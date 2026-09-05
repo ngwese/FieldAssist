@@ -81,13 +81,8 @@ impl FormatEncoder for VorbisEncoderImpl {
             } else {
                 PacketWriteEndInfo::NormalPacket
             };
-            ogg.write_packet(
-                packet.data.into_boxed_slice(),
-                serial,
-                end,
-                packet.pts.max(0) as u64,
-            )
-            .context("write Ogg packet")?;
+            ogg.write_packet(packet.data, serial, end, packet.pts.max(0) as u64)
+                .context("write Ogg packet")?;
         }
         Ok(())
     }

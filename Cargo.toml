@@ -20,7 +20,7 @@ cpal = "0.18"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 hound = "3"
 rusty_vorbis = "0.1"
-ogg = "0.8"
+ogg = "0.9"
 flacenc = "0.5"
 rubato = { version = "5", features = ["fft_resampler"] }
 
