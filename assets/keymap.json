@@ -13,7 +13,7 @@
     "space": "transport.play_pause",
     "home": "transport.home",
     "end": "transport.end",
-    "backspace": "edit.delete",
+    "backspace": "edit.clear",
     "delete": "edit.remove"
   },
   "macos": {
@@ -28,9 +28,7 @@
     "cmd-c": "edit.copy",
     "cmd-v": "edit.paste",
     "cmd-d": "edit.duplicate",
-    "cmd-t": "edit.trim",
-    "cmd-alt-left": "edit.roll_left",
-    "cmd-alt-right": "edit.roll_right"
+    "cmd-t": "edit.trim"
   },
   "linux": {
     "ctrl-o": "file.open",
@@ -44,9 +42,7 @@
     "ctrl-c": "edit.copy",
     "ctrl-v": "edit.paste",
     "ctrl-d": "edit.duplicate",
-    "ctrl-t": "edit.trim",
-    "ctrl-alt-left": "edit.roll_left",
-    "ctrl-alt-right": "edit.roll_right"
+    "ctrl-t": "edit.trim"
   },
   "windows": {
     "ctrl-o": "file.open",
@@ -60,8 +56,6 @@
     "ctrl-c": "edit.copy",
     "ctrl-v": "edit.paste",
     "ctrl-d": "edit.duplicate",
-    "ctrl-t": "edit.trim",
-    "ctrl-alt-left": "edit.roll_left",
-    "ctrl-alt-right": "edit.roll_right"
+    "ctrl-t": "edit.trim"
   }
 }

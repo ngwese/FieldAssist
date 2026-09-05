@@ -1,14 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use super::buffer::{Buffer, ChannelScope, Region, RegionId};
+use super::buffer::{Buffer, ChannelScope, RegionId};
 use super::composition::{
     map_inclusive_through_inverse, map_inclusive_through_op, map_point_through_inverse,
-    map_point_through_op, marker_type_color, Composition, EditId, EditOp, MarkerId,
+    map_point_through_op, Composition, EditId, EditOp, MarkerId, MarkerType,
 };
-use super::selection::{SamplePosition, Selection};
+use super::regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
+use super::selection::SamplePosition;
 use super::snap::nearest_zero_crossing;
 use crate::components::waveform::WaveformDataProvider;
 use crate::progress::ProgressHandle;
@@ -18,11 +20,15 @@ const DRAG_THRESHOLD_SAMPLES: usize = 0;
 pub struct BufferDocument {
     pub composition: Arc<RwLock<Composition>>,
     pub buffer: Arc<RwLock<Buffer>>,
-    pub selection: Selection,
+    pub selection: RegionCollection,
     pub current_position: Option<SamplePosition>,
     pub snap_zero_crossings: bool,
+    pub snap_to_marker: bool,
+    pub snap_marker_disabled: HashSet<String>,
     pub progress: ProgressHandle,
     region_drag_anchor: Option<usize>,
+    region_drag_id: Option<RegionId>,
+    latched_marker: Option<usize>,
     next_region_id: u64,
 }
 
@@ -38,11 +44,15 @@ impl BufferDocument {
         Self {
             composition,
             buffer,
-            selection: Selection::None,
+            selection: RegionCollection::new(SELECTION_COLLECTION),
             current_position: None,
             snap_zero_crossings: false,
+            snap_to_marker: false,
+            snap_marker_disabled: HashSet::new(),
             progress: ProgressHandle::new(),
             region_drag_anchor: None,
+            region_drag_id: None,
+            latched_marker: None,
             next_region_id: 1,
         }
     }
@@ -61,6 +71,23 @@ impl BufferDocument {
 
     pub fn toggle_zero_crossing_snap(&mut self) {
         self.snap_zero_crossings = !self.snap_zero_crossings;
+    }
+
+    pub fn toggle_marker_snap(&mut self) {
+        self.snap_to_marker = !self.snap_to_marker;
+        if !self.snap_to_marker {
+            self.latched_marker = None;
+        }
+    }
+
+    pub fn marker_type_snaps(&self, name: &str) -> bool {
+        !self.snap_marker_disabled.contains(name)
+    }
+
+    pub fn toggle_snap_marker_type(&mut self, name: &str) {
+        if !self.snap_marker_disabled.remove(name) {
+            self.snap_marker_disabled.insert(name.to_string());
+        }
     }
 
     pub fn is_region_drag_active(&self) -> bool {
@@ -88,7 +115,7 @@ impl BufferDocument {
         start + local
     }
 
-    fn snap_sample(&self, scope: &ChannelScope, sample: usize) -> usize {
+    fn snap_zero(&self, scope: &ChannelScope, sample: usize) -> usize {
         if !self.snap_zero_crossings {
             return sample;
         }
@@ -97,6 +124,46 @@ impl BufferDocument {
             ChannelScope::Channels(chs) => chs.first().copied().unwrap_or(0),
         };
         self.snap_channel(channel, sample)
+    }
+
+    pub fn snap_sample(&mut self, scope: &ChannelScope, sample: usize, radius: usize) -> usize {
+        let sample = self.clamp_sample(sample);
+        if self.snap_to_marker {
+            if let Some(latched) = self.latched_marker {
+                if sample.abs_diff(latched) > radius {
+                    self.latched_marker = None;
+                } else {
+                    return latched;
+                }
+            }
+            if let Some(marker) = self.nearest_snap_marker(sample, radius) {
+                self.latched_marker = Some(marker);
+                return marker;
+            }
+        }
+        self.snap_zero(scope, sample)
+    }
+
+    fn nearest_snap_marker(&self, sample: usize, radius: usize) -> Option<usize> {
+        if radius == 0 {
+            return None;
+        }
+        let composition = self.composition.read().unwrap();
+        let mut best: Option<(usize, usize)> = None;
+        for marker in composition.markers().iter() {
+            if !self.marker_type_snaps(&marker.marker_type) {
+                continue;
+            }
+            let frame = marker.frame as usize;
+            let dist = sample.abs_diff(frame);
+            if dist > radius {
+                continue;
+            }
+            if best.is_none_or(|(best_dist, _)| dist < best_dist) {
+                best = Some((dist, frame));
+            }
+        }
+        best.map(|(_, frame)| frame)
     }
 
     fn clamp_sample(&self, sample: usize) -> usize {
@@ -133,130 +200,169 @@ impl BufferDocument {
         }
     }
 
-    pub fn hit_test_region(&self, sample: usize, lane: usize) -> Option<RegionId> {
-        self.buffer
-            .read()
-            .unwrap()
-            .regions
-            .iter()
-            .rev()
-            .find(|region| region.contains(sample, lane))
-            .map(|region| region.id)
-    }
-
     pub fn set_position(&mut self, sample: usize, scope: ChannelScope) {
-        let sample = self.clamp_sample(self.snap_sample(&scope, sample));
+        let sample = self.clamp_sample(self.snap_zero(&scope, sample));
+        self.clear_drag();
+        self.set_current_position_sample(sample, scope);
+    }
+
+    fn clear_drag(&mut self) {
         self.region_drag_anchor = None;
-        self.set_current_position_sample(sample, scope.clone());
-        self.selection = Selection::Position(SamplePosition {
-            sample,
-            channels: scope,
-        });
+        self.region_drag_id = None;
+        self.latched_marker = None;
     }
 
-    pub fn select_region_at(&mut self, sample: usize, lane: usize, scope: ChannelScope) {
-        let sample = self.clamp_sample(self.snap_sample(&scope, sample));
-        if let Some(id) = self.hit_test_region(sample, lane) {
-            let region = self.buffer.read().unwrap().region(id).cloned();
-            if let Some(region) = region {
-                self.region_drag_anchor = None;
-                self.set_current_position_sample(region.end, region.channels.clone());
-                self.selection = Selection::Region {
-                    region_id: Some(id),
-                    start: region.start,
-                    end: region.end,
-                    channels: region.channels,
-                };
-                return;
-            }
-        }
-        self.set_position(sample, scope);
+    fn peek_next_region_id(&self) -> u64 {
+        self.next_region_id
+            .max(self.composition.read().unwrap().peek_next_region_id())
+            .max(1)
     }
 
-    pub fn begin_region_drag(&mut self, anchor: usize, scope: ChannelScope) {
-        let anchor = self.clamp_sample(self.snap_sample(&scope, anchor));
+    fn commit_next_region_id(&mut self, next: u64) {
+        self.next_region_id = next;
+        self.composition.write().unwrap().set_next_region_id(next);
+    }
+
+    fn push_selection_region(
+        &mut self,
+        start: usize,
+        end: usize,
+        channels: ChannelScope,
+        label: Option<String>,
+    ) -> RegionId {
+        let mut next = self.peek_next_region_id();
+        let id = self
+            .selection
+            .alloc_push(start, end, channels, label, &mut next);
+        self.commit_next_region_id(next);
+        id
+    }
+
+    pub fn begin_region_replace(&mut self, anchor: usize, scope: ChannelScope, radius: usize) {
+        let anchor = self.snap_sample(&scope, anchor, radius);
+        self.selection.clear();
+        let id = self.push_selection_region(anchor, anchor, scope, None);
         self.region_drag_anchor = Some(anchor);
-        self.selection = Selection::Region {
-            region_id: None,
-            start: anchor,
-            end: anchor,
-            channels: scope,
-        };
+        self.region_drag_id = Some(id);
     }
 
-    pub fn update_region_drag(&mut self, sample: usize) {
-        let Some(anchor) = self.region_drag_anchor else {
+    pub fn begin_region_disjoint(&mut self, anchor: usize, scope: ChannelScope, radius: usize) {
+        let anchor = self.snap_sample(&scope, anchor, radius);
+        let id = self.push_selection_region(anchor, anchor, scope, None);
+        self.region_drag_anchor = Some(anchor);
+        self.region_drag_id = Some(id);
+    }
+
+    pub fn begin_region_extend(&mut self, sample: usize, scope: ChannelScope, radius: usize) {
+        let sample = self.snap_sample(&scope, sample, radius);
+        if self.selection.is_empty() {
+            let anchor = self
+                .current_position
+                .as_ref()
+                .map(|pos| pos.sample)
+                .unwrap_or(0);
+            let anchor = self.clamp_sample(anchor);
+            let id = self.push_selection_region(anchor, sample, scope, None);
+            self.region_drag_anchor = Some(anchor);
+            self.region_drag_id = Some(id);
             return;
-        };
-        let channels = match &self.selection {
-            Selection::Region { channels, .. } => channels.clone(),
-            _ => return,
-        };
-        let sample = self.clamp_sample(self.snap_sample(&channels, sample));
-        let (start, end) = Self::normalized_region_bounds(anchor, sample);
-        let start = self.clamp_sample(self.snap_sample(&channels, start));
-        let end = self.clamp_sample(self.snap_sample(&channels, end));
-        let (start, end) = Self::normalized_region_bounds(start, end);
-        if let Selection::Region {
-            start: sel_start,
-            end: sel_end,
-            ..
-        } = &mut self.selection
-        {
-            *sel_start = start;
-            *sel_end = end;
         }
-    }
-
-    pub fn finish_region_drag(&mut self) {
-        self.region_drag_anchor = None;
-        let Selection::Region {
-            region_id,
-            start,
-            end,
-            channels,
-        } = self.selection.clone()
+        let Some((id, endpoint, _)) = self
+            .selection
+            .nearest_endpoint(sample, Some(&scope))
+            .or_else(|| self.selection.nearest_endpoint(sample, None))
         else {
             return;
         };
+        let Some(region) = self.selection.get(id) else {
+            return;
+        };
+        let anchor = match endpoint {
+            RegionEndpoint::Start => region.end,
+            RegionEndpoint::End => region.start,
+        };
+        if let Some(region) = self.selection.get_mut(id) {
+            let (start, end) = Self::normalized_region_bounds(anchor, sample);
+            region.start = start;
+            region.end = end;
+        }
+        self.selection.normalize();
+        self.region_drag_anchor = Some(anchor);
+        self.region_drag_id = self
+            .selection
+            .regions
+            .iter()
+            .find(|region| {
+                region.contains(sample, 0) || (region.start..=region.end).contains(&sample)
+            })
+            .map(|region| region.id)
+            .or(Some(id));
+    }
 
-        let (start, end) = Self::normalized_region_bounds(start, end);
-
-        if end.saturating_sub(start) <= DRAG_THRESHOLD_SAMPLES {
-            self.set_current_position_sample(start, channels.clone());
-            self.selection = Selection::Position(SamplePosition {
-                sample: start,
-                channels,
+    pub fn update_region_drag(&mut self, sample: usize, radius: usize) {
+        let Some(anchor) = self.region_drag_anchor else {
+            return;
+        };
+        let Some(id) = self.region_drag_id else {
+            return;
+        };
+        let Some(channels) = self.selection.get(id).map(|region| region.channels.clone()) else {
+            return;
+        };
+        let sample = self.snap_sample(&channels, sample, radius);
+        let (start, end) = Self::normalized_region_bounds(anchor, sample);
+        if let Some(region) = self.selection.get_mut(id) {
+            region.start = start;
+            region.end = end;
+        }
+        self.selection.normalize();
+        self.region_drag_id = self
+            .selection
+            .regions
+            .iter()
+            .find(|region| {
+                region.channels == channels && region.start <= start && region.end >= end
+            })
+            .map(|region| region.id)
+            .or_else(|| {
+                self.selection
+                    .regions
+                    .iter()
+                    .find(|region| (region.start..=region.end).contains(&sample))
+                    .map(|region| region.id)
             });
+    }
+
+    pub fn finish_region_drag(&mut self) {
+        let id = self.region_drag_id;
+        self.clear_drag();
+        let Some(id) = id else {
+            return;
+        };
+        let Some(region) = self.selection.get(id).cloned() else {
+            return;
+        };
+        let (start, end) = Self::normalized_region_bounds(region.start, region.end);
+        if end.saturating_sub(start) <= DRAG_THRESHOLD_SAMPLES {
+            self.selection.remove(id);
+            self.set_current_position_sample(start, region.channels);
             return;
         }
+        self.set_current_position_sample(end, region.channels);
+        self.selection.normalize();
+    }
 
-        self.set_current_position_sample(end, channels.clone());
-
-        if let Some(id) = region_id {
-            if let Some(region) = self.buffer.write().unwrap().region_mut(id) {
-                region.start = start;
-                region.end = end;
-                region.channels = channels.clone();
-            }
-            self.selection = Selection::Region {
-                region_id: Some(id),
-                start,
-                end,
-                channels,
-            };
-        } else {
-            self.selection = Selection::Region {
-                region_id: None,
-                start,
-                end,
-                channels,
-            };
+    pub fn click_without_drag(&mut self, sample: usize, scope: ChannelScope, add: bool) {
+        self.clear_drag();
+        if !add {
+            self.selection.clear();
         }
+        let sample = self.clamp_sample(self.snap_zero(&scope, sample));
+        self.set_current_position_sample(sample, scope);
     }
 
     pub fn add_region(&mut self, start: usize, end: usize, channels: ChannelScope) -> RegionId {
-        self.add_labeled_region(start, end, channels, None)
+        self.add_labeled_region(start, end, channels, None, SELECTION_COLLECTION)
     }
 
     pub fn add_labeled_region(
@@ -265,33 +371,87 @@ impl BufferDocument {
         end: usize,
         channels: ChannelScope,
         label: Option<String>,
+        collection: &str,
     ) -> RegionId {
-        let id = RegionId(self.next_region_id);
-        self.next_region_id += 1;
-        let mut region = Region::new(id, start, end, channels);
-        if let Some(label) = label {
-            region = region.with_label(label);
+        let start = self.clamp_sample(start);
+        let end = self.clamp_sample(end);
+        if collection == SELECTION_COLLECTION {
+            return self.push_selection_region(start, end, channels, label);
         }
-        self.buffer.write().unwrap().regions.push(region);
+        let id = self
+            .composition
+            .write()
+            .unwrap()
+            .add_named_region(collection, start, end, channels, label)
+            .unwrap_or(RegionId(0));
+        self.next_region_id = self.peek_next_region_id();
         id
     }
 
     pub fn remove_region(&mut self, id: RegionId) -> bool {
-        self.buffer.write().unwrap().remove_region(id)
+        if self.selection.remove(id) {
+            return true;
+        }
+        let mut composition = self.composition.write().unwrap();
+        for collection in composition.collections().to_vec() {
+            if collection.regions.iter().any(|region| region.id == id) {
+                if let Some(col) = composition.collection_mut(&collection.name) {
+                    return col.remove(id);
+                }
+            }
+        }
+        false
+    }
+
+    pub fn named_collections(&self) -> Vec<RegionCollection> {
+        self.composition.read().unwrap().collections().to_vec()
+    }
+
+    pub fn collection_names(&self) -> Vec<String> {
+        let mut names = vec![SELECTION_COLLECTION.to_string()];
+        for collection in self.composition.read().unwrap().collections() {
+            names.push(collection.name.clone());
+        }
+        names
+    }
+
+    pub fn ensure_named_collection(&mut self, name: &str) {
+        if name != SELECTION_COLLECTION {
+            self.composition.write().unwrap().ensure_collection(name);
+        }
+    }
+
+    pub fn adopt_collection_as_selection(&mut self, name: &str) {
+        if name == SELECTION_COLLECTION {
+            return;
+        }
+        let other = self.composition.read().unwrap().collection(name).cloned();
+        self.clear_drag();
+        match other {
+            Some(other) => {
+                let mut next = self.peek_next_region_id();
+                self.selection.copy_regions_from(&other, &mut next);
+                self.commit_next_region_id(next);
+            }
+            None => self.selection.clear(),
+        }
     }
 
     pub fn select_range(&mut self, start: usize, stop: usize, channels: ChannelScope) {
         let start = self.clamp_sample(start);
         let stop = self.clamp_sample(stop);
         let (start, end) = Self::normalized_region_bounds(start, stop);
-        self.region_drag_anchor = None;
+        self.clear_drag();
         self.set_current_position_sample(end, channels.clone());
-        self.selection = Selection::Region {
-            region_id: None,
+        let mut next = self.peek_next_region_id();
+        self.selection.replace_with(crate::model::Region::new(
+            RegionId(next),
             start,
             end,
             channels,
-        };
+        ));
+        next += 1;
+        self.commit_next_region_id(next);
     }
 
     pub fn select_all(&mut self) {
@@ -304,8 +464,8 @@ impl BufferDocument {
     }
 
     pub fn clear_selection(&mut self) {
-        self.region_drag_anchor = None;
-        self.selection = Selection::None;
+        self.clear_drag();
+        self.selection.clear();
     }
 
     pub fn invert_selection(&mut self) {
@@ -315,33 +475,13 @@ impl BufferDocument {
             return;
         }
         let last = frames.saturating_sub(1);
-        match &self.selection {
-            Selection::None | Selection::Position(_) => self.select_all(),
-            Selection::Region { start, end, .. } => {
-                let start = *start;
-                let end = *end;
-                if start == 0 && end >= last {
-                    self.clear_selection();
-                    return;
-                }
-                let touches_start = start == 0;
-                let touches_end = end >= last;
-                if touches_start && !touches_end {
-                    self.select_range(end.saturating_add(1), last, ChannelScope::all());
-                } else if touches_end && !touches_start {
-                    self.select_range(0, start.saturating_sub(1), ChannelScope::all());
-                } else {
-                    let prefix_len = start;
-                    let suffix_len = last.saturating_sub(end);
-                    if prefix_len >= suffix_len && start > 0 {
-                        self.select_range(0, start - 1, ChannelScope::all());
-                    } else if end < last {
-                        self.select_range(end + 1, last, ChannelScope::all());
-                    } else {
-                        self.clear_selection();
-                    }
-                }
-            }
+        let channel_count = self.composition.read().unwrap().channel_count();
+        self.clear_drag();
+        let mut next = self.peek_next_region_id();
+        self.selection.invert(last, channel_count.max(1), &mut next);
+        self.commit_next_region_id(next);
+        if let Some(region) = self.selection.regions.last() {
+            self.set_current_position_sample(region.end, region.channels.clone());
         }
     }
 
@@ -349,20 +489,32 @@ impl BufferDocument {
         &mut self,
         sample: usize,
         marker_type: &str,
-        color: [f32; 4],
         note: Option<String>,
     ) -> Option<MarkerId> {
         let sample = self.clamp_sample(sample);
         self.composition
             .write()
             .unwrap()
-            .add_marker(sample as u64, marker_type, color, note)
+            .add_marker(sample as u64, marker_type, note)
     }
 
     pub fn add_marker_of_type(&mut self, sample: usize, marker_type: &str) -> Option<MarkerId> {
-        let color = marker_type_color(marker_type)
-            .or_else(|| marker_type_color(super::composition::default_marker_type()))?;
-        self.add_marker(sample, marker_type, color, None)
+        self.add_marker(sample, marker_type, None)
+    }
+
+    pub fn marker_types(&self) -> Vec<MarkerType> {
+        self.composition.read().unwrap().marker_types().to_vec()
+    }
+
+    pub fn add_marker_type(&mut self, name: &str, color: [f32; 4]) -> bool {
+        self.composition
+            .write()
+            .unwrap()
+            .add_marker_type(name, color)
+    }
+
+    pub fn remove_marker_type(&mut self, name: &str) -> bool {
+        self.composition.write().unwrap().remove_marker_type(name)
     }
 
     pub fn remove_marker(&mut self, id: MarkerId) -> bool {
@@ -403,21 +555,13 @@ impl BufferDocument {
     }
 
     pub fn reset_for_new_buffer(&mut self) {
-        self.selection = Selection::None;
+        self.selection.clear();
         self.current_position = None;
-        self.region_drag_anchor = None;
+        self.clear_drag();
     }
 
-    pub fn selection_span(&self) -> Option<(u64, u64)> {
-        match &self.selection {
-            Selection::Region { start, end, .. } if *end >= *start => {
-                let len = (*end as u64)
-                    .saturating_sub(*start as u64)
-                    .saturating_add(1);
-                Some((*start as u64, len))
-            }
-            _ => None,
-        }
+    pub fn selection_spans(&self) -> Vec<(u64, u64)> {
+        self.selection.edit_spans()
     }
 
     pub fn caret_frame(&self) -> u64 {
@@ -457,65 +601,21 @@ impl BufferDocument {
         if let Some(pos) = self.current_position.as_mut() {
             pos.sample = map_point_through_op(pos.sample as u64, op) as usize;
         }
-        self.selection = match self.selection.clone() {
-            Selection::Region {
-                start,
-                end,
-                channels,
-                ..
-            } => match map_inclusive_through_op(start as u64, end as u64, op) {
-                Some((start, end)) => Selection::Region {
-                    region_id: None,
-                    start: start as usize,
-                    end: end as usize,
-                    channels,
-                },
-                None => Selection::Position(SamplePosition {
-                    sample: map_point_through_op(start as u64, op) as usize,
-                    channels,
-                }),
-            },
-            Selection::Position(pos) => Selection::Position(SamplePosition {
-                sample: map_point_through_op(pos.sample as u64, op) as usize,
-                channels: pos.channels,
-            }),
-            Selection::None => Selection::None,
-        };
+        self.selection
+            .remap(|start, end| map_inclusive_through_op(start, end, op));
     }
 
     fn remap_through_inverse(&mut self, op: &EditOp) {
         if let Some(pos) = self.current_position.as_mut() {
             pos.sample = map_point_through_inverse(pos.sample as u64, op) as usize;
         }
-        self.selection = match self.selection.clone() {
-            Selection::Region {
-                start,
-                end,
-                channels,
-                ..
-            } => match map_inclusive_through_inverse(start as u64, end as u64, op) {
-                Some((start, end)) => Selection::Region {
-                    region_id: None,
-                    start: start as usize,
-                    end: end as usize,
-                    channels,
-                },
-                None => Selection::Position(SamplePosition {
-                    sample: map_point_through_inverse(start as u64, op) as usize,
-                    channels,
-                }),
-            },
-            Selection::Position(pos) => Selection::Position(SamplePosition {
-                sample: map_point_through_inverse(pos.sample as u64, op) as usize,
-                channels: pos.channels,
-            }),
-            Selection::None => Selection::None,
-        };
+        self.selection
+            .remap(|start, end| map_inclusive_through_inverse(start, end, op));
     }
 
     fn clamp_playhead_and_selection(&mut self) {
         if self.frames() == 0 {
-            self.selection = Selection::None;
+            self.selection.clear();
             self.current_position = None;
             return;
         }
@@ -525,31 +625,8 @@ impl BufferDocument {
                 pos.sample = sample;
             }
         }
-        match self.selection.clone() {
-            Selection::Region {
-                region_id,
-                start,
-                end,
-                channels,
-            } => {
-                let start = self.clamp_sample(start);
-                let end = self.clamp_sample(end);
-                let (start, end) = Self::normalized_region_bounds(start, end);
-                self.selection = Selection::Region {
-                    region_id,
-                    start,
-                    end,
-                    channels,
-                };
-            }
-            Selection::Position(pos) => {
-                self.selection = Selection::Position(SamplePosition {
-                    sample: self.clamp_sample(pos.sample),
-                    channels: pos.channels,
-                });
-            }
-            Selection::None => {}
-        }
+        let last = self.frames().saturating_sub(1);
+        self.selection.clamp(last);
     }
 
     pub fn edit_undo(&mut self) -> bool {
@@ -580,23 +657,29 @@ impl BufferDocument {
     }
 
     pub fn edit_copy(&mut self) {
-        let Some((start, len)) = self.selection_span() else {
+        let spans = self.selection_spans();
+        if spans.is_empty() {
             return;
-        };
-        self.composition.write().unwrap().copy(start, len);
+        }
+        self.composition.write().unwrap().copy_ranges(&spans);
     }
 
     pub fn edit_cut(&mut self) {
-        let Some((start, len)) = self.selection_span() else {
+        let mut spans = self.selection_spans();
+        if spans.is_empty() {
             return;
-        };
+        }
+        self.composition.write().unwrap().copy_ranges(&spans);
+        spans.sort_by_key(|(start, _)| *start);
         let from = self.composition.read().unwrap().edit_cursor();
-        self.composition.write().unwrap().cut(start, len);
+        for (start, len) in spans.into_iter().rev() {
+            self.composition.write().unwrap().remove(start, len);
+        }
         self.after_tree_changed(from);
     }
 
     pub fn edit_paste(&mut self) {
-        let (at, replace) = if let Some((start, len)) = self.selection_span() {
+        let (at, replace) = if let Some((start, len)) = self.selection.first_span() {
             (start, len)
         } else {
             (self.caret_frame(), 0)
@@ -610,54 +693,68 @@ impl BufferDocument {
         self.after_tree_changed(from);
     }
 
-    pub fn edit_delete(&mut self) {
-        let Some((start, len)) = self.selection_span() else {
+    pub fn edit_clear(&mut self) {
+        let spans = self.selection_spans();
+        if spans.is_empty() {
             return;
-        };
+        }
         let from = self.composition.read().unwrap().edit_cursor();
-        self.composition.write().unwrap().delete(start, len);
+        for (start, len) in spans {
+            self.composition.write().unwrap().delete(start, len);
+        }
         self.after_tree_changed(from);
     }
 
     pub fn edit_remove(&mut self) {
-        let Some((start, len)) = self.selection_span() else {
+        let mut spans = self.selection_spans();
+        if spans.is_empty() {
             return;
-        };
+        }
+        spans.sort_by_key(|(start, _)| *start);
         let from = self.composition.read().unwrap().edit_cursor();
-        self.composition.write().unwrap().remove(start, len);
+        for (start, len) in spans.into_iter().rev() {
+            self.composition.write().unwrap().remove(start, len);
+        }
         self.after_tree_changed(from);
     }
 
     pub fn edit_duplicate(&mut self) {
-        let Some((start, len)) = self.selection_span() else {
+        let mut spans = self.selection_spans();
+        if spans.is_empty() {
             return;
-        };
+        }
+        spans.sort_by_key(|(start, _)| *start);
         let from = self.composition.read().unwrap().edit_cursor();
-        self.composition.write().unwrap().duplicate(start, len);
+        for (start, len) in spans.into_iter().rev() {
+            self.composition.write().unwrap().duplicate(start, len);
+        }
         self.after_tree_changed(from);
     }
 
     pub fn edit_trim(&mut self) {
-        let Some((start, len)) = self.selection_span() else {
+        let spans = self.selection_spans();
+        if spans.is_empty() {
             return;
-        };
+        }
         let from = self.composition.read().unwrap().edit_cursor();
-        self.composition.write().unwrap().trim(start, len);
-        self.after_tree_changed(from);
-    }
-
-    pub fn edit_roll(&mut self, delta: i64) {
-        let at = self
-            .selection_span()
-            .map(|(start, _)| start)
-            .unwrap_or_else(|| self.caret_frame());
-        let from = self.composition.read().unwrap().edit_cursor();
-        self.composition.write().unwrap().roll(at, delta);
+        self.composition.write().unwrap().trim_ranges(&spans);
         self.after_tree_changed(from);
     }
 
     pub fn current_edit(&self) -> EditId {
         self.composition.read().unwrap().current_edit()
+    }
+
+    pub(crate) fn find_region(&self, id: RegionId) -> Option<(String, crate::model::Region)> {
+        if let Some(region) = self.selection.get(id) {
+            return Some((SELECTION_COLLECTION.into(), region.clone()));
+        }
+        for collection in self.composition.read().unwrap().collections() {
+            if let Some(region) = collection.get(id) {
+                return Some((collection.name.clone(), region.clone()));
+            }
+        }
+        None
     }
 }
 
@@ -741,72 +838,57 @@ mod tests {
     }
 
     #[test]
-    fn commit_updates_existing_region_only() {
+    fn drag_commits_to_selection_collection() {
         let mut doc = test_document(1000);
-        let id = doc.add_region(10, 20, ChannelScope::all());
-        doc.begin_region_drag(10, ChannelScope::all());
-        if let Selection::Region {
-            region_id: ref mut rid,
-            ..
-        } = doc.selection
-        {
-            *rid = Some(id);
-        }
-        doc.update_region_drag(50);
+        doc.begin_region_replace(10, ChannelScope::all(), 0);
+        doc.update_region_drag(50, 0);
         doc.finish_region_drag();
-        let buffer = doc.buffer.read().unwrap();
-        let region = buffer.region(id).unwrap();
-        assert_eq!(region.start, 10);
-        assert_eq!(region.end, 50);
+        assert_eq!(doc.selection.regions.len(), 1);
+        assert_eq!(doc.selection.regions[0].start, 10);
+        assert_eq!(doc.selection.regions[0].end, 50);
         assert_eq!(doc.current_position.as_ref().map(|p| p.sample), Some(50));
-    }
-
-    #[test]
-    fn transient_region_not_persisted() {
-        let mut doc = test_document(1000);
-        doc.begin_region_drag(10, ChannelScope::all());
-        doc.update_region_drag(50);
-        doc.finish_region_drag();
-        assert!(doc.buffer.read().unwrap().regions.is_empty());
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                region_id: None,
-                ..
-            }
-        ));
-        assert_eq!(doc.current_position.as_ref().map(|p| p.sample), Some(50));
+        assert!(doc.composition.read().unwrap().collections().is_empty());
     }
 
     #[test]
     fn reverse_drag_normalizes_bounds_and_sets_position_to_end() {
         let mut doc = test_document(1000);
-        doc.begin_region_drag(80, ChannelScope::all());
-        doc.update_region_drag(10);
+        doc.begin_region_replace(80, ChannelScope::all(), 0);
+        doc.update_region_drag(10, 0);
         doc.finish_region_drag();
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                start: 10,
-                end: 80,
-                ..
-            }
-        ));
+        assert_eq!(doc.selection.regions[0].start, 10);
+        assert_eq!(doc.selection.regions[0].end, 80);
         assert_eq!(doc.current_position.as_ref().map(|p| p.sample), Some(80));
     }
 
     #[test]
-    fn cut_and_delete_use_selection_span() {
+    fn ctrl_adds_disjoint_regions_and_drag_merges_when_crossing() {
+        let mut doc = test_document(1000);
+        doc.select_range(10, 20, ChannelScope::all());
+        doc.begin_region_disjoint(40, ChannelScope::all(), 0);
+        doc.update_region_drag(50, 0);
+        doc.finish_region_drag();
+        assert_eq!(doc.selection.regions.len(), 2);
+        doc.begin_region_extend(22, ChannelScope::all(), 0);
+        doc.update_region_drag(45, 0);
+        doc.finish_region_drag();
+        assert_eq!(doc.selection.regions.len(), 1);
+        assert_eq!(doc.selection.regions[0].start, 10);
+        assert_eq!(doc.selection.regions[0].end, 50);
+    }
+
+    #[test]
+    fn cut_and_clear_use_selection_spans() {
         let mut doc = test_document(100);
-        doc.begin_region_drag(10, ChannelScope::all());
-        doc.update_region_drag(19);
+        doc.begin_region_replace(10, ChannelScope::all(), 0);
+        doc.update_region_drag(19, 0);
         doc.finish_region_drag();
         doc.edit_cut();
         assert_eq!(doc.frames(), 90);
-        doc.begin_region_drag(0, ChannelScope::all());
-        doc.update_region_drag(4);
+        doc.begin_region_replace(0, ChannelScope::all(), 0);
+        doc.update_region_drag(4, 0);
         doc.finish_region_drag();
-        doc.edit_delete();
+        doc.edit_clear();
         assert_eq!(doc.frames(), 90);
     }
 
@@ -815,7 +897,7 @@ mod tests {
         let mut doc = test_document(50);
         doc.edit_cut();
         doc.edit_copy();
-        doc.edit_delete();
+        doc.edit_clear();
         doc.edit_remove();
         doc.edit_duplicate();
         doc.edit_trim();
@@ -840,10 +922,11 @@ mod tests {
     #[test]
     fn paste_at_caret_follows_the_shifted_sample() {
         let mut doc = test_document(100);
-        doc.begin_region_drag(0, ChannelScope::all());
-        doc.update_region_drag(9);
+        doc.begin_region_replace(0, ChannelScope::all(), 0);
+        doc.update_region_drag(9, 0);
         doc.finish_region_drag();
         doc.edit_copy();
+        doc.clear_selection();
         doc.set_position(50, ChannelScope::all());
         doc.edit_paste();
         assert_eq!(doc.frames(), 110);
@@ -851,63 +934,74 @@ mod tests {
     }
 
     #[test]
+    fn paste_with_selection_replaces_from_first_span() {
+        let mut doc = test_document(100);
+        doc.begin_region_replace(0, ChannelScope::all(), 0);
+        doc.update_region_drag(9, 0);
+        doc.finish_region_drag();
+        doc.edit_copy();
+        doc.select_range(20, 29, ChannelScope::all());
+        doc.edit_paste();
+        assert_eq!(doc.frames(), 100);
+    }
+
+    #[test]
     fn invert_selection_covers_edges_and_interior() {
         let mut doc = test_document(100);
         doc.invert_selection();
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                start: 0,
-                end: 99,
-                ..
-            }
-        ));
+        assert_eq!(doc.selection.regions.len(), 1);
+        assert_eq!(doc.selection.regions[0].start, 0);
+        assert_eq!(doc.selection.regions[0].end, 99);
         doc.invert_selection();
-        assert!(matches!(doc.selection, Selection::None));
+        assert!(doc.selection.is_empty());
 
         doc.select_range(0, 40, ChannelScope::all());
         doc.invert_selection();
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                start: 41,
-                end: 99,
-                ..
-            }
-        ));
+        assert_eq!(doc.selection.regions.len(), 1);
+        assert_eq!(doc.selection.regions[0].start, 41);
+        assert_eq!(doc.selection.regions[0].end, 99);
 
         doc.select_range(50, 99, ChannelScope::all());
         doc.invert_selection();
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                start: 0,
-                end: 49,
-                ..
-            }
-        ));
+        assert_eq!(doc.selection.regions.len(), 1);
+        assert_eq!(doc.selection.regions[0].start, 0);
+        assert_eq!(doc.selection.regions[0].end, 49);
 
         doc.select_range(10, 20, ChannelScope::all());
         doc.invert_selection();
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                start: 21,
-                end: 99,
-                ..
-            }
-        ));
+        assert_eq!(doc.selection.regions.len(), 2);
+        assert_eq!(
+            (doc.selection.regions[0].start, doc.selection.regions[0].end),
+            (0, 9)
+        );
+        assert_eq!(
+            (doc.selection.regions[1].start, doc.selection.regions[1].end),
+            (21, 99)
+        );
+    }
 
-        doc.select_range(80, 90, ChannelScope::all());
-        doc.invert_selection();
-        assert!(matches!(
-            doc.selection,
-            Selection::Region {
-                start: 0,
-                end: 79,
-                ..
-            }
-        ));
+    #[test]
+    fn remove_applies_right_to_left_across_regions() {
+        let mut doc = test_document(100);
+        doc.select_range(10, 19, ChannelScope::all());
+        doc.begin_region_disjoint(50, ChannelScope::all(), 0);
+        doc.update_region_drag(59, 0);
+        doc.finish_region_drag();
+        assert_eq!(doc.selection.regions.len(), 2);
+        doc.edit_remove();
+        assert_eq!(doc.frames(), 80);
+    }
+
+    #[test]
+    fn marker_snap_latches_and_releases() {
+        let mut doc = test_document(1000);
+        assert!(doc.add_marker_of_type(100, "Blue").is_some());
+        doc.snap_to_marker = true;
+        assert_eq!(doc.snap_sample(&ChannelScope::all(), 102, 10), 100);
+        assert_eq!(doc.latched_marker, Some(100));
+        assert_eq!(doc.snap_sample(&ChannelScope::all(), 105, 10), 100);
+        assert_eq!(doc.snap_sample(&ChannelScope::all(), 200, 10), 200);
+        assert_eq!(doc.latched_marker, None);
     }
 
     #[test]
@@ -937,5 +1031,19 @@ mod tests {
         assert_eq!(doc.composition.read().unwrap().markers().len(), 2);
         assert!(doc.remove_marker_at_type(40, "Blue"));
         assert_eq!(doc.composition.read().unwrap().markers().len(), 1);
+    }
+
+    #[test]
+    fn removing_marker_type_removes_its_markers() {
+        let mut doc = test_document(100);
+        assert!(doc.add_marker_of_type(10, "Blue").is_some());
+        assert!(doc.add_marker_of_type(20, "Yellow").is_some());
+        assert!(doc.remove_marker_type("Blue"));
+        let composition = doc.composition.read().unwrap();
+        assert_eq!(composition.markers().len(), 1);
+        assert!(composition
+            .marker_types()
+            .iter()
+            .all(|ty| ty.name != "Blue"));
     }
 }

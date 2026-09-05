@@ -3,8 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::markers::Marker;
+use super::markers::{MarkerType, StoredMarker};
 use super::tree::ClipTree;
+use crate::model::regions::RegionCollection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EditId(pub u64);
@@ -159,11 +160,15 @@ pub struct ProjectFile {
     pub edits: Vec<EditOp>,
     pub edit_cursor: usize,
     #[serde(default)]
-    pub markers: Vec<Marker>,
+    pub markers: Vec<StoredMarker>,
+    #[serde(default)]
+    pub marker_types: Vec<MarkerType>,
+    #[serde(default)]
+    pub collections: Vec<RegionCollection>,
 }
 
 pub const FACOMP_KIND: &str = "facomp";
-pub const FACOMP_FORMAT_VERSION: u32 = 2;
+pub const FACOMP_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectEnvelope {
@@ -190,7 +195,7 @@ impl ProjectEnvelope {
             bail!("not a snd-review composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            1 | 2 => Ok(envelope),
+            1 | 2 | 3 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer snd-review (format_version {n})")

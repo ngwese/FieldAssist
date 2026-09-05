@@ -8,6 +8,7 @@ pub mod explorer;
 pub mod header_meta;
 pub mod markers;
 pub mod quit_unsaved;
+pub mod regions;
 pub mod render_sheet;
 pub mod repl;
 pub mod status_bar;

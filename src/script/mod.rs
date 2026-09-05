@@ -70,19 +70,56 @@ mod tests {
             r#"
             local c = app.active
             c:select(0, 100)
-            local region = c:add_region({ start = 10, stop = 20, label = "intro" })
-            return c.selection.kind, c.selection.start, region.label, region.start, region.stop
+            local region = c:add_region({
+              start = 10,
+              stop = 20,
+              label = "intro",
+              collection = "cues",
+            })
+            local sel = c.selection.regions[1]
+            return sel.start, sel.stop, region.label, region.start, region.collection, #c.collections
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(out.result.as_deref(), Some("region\t0\tintro\t10\t20"));
+        assert_eq!(out.result.as_deref(), Some("0\t100\tintro\t10\tcues\t2"));
         let world = world.borrow();
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
-        assert_eq!(
-            doc.buffer.read().unwrap().regions[0].label.as_deref(),
-            Some("intro"),
+        let composition = doc.composition.read().unwrap();
+        let cues = composition.collection("cues").expect("cues");
+        assert_eq!(cues.regions[0].label.as_deref(), Some("intro"));
+    }
+
+    #[test]
+    fn collections_and_marker_types_round_trip() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local c = app.active
+            c:clear_selection()
+            c:add_region({ start = 5, stop = 15, label = "sel" })
+            local silent = c:collection("silent")
+            c:add_region({ start = 40, stop = 50, collection = "silent", label = "gap" })
+            c:add_marker_type("Red", {1, 0, 0, 1})
+            c:add_marker({ frame = 12, type = "Red", note = "hit" })
+            local types_before, markers_before = #c.marker_types, #c.markers
+            c:remove_marker_type("Red")
+            return c.selection.regions[1].label, silent.regions[1].label, types_before, markers_before, #c.marker_types, #c.markers
+            "#,
         );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("sel\tgap\t4\t1\t3\t0"));
+        let world = world.borrow();
+        let id = world.active.unwrap();
+        let doc = world.docs.get(&id).unwrap();
+        assert_eq!(doc.selection.regions[0].label.as_deref(), Some("sel"));
+        assert!(doc
+            .composition
+            .read()
+            .unwrap()
+            .marker_types()
+            .iter()
+            .all(|ty| ty.name != "Red"));
     }
 
     #[test]
@@ -109,6 +146,28 @@ mod tests {
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
         assert!(doc.composition.read().unwrap().markers().is_empty());
+    }
+
+    #[test]
+    fn add_marker_color_registers_unknown_type() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local c = app.active
+            local m = c:add_marker({ frame = 10, type = "Red", color = {1, 0, 0, 1} })
+            return m.type, m.color[1], m.color[2], m.color[3], #c.marker_types
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("Red\t1.0\t0.0\t0.0\t4"));
+        let world = world.borrow();
+        let id = world.active.unwrap();
+        let doc = world.docs.get(&id).unwrap();
+        let composition = doc.composition.read().unwrap();
+        assert!(composition
+            .marker_types()
+            .iter()
+            .any(|ty| ty.name == "Red" && ty.color == [1.0, 0.0, 0.0, 1.0]));
     }
 
     #[test]

@@ -10,7 +10,6 @@ use gpui_component::{h_flex, ActiveTheme as _};
 
 use crate::components::waveform::WaveformDisplay;
 use crate::model::document::BufferDocument;
-use crate::model::selection::Selection;
 use crate::playback::TransportState;
 
 /// Title-bar session readout. Lives in its own view so hover, playhead, and
@@ -163,10 +162,10 @@ fn format_header_meta(doc: &BufferDocument, transport: TransportState) -> String
         ));
     }
 
-    if let Selection::Region { start, end, .. } = &doc.selection {
+    if let Some((start, end)) = doc.selection.bounding_span() {
         if end > start {
-            let start_secs = doc.sample_to_secs(*start);
-            let end_secs = doc.sample_to_secs(*end);
+            let start_secs = doc.sample_to_secs(start);
+            let end_secs = doc.sample_to_secs(end);
             let len_samples = end - start + 1;
             let len_secs = len_samples as f64 / f64::from(doc.sample_rate().max(1));
             parts.push(format!(

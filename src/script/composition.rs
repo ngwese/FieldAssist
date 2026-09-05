@@ -5,11 +5,14 @@ use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value
 
 use crate::model::buffer::{ChannelScope, RegionId};
 use crate::model::document::BufferDocument;
+use crate::model::regions::SELECTION_COLLECTION;
 use crate::session::DocumentId;
 
-use super::marker::{list_markers, marker_id_from_lua, parse_add_marker, LuaMarker};
+use super::marker::{
+    color_from_value, color_to_lua, list_markers, marker_id_from_lua, parse_add_marker, LuaMarker,
+};
 use super::region::LuaRegion;
-use super::selection::{channels_from_lua, optional_i64, LuaSelection};
+use super::selection::{channels_from_lua, collection_name_from_lua, optional_i64, LuaCollection};
 use super::{host_from_lua, with_document};
 
 #[derive(Clone, Copy, Debug)]
@@ -53,9 +56,10 @@ impl UserData for LuaComposition {
                 Ok(doc.composition.read().unwrap().duration_secs())
             })
         });
-        fields.add_field_method_get("selection", |lua, this| {
-            with_document(lua, this.id, |doc| {
-                Ok(LuaSelection::from_selection(&doc.selection))
+        fields.add_field_method_get("selection", |_, this| {
+            Ok(LuaCollection {
+                doc: this.id,
+                name: SELECTION_COLLECTION.into(),
             })
         });
         fields.add_field_method_set("selection", |lua, this, value: Value| {
@@ -81,21 +85,35 @@ impl UserData for LuaComposition {
         fields.add_field_method_get("regions", |lua, this| {
             with_document(lua, this.id, |doc| {
                 let regions: Vec<LuaRegion> = doc
-                    .buffer
-                    .read()
-                    .unwrap()
+                    .selection
                     .regions
                     .iter()
                     .map(|region| LuaRegion {
                         doc: this.id,
+                        collection: SELECTION_COLLECTION.into(),
                         id: region.id,
                     })
                     .collect();
                 Ok(regions)
             })
         });
+        fields.add_field_method_get("collections", |lua, this| {
+            with_document(lua, this.id, |doc| Ok(doc.collection_names()))
+        });
         fields.add_field_method_get("markers", |lua, this| {
             with_document(lua, this.id, |doc| Ok(list_markers(doc, this.id)))
+        });
+        fields.add_field_method_get("marker_types", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let table = lua.create_table()?;
+                for (i, ty) in doc.marker_types().iter().enumerate() {
+                    let row = lua.create_table()?;
+                    row.set("name", ty.name.clone())?;
+                    row.set("color", color_to_lua(lua, ty.color)?)?;
+                    table.set(i + 1, row)?;
+                }
+                Ok(table)
+            })
         });
     }
 
@@ -125,21 +143,37 @@ impl UserData for LuaComposition {
             })?;
             after_edit(lua, this.id)
         });
+        methods.add_method("collection", |lua, this, name: String| {
+            if name != SELECTION_COLLECTION {
+                with_document(lua, this.id, |doc| {
+                    doc.ensure_named_collection(&name);
+                    Ok(())
+                })?;
+                after_edit(lua, this.id)?;
+            }
+            Ok(LuaCollection { doc: this.id, name })
+        });
         methods.add_method("add_region", |lua, this, spec: Table| {
             let start: i64 = spec.get("start")?;
             let stop: i64 = spec.get("stop")?;
             let channels = channels_from_lua(lua, spec.get("channels")?)?;
             let label: Option<String> = spec.get("label")?;
+            let collection = collection_name_from_lua(spec.get("collection")?)?;
             let id = with_document(lua, this.id, |doc| {
                 Ok(doc.add_labeled_region(
                     start.max(0) as usize,
                     stop.max(0) as usize,
                     channels,
                     label,
+                    &collection,
                 ))
             })?;
             after_edit(lua, this.id)?;
-            Ok(LuaRegion { doc: this.id, id })
+            Ok(LuaRegion {
+                doc: this.id,
+                collection,
+                id,
+            })
         });
         methods.add_method("remove_region", |lua, this, id: i64| {
             let removed = with_document(lua, this.id, |doc| {
@@ -151,7 +185,10 @@ impl UserData for LuaComposition {
         methods.add_method("add_marker", |lua, this, args: mlua::MultiValue| {
             let spec = parse_add_marker(args)?;
             let id = with_document(lua, this.id, |doc| {
-                Ok(doc.add_marker(spec.frame, &spec.marker_type, spec.color, spec.note))
+                if let Some(color) = spec.color {
+                    doc.add_marker_type(&spec.marker_type, color);
+                }
+                Ok(doc.add_marker(spec.frame, &spec.marker_type, spec.note))
             })?;
             after_edit(lua, this.id)?;
             Ok(id.map(|id| LuaMarker { doc: this.id, id }))
@@ -194,6 +231,23 @@ impl UserData for LuaComposition {
                 })
             },
         );
+        methods.add_method(
+            "add_marker_type",
+            |lua, this, (name, color): (String, Value)| {
+                let color = color_from_value(color)?.ok_or_else(|| {
+                    mlua::Error::runtime("add_marker_type needs a color {r,g,b,a}")
+                })?;
+                let added =
+                    with_document(lua, this.id, |doc| Ok(doc.add_marker_type(&name, color)))?;
+                after_edit(lua, this.id)?;
+                Ok(added)
+            },
+        );
+        methods.add_method("remove_marker_type", |lua, this, name: String| {
+            let removed = with_document(lua, this.id, |doc| Ok(doc.remove_marker_type(&name)))?;
+            after_edit(lua, this.id)?;
+            Ok(removed)
+        });
         methods.add_method("undo", |lua, this, ()| {
             edit(lua, this.id, |doc| doc.edit_undo())
         });
@@ -218,9 +272,9 @@ impl UserData for LuaComposition {
                 true
             })
         });
-        methods.add_method("delete", |lua, this, ()| {
+        methods.add_method("clear", |lua, this, ()| {
             edit(lua, this.id, |doc| {
-                doc.edit_delete();
+                doc.edit_clear();
                 true
             })
         });
@@ -239,12 +293,6 @@ impl UserData for LuaComposition {
         methods.add_method("trim", |lua, this, ()| {
             edit(lua, this.id, |doc| {
                 doc.edit_trim();
-                true
-            })
-        });
-        methods.add_method("roll", |lua, this, delta: i64| {
-            edit(lua, this.id, |doc| {
-                doc.edit_roll(delta);
                 true
             })
         });
@@ -268,58 +316,44 @@ fn apply_selection(lua: &Lua, doc: &mut BufferDocument, value: Value) -> mlua::R
             Ok(())
         }
         Value::UserData(data) => {
-            let selection = data.borrow::<LuaSelection>()?;
-            apply_lua_selection(doc, &selection)
+            let collection = data.borrow::<LuaCollection>()?;
+            if collection.name != SELECTION_COLLECTION {
+                doc.adopt_collection_as_selection(&collection.name);
+            }
+            Ok(())
         }
         Value::Table(table) => {
             let kind: String = table.get("kind").unwrap_or_else(|_| "region".into());
             let start = optional_i64(table.get("start")?)?;
             let stop = optional_i64(table.get("stop")?)?;
             let channels = channels_from_lua(lua, table.get("channels")?)?;
-            apply_lua_selection(
-                doc,
-                &LuaSelection {
-                    kind,
-                    start,
-                    stop,
-                    channels,
-                },
-            )
+            match kind.as_str() {
+                "none" => {
+                    doc.clear_selection();
+                    Ok(())
+                }
+                "position" => {
+                    let sample = start
+                        .ok_or_else(|| mlua::Error::runtime("position selection needs start"))?;
+                    doc.clear_selection();
+                    doc.set_position(sample.max(0) as usize, channels);
+                    Ok(())
+                }
+                "region" => {
+                    let start = start
+                        .ok_or_else(|| mlua::Error::runtime("region selection needs start"))?;
+                    let stop = stop.unwrap_or(start);
+                    doc.select_range(start.max(0) as usize, stop.max(0) as usize, channels);
+                    Ok(())
+                }
+                kind => Err(mlua::Error::runtime(format!(
+                    "unknown selection kind {kind}"
+                ))),
+            }
         }
         other => Err(mlua::Error::runtime(format!(
-            "selection must be a table or userdata, got {}",
+            "selection must be a table, collection, or nil, got {}",
             other.type_name()
-        ))),
-    }
-}
-
-fn apply_lua_selection(doc: &mut BufferDocument, selection: &LuaSelection) -> mlua::Result<()> {
-    match selection.kind.as_str() {
-        "none" => {
-            doc.clear_selection();
-            Ok(())
-        }
-        "position" => {
-            let sample = selection
-                .start
-                .ok_or_else(|| mlua::Error::runtime("position selection needs start"))?;
-            doc.set_position(sample.max(0) as usize, selection.channels.clone());
-            Ok(())
-        }
-        "region" => {
-            let start = selection
-                .start
-                .ok_or_else(|| mlua::Error::runtime("region selection needs start"))?;
-            let stop = selection.stop.unwrap_or(start);
-            doc.select_range(
-                start.max(0) as usize,
-                stop.max(0) as usize,
-                selection.channels.clone(),
-            );
-            Ok(())
-        }
-        kind => Err(mlua::Error::runtime(format!(
-            "unknown selection kind {kind}"
         ))),
     }
 }

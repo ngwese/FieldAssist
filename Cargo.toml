@@ -1,6 +1,6 @@
 [package]
 name = "FieldAssist"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Review, edit, and process audio coming in from the field"
 license = "MIT"
@@ -10,6 +10,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = "1.0"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }

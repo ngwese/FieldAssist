@@ -7,12 +7,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use anyhow::{bail, Context, Result};
 
 use super::clip::{Clip, ClipId, ClipSpan};
+use super::edit_ranges::{map_inclusive_through_inverse, map_inclusive_through_op};
 use super::edl::{EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
-use super::markers::{Marker, MarkerId, MarkerList};
+use super::markers::{Marker, MarkerId, MarkerList, MarkerType, StoredMarker};
 use super::media::{MediaId, MediaPool, MediaRef};
 use super::pager::BlockPager;
 use super::tree::ClipTree;
 use crate::audio::{ProbedFile, PEAK_BLOCK};
+use crate::model::regions::{RegionCollection, SELECTION_COLLECTION};
 use crate::progress::ProgressHandle;
 
 #[derive(Debug, Clone, Default)]
@@ -43,8 +45,13 @@ pub struct Composition {
     clipboard: Clipboard,
     initial: InitialState,
     markers: MarkerList,
+    marker_types: Vec<MarkerType>,
+    collections: Vec<RegionCollection>,
+    next_region_id: u64,
     clean_edit_id: EditId,
     clean_markers: Vec<Marker>,
+    clean_marker_types: Vec<MarkerType>,
+    clean_collections: Vec<RegionCollection>,
 }
 
 impl Composition {
@@ -65,8 +72,13 @@ impl Composition {
             },
             initial: InitialState::Empty,
             markers: MarkerList::new(),
+            marker_types: MarkerType::defaults(),
+            collections: Vec::new(),
+            next_region_id: 1,
             clean_edit_id: EditId(0),
             clean_markers: Vec::new(),
+            clean_marker_types: Vec::new(),
+            clean_collections: Vec::new(),
         };
         composition.mark_clean();
         composition
@@ -105,8 +117,13 @@ impl Composition {
                 media_id: media_id.0,
             },
             markers: MarkerList::new(),
+            marker_types: MarkerType::defaults(),
+            collections: Vec::new(),
+            next_region_id: 1,
             clean_edit_id: EditId(0),
             clean_markers: Vec::new(),
+            clean_marker_types: Vec::new(),
+            clean_collections: Vec::new(),
         };
         let peaked = composed
             .pool
@@ -208,12 +225,17 @@ impl Composition {
     }
 
     pub fn is_modified(&self) -> bool {
-        self.edl.current_id() != self.clean_edit_id || self.markers.to_vec() != self.clean_markers
+        self.edl.current_id() != self.clean_edit_id
+            || self.markers.to_vec() != self.clean_markers
+            || self.marker_types != self.clean_marker_types
+            || self.collections != self.clean_collections
     }
 
     fn mark_clean(&mut self) {
         self.clean_edit_id = self.edl.current_id();
         self.clean_markers = self.markers.to_vec();
+        self.clean_marker_types = self.marker_types.clone();
+        self.clean_collections = self.collections.clone();
     }
 
     pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
@@ -262,10 +284,9 @@ impl Composition {
         &mut self,
         frame: u64,
         marker_type: impl Into<String>,
-        color: [f32; 4],
         note: Option<String>,
     ) -> Option<MarkerId> {
-        self.markers.insert(frame, marker_type, color, note)
+        self.markers.insert(frame, marker_type, note)
     }
 
     pub fn remove_marker(&mut self, id: MarkerId) -> bool {
@@ -278,6 +299,125 @@ impl Composition {
 
     pub fn remove_marker_at_type(&mut self, frame: u64, marker_type: &str) -> bool {
         self.markers.remove_at_type(frame, marker_type)
+    }
+
+    pub fn marker_types(&self) -> &[MarkerType] {
+        &self.marker_types
+    }
+
+    pub fn marker_type_color(&self, name: &str) -> Option<[f32; 4]> {
+        MarkerType::color_of(&self.marker_types, name)
+    }
+
+    pub fn resolved_marker_color(&self, name: &str) -> [f32; 4] {
+        MarkerType::resolved_color(&self.marker_types, name)
+    }
+
+    pub fn add_marker_type(&mut self, name: impl Into<String>, color: [f32; 4]) -> bool {
+        let name = name.into();
+        if name.is_empty() {
+            return false;
+        }
+        if self.marker_types.iter().any(|ty| ty.name == name) {
+            return false;
+        }
+        self.marker_types.push(MarkerType { name, color });
+        true
+    }
+
+    pub fn remove_marker_type(&mut self, name: &str) -> bool {
+        let Some(index) = self.marker_types.iter().position(|ty| ty.name == name) else {
+            return false;
+        };
+        self.marker_types.remove(index);
+        self.markers.remove_type(name);
+        true
+    }
+
+    pub fn collections(&self) -> &[RegionCollection] {
+        &self.collections
+    }
+
+    pub fn collection(&self, name: &str) -> Option<&RegionCollection> {
+        self.collections.iter().find(|col| col.name == name)
+    }
+
+    pub fn collection_mut(&mut self, name: &str) -> Option<&mut RegionCollection> {
+        self.collections.iter_mut().find(|col| col.name == name)
+    }
+
+    pub fn ensure_collection(&mut self, name: &str) -> Option<&mut RegionCollection> {
+        if name.is_empty() || name == SELECTION_COLLECTION {
+            return None;
+        }
+        if !self.collections.iter().any(|col| col.name == name) {
+            self.collections.push(RegionCollection::new(name));
+        }
+        self.collection_mut(name)
+    }
+
+    pub fn add_named_region(
+        &mut self,
+        name: &str,
+        start: usize,
+        end: usize,
+        channels: crate::model::buffer::ChannelScope,
+        label: Option<String>,
+    ) -> Option<crate::model::buffer::RegionId> {
+        if name.is_empty() || name == SELECTION_COLLECTION {
+            return None;
+        }
+        let index = match self.collections.iter().position(|col| col.name == name) {
+            Some(index) => index,
+            None => {
+                self.collections.push(RegionCollection::new(name));
+                self.collections.len() - 1
+            }
+        };
+        Some(self.collections[index].alloc_push(
+            start,
+            end,
+            channels,
+            label,
+            &mut self.next_region_id,
+        ))
+    }
+
+    pub fn alloc_region_id(&mut self) -> u64 {
+        let id = self.next_region_id;
+        self.next_region_id += 1;
+        id
+    }
+
+    pub fn peek_next_region_id(&self) -> u64 {
+        self.next_region_id.max(1)
+    }
+
+    pub fn set_next_region_id(&mut self, next: u64) {
+        self.next_region_id = self.next_region_id.max(next).max(1);
+    }
+
+    fn bump_next_region_id_from_collections(&mut self) {
+        let max_id = self
+            .collections
+            .iter()
+            .flat_map(|col| col.regions.iter())
+            .map(|region| region.id.0)
+            .max()
+            .unwrap_or(0);
+        self.next_region_id = self.next_region_id.max(max_id.saturating_add(1)).max(1);
+    }
+
+    fn remap_collections_op(&mut self, op: &EditOp) {
+        for collection in &mut self.collections {
+            collection.remap(|start, end| map_inclusive_through_op(start, end, op));
+        }
+    }
+
+    fn remap_collections_inverse(&mut self, op: &EditOp) {
+        for collection in &mut self.collections {
+            collection.remap(|start, end| map_inclusive_through_inverse(start, end, op));
+        }
     }
 
     pub fn pool(&self) -> &MediaPool {
@@ -335,6 +475,7 @@ impl Composition {
 
     fn commit(&mut self, op: EditOp, tree: ClipTree) {
         self.markers.remap_through_op(&op);
+        self.remap_collections_op(&op);
         self.tree = tree;
         self.edl.push(op, self.tree.clone());
     }
@@ -346,6 +487,7 @@ impl Composition {
         let op = self.edl.current().op.clone();
         if let Some(tree) = self.edl.undo() {
             self.markers.remap_through_inverse(&op);
+            self.remap_collections_inverse(&op);
             self.adopt_tree(tree);
             true
         } else {
@@ -360,6 +502,7 @@ impl Composition {
         let op = self.edl.edits()[self.edl.cursor() + 1].op.clone();
         if let Some(tree) = self.edl.redo() {
             self.markers.remap_through_op(&op);
+            self.remap_collections_op(&op);
             self.adopt_tree(tree);
             true
         } else {
@@ -372,6 +515,7 @@ impl Composition {
         if let Some(tree) = self.edl.jump_to(id) {
             let to = self.edl.cursor();
             self.remap_markers_between(from, to);
+            self.remap_collections_between(from, to);
             self.adopt_tree(tree);
             true
         } else {
@@ -393,6 +537,24 @@ impl Composition {
         } else if to < from {
             for op in ops[to + 1..=from].iter().rev() {
                 self.markers.remap_through_inverse(op);
+            }
+        }
+    }
+
+    fn remap_collections_between(&mut self, from: usize, to: usize) {
+        let ops: Vec<EditOp> = self
+            .edl
+            .edits()
+            .iter()
+            .map(|edit| edit.op.clone())
+            .collect();
+        if to > from {
+            for op in &ops[from + 1..=to] {
+                self.remap_collections_op(op);
+            }
+        } else if to < from {
+            for op in ops[to + 1..=from].iter().rev() {
+                self.remap_collections_inverse(op);
             }
         }
     }
@@ -461,9 +623,67 @@ impl Composition {
     }
 
     pub fn copy(&mut self, start: u64, len: u64) {
-        self.fill_clipboard(start, len);
+        self.copy_ranges(&[(start, len)]);
+    }
+
+    pub fn copy_ranges(&mut self, ranges: &[(u64, u64)]) {
+        if ranges.is_empty() {
+            return;
+        }
+        let mut n = self.next_clip_id;
+        let mut clips = Vec::new();
+        for &(start, len) in ranges {
+            if len == 0 {
+                continue;
+            }
+            clips.extend(self.tree.clips_in_range(start, len, &mut || {
+                n += 1;
+                ClipId(n)
+            }));
+        }
+        self.next_clip_id = n;
+        self.clipboard = Clipboard {
+            sample_rate: self.sample_rate,
+            channel_count: self.channel_count,
+            clips,
+        };
+        let (start, len) = ranges[0];
         self.edl
             .push(EditOp::Copy { start, len }, self.tree.clone());
+    }
+
+    pub fn trim_ranges(&mut self, ranges: &[(u64, u64)]) {
+        if ranges.is_empty() {
+            return;
+        }
+        let mut n = self.next_clip_id;
+        let mut clips = Vec::new();
+        for &(start, len) in ranges {
+            if len == 0 {
+                continue;
+            }
+            clips.extend(self.tree.clips_in_range(start, len, &mut || {
+                n += 1;
+                ClipId(n)
+            }));
+        }
+        let kept_len: u64 = clips.iter().map(|clip| clip.len).sum();
+        let kept = ClipTree::from_clips(clips);
+        let tree = self
+            .tree
+            .replace_range(0, self.tree.frames(), kept, &mut || {
+                n += 1;
+                ClipId(n)
+            });
+        self.next_clip_id = n;
+        let (start, _) = ranges[0];
+        self.commit(
+            EditOp::Trim {
+                start,
+                len: kept_len,
+            },
+            tree,
+        );
     }
 
     pub fn remove(&mut self, start: u64, len: u64) {
@@ -1083,7 +1303,9 @@ impl Composition {
             initial: self.initial.clone(),
             edits: self.edl.ops_from_first_user(),
             edit_cursor: self.edl.cursor(),
-            markers: self.markers.to_vec(),
+            markers: self.markers.iter().map(StoredMarker::from).collect(),
+            marker_types: self.marker_types.clone(),
+            collections: self.collections.clone(),
         }
     }
 
@@ -1121,7 +1343,26 @@ impl Composition {
         if let Some(tree) = composition.edl.jump_to_index(file.edit_cursor) {
             composition.adopt_tree(tree);
         }
-        composition.markers = MarkerList::from_vec(file.markers);
+        composition.markers =
+            MarkerList::from_vec(file.markers.iter().cloned().map(Marker::from).collect());
+        if file.marker_types.is_empty() {
+            composition.marker_types = MarkerType::defaults();
+        } else {
+            composition.marker_types = file.marker_types;
+        }
+        for stored in &file.markers {
+            if let Some(color) = stored.color {
+                if composition.marker_type_color(&stored.marker_type).is_none() {
+                    composition.add_marker_type(&stored.marker_type, color);
+                }
+            }
+        }
+        composition.collections = file
+            .collections
+            .into_iter()
+            .filter(|col| col.name != SELECTION_COLLECTION && !col.name.is_empty())
+            .collect();
+        composition.bump_next_region_id_from_collections();
         composition.mark_clean();
         Ok(composition)
     }
@@ -1333,7 +1574,7 @@ impl Iterator for FramesIter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::markers::{marker_type_color, MARKER_TYPE_BLUE};
+    use super::super::markers::MARKER_TYPE_BLUE;
     use super::*;
 
     fn sine_media(frames: usize, channels: usize, rate: u32) -> MediaRef {
@@ -1523,12 +1764,11 @@ mod tests {
     #[test]
     fn marker_add_and_remove_are_dirty() {
         let mut comp = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
-        let color = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        let id = comp.add_marker(0, MARKER_TYPE_BLUE, color, None).unwrap();
+        let id = comp.add_marker(0, MARKER_TYPE_BLUE, None).unwrap();
         assert!(comp.is_modified());
         assert!(comp.remove_marker(id));
         assert!(!comp.is_modified());
-        comp.add_marker(4, MARKER_TYPE_BLUE, color, None);
+        comp.add_marker(4, MARKER_TYPE_BLUE, None);
         assert!(comp.is_modified());
     }
 
@@ -1536,12 +1776,7 @@ mod tests {
     fn save_clears_dirty() {
         let mut live = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
         live.remove(2, 2);
-        live.add_marker(
-            0,
-            MARKER_TYPE_BLUE,
-            marker_type_color(MARKER_TYPE_BLUE).unwrap(),
-            None,
-        );
+        live.add_marker(0, MARKER_TYPE_BLUE, None);
         assert!(live.is_modified());
         let path = std::env::temp_dir().join("snd-composition-dirty-save.facomp");
         live.save_to_path(&path).unwrap();
@@ -1580,10 +1815,10 @@ mod tests {
         comp.remove(2, 2);
         let json = comp.to_json().unwrap();
         assert!(!json.contains("samples"));
-        assert!(!json.contains("0.5"));
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 2);
+        assert_eq!(value["format_version"], 3);
         let media = &value["media"][0];
         assert!(media.get("path").is_some());
         assert!(media.get("size_bytes").is_some());
@@ -1825,6 +2060,8 @@ mod tests {
             edits: Vec::new(),
             edit_cursor: 0,
             markers: Vec::new(),
+            marker_types: Vec::new(),
+            collections: Vec::new(),
         };
         let json = ProjectEnvelope::wrap(file).to_json().unwrap();
         let (comp, warnings) = Composition::from_json_reprobing(&json).unwrap();
@@ -1919,13 +2156,12 @@ mod tests {
 
     #[test]
     fn markers_remap_through_cut_and_undo() {
-        use super::super::markers::{marker_type_color, MARKER_TYPE_BLUE};
+        use super::super::markers::MARKER_TYPE_BLUE;
 
         let mut comp = Composition::from_media(sine_media(40, 1, 44100)).unwrap();
-        let blue = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        comp.add_marker(5, MARKER_TYPE_BLUE, blue, None).unwrap();
-        comp.add_marker(15, MARKER_TYPE_BLUE, blue, None).unwrap();
-        comp.add_marker(30, MARKER_TYPE_BLUE, blue, None).unwrap();
+        comp.add_marker(5, MARKER_TYPE_BLUE, None).unwrap();
+        comp.add_marker(15, MARKER_TYPE_BLUE, None).unwrap();
+        comp.add_marker(30, MARKER_TYPE_BLUE, None).unwrap();
         comp.cut(10, 10);
         let frames: Vec<u64> = comp.markers().iter().map(|m| m.frame).collect();
         assert_eq!(frames, vec![5, 20]);
@@ -1953,18 +2189,18 @@ mod tests {
 
     #[test]
     fn project_json_round_trip_keeps_markers() {
-        use super::super::markers::{marker_type_color, MARKER_TYPE_BLUE, MARKER_TYPE_YELLOW};
+        use super::super::markers::{MARKER_TYPE_BLUE, MARKER_TYPE_YELLOW};
 
         let mut comp = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
-        let blue = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        let yellow = marker_type_color(MARKER_TYPE_YELLOW).unwrap();
-        comp.add_marker(3, MARKER_TYPE_BLUE, blue, None).unwrap();
-        comp.add_marker(8, MARKER_TYPE_YELLOW, yellow, Some("cue".into()))
+        comp.add_marker(3, MARKER_TYPE_BLUE, None).unwrap();
+        comp.add_marker(8, MARKER_TYPE_YELLOW, Some("cue".into()))
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 2);
+        assert_eq!(value["format_version"], 3);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
+        assert!(value["markers"][0].get("color").is_none());
+        assert!(value["marker_types"].as_array().unwrap().len() >= 3);
         let restored = Composition::from_json(&json).unwrap();
         let markers: Vec<_> = restored.markers().iter().cloned().collect();
         assert_eq!(markers.len(), 2);
@@ -1972,5 +2208,83 @@ mod tests {
         assert_eq!(markers[0].marker_type, MARKER_TYPE_BLUE);
         assert_eq!(markers[1].frame, 8);
         assert_eq!(markers[1].note.as_deref(), Some("cue"));
+    }
+
+    #[test]
+    fn project_json_v2_loads_without_collections() {
+        let json = r#"{
+            "kind":"facomp",
+            "format_version":2,
+            "sample_rate":44100,
+            "channel_count":1,
+            "media":[],
+            "initial":{"type":"empty"},
+            "edits":[],
+            "edit_cursor":0,
+            "markers":[]
+        }"#;
+        let restored = Composition::from_json(json).unwrap();
+        assert!(restored.collections().is_empty());
+        assert_eq!(restored.marker_types().len(), 3);
+        assert_eq!(restored.sample_rate(), 44100);
+    }
+
+    #[test]
+    fn project_json_round_trip_keeps_collections_and_marker_types() {
+        use crate::model::buffer::ChannelScope;
+
+        let mut comp = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
+        assert!(comp.add_marker_type("Red", [1.0, 0.0, 0.0, 1.0]));
+        comp.add_named_region("silent", 2, 5, ChannelScope::all(), Some("gap".into()))
+            .unwrap();
+        let json = comp.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["format_version"], 3);
+        assert_eq!(value["collections"].as_array().unwrap().len(), 1);
+        assert!(value["marker_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|ty| ty["name"] == "Red"));
+        let restored = Composition::from_json(&json).unwrap();
+        assert!(restored.marker_types().iter().any(|ty| ty.name == "Red"));
+        let silent = restored.collection("silent").expect("silent");
+        assert_eq!(silent.regions[0].label.as_deref(), Some("gap"));
+        assert_eq!(silent.regions[0].start, 2);
+        assert_eq!(silent.regions[0].end, 5);
+    }
+
+    #[test]
+    fn project_json_v2_instance_color_becomes_marker_type() {
+        let json = r#"{
+            "kind":"facomp",
+            "format_version":2,
+            "sample_rate":44100,
+            "channel_count":1,
+            "media":[],
+            "initial":{"type":"empty"},
+            "edits":[],
+            "edit_cursor":0,
+            "markers":[
+                {"id":1,"frame":10,"type":"Red","color":[1.0,0.0,0.0,1.0],"note":"hit"}
+            ]
+        }"#;
+        let restored = Composition::from_json(json).unwrap();
+        let marker = restored.markers().iter().next().expect("marker");
+        assert_eq!(marker.frame, 10);
+        assert_eq!(marker.marker_type, "Red");
+        assert_eq!(marker.note.as_deref(), Some("hit"));
+        assert_eq!(restored.resolved_marker_color("Red"), [1.0, 0.0, 0.0, 1.0]);
+        assert!(restored
+            .marker_types()
+            .iter()
+            .any(|ty| ty.name == "Red" && ty.color == [1.0, 0.0, 0.0, 1.0]));
+        let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
+        assert!(saved["markers"][0].get("color").is_none());
+        assert!(saved["marker_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|ty| ty["name"] == "Red"));
     }
 }

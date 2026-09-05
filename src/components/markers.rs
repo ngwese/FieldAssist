@@ -162,17 +162,16 @@ impl Render for MarkersPanel {
         let caret = doc.current_position.as_ref().map(|pos| pos.sample as u64);
         let sample_rate = doc.sample_rate();
         let selected = self.selected;
+        let composition = doc.composition.read().unwrap();
         let rows: Rc<Vec<MarkerRow>> = Rc::new(
-            doc.composition
-                .read()
-                .unwrap()
+            composition
                 .markers()
                 .iter()
                 .map(|marker| MarkerRow {
                     id: marker.id,
                     frame: marker.frame,
                     kind: marker.marker_type.clone(),
-                    color: marker.color,
+                    color: composition.resolved_marker_color(&marker.marker_type),
                     note: marker.note.clone().unwrap_or_default(),
                     stamp: format_stamp(marker.frame, sample_rate),
                     selected: selected == Some(marker.id) || Some(marker.frame) == caret,

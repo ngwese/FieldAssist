@@ -3,7 +3,7 @@
 
 use mlua::{FromLua, Lua, MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
 
-use crate::model::composition::{default_marker_type, marker_type_color, Marker, MarkerId};
+use crate::model::composition::{default_marker_type, Marker, MarkerId};
 use crate::model::document::BufferDocument;
 use crate::session::DocumentId;
 
@@ -38,8 +38,14 @@ impl UserData for LuaMarker {
             with_marker(lua, this, |marker| Ok(marker.marker_type.clone()))
         });
         fields.add_field_method_get("color", |lua, this| {
-            let color = with_marker(lua, this, |marker| Ok(marker.color))?;
-            color_to_lua(lua, color)
+            with_document(lua, this.doc, |doc| {
+                let composition = doc.composition.read().unwrap();
+                let marker = composition
+                    .markers()
+                    .get(this.id)
+                    .ok_or_else(|| mlua::Error::runtime("marker no longer exists"))?;
+                color_to_lua(lua, composition.resolved_marker_color(&marker.marker_type))
+            })
         });
         fields.add_field_method_get("note", |lua, this| {
             with_marker(lua, this, |marker| Ok(marker.note.clone()))
@@ -58,7 +64,7 @@ impl UserData for LuaMarker {
 pub struct AddMarkerArgs {
     pub frame: usize,
     pub marker_type: String,
-    pub color: [f32; 4],
+    pub color: Option<[f32; 4]>,
     pub note: Option<String>,
 }
 
@@ -82,11 +88,10 @@ pub fn parse_add_marker(args: MultiValue) -> mlua::Result<AddMarkerArgs> {
                     )))
                 }
             };
-            let color = resolve_color(&marker_type, None)?;
             Ok(AddMarkerArgs {
                 frame: frame.max(0) as usize,
                 marker_type,
-                color,
+                color: None,
                 note: None,
             })
         }
@@ -113,25 +118,15 @@ fn spec_from_table(spec: Table) -> mlua::Result<AddMarkerArgs> {
         .or(spec.get::<Option<String>>("kind")?)
         .unwrap_or_else(|| default_marker_type().to_string());
     let note: Option<String> = spec.get("note")?;
-    let color = resolve_color(&marker_type, color_from_value(spec.get("color")?)?)?;
     Ok(AddMarkerArgs {
         frame: frame.max(0) as usize,
         marker_type,
-        color,
+        color: color_from_value(spec.get("color")?)?,
         note,
     })
 }
 
-fn resolve_color(marker_type: &str, explicit: Option<[f32; 4]>) -> mlua::Result<[f32; 4]> {
-    if let Some(color) = explicit {
-        return Ok(color);
-    }
-    marker_type_color(marker_type)
-        .or_else(|| marker_type_color(default_marker_type()))
-        .ok_or_else(|| mlua::Error::runtime("unknown marker type"))
-}
-
-fn color_from_value(value: Value) -> mlua::Result<Option<[f32; 4]>> {
+pub(crate) fn color_from_value(value: Value) -> mlua::Result<Option<[f32; 4]>> {
     match value {
         Value::Nil => Ok(None),
         Value::Table(table) => {
@@ -148,7 +143,7 @@ fn color_from_value(value: Value) -> mlua::Result<Option<[f32; 4]>> {
     }
 }
 
-fn color_to_lua(lua: &Lua, color: [f32; 4]) -> mlua::Result<Table> {
+pub(crate) fn color_to_lua(lua: &Lua, color: [f32; 4]) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     for (i, component) in color.iter().enumerate() {
         table.set(i + 1, *component)?;

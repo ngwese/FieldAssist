@@ -20,7 +20,6 @@ use crate::audio::PEAK_BLOCK;
 use crate::model::buffer::Region;
 use crate::model::composition::EditId;
 use crate::model::document::BufferDocument;
-use crate::model::selection::Selection;
 
 actions!(waveform, [ToggleZeroCrossing]);
 
@@ -66,14 +65,16 @@ const MODIFIED_HOVER_FILL: gpui::Hsla = hsla(0.08, 0.90, 0.55, 0.18);
 const MARKER_BAR_OPACITY: f32 = 0.35;
 const MARKER_TRIANGLE_BASE: f32 = 5.0;
 const MARKER_TRIANGLE_HEIGHT: f32 = 5.0;
+/// Fraction of the visible timeline used as the marker snap latch and
+/// release radius.
+const MARKER_SNAP_VIEWPORT_FRACTION: f64 = 0.01;
 
 enum Drag {
-    Pan {
-        last_x: f32,
-    },
     SelectRegion {
         lane: usize,
         alt: bool,
+        ctrl: bool,
+        shift: bool,
         anchor_sample: usize,
         origin_x: f32,
         dragging: bool,
@@ -210,12 +211,10 @@ impl WaveformDisplay {
         let frames = self.frames(cx) as f64;
         let (region, position) = {
             let doc = self.document.read(cx);
-            let region = match &doc.selection {
-                Selection::Region { start, end, .. } if *end > *start => {
-                    Some((*start as f64, *end as f64 + 1.0))
-                }
-                _ => None,
-            };
+            let region = doc
+                .selection
+                .bounding_span()
+                .map(|(start, end)| (start as f64, end as f64 + 1.0));
             let position = doc.current_position.as_ref().map(|p| p.sample as f64);
             (region, position)
         };
@@ -400,17 +399,22 @@ impl WaveformDisplay {
         self.scrollbar_origin_x = bounds.origin.x.as_f32();
     }
 
+    fn marker_snap_radius(&self) -> usize {
+        (MARKER_SNAP_VIEWPORT_FRACTION
+            * f64::from(self.viewport_width.max(1.0))
+            * self.samples_per_pixel)
+            .round()
+            .max(0.0) as usize
+    }
+
     fn handle_drag_move(&mut self, x: f32, cx: &mut Context<Self>) {
         let drag = self.drag.take();
         self.drag = match drag {
-            Some(Drag::Pan { last_x }) => {
-                self.pan_pixels(x - last_x, cx);
-                cx.notify();
-                Some(Drag::Pan { last_x: x })
-            }
             Some(Drag::SelectRegion {
                 lane,
                 alt,
+                ctrl,
+                shift,
                 anchor_sample,
                 origin_x,
                 mut dragging,
@@ -420,8 +424,9 @@ impl WaveformDisplay {
                 }
                 if dragging {
                     let sample = self.sample_at_x(x).round() as usize;
+                    let radius = self.marker_snap_radius();
                     self.document.update(cx, |doc, cx| {
-                        doc.update_region_drag(sample);
+                        doc.update_region_drag(sample, radius);
                         cx.notify();
                     });
                     cx.notify();
@@ -429,6 +434,8 @@ impl WaveformDisplay {
                 Some(Drag::SelectRegion {
                     lane,
                     alt,
+                    ctrl,
+                    shift,
                     anchor_sample,
                     origin_x,
                     dragging,
@@ -453,18 +460,23 @@ impl WaveformDisplay {
             Drag::SelectRegion {
                 lane,
                 alt,
+                ctrl,
+                shift,
                 anchor_sample,
                 dragging,
                 ..
             } => {
+                let radius = self.marker_snap_radius();
+                let sample = self.sample_at_x(x).round() as usize;
                 self.document.update(cx, |doc, cx| {
                     let scope = doc.channel_scope_for_lane(lane, alt);
-                    if dragging {
-                        let sample = self.sample_at_x(x).round() as usize;
-                        doc.update_region_drag(sample);
+                    if dragging || shift {
+                        if dragging {
+                            doc.update_region_drag(sample, radius);
+                        }
                         doc.finish_region_drag();
                     } else {
-                        doc.select_region_at(anchor_sample, lane, scope);
+                        doc.click_without_drag(anchor_sample, scope, ctrl);
                     }
                     cx.notify();
                 });
@@ -853,7 +865,6 @@ fn paint_lane(
     samples_per_pixel: f64,
     color: gpui::Hsla,
     zero_color: gpui::Hsla,
-    selection: &Selection,
     hover_sample: Option<usize>,
     modified_ranges: &[(u64, u64)],
     hover_ranges: &[(u64, u64)],
@@ -862,40 +873,29 @@ fn paint_lane(
 ) {
     let width = bounds.size.width.as_f32();
     let height = bounds.size.height.as_f32();
-    let buffer = provider.buffer.read().unwrap();
     if width < 1.0 || height < 1.0 || channel >= WaveformDataProvider::channel_count(provider) {
         return;
     }
 
-    for region in &buffer.regions {
+    let named = provider.composition.read().unwrap();
+    for collection in named.collections() {
+        for region in &collection.regions {
+            paint_region_overlay(
+                bounds,
+                region,
+                channel,
+                start_sample,
+                samples_per_pixel,
+                color.opacity(0.55),
+                window,
+            );
+        }
+    }
+    drop(named);
+    for region in &provider.selection.regions {
         paint_region_overlay(
             bounds,
             region,
-            channel,
-            start_sample,
-            samples_per_pixel,
-            color,
-            window,
-        );
-    }
-
-    if let Selection::Region {
-        region_id: None,
-        start,
-        end,
-        channels,
-    } = selection
-    {
-        let transient = Region {
-            id: crate::model::RegionId(0),
-            start: *start,
-            end: *end,
-            channels: channels.clone(),
-            label: None,
-        };
-        paint_region_overlay(
-            bounds,
-            &transient,
             channel,
             start_sample,
             samples_per_pixel,
@@ -1124,7 +1124,6 @@ impl Render for WaveformDisplay {
         let theme = cx.theme().clone();
         let document = self.document.clone();
         let snap = self.document.read(cx).snap_zero_crossings;
-        let selection = self.document.read(cx).selection.clone();
         let start_sample = self.start_sample;
         let samples_per_pixel = self.samples_per_pixel;
         let hover_sample = self.hover_sample;
@@ -1139,7 +1138,12 @@ impl Render for WaveformDisplay {
             let markers: Vec<(u64, [f32; 4])> = composition
                 .markers()
                 .iter()
-                .map(|marker| (marker.frame, marker.color))
+                .map(|marker| {
+                    (
+                        marker.frame,
+                        composition.resolved_marker_color(&marker.marker_type),
+                    )
+                })
                 .collect();
             (modified, hover, markers)
         };
@@ -1223,7 +1227,6 @@ impl Render for WaveformDisplay {
                                 .children((0..channel_count).map(|ch| {
                                     let document = document.clone();
                                     let entity = entity.clone();
-                                    let selection = selection.clone();
                                     let color = channel_color(&theme, ch);
                                     let zero = theme.border;
                                     let channel_label =
@@ -1262,22 +1265,52 @@ impl Render for WaveformDisplay {
                                                             this.sample_at_x(x).round() as usize;
                                                         if event.modifiers.shift {
                                                             this.drag =
-                                                                Some(Drag::Pan { last_x: x });
-                                                        } else {
+                                                                Some(Drag::SelectRegion {
+                                                                    lane: ch,
+                                                                    alt: event.modifiers.alt,
+                                                                    ctrl: event.modifiers.control,
+                                                                    shift: true,
+                                                                    anchor_sample: sample,
+                                                                    origin_x: x,
+                                                                    dragging: false,
+                                                                });
                                                             let alt = event.modifiers.alt;
+                                                            let radius = this.marker_snap_radius();
                                                             let scope = this
                                                                 .document
                                                                 .read(cx)
                                                                 .channel_scope_for_lane(ch, alt);
                                                             this.document.update(cx, |doc, cx| {
-                                                                doc.begin_region_drag(
-                                                                    sample, scope,
+                                                                doc.begin_region_extend(
+                                                                    sample, scope, radius,
                                                                 );
+                                                                cx.notify();
+                                                            });
+                                                        } else {
+                                                            let alt = event.modifiers.alt;
+                                                            let ctrl = event.modifiers.control;
+                                                            let radius = this.marker_snap_radius();
+                                                            let scope = this
+                                                                .document
+                                                                .read(cx)
+                                                                .channel_scope_for_lane(ch, alt);
+                                                            this.document.update(cx, |doc, cx| {
+                                                                if ctrl {
+                                                                    doc.begin_region_disjoint(
+                                                                        sample, scope, radius,
+                                                                    );
+                                                                } else {
+                                                                    doc.begin_region_replace(
+                                                                        sample, scope, radius,
+                                                                    );
+                                                                }
                                                                 cx.notify();
                                                             });
                                                             this.drag = Some(Drag::SelectRegion {
                                                                 lane: ch,
                                                                 alt,
+                                                                ctrl,
+                                                                shift: false,
                                                                 anchor_sample: sample,
                                                                 origin_x: x,
                                                                 dragging: false,
@@ -1318,7 +1351,6 @@ impl Render for WaveformDisplay {
                                                                 samples_per_pixel,
                                                                 color,
                                                                 zero,
-                                                                &selection,
                                                                 hover_sample,
                                                                 &modified_ranges,
                                                                 &hover_ranges,

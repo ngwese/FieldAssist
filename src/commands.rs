@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui::{actions, App, KeyBinding, Keystroke};
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 actions!(
@@ -37,23 +38,34 @@ actions!(
         EditCut,
         EditCopy,
         EditPaste,
-        EditDelete,
+        EditClear,
         EditRemove,
         EditDuplicate,
         EditTrim,
-        EditRollLeft,
-        EditRollRight,
         SelectAll,
         SelectNone,
         InvertSelection,
         MarkerTypeBlue,
         MarkerTypeYellow,
         MarkerTypePurple,
+        SnapToMarker,
         AddMarkerAtHover,
         AddMarker,
         DeleteMarker,
     ]
 );
+
+#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
+#[action(namespace = snd_review)]
+pub struct SetActiveMarkerType {
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
+#[action(namespace = snd_review)]
+pub struct ToggleSnapMarkerType {
+    pub name: String,
+}
 
 const DEFAULT_KEYMAP: &str = include_str!("../assets/keymap.json");
 
@@ -95,18 +107,17 @@ const KNOWN_COMMANDS: &[&str] = &[
     "edit.cut",
     "edit.copy",
     "edit.paste",
-    "edit.delete",
+    "edit.clear",
     "edit.remove",
     "edit.duplicate",
     "edit.trim",
-    "edit.roll_left",
-    "edit.roll_right",
     "selection.select_all",
     "selection.select_none",
     "selection.invert",
     "selection.marker_type_blue",
     "selection.marker_type_yellow",
     "selection.marker_type_purple",
+    "selection.snap_to_marker",
     "selection.add_at_hover",
     "selection.add_marker",
     "selection.delete_marker",
@@ -332,12 +343,10 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "edit.cut" => KeyBinding::new(keystrokes, EditCut, Some(context)),
         "edit.copy" => KeyBinding::new(keystrokes, EditCopy, Some(context)),
         "edit.paste" => KeyBinding::new(keystrokes, EditPaste, Some(context)),
-        "edit.delete" => KeyBinding::new(keystrokes, EditDelete, Some(context)),
+        "edit.clear" => KeyBinding::new(keystrokes, EditClear, Some(context)),
         "edit.remove" => KeyBinding::new(keystrokes, EditRemove, Some(context)),
         "edit.duplicate" => KeyBinding::new(keystrokes, EditDuplicate, Some(context)),
         "edit.trim" => KeyBinding::new(keystrokes, EditTrim, Some(context)),
-        "edit.roll_left" => KeyBinding::new(keystrokes, EditRollLeft, Some(context)),
-        "edit.roll_right" => KeyBinding::new(keystrokes, EditRollRight, Some(context)),
         "selection.select_all" => KeyBinding::new(keystrokes, SelectAll, Some(context)),
         "selection.select_none" => KeyBinding::new(keystrokes, SelectNone, Some(context)),
         "selection.invert" => KeyBinding::new(keystrokes, InvertSelection, Some(context)),
@@ -348,6 +357,7 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "selection.marker_type_purple" => {
             KeyBinding::new(keystrokes, MarkerTypePurple, Some(context))
         }
+        "selection.snap_to_marker" => KeyBinding::new(keystrokes, SnapToMarker, Some(context)),
         "selection.add_at_hover" => KeyBinding::new(keystrokes, AddMarkerAtHover, Some(context)),
         "selection.add_marker" => KeyBinding::new(keystrokes, AddMarker, Some(context)),
         "selection.delete_marker" => KeyBinding::new(keystrokes, DeleteMarker, Some(context)),
@@ -429,10 +439,7 @@ mod tests {
         assert_eq!(map.get("cmd-x").map(String::as_str), Some("edit.cut"));
         assert_eq!(map.get("cmd-c").map(String::as_str), Some("edit.copy"));
         assert_eq!(map.get("cmd-v").map(String::as_str), Some("edit.paste"));
-        assert_eq!(
-            map.get("backspace").map(String::as_str),
-            Some("edit.delete")
-        );
+        assert_eq!(map.get("backspace").map(String::as_str), Some("edit.clear"));
         assert_eq!(map.get("delete").map(String::as_str), Some("edit.remove"));
         assert!(map.get("ctrl-o").is_none());
     }
@@ -474,7 +481,7 @@ mod tests {
 
     #[test]
     fn keymap_bindings_are_scoped_to_the_app_view() {
-        let binding = binding_for("edit.delete", "backspace").expect("backspace");
+        let binding = binding_for("edit.clear", "backspace").expect("backspace");
         assert!(binding.predicate().is_some());
         let binding = binding_for("transport.stop", "k").expect("stop");
         assert!(binding.predicate().is_some());

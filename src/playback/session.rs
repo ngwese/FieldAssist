@@ -9,7 +9,6 @@ use cpal::Device;
 use crate::model::buffer::ChannelScope;
 use crate::model::composition::Composition;
 use crate::model::document::BufferDocument;
-use crate::model::selection::Selection;
 use crate::model::Buffer;
 
 use super::anchors::{collect_anchors, next_anchor, previous_anchor};
@@ -86,10 +85,9 @@ impl PlaybackSession {
     }
 
     fn region_bounds_from_doc(doc: &BufferDocument) -> Option<(usize, usize)> {
-        match &doc.selection {
-            Selection::Region { start, end, .. } if end > start => Some((*start, *end)),
-            _ => None,
-        }
+        doc.selection
+            .bounding_span()
+            .filter(|(start, end)| end > start)
     }
 
     pub fn sync_from_document(&mut self, doc: &BufferDocument) {

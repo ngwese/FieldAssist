@@ -1,56 +1,78 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use mlua::{Lua, UserData, UserDataFields, Value};
+use mlua::{FromLua, Lua, MetaMethod, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::buffer::ChannelScope;
-use crate::model::selection::Selection;
+use crate::model::regions::SELECTION_COLLECTION;
+use crate::session::DocumentId;
+
+use super::region::LuaRegion;
+use super::with_document;
 
 #[derive(Clone, Debug)]
-pub struct LuaSelection {
-    pub kind: String,
-    pub start: Option<i64>,
-    pub stop: Option<i64>,
-    pub channels: ChannelScope,
+pub struct LuaCollection {
+    pub doc: DocumentId,
+    pub name: String,
 }
 
-impl LuaSelection {
-    pub fn from_selection(selection: &Selection) -> Self {
-        match selection {
-            Selection::None => Self {
-                kind: "none".into(),
-                start: None,
-                stop: None,
-                channels: ChannelScope::all(),
-            },
-            Selection::Position(pos) => Self {
-                kind: "position".into(),
-                start: Some(pos.sample as i64),
-                stop: Some(pos.sample as i64),
-                channels: pos.channels.clone(),
-            },
-            Selection::Region {
-                start,
-                end,
-                channels,
-                ..
-            } => Self {
-                kind: "region".into(),
-                start: Some(*start as i64),
-                stop: Some(*end as i64),
-                channels: channels.clone(),
-            },
+impl FromLua for LuaCollection {
+    fn from_lua(value: Value, _: &Lua) -> mlua::Result<Self> {
+        match value {
+            Value::UserData(data) => data.borrow::<Self>().map(|this| this.clone()),
+            _ => Err(mlua::Error::runtime("expected a collection")),
         }
     }
 }
 
-impl UserData for LuaSelection {
+impl UserData for LuaCollection {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("kind", |_, this| Ok(this.kind.clone()));
-        fields.add_field_method_get("start", |_, this| Ok(this.start));
-        fields.add_field_method_get("stop", |_, this| Ok(this.stop));
-        fields.add_field_method_get("channels", |lua, this| channels_to_lua(lua, &this.channels));
+        fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
+        fields.add_field_method_get("regions", |lua, this| {
+            with_document(lua, this.doc, |doc| Ok(collection_regions(doc, this)))
+        });
     }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_meta_method(MetaMethod::Len, |lua, this, ()| {
+            with_document(lua, this.doc, |doc| {
+                Ok(collection_regions(doc, this).len() as i64)
+            })
+        });
+    }
+}
+
+fn collection_regions(
+    doc: &crate::model::document::BufferDocument,
+    this: &LuaCollection,
+) -> Vec<LuaRegion> {
+    if this.name == SELECTION_COLLECTION {
+        return doc
+            .selection
+            .regions
+            .iter()
+            .map(|region| LuaRegion {
+                doc: this.doc,
+                collection: SELECTION_COLLECTION.into(),
+                id: region.id,
+            })
+            .collect();
+    }
+    doc.composition
+        .read()
+        .unwrap()
+        .collection(&this.name)
+        .map(|col| {
+            col.regions
+                .iter()
+                .map(|region| LuaRegion {
+                    doc: this.doc,
+                    collection: this.name.clone(),
+                    id: region.id,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn channels_from_lua(_lua: &Lua, value: Value) -> mlua::Result<ChannelScope> {
@@ -88,13 +110,13 @@ pub fn channels_from_lua(_lua: &Lua, value: Value) -> mlua::Result<ChannelScope>
     }
 }
 
-pub fn channels_to_lua(lua: &Lua, scope: &ChannelScope) -> mlua::Result<Value> {
-    match scope {
+pub fn channels_to_lua(lua: &Lua, channels: &ChannelScope) -> mlua::Result<Value> {
+    match channels {
         ChannelScope::AllChannels => Ok(Value::String(lua.create_string("all")?)),
-        ChannelScope::Channels(channels) => {
+        ChannelScope::Channels(list) => {
             let table = lua.create_table()?;
-            for (i, channel) in channels.iter().enumerate() {
-                table.set(i + 1, *channel as i64)?;
+            for (i, ch) in list.iter().enumerate() {
+                table.set(i + 1, *ch as i64)?;
             }
             Ok(Value::Table(table))
         }
@@ -108,6 +130,17 @@ pub fn optional_i64(value: Value) -> mlua::Result<Option<i64>> {
         Value::Number(n) => Ok(Some(n as i64)),
         other => Err(mlua::Error::runtime(format!(
             "expected integer, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+pub fn collection_name_from_lua(value: Value) -> mlua::Result<String> {
+    match value {
+        Value::Nil => Ok(SELECTION_COLLECTION.into()),
+        Value::String(s) => Ok(s.to_str()?.to_string()),
+        other => Err(mlua::Error::runtime(format!(
+            "collection name must be a string, got {}",
             other.type_name()
         ))),
     }

@@ -54,6 +54,38 @@ pub fn default_marker_type() -> &'static str {
     MARKER_TYPE_BLUE
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MarkerType {
+    pub name: String,
+    pub color: [f32; 4],
+}
+
+impl MarkerType {
+    pub fn defaults() -> Vec<Self> {
+        DEFAULT_MARKER_TYPES
+            .iter()
+            .map(|(name, color)| Self {
+                name: (*name).to_string(),
+                color: *color,
+            })
+            .collect()
+    }
+
+    pub fn color_of(types: &[Self], name: &str) -> Option<[f32; 4]> {
+        types
+            .iter()
+            .find(|ty| ty.name == name)
+            .map(|ty| ty.color)
+            .or_else(|| marker_type_color(name))
+    }
+
+    pub fn resolved_color(types: &[Self], name: &str) -> [f32; 4] {
+        Self::color_of(types, name)
+            .or_else(|| marker_type_color(default_marker_type()))
+            .unwrap_or([0.5, 0.5, 0.5, 1.0])
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MarkerId(pub u64);
 
@@ -63,9 +95,61 @@ pub struct Marker {
     pub frame: u64,
     #[serde(rename = "type")]
     pub marker_type: String,
-    pub color: [f32; 4],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+impl Marker {
+    pub fn new(
+        id: MarkerId,
+        frame: u64,
+        marker_type: impl Into<String>,
+        note: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            frame,
+            marker_type: marker_type.into(),
+            note,
+        }
+    }
+}
+
+/// On-disk marker instance. Older files stored `color` on each instance;
+/// load folds that into [`MarkerType`]. New files omit it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredMarker {
+    pub id: MarkerId,
+    pub frame: u64,
+    #[serde(rename = "type")]
+    pub marker_type: String,
+    #[serde(default, skip_serializing)]
+    pub color: Option<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl From<&Marker> for StoredMarker {
+    fn from(marker: &Marker) -> Self {
+        Self {
+            id: marker.id,
+            frame: marker.frame,
+            marker_type: marker.marker_type.clone(),
+            color: None,
+            note: marker.note.clone(),
+        }
+    }
+}
+
+impl From<StoredMarker> for Marker {
+    fn from(stored: StoredMarker) -> Self {
+        Self {
+            id: stored.id,
+            frame: stored.frame,
+            marker_type: stored.marker_type,
+            note: stored.note,
+        }
+    }
 }
 
 /// Time-ordered marker store. Insert and delete are O(log N).
@@ -129,7 +213,6 @@ impl MarkerList {
         &mut self,
         frame: u64,
         marker_type: impl Into<String>,
-        color: [f32; 4],
         note: Option<String>,
     ) -> Option<MarkerId> {
         let marker_type = marker_type.into();
@@ -140,16 +223,8 @@ impl MarkerList {
         self.next_id += 1;
         self.bump();
         self.by_key.insert((frame, marker_type.clone()), id);
-        self.by_id.insert(
-            id,
-            Marker {
-                id,
-                frame,
-                marker_type,
-                color,
-                note,
-            },
-        );
+        self.by_id
+            .insert(id, Marker::new(id, frame, marker_type, note));
         Some(id)
     }
 
@@ -169,6 +244,19 @@ impl MarkerList {
         self.by_id.remove(&id);
         self.bump();
         true
+    }
+
+    pub fn remove_type(&mut self, marker_type: &str) -> usize {
+        let ids: Vec<MarkerId> = self
+            .iter()
+            .filter(|marker| marker.marker_type == marker_type)
+            .map(|marker| marker.id)
+            .collect();
+        let count = ids.len();
+        for id in ids {
+            self.remove(id);
+        }
+        count
     }
 
     pub fn remove_at(&mut self, frame: u64) -> bool {
@@ -244,19 +332,12 @@ mod tests {
     #[test]
     fn insert_delete_and_lookup_are_ordered() {
         let mut list = MarkerList::new();
-        let blue = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        let a = list.insert(100, MARKER_TYPE_BLUE, blue, None).unwrap();
+        let a = list.insert(100, MARKER_TYPE_BLUE, None).unwrap();
         let b = list
-            .insert(
-                20,
-                MARKER_TYPE_YELLOW,
-                [1.0, 1.0, 0.0, 1.0],
-                Some("note".into()),
-            )
+            .insert(20, MARKER_TYPE_YELLOW, Some("note".into()))
             .unwrap();
-        assert!(list.insert(100, MARKER_TYPE_BLUE, blue, None).is_none());
-        let purple = marker_type_color(MARKER_TYPE_PURPLE).unwrap();
-        let c = list.insert(100, MARKER_TYPE_PURPLE, purple, None).unwrap();
+        assert!(list.insert(100, MARKER_TYPE_BLUE, None).is_none());
+        let c = list.insert(100, MARKER_TYPE_PURPLE, None).unwrap();
         let frames: Vec<u64> = list.iter().map(|m| m.frame).collect();
         assert_eq!(frames, vec![20, 100, 100]);
         assert_eq!(list.get_at(20).map(|m| m.id), Some(b));
@@ -274,30 +355,10 @@ mod tests {
 
     #[test]
     fn from_vec_skips_duplicate_type_at_frame() {
-        let blue = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        let purple = marker_type_color(MARKER_TYPE_PURPLE).unwrap();
         let list = MarkerList::from_vec(vec![
-            Marker {
-                id: MarkerId(4),
-                frame: 10,
-                marker_type: MARKER_TYPE_BLUE.into(),
-                color: blue,
-                note: None,
-            },
-            Marker {
-                id: MarkerId(5),
-                frame: 10,
-                marker_type: MARKER_TYPE_BLUE.into(),
-                color: blue,
-                note: None,
-            },
-            Marker {
-                id: MarkerId(6),
-                frame: 10,
-                marker_type: MARKER_TYPE_PURPLE.into(),
-                color: purple,
-                note: None,
-            },
+            Marker::new(MarkerId(4), 10, MARKER_TYPE_BLUE, None),
+            Marker::new(MarkerId(5), 10, MARKER_TYPE_BLUE, None),
+            Marker::new(MarkerId(6), 10, MARKER_TYPE_PURPLE, None),
         ]);
         assert_eq!(list.len(), 2);
         assert_eq!(
@@ -310,7 +371,7 @@ mod tests {
         );
         let id = {
             let mut list = list;
-            list.insert(11, MARKER_TYPE_BLUE, blue, None).unwrap()
+            list.insert(11, MARKER_TYPE_BLUE, None).unwrap()
         };
         assert_eq!(id, MarkerId(7));
     }
@@ -318,15 +379,29 @@ mod tests {
     #[test]
     fn remap_cut_shifts_and_drops() {
         let mut list = MarkerList::new();
-        let blue = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        list.insert(5, MARKER_TYPE_BLUE, blue, None).unwrap();
-        list.insert(15, MARKER_TYPE_BLUE, blue, None).unwrap();
-        list.insert(25, MARKER_TYPE_BLUE, blue, None).unwrap();
+        list.insert(5, MARKER_TYPE_BLUE, None).unwrap();
+        list.insert(15, MARKER_TYPE_BLUE, None).unwrap();
+        list.insert(25, MARKER_TYPE_BLUE, None).unwrap();
         list.remap_through_op(&EditOp::Cut { start: 10, len: 10 });
         let frames: Vec<u64> = list.iter().map(|m| m.frame).collect();
         assert_eq!(frames, vec![5, 15]);
         list.remap_through_inverse(&EditOp::Cut { start: 10, len: 10 });
         let frames: Vec<u64> = list.iter().map(|m| m.frame).collect();
         assert_eq!(frames, vec![5, 25]);
+    }
+
+    #[test]
+    fn stored_marker_reads_legacy_color_and_omits_it_on_save() {
+        let stored: StoredMarker = serde_json::from_str(
+            r#"{"id":1,"frame":10,"type":"Red","color":[1.0,0.0,0.0,1.0],"note":"hit"}"#,
+        )
+        .unwrap();
+        assert_eq!(stored.color, Some([1.0, 0.0, 0.0, 1.0]));
+        let marker = Marker::from(stored.clone());
+        assert_eq!(marker.marker_type, "Red");
+        let json = serde_json::to_value(StoredMarker::from(&marker)).unwrap();
+        assert!(json.get("color").is_none());
+        assert_eq!(json["type"], "Red");
+        assert_eq!(json["frame"], 10);
     }
 }

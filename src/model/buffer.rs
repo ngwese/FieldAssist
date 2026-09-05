@@ -3,12 +3,14 @@
 
 use std::{path::PathBuf, time::SystemTime};
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::audio::DecodedAudio;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RegionId(pub u64);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChannelScope {
     AllChannels,
     Channels(Vec<usize>),
@@ -29,6 +31,51 @@ impl ChannelScope {
             Self::Channels(channels) => channels.contains(&channel),
         }
     }
+
+    pub fn normalize(&mut self) {
+        if let Self::Channels(channels) = self {
+            channels.sort_unstable();
+            channels.dedup();
+            if channels.is_empty() {
+                *self = Self::AllChannels;
+            }
+        }
+    }
+}
+
+impl Serialize for ChannelScope {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::AllChannels => serializer.serialize_str("all"),
+            Self::Channels(channels) => channels.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ChannelScope {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            All(String),
+            List(Vec<usize>),
+        }
+        match Repr::deserialize(deserializer)? {
+            Repr::All(text) if text == "all" => Ok(Self::AllChannels),
+            Repr::All(text) => Err(serde::de::Error::custom(format!(
+                "channels must be \"all\" or an array, got {text:?}"
+            ))),
+            Repr::List(channels) => {
+                let mut scope = if channels.is_empty() {
+                    Self::AllChannels
+                } else {
+                    Self::Channels(channels)
+                };
+                scope.normalize();
+                Ok(scope)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -41,12 +88,13 @@ pub struct BufferSource {
     pub codec: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Region {
     pub id: RegionId,
     pub start: usize,
     pub end: usize,
     pub channels: ChannelScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
@@ -57,6 +105,8 @@ impl Region {
         } else {
             (end, start)
         };
+        let mut channels = channels;
+        channels.normalize();
         Self {
             id,
             start,
@@ -74,13 +124,16 @@ impl Region {
     pub fn contains(&self, sample: usize, channel: usize) -> bool {
         self.channels.applies_to(channel) && sample >= self.start && sample <= self.end
     }
+
+    pub fn span_len(&self) -> usize {
+        self.end.saturating_sub(self.start).saturating_add(1)
+    }
 }
 
 #[derive(Debug)]
 pub struct Buffer {
     pub audio: DecodedAudio,
     pub source: Option<BufferSource>,
-    pub regions: Vec<Region>,
 }
 
 impl Buffer {
@@ -92,7 +145,6 @@ impl Buffer {
                 peaks: vec![],
             },
             source: None,
-            regions: vec![],
         }
     }
 
@@ -113,19 +165,5 @@ impl Buffer {
             channels: ChannelScope::all(),
             label: None,
         }
-    }
-
-    pub fn region(&self, id: RegionId) -> Option<&Region> {
-        self.regions.iter().find(|r| r.id == id)
-    }
-
-    pub fn region_mut(&mut self, id: RegionId) -> Option<&mut Region> {
-        self.regions.iter_mut().find(|r| r.id == id)
-    }
-
-    pub fn remove_region(&mut self, id: RegionId) -> bool {
-        let before = self.regions.len();
-        self.regions.retain(|region| region.id != id);
-        self.regions.len() != before
     }
 }

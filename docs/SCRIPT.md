@@ -59,27 +59,34 @@ markers, regions, and selection live on this object.
 | `channels` | integer | Channel count. |
 | `duration` | number | Length in seconds. |
 | `position` | integer or nil | Playhead / caret sample. Assignable. |
-| `selection` | Selection | Current selection. Assignable; `nil` clears it. |
-| `regions` | array of Region | Named (or unlabeled) regions, in buffer order. |
+| `selection` | Collection | Session selection collection. Assign `nil` to clear. |
+| `regions` | array of Region | Regions in the selection collection. |
+| `collections` | array of strings | `"selection"` plus persisted collection names. |
 | `markers` | array of Marker | User markers, ordered by frame then type. |
+| `marker_types` | array of `{ name, color }` | Composition type registry. |
 
-Reading `markers` or `regions` returns a snapshot table. Later adds/removes do
-not update a table you already hold; read the field again.
+Reading `markers`, `regions`, `collections`, or `marker_types` returns a
+snapshot table. Later adds/removes do not update a table you already hold;
+read the field again. Region and Marker objects themselves are live.
 
 ### Selection methods
 
 ```lua
-c:select(start, stop)              -- samples; all channels
+c:select(start, stop)              -- replace selection with one region
 c:select(start, stop, {0, 1})      -- specific channels
 c:select_all()
 c:clear_selection()
 c.position = 44100
 c.selection = { kind = "region", start = 0, stop = 100 }
-c.selection = { kind = "position", start = 50 }
 c.selection = nil                  -- same as clear_selection()
 ```
 
-### Regions
+`c.selection` is a **collection**. Iterate `c.selection.regions` (or `c.regions`).
+
+### Collections and regions
+
+Named collections persist in the `.facomp`. `"selection"` is session state and
+is not saved.
 
 ```lua
 local r = c:add_region({
@@ -87,27 +94,40 @@ local r = c:add_region({
   stop = 44100,
   label = "intro",      -- optional
   channels = "all",     -- optional; "all" or {0, 1, ...}
+  collection = "cues",  -- optional; default "selection"
 })
-print(r.id, r.start, r.stop, r.label)
-c:remove_region(r.id)   -- returns whether a region was removed
+print(r.id, r.start, r.stop, r.label, r.collection)
+c:remove_region(r.id)
+
+local silent = c:collection("silent")  -- get or create
+for _, region in ipairs(silent.regions) do
+  print(region.start, region.stop)
+end
 ```
 
 ### Markers
 
-One marker of a given **type** may exist at a given frame. A second insert of
-the same type at that frame is ignored and returns `nil`. Different types may
-share a frame.
+A **marker type** is a named definition (`name` + `color`). A **marker** is an
+instance of a type (`frame`, `type`, `note`). Color lives on the type, not the
+instance; `marker.color` reads the type registry.
+
+One marker of a given type may exist at a given frame. A second insert of the
+same type at that frame is ignored and returns `nil`. Different types may share
+a frame.
 
 Built-in types: `"Blue"`, `"Yellow"`, `"Purple"`. The default type is `"Blue"`.
-Custom type names are allowed if you pass a `color`.
+Custom types are stored on the composition.
 
 ```lua
+c:add_marker_type("Red", {1, 0, 0, 1})  -- color required for a new name
+c:remove_marker_type("Red")             -- also deletes markers of that type
+
 -- table form
 local m = c:add_marker({
   frame = 1000,           -- or sample = 1000
   type = "Yellow",        -- or kind; default "Blue"
   note = "door slam",     -- optional
-  color = {1, 0, 0, 1},   -- optional RGBA in 0..1
+  color = {1, 0, 0, 1},   -- optional; registers a new type if the name is unknown
 })
 
 -- positional form
@@ -136,30 +156,29 @@ frame.
 
 ### Timeline edits
 
-These follow the current selection (or caret), same as the Edit menu:
+These apply to every region in the current **selection** collection, same as
+the Edit menu:
 
 | Method | Effect |
 | --- | --- |
 | `c:undo()` / `c:redo()` | History. `undo`/`redo` return whether a step ran. |
 | `c:cut()` / `c:copy()` / `c:paste()` | Clipboard. |
-| `c:delete()` | Replace the selection with silence (keep length). |
-| `c:remove()` | Cut the selection out (timeline shrinks). |
-| `c:duplicate()` | Duplicate the selection. |
-| `c:trim()` | Trim the composition to the selection. |
-| `c:roll(delta)` | Roll source by `delta` samples (negative = left). |
+| `c:clear()` | Silence each selected span (keep length). |
+| `c:remove()` | Cut selected spans out (timeline shrinks). |
+| `c:duplicate()` | Duplicate each selected span in place. |
+| `c:trim()` | Keep selected spans concatenated; discard gaps. |
 
-## Selection
+## Collection
 
-`c.selection` is a snapshot object:
+| Field | Type |
+| --- | --- |
+| `name` | string (`"selection"` or a persisted name) |
+| `regions` | array of Region |
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| `kind` | `"none"`, `"position"`, or `"region"` | |
-| `start` | integer or nil | Sample. For a position, start and stop are the same. |
-| `stop` | integer or nil | Inclusive end sample for a region. |
-| `channels` | `"all"` or array of integers | |
+`#collection` is the number of regions.
 
-Assign a table with the same keys, a Selection object, or `nil`.
+Assigning a named collection to `c.selection` copies its regions into the
+session selection.
 
 ## Region
 
@@ -170,8 +189,9 @@ Assign a table with the same keys, a Selection object, or `nil`.
 | `stop` | integer (sample, inclusive) |
 | `channels` | `"all"` or array of integers |
 | `label` | string or nil |
+| `collection` | string |
 
-Fields are live: they read the current buffer. A region that has been removed
+Fields are live: they read the current document. A region that has been removed
 errors if you access its fields.
 
 ## Marker
@@ -181,7 +201,7 @@ errors if you access its fields.
 | `id` | integer |
 | `frame` | integer (sample). Alias: `sample`. |
 | `type` | string (e.g. `"Blue"`) |
-| `color` | array of four numbers `r, g, b, a` in `0..1` |
+| `color` | array of four numbers `r, g, b, a` in `0..1` (from the type registry) |
 | `note` | string or nil |
 
 | Method | Effect |
@@ -193,7 +213,7 @@ field access errors.
 
 ## Channels
 
-Anywhere a channel scope is accepted (`select`, `add_region`, `selection.channels`):
+Anywhere a channel scope is accepted (`select`, `add_region`):
 
 - omit the argument, pass `nil`, or pass `"all"` — every channel
 - pass `{0}` or `{0, 1}` — those channel indices
@@ -215,13 +235,12 @@ Anywhere a channel scope is accepted (`select`, `add_region`, `selection.channel
 `transport.loop`
 
 **Edit:** `edit.undo`, `edit.redo`, `edit.cut`, `edit.copy`, `edit.paste`,
-`edit.delete`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.roll_left`,
-`edit.roll_right`
+`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`
 
 **Selection / markers:** `selection.select_all`, `selection.select_none`,
 `selection.invert`, `selection.marker_type_blue`, `selection.marker_type_yellow`,
-`selection.marker_type_purple`, `selection.add_at_hover`, `selection.add_marker`,
-`selection.delete_marker`
+`selection.marker_type_purple`, `selection.snap_to_marker`,
+`selection.add_at_hover`, `selection.add_marker`, `selection.delete_marker`
 
 Marker commands use the active marker type and the Add at Hover setting from
 the Selection menu. Prefer `c:add_marker` / `c:remove_marker` when the script

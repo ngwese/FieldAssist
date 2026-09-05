@@ -30,13 +30,13 @@ use gpui_component::{
 
 use crate::assets::AppAssets;
 use crate::commands::{
-    install_keybindings, About, AddMarker, AddMarkerAtHover, Close, DeleteMarker, EditCopy,
-    EditCut, EditDelete, EditDuplicate, EditPaste, EditRedo, EditRemove, EditRollLeft,
-    EditRollRight, EditTrim, EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple,
-    MarkerTypeYellow, Open, Quit, Render as RenderFile, Save, SaveAs, SelectAll, SelectNone,
-    TransportEnd, TransportHome, TransportLoop, TransportNext, TransportPlayPause,
-    TransportPrevious, TransportStart, TransportStop, ViewExplorer, ViewFitAll, ViewFrame,
-    ViewDetail, ViewScript, ViewZoomIn, ViewZoomOut,
+    install_keybindings, About, AddMarker, AddMarkerAtHover, Close, DeleteMarker, EditClear,
+    EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim, EditUndo,
+    InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
+    Render as RenderFile, Save, SaveAs, SelectAll, SelectNone, SetActiveMarkerType, SnapToMarker,
+    ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
+    TransportPlayPause, TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer,
+    ViewFitAll, ViewFrame, ViewScript, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::dock_skin::{CenterTabCloseHandler, CompactDockSkin};
 use crate::components::edits::EditsPanel;
@@ -45,13 +45,15 @@ use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
 use crate::components::header_meta::HeaderMeta;
 use crate::components::markers::MarkersPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
+use crate::components::regions::RegionsPanel;
 use crate::components::render_sheet::RenderSheet;
 use crate::components::repl::ReplPanel;
 use crate::components::status_bar::{FileStatus, FileStatusBar};
 use crate::components::waveform::{ToggleZeroCrossing, WaveformDisplay};
 use crate::components::workspace::WorkspacePanel;
 use crate::model::composition::{
-    default_marker_type, Composition, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    default_marker_type, Composition, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
+    MARKER_TYPE_YELLOW,
 };
 use crate::model::{is_facomp_path, Buffer, BufferDocument};
 use crate::playback::{PlaybackSession, TransportState};
@@ -86,6 +88,7 @@ pub struct AppView {
     explorer: Entity<ExplorerPanel>,
     edits: Entity<EditsPanel>,
     markers: Entity<MarkersPanel>,
+    regions: Entity<RegionsPanel>,
     header_meta: Entity<HeaderMeta>,
     empty_editors: Entity<EmptyPane>,
     repl: Entity<ReplPanel>,
@@ -189,12 +192,16 @@ impl AppView {
         let header_meta = cx.new(|cx| HeaderMeta::new(cx));
         let edits = cx.new(|cx| EditsPanel::new(cx));
         let markers = cx.new(|cx| MarkersPanel::new(cx));
+        let regions = cx.new(|cx| RegionsPanel::new(cx));
         if let Some(views) = initial_target {
             edits.update(cx, |edits, cx| {
                 edits.set_target(views.document.clone(), views.waveform.clone(), cx);
             });
             markers.update(cx, |markers, cx| {
                 markers.set_target(views.document.clone(), views.waveform.clone(), cx);
+            });
+            regions.update(cx, |regions, cx| {
+                regions.set_target(views.document.clone(), views.waveform.clone(), cx);
             });
             header_meta.update(cx, |meta, cx| {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
@@ -218,6 +225,7 @@ impl AppView {
         };
         let edits_handle = panel_handle(edits.clone());
         let markers_handle = panel_handle(markers.clone());
+        let regions_handle = panel_handle(regions.clone());
         dock_area.update(cx, |area, cx| {
             area.set_center(DockLayout::tabs().panel_view(center_handle, cx), window, cx);
             area.set_dock(
@@ -233,6 +241,7 @@ impl AppView {
                 DockPlacement::Right,
                 DockLayout::tabs()
                     .panel_view(markers_handle, cx)
+                    .panel_view(regions_handle, cx)
                     .panel_view(edits_handle, cx),
                 window,
                 cx,
@@ -261,6 +270,7 @@ impl AppView {
             explorer,
             edits,
             markers,
+            regions,
             header_meta,
             empty_editors,
             repl,
@@ -449,6 +459,9 @@ impl AppView {
             self.markers.update(cx, |markers, cx| {
                 markers.set_target(views.document.clone(), views.waveform.clone(), cx);
             });
+            self.regions.update(cx, |regions, cx| {
+                regions.set_target(views.document.clone(), views.waveform.clone(), cx);
+            });
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
             });
@@ -459,12 +472,15 @@ impl AppView {
             self.edits.update(cx, |edits, cx| edits.clear_target(cx));
             self.markers
                 .update(cx, |markers, cx| markers.clear_target(cx));
+            self.regions
+                .update(cx, |regions, cx| regions.clear_target(cx));
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(None, None, cx);
             });
         }
         self.refresh_explorer(cx);
         self.update_window_title(window, cx);
+        self.sync_view_menus(cx);
         cx.notify();
     }
 
@@ -718,16 +734,40 @@ impl AppView {
     }
 
     fn sync_view_menus(&self, cx: &mut Context<Self>) {
-        apply_app_menus(
-            self.explorer_dock_open(cx),
-            self.detail_dock_open(cx),
-            self.script_dock_open(cx),
-            &self.active_marker_type,
-            self.add_marker_at_hover,
-            cx,
-        );
+        apply_app_menus(&self.app_menu_state(cx), cx);
         if let Some(bar) = self.app_menu_bar.clone() {
             bar.update(cx, |bar, cx| bar.reload(cx));
+        }
+    }
+
+    fn app_menu_state(&self, cx: &App) -> AppMenuState {
+        let (snap_to_marker, marker_types, snap_disabled) = if let Some(views) = self.active_views()
+        {
+            let doc = views.document.read(cx);
+            (
+                doc.snap_to_marker,
+                doc.marker_types().into_iter().map(|ty| ty.name).collect(),
+                doc.snap_marker_disabled.clone(),
+            )
+        } else {
+            (
+                false,
+                DEFAULT_MARKER_TYPES
+                    .iter()
+                    .map(|(name, _)| (*name).to_string())
+                    .collect(),
+                HashSet::new(),
+            )
+        };
+        AppMenuState {
+            explorer: self.explorer_dock_open(cx),
+            detail: self.detail_dock_open(cx),
+            script: self.script_dock_open(cx),
+            marker_type: self.active_marker_type.clone(),
+            add_at_hover: self.add_marker_at_hover,
+            snap_to_marker,
+            marker_types,
+            snap_disabled,
         }
     }
 
@@ -872,6 +912,7 @@ impl AppView {
         self.refresh_explorer(cx);
         self.spawn_peak_build(id, cx);
         self.update_window_title(window, cx);
+        self.sync_view_menus(cx);
         cx.notify();
     }
 
@@ -953,18 +994,20 @@ impl AppView {
             "edit.cut" => self.run_edit(cx, |doc| doc.edit_cut()),
             "edit.copy" => self.run_edit(cx, |doc| doc.edit_copy()),
             "edit.paste" => self.run_edit(cx, |doc| doc.edit_paste()),
-            "edit.delete" => self.run_edit(cx, |doc| doc.edit_delete()),
+            "edit.clear" => self.run_edit(cx, |doc| doc.edit_clear()),
             "edit.remove" => self.run_edit(cx, |doc| doc.edit_remove()),
             "edit.duplicate" => self.run_edit(cx, |doc| doc.edit_duplicate()),
             "edit.trim" => self.run_edit(cx, |doc| doc.edit_trim()),
-            "edit.roll_left" => self.run_edit(cx, |doc| doc.edit_roll(-1)),
-            "edit.roll_right" => self.run_edit(cx, |doc| doc.edit_roll(1)),
             "selection.select_all" => self.run_edit(cx, |doc| doc.select_all()),
             "selection.select_none" => self.run_edit(cx, |doc| doc.clear_selection()),
             "selection.invert" => self.run_edit(cx, |doc| doc.invert_selection()),
             "selection.marker_type_blue" => self.set_active_marker_type(MARKER_TYPE_BLUE, cx),
             "selection.marker_type_yellow" => self.set_active_marker_type(MARKER_TYPE_YELLOW, cx),
             "selection.marker_type_purple" => self.set_active_marker_type(MARKER_TYPE_PURPLE, cx),
+            "selection.snap_to_marker" => {
+                self.update_active_document(cx, |doc| doc.toggle_marker_snap());
+                self.sync_view_menus(cx);
+            }
             "selection.add_at_hover" => {
                 self.add_marker_at_hover = !self.add_marker_at_hover;
                 self.sync_view_menus(cx);
@@ -1004,6 +1047,20 @@ impl AppView {
         self.playback.sync_from_document(views.document.read(cx));
         self.refresh_explorer(cx);
         self.spawn_peak_build(id, cx);
+    }
+
+    fn update_active_document(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut BufferDocument),
+    ) {
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        views.document.update(cx, |doc, cx| {
+            f(doc);
+            cx.notify();
+        });
     }
 
     fn set_active_marker_type(&mut self, marker_type: &str, cx: &mut Context<Self>) {
@@ -1924,6 +1981,23 @@ pub(crate) fn dispatch_command(command_id: &str, cx: &mut App) -> Result<(), Str
     Ok(())
 }
 
+fn update_open_view(
+    cx: &mut App,
+    f: impl FnOnce(&mut AppView, &mut Window, &mut Context<AppView>) + 'static,
+) {
+    let Some(view) = cx.try_global::<OpenTarget>().map(|target| target.0.clone()) else {
+        return;
+    };
+    let Some(window) = cx.active_window() else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let _ = window.update(cx, |_, window, cx| {
+            view.update(cx, |this, cx| f(this, window, cx));
+        });
+    });
+}
+
 fn quit(_: &Quit, cx: &mut App) {
     let _ = crate::commands::dispatch("file.quit", cx);
 }
@@ -2032,8 +2106,8 @@ fn edit_paste(_: &EditPaste, cx: &mut App) {
     let _ = crate::commands::dispatch("edit.paste", cx);
 }
 
-fn edit_delete(_: &EditDelete, cx: &mut App) {
-    let _ = crate::commands::dispatch("edit.delete", cx);
+fn edit_clear(_: &EditClear, cx: &mut App) {
+    let _ = crate::commands::dispatch("edit.clear", cx);
 }
 
 fn edit_remove(_: &EditRemove, cx: &mut App) {
@@ -2046,14 +2120,6 @@ fn edit_duplicate(_: &EditDuplicate, cx: &mut App) {
 
 fn edit_trim(_: &EditTrim, cx: &mut App) {
     let _ = crate::commands::dispatch("edit.trim", cx);
-}
-
-fn edit_roll_left(_: &EditRollLeft, cx: &mut App) {
-    let _ = crate::commands::dispatch("edit.roll_left", cx);
-}
-
-fn edit_roll_right(_: &EditRollRight, cx: &mut App) {
-    let _ = crate::commands::dispatch("edit.roll_right", cx);
 }
 
 fn select_all(_: &SelectAll, cx: &mut App) {
@@ -2080,6 +2146,25 @@ fn marker_type_purple(_: &MarkerTypePurple, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.marker_type_purple", cx);
 }
 
+fn snap_to_marker(_: &SnapToMarker, cx: &mut App) {
+    let _ = crate::commands::dispatch("selection.snap_to_marker", cx);
+}
+
+fn set_active_marker_type_action(action: &SetActiveMarkerType, cx: &mut App) {
+    let name = action.name.clone();
+    update_open_view(cx, move |this, _, cx| {
+        this.set_active_marker_type(&name, cx);
+    });
+}
+
+fn toggle_snap_marker_type_action(action: &ToggleSnapMarkerType, cx: &mut App) {
+    let name = action.name.clone();
+    update_open_view(cx, move |this, _, cx| {
+        this.update_active_document(cx, |doc| doc.toggle_snap_marker_type(&name));
+        this.sync_view_menus(cx);
+    });
+}
+
 fn add_marker_at_hover(_: &AddMarkerAtHover, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.add_at_hover", cx);
 }
@@ -2092,13 +2177,54 @@ fn delete_marker(_: &DeleteMarker, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.delete_marker", cx);
 }
 
-fn app_menus(
+struct AppMenuState {
     explorer: bool,
     detail: bool,
     script: bool,
-    marker_type: &str,
+    marker_type: String,
     add_at_hover: bool,
-) -> Vec<Menu> {
+    snap_to_marker: bool,
+    marker_types: Vec<String>,
+    snap_disabled: HashSet<String>,
+}
+
+fn marker_type_menu_item(name: &str, active: &str) -> MenuItem {
+    let checked = active == name;
+    match name {
+        MARKER_TYPE_BLUE => MenuItem::action("Blue", MarkerTypeBlue).checked(checked),
+        MARKER_TYPE_YELLOW => MenuItem::action("Yellow", MarkerTypeYellow).checked(checked),
+        MARKER_TYPE_PURPLE => MenuItem::action("Purple", MarkerTypePurple).checked(checked),
+        other => MenuItem::action(
+            other.to_string(),
+            SetActiveMarkerType {
+                name: other.to_string(),
+            },
+        )
+        .checked(checked),
+    }
+}
+
+fn snap_marker_type_menu_item(name: &str, disabled: &HashSet<String>) -> MenuItem {
+    MenuItem::action(
+        name.to_string(),
+        ToggleSnapMarkerType {
+            name: name.to_string(),
+        },
+    )
+    .checked(!disabled.contains(name))
+}
+
+fn app_menus(state: &AppMenuState) -> Vec<Menu> {
+    let create_type_items: Vec<MenuItem> = state
+        .marker_types
+        .iter()
+        .map(|name| marker_type_menu_item(name, &state.marker_type))
+        .collect();
+    let snap_type_items: Vec<MenuItem> = state
+        .marker_types
+        .iter()
+        .map(|name| snap_marker_type_menu_item(name, &state.snap_disabled))
+        .collect();
     vec![
         Menu::new("File").items([
             MenuItem::action("Open...", Open),
@@ -2118,37 +2244,28 @@ fn app_menus(
             MenuItem::action("Copy", EditCopy),
             MenuItem::action("Paste", EditPaste),
             MenuItem::separator(),
-            MenuItem::action("Delete", EditDelete),
+            MenuItem::action("Clear", EditClear),
             MenuItem::action("Remove", EditRemove),
             MenuItem::action("Duplicate", EditDuplicate),
             MenuItem::action("Trim to Selection", EditTrim),
-            MenuItem::separator(),
-            MenuItem::action("Roll Source Left", EditRollLeft),
-            MenuItem::action("Roll Source Right", EditRollRight),
         ]),
         Menu::new("Selection").items([
             MenuItem::action("Select All", SelectAll),
             MenuItem::action("Select None", SelectNone),
             MenuItem::action("Invert", InvertSelection),
             MenuItem::separator(),
-            MenuItem::submenu(
-                Menu::new("Marker Type").items([
-                    MenuItem::action("Blue", MarkerTypeBlue)
-                        .checked(marker_type == MARKER_TYPE_BLUE),
-                    MenuItem::action("Yellow", MarkerTypeYellow)
-                        .checked(marker_type == MARKER_TYPE_YELLOW),
-                    MenuItem::action("Purple", MarkerTypePurple)
-                        .checked(marker_type == MARKER_TYPE_PURPLE),
-                ]),
-            ),
-            MenuItem::action("Add at Hover", AddMarkerAtHover).checked(add_at_hover),
+            MenuItem::action("Snap To Marker", SnapToMarker).checked(state.snap_to_marker),
+            MenuItem::submenu(Menu::new("Snap Marker Type").items(snap_type_items)),
+            MenuItem::separator(),
+            MenuItem::submenu(Menu::new("Create Marker Type").items(create_type_items)),
+            MenuItem::action("Add at Hover", AddMarkerAtHover).checked(state.add_at_hover),
             MenuItem::action("Add Marker", AddMarker),
             MenuItem::action("Delete Marker", DeleteMarker),
         ]),
         Menu::new("View").items([
-            MenuItem::action("Show Explorer", ViewExplorer).checked(explorer),
-            MenuItem::action("Show Detail", ViewDetail).checked(detail),
-            MenuItem::action("Show Script", ViewScript).checked(script),
+            MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
+            MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
+            MenuItem::action("Show Script", ViewScript).checked(state.script),
             MenuItem::separator(),
             MenuItem::action("Zoom In", ViewZoomIn),
             MenuItem::action("Zoom Out", ViewZoomOut),
@@ -2158,22 +2275,9 @@ fn app_menus(
     ]
 }
 
-fn apply_app_menus(
-    explorer: bool,
-    detail: bool,
-    script: bool,
-    marker_type: &str,
-    add_at_hover: bool,
-    cx: &mut App,
-) {
-    cx.set_menus(app_menus(
-        explorer,
-        detail,
-        script,
-        marker_type,
-        add_at_hover,
-    ));
-    let owned = app_menus(explorer, detail, script, marker_type, add_at_hover)
+fn apply_app_menus(state: &AppMenuState, cx: &mut App) {
+    cx.set_menus(app_menus(state));
+    let owned = app_menus(state)
         .into_iter()
         .map(|menu| menu.owned())
         .collect();
@@ -2208,23 +2312,39 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(edit_cut);
     cx.on_action(edit_copy);
     cx.on_action(edit_paste);
-    cx.on_action(edit_delete);
+    cx.on_action(edit_clear);
     cx.on_action(edit_remove);
     cx.on_action(edit_duplicate);
     cx.on_action(edit_trim);
-    cx.on_action(edit_roll_left);
-    cx.on_action(edit_roll_right);
     cx.on_action(select_all);
     cx.on_action(select_none);
     cx.on_action(invert_selection);
     cx.on_action(marker_type_blue);
     cx.on_action(marker_type_yellow);
     cx.on_action(marker_type_purple);
+    cx.on_action(snap_to_marker);
+    cx.on_action(set_active_marker_type_action);
+    cx.on_action(toggle_snap_marker_type_action);
     cx.on_action(add_marker_at_hover);
     cx.on_action(add_marker);
     cx.on_action(delete_marker);
     install_keybindings(cx);
-    apply_app_menus(false, false, false, default_marker_type(), true, cx);
+    apply_app_menus(
+        &AppMenuState {
+            explorer: false,
+            detail: false,
+            script: false,
+            marker_type: default_marker_type().to_string(),
+            add_at_hover: true,
+            snap_to_marker: false,
+            marker_types: DEFAULT_MARKER_TYPES
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect(),
+            snap_disabled: HashSet::new(),
+        },
+        cx,
+    );
     cx.activate(true);
 }
 

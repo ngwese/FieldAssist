@@ -145,7 +145,6 @@ pub fn load_buffer(path: &Path) -> Result<Buffer> {
             container_format: meta.container_format,
             codec: meta.codec,
         }),
-        regions: Vec::new(),
     })
 }
 

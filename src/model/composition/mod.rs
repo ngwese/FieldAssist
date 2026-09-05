@@ -21,8 +21,8 @@ pub use edl::{
     FACOMP_KIND,
 };
 pub use markers::{
-    default_marker_type, marker_type_color, Marker, MarkerId, MarkerList, DEFAULT_MARKER_TYPES,
-    MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    default_marker_type, marker_type_color, Marker, MarkerId, MarkerList, MarkerType,
+    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 pub use media::{MediaId, MediaPool, MediaRef};
 pub use pager::{BlockPager, BLOCK_FRAMES};

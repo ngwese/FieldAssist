@@ -5,12 +5,17 @@ use crate::model::document::BufferDocument;
 
 pub fn collect_anchors(doc: &BufferDocument) -> Vec<usize> {
     let composition = doc.composition.read().unwrap();
-    let buffer = doc.buffer.read().unwrap();
     let mut anchors: Vec<usize> = composition
         .markers()
         .iter()
         .map(|marker| marker.frame as usize)
-        .chain(buffer.regions.iter().flat_map(|r| [r.start, r.end]))
+        .chain(doc.selection.regions.iter().flat_map(|r| [r.start, r.end]))
+        .chain(
+            composition
+                .collections()
+                .iter()
+                .flat_map(|col| col.regions.iter().flat_map(|r| [r.start, r.end])),
+        )
         .collect();
     anchors.sort_unstable();
     anchors.dedup();
@@ -28,24 +33,16 @@ pub fn next_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::buffer::{ChannelScope, Region, RegionId};
-    use crate::model::composition::{
-        marker_type_color, Composition, MediaId, MediaRef, MARKER_TYPE_BLUE,
-    };
+    use crate::model::buffer::ChannelScope;
+    use crate::model::composition::{Composition, MediaId, MediaRef, MARKER_TYPE_BLUE};
     use crate::model::document::BufferDocument;
 
     fn test_document() -> BufferDocument {
         let samples = vec![vec![0.0; 1000]];
         let media = MediaRef::from_memory(MediaId(0), 44100, samples);
         let mut doc = BufferDocument::new(Composition::from_media(media).unwrap());
-        let blue = marker_type_color(MARKER_TYPE_BLUE).unwrap();
-        doc.add_marker(50, MARKER_TYPE_BLUE, blue, None);
-        doc.buffer.write().unwrap().regions.push(Region::new(
-            RegionId(1),
-            100,
-            200,
-            ChannelScope::all(),
-        ));
+        doc.add_marker(50, MARKER_TYPE_BLUE, None);
+        doc.add_labeled_region(100, 200, ChannelScope::all(), None, "cues");
         doc
     }
 
