@@ -7,7 +7,8 @@ use gpui::{
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex, ActiveTheme as _, Icon, IconName, IconNamed, Selectable as _, Sizable as _,
+    h_flex, ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Selectable as _,
+    Sizable as _,
 };
 
 use crate::commands::{
@@ -119,7 +120,14 @@ impl RenderOnce for Transport {
                         transport_button("transport-loop", loop_icon, loop_label, TransportLoop)
                             .selected(self.looping)
                             .toggled(self.looping)
-                            .when(self.looping, |this| this.text_color(theme.primary))
+                            .when(self.looping, |this| {
+                                let bg = if theme.is_dark() {
+                                    theme.secondary.lighten(0.1).opacity(1.)
+                                } else {
+                                    theme.secondary.darken(0.1).opacity(1.)
+                                };
+                                this.text_color(theme.primary).bg(bg)
+                            })
                     }),
             )
     }
