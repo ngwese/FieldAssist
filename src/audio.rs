@@ -8,15 +8,14 @@ use std::{fs, fs::File, path::Path, time::SystemTime};
 
 use anyhow::{bail, Context, Result};
 use symphonia::core::{
-    audio::{AudioBufferRef, SampleBuffer, SignalSpec},
-    codecs::{CodecParameters, DecoderOptions, CODEC_TYPE_NULL},
+    audio::{sample::SampleFormat, AudioSpec, GenericAudioBufferRef},
+    codecs::audio::{AudioCodecParameters, AudioDecoderOptions},
     errors::Error as SymphoniaError,
-    formats::{FormatOptions, SeekMode, SeekTo},
+    formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo, Track, TrackType},
     io::MediaSourceStream,
     meta::MetadataOptions,
-    probe::Hint,
-    sample::SampleFormat,
-    units::Time,
+    packet::Packet,
+    units::{Time, Timestamp},
 };
 
 use crate::components::waveform::WaveformDataProvider;
@@ -158,41 +157,19 @@ pub fn probe_header(path: &Path) -> Result<ProbedFile> {
     if let Some(probed) = probe_flac_header(path, metadata.len()) {
         return Ok(probed);
     }
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .with_context(|| format!("unsupported or unreadable audio format: {}", path.display()))?;
-    let format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .cloned()
-        .context("no supported audio track in file")?;
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(0);
-    let channel_count = track
-        .codec_params
-        .channels
-        .map(|ch| ch.count())
-        .unwrap_or(0);
-    let bits_per_sample = codec_bits_per_sample(&track.codec_params);
-    let frame_count = track.codec_params.n_frames.filter(|n| *n > 0);
+    let format = open_format(path)?;
+    let track = first_audio_track(format.as_ref())?;
+    let params = audio_codec_params(&track)?;
+    let sample_rate = params.sample_rate.unwrap_or(0);
+    let channel_count = params.channels.as_ref().map(|ch| ch.count()).unwrap_or(0);
+    let bits_per_sample = codec_bits_per_sample(params);
+    let frame_count = track.num_frames.filter(|n| *n > 0);
     let container_format = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("unknown")
         .to_string();
-    let codec = track.codec_params.codec.to_string();
+    let codec = params.codec.to_string();
     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     let Some(frame_count) = frame_count else {
         bail!(
@@ -252,54 +229,36 @@ pub fn decode_range(path: &Path, start: u64, count: u64) -> Result<Vec<Vec<f32>>
     if count == 0 {
         return Ok(Vec::new());
     }
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .with_context(|| format!("unsupported or unreadable audio format: {}", path.display()))?;
-    let mut format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .cloned()
-        .context("no supported audio track in file")?;
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(0);
+    let mut format = open_format(path)?;
+    let track = first_audio_track(format.as_ref())?;
+    let params = audio_codec_params(&track)?;
+    let sample_rate = params.sample_rate.unwrap_or(0);
     let track_id = track.id;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
         .context("unsupported audio codec")?;
 
     let mut decoded_start = 0u64;
     if sample_rate > 0 {
-        let seek_to = if track.codec_params.time_base.is_some() {
-            SeekTo::TimeStamp {
-                ts: start,
+        let seek_to = if track.time_base.is_some() {
+            SeekTo::Timestamp {
+                ts: Timestamp::new(start as i64),
                 track_id,
             }
         } else {
             let seconds = start as f64 / f64::from(sample_rate);
             SeekTo::Time {
-                time: Time::new(seconds.trunc() as u64, seconds.fract()),
+                time: Time::try_from_secs_f64(seconds).unwrap_or_default(),
                 track_id: Some(track_id),
             }
         };
         if let Ok(seeked) = format.seek(SeekMode::Accurate, seek_to) {
             decoder.reset();
-            decoded_start = if let Some(tb) = track.codec_params.time_base {
-                let t = tb.calc_time(seeked.actual_ts);
-                ((t.seconds as f64 + t.frac) * f64::from(sample_rate)).round() as u64
+            decoded_start = if let Some(tb) = track.time_base {
+                let t = tb.calc_time_saturating(seeked.actual_ts);
+                (t.as_secs_f64() * f64::from(sample_rate)).round() as u64
             } else {
-                seeked.actual_ts
+                seeked.actual_ts.get().max(0) as u64
             };
         }
     }
@@ -307,8 +266,7 @@ pub fn decode_range(path: &Path, start: u64, count: u64) -> Result<Vec<Vec<f32>>
         decoded_start = 0;
     }
 
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
-    let mut spec: Option<SignalSpec> = None;
+    let mut spec: Option<AudioSpec> = None;
     let mut channels: Vec<Vec<f32>> = Vec::new();
     let skip = start.saturating_sub(decoded_start);
     let needed = skip + count;
@@ -317,26 +275,16 @@ pub fn decode_range(path: &Path, start: u64, count: u64) -> Result<Vec<Vec<f32>>
         if !channels.is_empty() && channels[0].len() as u64 >= needed {
             break;
         }
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::ResetRequired) => {
-                bail!("media reset required; this file is not supported");
-            }
-            Err(SymphoniaError::IoError(err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(err) => {
-                bail!("error reading audio packet: {err}");
-            }
+        let packet = match next_audio_packet(format.as_mut())? {
+            Some(packet) => packet,
+            None => break,
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                append_decoded(decoded, &mut sample_buf, &mut spec, &mut channels)?;
+                append_decoded(decoded, &mut spec, &mut channels)?;
             }
             Err(SymphoniaError::DecodeError(_)) | Err(SymphoniaError::IoError(_)) => continue,
             Err(err) => bail!("unrecoverable decode error: {err}"),
@@ -363,72 +311,39 @@ pub fn decode_range(path: &Path, start: u64, count: u64) -> Result<Vec<Vec<f32>>
 }
 
 fn decode_with_meta(path: &Path) -> Result<(DecodedAudio, DecodeMeta)> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .with_context(|| format!("unsupported or unreadable audio format: {}", path.display()))?;
-
-    let mut format = probed.format;
+    let mut format = open_format(path)?;
     let container_format = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("unknown")
         .to_string();
 
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .cloned()
-        .context("no supported audio track in file")?;
-
-    let codec = track.codec_params.codec.to_string();
-    let mut bits_per_sample = codec_bits_per_sample(&track.codec_params);
+    let track = first_audio_track(format.as_ref())?;
+    let params = audio_codec_params(&track)?;
+    let codec = params.codec.to_string();
+    let mut bits_per_sample = codec_bits_per_sample(params);
 
     let track_id = track.id;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
         .context("unsupported audio codec")?;
 
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
-    let mut spec: Option<SignalSpec> = None;
+    let mut spec: Option<AudioSpec> = None;
     let mut channels: Vec<Vec<f32>> = Vec::new();
 
     loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::ResetRequired) => {
-                bail!("media reset required; this file is not supported");
-            }
-            Err(SymphoniaError::IoError(err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(err) => {
-                bail!("error reading audio packet: {err}");
-            }
+        let packet = match next_audio_packet(format.as_mut())? {
+            Some(packet) => packet,
+            None => break,
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                append_decoded(decoded, &mut sample_buf, &mut spec, &mut channels)?;
+                append_decoded(decoded, &mut spec, &mut channels)?;
             }
             Err(SymphoniaError::DecodeError(_)) | Err(SymphoniaError::IoError(_)) => continue,
             Err(err) => bail!("unrecoverable decode error: {err}"),
@@ -439,7 +354,7 @@ fn decode_with_meta(path: &Path) -> Result<(DecodedAudio, DecodeMeta)> {
         bail!("file contained no audio samples");
     }
 
-    let sample_rate = spec.map(|s| s.rate).unwrap_or(0);
+    let sample_rate = spec.as_ref().map(|s| s.rate()).unwrap_or(0);
     if sample_rate == 0 {
         bail!("audio track has no sample rate");
     }
@@ -553,7 +468,49 @@ fn parse_flac_streaminfo(path: &Path) -> Option<FlacStreaminfo> {
     None
 }
 
-fn codec_bits_per_sample(params: &CodecParameters) -> Option<u32> {
+fn open_format(path: &Path) -> Result<Box<dyn FormatReader>> {
+    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .with_context(|| format!("unsupported or unreadable audio format: {}", path.display()))
+}
+
+fn first_audio_track(format: &dyn FormatReader) -> Result<Track> {
+    format
+        .default_track(TrackType::Audio)
+        .cloned()
+        .context("no supported audio track in file")
+}
+
+fn audio_codec_params(track: &Track) -> Result<&AudioCodecParameters> {
+    track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .context("no audio codec parameters")
+}
+
+fn next_audio_packet(format: &mut dyn FormatReader) -> Result<Option<Packet>> {
+    match format.next_packet() {
+        Ok(packet) => Ok(packet),
+        Err(SymphoniaError::ResetRequired) => {
+            bail!("media reset required; this file is not supported");
+        }
+        Err(err) => bail!("error reading audio packet: {err}"),
+    }
+}
+
+fn codec_bits_per_sample(params: &AudioCodecParameters) -> Option<u32> {
     params
         .bits_per_sample
         .or(params.bits_per_coded_sample)
@@ -599,13 +556,12 @@ impl WaveformDataProvider for Buffer {
 }
 
 fn append_decoded(
-    decoded: AudioBufferRef<'_>,
-    sample_buf: &mut Option<SampleBuffer<f32>>,
-    spec: &mut Option<SignalSpec>,
+    decoded: GenericAudioBufferRef<'_>,
+    spec: &mut Option<AudioSpec>,
     channels: &mut Vec<Vec<f32>>,
 ) -> Result<()> {
-    let decoded_spec = *decoded.spec();
-    let channel_count = decoded_spec.channels.count();
+    let decoded_spec = decoded.spec().clone();
+    let channel_count = decoded_spec.channels().count();
     if channel_count == 0 {
         bail!("audio track has no channels");
     }
@@ -613,26 +569,15 @@ fn append_decoded(
     if spec.is_none() {
         *spec = Some(decoded_spec);
         *channels = vec![Vec::new(); channel_count];
-        *sample_buf = Some(SampleBuffer::<f32>::new(
-            decoded.capacity() as u64,
-            decoded_spec,
-        ));
     }
 
-    let buf = sample_buf
-        .as_mut()
-        .expect("sample buffer is created with the first packet");
-    buf.copy_interleaved_ref(decoded);
-
-    let samples = buf.samples();
-    if samples.len() % channel_count != 0 {
-        bail!("decoded sample count is not a multiple of the channel count");
+    let mut packet: Vec<Vec<f32>> = Vec::new();
+    decoded.copy_to_vecs_planar(&mut packet);
+    if packet.len() != channels.len() {
+        bail!("decoded plane count does not match channel count");
     }
-
-    for frame in samples.chunks_exact(channel_count) {
-        for (ch, sample) in frame.iter().enumerate() {
-            channels[ch].push(*sample);
-        }
+    for (ch, plane) in channels.iter_mut().zip(packet) {
+        ch.extend(plane);
     }
 
     Ok(())
