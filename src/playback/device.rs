@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::{anyhow, bail, Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::HostTrait;
 use cpal::Device;
 
 #[derive(Debug, Clone)]
@@ -15,7 +15,7 @@ pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
     for (index, device) in host.output_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| format!("output-{index}"));
+        let name = device.to_string();
         devices.push(OutputDeviceInfo { index, name });
     }
     Ok(devices)
@@ -41,10 +41,7 @@ pub fn resolve_output_device(spec: Option<&str>) -> Result<Device> {
             .ok_or_else(|| anyhow!("output device index {index} out of range"));
     }
 
-    let names: Vec<String> = devices
-        .iter()
-        .map(|d| d.name().unwrap_or_default())
-        .collect();
+    let names: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
 
     if let Some(index) = names.iter().position(|n| n == spec) {
         return Ok(devices[index].clone());

@@ -16,7 +16,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
 symphonia = { version = "0.6", features = ["all"] }
-cpal = "0.15"
+cpal = "0.18"
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
 hound = "3"
 rusty_vorbis = "0.1"

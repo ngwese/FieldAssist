@@ -219,7 +219,7 @@ impl PlaybackEngine {
             sample_rate: default_config.sample_rate(),
             buffer_size: cpal::BufferSize::Default,
         };
-        let output_rate = stream_config.sample_rate.0;
+        let output_rate = stream_config.sample_rate;
         let output_channels = stream_config.channels as usize;
         let shared = Arc::new(PlaybackShared::with_output_layout(
             provider,
@@ -228,14 +228,14 @@ impl PlaybackEngine {
         ));
         let shared_cb = shared.clone();
 
-        let stream = build_output_stream(device, &stream_config, sample_format, shared_cb.clone())
+        let stream = build_output_stream(device, stream_config, sample_format, shared_cb.clone())
             .or_else(|_| {
                 let fallback = StreamConfig {
                     channels: default_config.channels(),
                     sample_rate: default_config.sample_rate(),
                     buffer_size: cpal::BufferSize::Default,
                 };
-                build_output_stream(device, &fallback, sample_format, shared_cb)
+                build_output_stream(device, fallback, sample_format, shared_cb)
             })
             .context("failed to build output stream")?;
 
@@ -250,7 +250,7 @@ impl PlaybackEngine {
 
 fn build_output_stream(
     device: &Device,
-    stream_config: &StreamConfig,
+    stream_config: StreamConfig,
     sample_format: SampleFormat,
     shared: Arc<PlaybackShared>,
 ) -> Result<Stream> {
@@ -270,6 +270,21 @@ fn build_output_stream(
                     shared.fill_output(&mut temp);
                     for (out, sample) in data.iter_mut().zip(temp) {
                         *out = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                    }
+                },
+                |_| {},
+                None,
+            )
+        }
+        SampleFormat::I32 => {
+            let shared = shared.clone();
+            device.build_output_stream(
+                stream_config,
+                move |data: &mut [i32], _| {
+                    let mut temp = vec![0.0f32; data.len()];
+                    shared.fill_output(&mut temp);
+                    for (out, sample) in data.iter_mut().zip(temp) {
+                        *out = (sample.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
                     }
                 },
                 |_| {},
