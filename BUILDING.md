@@ -3,6 +3,17 @@
 ## Requirements
 
 - [Rust](https://www.rust-lang.org/tools/install) (2021 edition)
+- [Faust](https://faust.grame.fr/) (optional) to regenerate monitor DSP sources
+
+## Faust monitor chains
+
+Playback monitoring compiles Faust DSP in `dsp/` (`monitor_mono.dsp`,
+`monitor_stereo.dsp`, `monitor_ms.dsp`, `monitor_foa.dsp`) to Rust via
+`faust -lang rust -json` in `build.rs`. Generated `.inc.rs` and `.json` files
+are committed under `src/monitor/generated/` so `cargo build` does not require
+Faust. When `faust` is on `PATH` (or `FAUST` points at the binary), those
+artifacts are regenerated. Stereo and M/S chains share
+`dsp/headphone_crossfeed.lib`.
 
 ## Build
 

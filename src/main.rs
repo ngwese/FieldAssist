@@ -18,6 +18,7 @@ mod audio;
 mod commands;
 mod components;
 mod model;
+mod monitor;
 mod playback;
 mod progress;
 mod render;
@@ -68,10 +69,7 @@ fn main() -> Result<()> {
             let started = Instant::now();
             let composition = model::Composition::load_from_path(path)
                 .with_context(|| format!("failed to load {}", path.display()))?;
-            (
-                Some(composition),
-                Some(started.elapsed().as_secs_f64()),
-            )
+            (Some(composition), Some(started.elapsed().as_secs_f64()))
         }
         None => (None, None),
     };

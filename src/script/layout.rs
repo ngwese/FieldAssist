@@ -10,9 +10,16 @@ pub struct ChannelLayoutDef {
     pub name: String,
     pub description: String,
     pub channels: BTreeMap<usize, String>,
-    /// Stored for a future monitor chain; not applied to playback yet.
-    #[allow(dead_code)]
     pub monitor: Option<serde_json::Value>,
+}
+
+impl ChannelLayoutDef {
+    pub fn monitor_chain_id(&self) -> Option<&str> {
+        self.monitor
+            .as_ref()
+            .and_then(|value| value.get("chain"))
+            .and_then(|value| value.as_str())
+    }
 }
 
 pub fn layout_from_lua(table: Table) -> mlua::Result<ChannelLayoutDef> {

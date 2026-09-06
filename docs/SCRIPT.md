@@ -56,7 +56,7 @@ app:define_layout({
   name = "stereo",
   description = "Left / Right",
   channels = { [0] = "L", [1] = "R" },
-  -- monitor = { ... },  -- optional; stored, not applied yet
+  monitor = { chain = "stereo" },  -- optional default monitor DSP
 })
 app:on("detect_layout", function(c, chosen)
   if chosen then
@@ -78,7 +78,11 @@ Hooks run in registration order; the last non-nil valid name wins.
 
 `define_layout` registers (or replaces) a named layout. Channel keys are
 0-based. The default embedded script defines `mono`, `stereo`, `MS`, `1OA`,
-and `2OA`.
+and `2OA`. Optional `monitor = { chain = "stereo" }` (or `"mono"` / `"ms"` /
+`"foa"`) is the default Monitor-tab DSP when that layout is chosen. Detecting
+a layout only fills `c.monitor_chain` when it is still unset. An explicit
+Monitor-tab or script assignment is saved on the `.facomp` and wins on reload.
+Changing layout does not clear a custom `playback_channels` subset.
 
 ## Composition
 
@@ -99,6 +103,8 @@ markers, regions, and selection live on this object.
 | `basename` | string or nil | File name when the source is file-backed. |
 | `dirname` | string or nil | Parent directory when the source is file-backed. |
 | `channel_layout` | string or nil | Effective layout name. Assign a defined name to choose it (saved); assign `nil` to clear. |
+| `monitor_chain` | string or nil | Monitor DSP id: `"mono"`, `"stereo"`, `"ms"`, or `"foa"`. Saved on the composition. Assign `nil` for 1:1 device mapping. |
+| `playback_channels` | array, `"all"`, or nil | 0-based composition channels fed to the monitor DSP, in file order. `nil` or `"all"` means every channel (the default). Extra channels are unused; missing DSP inputs are silence. |
 | `duration` | number | Length in seconds. |
 | `position` | integer or nil | Playhead / caret sample. Assignable. |
 | `selection` | Collection | Session selection collection. Assign `nil` to clear. |

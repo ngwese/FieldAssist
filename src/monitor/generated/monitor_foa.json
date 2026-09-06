@@ -1,0 +1,66 @@
+{
+	"name": "MonitorFoa",
+	"filename": "monitor_foa.dsp",
+	"version": "2.85.9",
+	"compile_options": "-lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoa -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0",
+	"library_list": ["C:/Program Files/Faust/share/faust/stdfaust.lib","C:/Program Files/Faust/share/faust/basics.lib","C:/Program Files/Faust/share/faust/signals.lib","C:/Program Files/Faust/share/faust/maths.lib","C:/Program Files/Faust/share/faust/platform.lib"],
+	"include_pathnames": ["C:/Users/g1988/proj/FieldAssist/dsp","C:/Program Files/Faust/share/faust","/usr/local/share/faust","/usr/share/faust","C:/Users/g1988/proj/FieldAssist/dsp","C:/Users/g1988/proj/FieldAssist/dsp"],
+	"size": 36,
+	"inputs": 4,
+	"outputs": 2,
+	"meta": [ 
+		{ "basics.lib/name": "Faust Basic Element Library" },
+		{ "basics.lib/version": "1.22.0" },
+		{ "compile_options": "-lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoa -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0" },
+		{ "filename": "monitor_foa.dsp" },
+		{ "license": "MIT" },
+		{ "maths.lib/author": "GRAME" },
+		{ "maths.lib/copyright": "GRAME" },
+		{ "maths.lib/license": "LGPL with exception" },
+		{ "maths.lib/name": "Faust Math Library" },
+		{ "maths.lib/version": "2.9.0" },
+		{ "name": "MonitorFoa" },
+		{ "platform.lib/name": "Generic Platform Library" },
+		{ "platform.lib/version": "1.3.0" },
+		{ "signals.lib/name": "Faust Routing Library" },
+		{ "signals.lib/version": "1.6.0" },
+		{ "version": "1.0" }
+	],
+	"ui": [ 
+		{
+			"type": "vgroup",
+			"label": "MonitorFoa",
+			"items": [ 
+				{
+					"type": "hslider",
+					"label": "Ambisonics/Yaw",
+					"varname": "fHslider0",
+					"shortname": "Ambisonics_Yaw",
+					"address": "/MonitorFoa/Ambisonics_Yaw",
+					"meta": [
+						{ "unit": "deg" }
+					],
+					"init": 0,
+					"min": -180,
+					"max": 180,
+					"step": 0.1
+				},
+				{
+					"type": "hslider",
+					"label": "Monitor/Gain",
+					"varname": "fHslider1",
+					"shortname": "Monitor_Gain",
+					"address": "/MonitorFoa/Monitor_Gain",
+					"meta": [
+						{ "style": "knob" },
+						{ "unit": "dB" }
+					],
+					"init": 0,
+					"min": -90,
+					"max": 12,
+					"step": 0.1
+				}
+			]
+		}
+	]
+}

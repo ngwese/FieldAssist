@@ -10,6 +10,7 @@ use crate::model::buffer::ChannelScope;
 use crate::model::composition::Composition;
 use crate::model::document::BufferDocument;
 use crate::model::Buffer;
+use crate::monitor::MonitorChain;
 
 use super::anchors::{collect_anchors, next_anchor, previous_anchor};
 use super::engine::PlaybackEngine;
@@ -42,7 +43,34 @@ impl PlaybackSession {
     }
 
     pub fn bind_composition(&self, composition: Arc<RwLock<Composition>>) {
-        self.provider.bind(composition);
+        self.provider.bind(composition.clone());
+        self.sync_monitor(&composition.read().unwrap());
+    }
+
+    pub fn sync_monitor(&self, composition: &Composition) {
+        let chain = composition.monitor_chain().and_then(MonitorChain::parse);
+        let channels = composition.playback_channels().map(|ch| ch.to_vec());
+        self.engine.shared.set_monitor(chain, channels);
+    }
+
+    pub fn set_monitor_param(&self, address: &str, value: f32) {
+        self.engine.shared.set_monitor_param(address, value);
+    }
+
+    pub fn monitor_param(&self, address: &str) -> Option<f32> {
+        self.engine.shared.monitor_param(address)
+    }
+
+    pub fn monitor_meter(&self, address: &str) -> Option<f32> {
+        self.engine.shared.monitor_meter(address)
+    }
+
+    pub fn monitor_ui_json(&self) -> Option<&'static str> {
+        self.engine.shared.monitor_ui_json()
+    }
+
+    pub fn monitor_meters(&self) -> std::collections::HashMap<String, f32> {
+        self.engine.shared.monitor_meters()
     }
 
     pub fn transport_state(&self) -> TransportState {
@@ -130,6 +158,7 @@ impl PlaybackSession {
             }
         }
         self.apply_to_engine();
+        self.sync_monitor(&doc.composition.read().unwrap());
     }
 
     pub fn sync_document_from_playback(&mut self, doc: &mut BufferDocument) {

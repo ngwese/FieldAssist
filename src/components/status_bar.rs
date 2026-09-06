@@ -3,12 +3,15 @@
 
 use std::rc::Rc;
 
-use gpui::{div, px, App, Hsla, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window};
+use gpui::{
+    div, px, App, Hsla, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _,
+    Window,
+};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     status_bar::StatusBar,
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, Icon, IconNamed, Sizable as _,
 };
 
 use crate::model::composition::Composition;
@@ -67,6 +70,7 @@ pub struct FileStatusBar {
     file: Option<FileStatus>,
     progress_message: Option<String>,
     layout: Option<LayoutPicker>,
+    on_monitor: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
 impl FileStatusBar {
@@ -75,6 +79,7 @@ impl FileStatusBar {
             file,
             progress_message: None,
             layout: None,
+            on_monitor: None,
         }
     }
 
@@ -85,6 +90,11 @@ impl FileStatusBar {
 
     pub fn with_layout(mut self, layout: Option<LayoutPicker>) -> Self {
         self.layout = layout;
+        self
+    }
+
+    pub fn with_monitor(mut self, on_monitor: Option<Rc<dyn Fn(&mut Window, &mut App)>>) -> Self {
+        self.on_monitor = on_monitor;
         self
     }
 }
@@ -117,13 +127,39 @@ impl RenderOnce for FileStatusBar {
             }
             bar = bar.child(message.clone());
         }
-        if let Some(layout) = self.layout {
-            bar = bar.right(layout_dropdown(layout, cx.theme().muted_foreground));
+        if self.on_monitor.is_some() || self.layout.is_some() {
+            let muted = cx.theme().muted_foreground;
+            if let Some(on_monitor) = self.on_monitor {
+                bar = bar.right(monitor_button(on_monitor, muted));
+            }
+            if let Some(layout) = self.layout {
+                bar = bar.right(layout_dropdown(layout, muted));
+            }
         } else if self.progress_message.is_some() {
             bar = bar.right("");
         }
         bar
     }
+}
+
+struct MonitorSpeakerIcon;
+
+impl IconNamed for MonitorSpeakerIcon {
+    fn path(self) -> SharedString {
+        "icons/monitor-speaker.svg".into()
+    }
+}
+
+fn monitor_button(on_click: Rc<dyn Fn(&mut Window, &mut App)>, muted: Hsla) -> impl IntoElement {
+    Button::new("monitor-tab")
+        .ghost()
+        .xsmall()
+        .text_color(muted)
+        .icon(Icon::new(MonitorSpeakerIcon))
+        .tooltip("Monitor")
+        .on_click(move |_, window, cx| {
+            (on_click)(window, cx);
+        })
 }
 
 fn layout_dropdown(picker: LayoutPicker, muted: Hsla) -> impl IntoElement {

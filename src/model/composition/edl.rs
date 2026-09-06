@@ -167,10 +167,14 @@ pub struct ProjectFile {
     pub collections: Vec<RegionCollection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_chain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback_channels: Option<Vec<usize>>,
 }
 
 pub const FACOMP_KIND: &str = "facomp";
-pub const FACOMP_FORMAT_VERSION: u32 = 3;
+pub const FACOMP_FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectEnvelope {
@@ -197,7 +201,7 @@ impl ProjectEnvelope {
             bail!("not a snd-review composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            1 | 2 | 3 => Ok(envelope),
+            1 | 2 | 3 | 4 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer snd-review (format_version {n})")

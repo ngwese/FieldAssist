@@ -323,6 +323,57 @@ mod tests {
     }
 
     #[test]
+    fn monitor_chain_and_playback_channels_round_trip() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:define_layout({
+              name = "MS",
+              description = "Mid / Side",
+              channels = { [0] = "M", [1] = "S" },
+              monitor = { chain = "ms" },
+            })
+            local c = app.active
+            c.channel_layout = "MS"
+            assert(c.monitor_chain == "ms")
+            c.monitor_chain = "stereo"
+            c.playback_channels = {1}
+            return c.monitor_chain, c.playback_channels[1]
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("stereo\t1"));
+        let id = world.borrow().active.unwrap();
+        let (chain, channels) = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            (
+                composition.monitor_chain().map(str::to_string),
+                composition.playback_channels().map(|ch| ch.to_vec()),
+            )
+        };
+        assert_eq!(chain.as_deref(), Some("stereo"));
+        assert_eq!(channels.as_deref(), Some(&[1][..]));
+        let out = host.eval(
+            r#"
+            app.active.playback_channels = "all"
+            app.active.monitor_chain = nil
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let (chain, channels) = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            (
+                composition.monitor_chain().map(str::to_string),
+                composition.playback_channels().map(|ch| ch.to_vec()),
+            )
+        };
+        assert!(chain.is_none());
+        assert!(channels.is_none());
+    }
+
+    #[test]
     fn composition_exposes_media_metadata() {
         let (mut host, _) = test_host();
         let out = host.eval(
@@ -349,12 +400,23 @@ mod tests {
         );
         let id = world.borrow().active.unwrap();
         host.fire_detect_layout(id);
-        let layout = {
+        let (layout, chain) = {
             let world = world.borrow();
             let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
-            composition.channel_layout().map(str::to_string)
+            (
+                composition.channel_layout().map(str::to_string),
+                composition.monitor_chain().map(str::to_string),
+            )
         };
         assert_eq!(layout.as_deref(), Some("stereo"));
+        assert_eq!(chain.as_deref(), Some("stereo"));
+        assert_eq!(
+            host.layout("1OA")
+                .and_then(|layout| layout.monitor_chain_id().map(str::to_string))
+                .as_deref(),
+            Some("foa")
+        );
+        assert!(host.layout("2OA").unwrap().monitor_chain_id().is_none());
     }
 
     #[test]

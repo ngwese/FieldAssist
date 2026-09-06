@@ -22,9 +22,8 @@ use gpui_component::{
         panel_handle, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
         PaneRef, PanelId, PanelStyle,
     },
-    h_flex,
-    v_flex, ActiveTheme as _, Disableable as _, GlobalState, IconName, Root, Selectable as _,
-    Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, GlobalState, IconName, Root,
+    Selectable as _, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
 };
 
 use crate::assets::AppAssets;
@@ -45,6 +44,7 @@ use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
 use crate::components::header_meta::HeaderMeta;
 use crate::components::markers::MarkersPanel;
 use crate::components::messages::MessagesPanel;
+use crate::components::monitor::MonitorPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::regions::RegionsPanel;
 use crate::components::render_sheet::RenderSheet;
@@ -90,6 +90,7 @@ pub struct AppView {
     edits: Entity<EditsPanel>,
     markers: Entity<MarkersPanel>,
     regions: Entity<RegionsPanel>,
+    monitor: Entity<MonitorPanel>,
     header_meta: Entity<HeaderMeta>,
     empty_editors: Entity<EmptyPane>,
     repl: Entity<ReplPanel>,
@@ -100,7 +101,14 @@ pub struct AppView {
     app_menu_bar: Option<Entity<AppMenuBar>>,
     pending_opens: Arc<Mutex<Vec<PathBuf>>>,
     pending_load: Arc<
-        Mutex<Vec<(DocumentId, u64, f64, Result<(Composition, Vec<String>), String>)>>,
+        Mutex<
+            Vec<(
+                DocumentId,
+                u64,
+                f64,
+                Result<(Composition, Vec<String>), String>,
+            )>,
+        >,
     >,
     pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
@@ -155,6 +163,7 @@ impl AppView {
                         this.header_meta.update(cx, |meta, cx| {
                             meta.set_transport(transport, cx);
                         });
+                        this.monitor.update(cx, |_, cx| cx.notify());
                     }
                 })
             });
@@ -198,6 +207,7 @@ impl AppView {
         let edits = cx.new(|cx| EditsPanel::new(cx));
         let markers = cx.new(|cx| MarkersPanel::new(cx));
         let regions = cx.new(|cx| RegionsPanel::new(cx));
+        let monitor = cx.new(|cx| MonitorPanel::new(app.clone(), cx));
         if let Some(views) = initial_target {
             edits.update(cx, |edits, cx| {
                 edits.set_target(views.document.clone(), views.waveform.clone(), cx);
@@ -207,6 +217,9 @@ impl AppView {
             });
             regions.update(cx, |regions, cx| {
                 regions.set_target(views.document.clone(), views.waveform.clone(), cx);
+            });
+            monitor.update(cx, |monitor, cx| {
+                monitor.set_target(views.document.clone(), cx);
             });
             header_meta.update(cx, |meta, cx| {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
@@ -232,6 +245,7 @@ impl AppView {
         let edits_handle = panel_handle(edits.clone());
         let markers_handle = panel_handle(markers.clone());
         let regions_handle = panel_handle(regions.clone());
+        let monitor_handle = panel_handle(monitor.clone());
         dock_area.update(cx, |area, cx| {
             area.set_center(DockLayout::tabs().panel_view(center_handle, cx), window, cx);
             area.set_dock(
@@ -248,6 +262,7 @@ impl AppView {
                 DockLayout::tabs()
                     .panel_view(markers_handle, cx)
                     .panel_view(regions_handle, cx)
+                    .panel_view(monitor_handle, cx)
                     .panel_view(edits_handle, cx),
                 window,
                 cx,
@@ -278,6 +293,7 @@ impl AppView {
             edits,
             markers,
             regions,
+            monitor,
             header_meta,
             empty_editors,
             repl,
@@ -473,6 +489,9 @@ impl AppView {
             self.regions.update(cx, |regions, cx| {
                 regions.set_target(views.document.clone(), views.waveform.clone(), cx);
             });
+            self.monitor.update(cx, |monitor, cx| {
+                monitor.set_target(views.document.clone(), cx);
+            });
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
             });
@@ -485,6 +504,8 @@ impl AppView {
                 .update(cx, |markers, cx| markers.clear_target(cx));
             self.regions
                 .update(cx, |regions, cx| regions.clear_target(cx));
+            self.monitor
+                .update(cx, |monitor, cx| monitor.clear_target(cx));
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(None, None, cx);
             });
@@ -533,7 +554,15 @@ impl AppView {
     }
 
     fn center_tab_slot(area: &DockArea, panel_id: PanelId) -> Option<(NodeId, usize, usize)> {
-        let tree = area.layout(DockPlacement::Center)?;
+        Self::panel_tab_slot(area, DockPlacement::Center, panel_id)
+    }
+
+    fn panel_tab_slot(
+        area: &DockArea,
+        placement: DockPlacement,
+        panel_id: PanelId,
+    ) -> Option<(NodeId, usize, usize)> {
+        let tree = area.layout(placement)?;
         let node = tree.find_panel_node(panel_id)?;
         match tree.find_node(node)?.kind() {
             PaneRef::Tabs { panels, active_ix } => {
@@ -959,6 +988,119 @@ impl AppView {
         self.after_script_edit(id, window, cx);
     }
 
+    pub(crate) fn monitor_ui_json(&self) -> Option<&'static str> {
+        self.playback.monitor_ui_json()
+    }
+
+    pub(crate) fn monitor_param(&self, address: &str) -> Option<f32> {
+        self.playback.monitor_param(address)
+    }
+
+    pub(crate) fn monitor_meters(&self) -> HashMap<String, f32> {
+        self.playback.monitor_meters()
+    }
+
+    pub(crate) fn set_monitor_param(&self, address: &str, value: f32) {
+        self.playback.set_monitor_param(address, value);
+    }
+
+    pub(crate) fn set_monitor_chain(
+        &mut self,
+        chain: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        views.document.update(cx, |doc, cx| {
+            doc.composition
+                .write()
+                .unwrap()
+                .set_monitor_chain(chain.map(str::to_string));
+            cx.notify();
+        });
+        self.playback.sync_from_document(views.document.read(cx));
+        self.monitor.update(cx, |_, cx| cx.notify());
+        self.update_window_title(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_playback_channel(
+        &mut self,
+        index: usize,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        views.document.update(cx, |doc, cx| {
+            let mut composition = doc.composition.write().unwrap();
+            let n = composition.channel_count();
+            if index >= n {
+                return;
+            }
+            let mut selected: Vec<bool> = match composition.playback_channels() {
+                Some(channels) => (0..n).map(|i| channels.contains(&i)).collect(),
+                None => vec![true; n],
+            };
+            selected[index] = enabled;
+            if !selected.iter().any(|on| *on) {
+                selected[index] = true;
+            }
+            let channels: Vec<usize> = selected
+                .iter()
+                .enumerate()
+                .filter_map(|(i, on)| on.then_some(i))
+                .collect();
+            composition.set_playback_channels(Some(channels));
+            drop(composition);
+            cx.notify();
+        });
+        self.playback.sync_from_document(views.document.read(cx));
+        self.monitor.update(cx, |_, cx| cx.notify());
+        self.update_window_title(window, cx);
+        cx.notify();
+    }
+
+    fn show_monitor_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel_id = PanelId::from(self.monitor.entity_id());
+        let dock_open = self.detail_dock_open(cx);
+        let already_active = dock_open
+            && Self::panel_tab_slot(&self.dock_area.read(cx), DockPlacement::Right, panel_id)
+                .is_some_and(|(_, ix, active_ix)| ix == active_ix);
+        if already_active {
+            return;
+        }
+        if !dock_open {
+            self.dock_area.update(cx, |area, cx| {
+                area.toggle_dock(DockPlacement::Right, window, cx);
+            });
+        }
+        self.dock_area.update(cx, |area, cx| {
+            if let Some((node, ix, active_ix)) =
+                Self::panel_tab_slot(area, DockPlacement::Right, panel_id)
+            {
+                if ix != active_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        });
+        self.sync_view_menus(cx);
+        cx.notify();
+    }
+
     pub(crate) fn session_active(&self) -> Option<DocumentId> {
         self.session.active()
     }
@@ -1014,6 +1156,7 @@ impl AppView {
                 self.playback.sync_from_document(views.document.read(cx));
                 views.document.update(cx, |_, cx| cx.notify());
                 views.waveform.update(cx, |_, cx| cx.notify());
+                self.monitor.update(cx, |_, cx| cx.notify());
             }
         }
         self.refresh_explorer(cx);
@@ -1910,6 +2053,16 @@ impl Render for AppView {
                 }),
             }
         });
+        let on_monitor = file_status.as_ref().map(|_| {
+            let app = cx.weak_entity();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |this, cx| {
+                        this.show_monitor_tab(window, cx);
+                    });
+                }
+            }) as Rc<dyn Fn(&mut Window, &mut App)>
+        });
         let progress_message = views.as_ref().and_then(|views| {
             views
                 .document
@@ -2064,6 +2217,7 @@ impl Render for AppView {
                                     .child(
                                         FileStatusBar::new(file_status)
                                             .with_progress_message(progress_message)
+                                            .with_monitor(on_monitor)
                                             .with_layout(layout_picker),
                                     ),
                             )

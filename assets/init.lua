@@ -8,24 +8,28 @@ app:define_layout({
   name = "mono",
   description = "Single channel",
   channels = { [0] = "Mono" },
+  monitor = { chain = "mono" },
 })
 
 app:define_layout({
   name = "stereo",
   description = "Left / Right",
   channels = { [0] = "L", [1] = "R" },
+  monitor = { chain = "stereo" },
 })
 
 app:define_layout({
   name = "MS",
   description = "Mid / Side",
   channels = { [0] = "M", [1] = "S" },
+  monitor = { chain = "ms" },
 })
 
 app:define_layout({
   name = "1OA",
   description = "First-order Ambisonics (Ambix)",
   channels = { [0] = "W", [1] = "Y", [2] = "Z", [3] = "X" },
+  monitor = { chain = "foa" },
 })
 
 app:define_layout({

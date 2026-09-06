@@ -57,6 +57,27 @@ pub struct Composition {
     clean_marker_types: Vec<MarkerType>,
     clean_collections: Vec<RegionCollection>,
     clean_chosen_channel_layout: Option<String>,
+    monitor_chain: Option<String>,
+    playback_channels: Option<Vec<usize>>,
+    clean_monitor_chain: Option<String>,
+    clean_playback_channels: Option<Vec<usize>>,
+}
+
+fn normalize_playback_channels(
+    channels: Option<Vec<usize>>,
+    channel_count: usize,
+) -> Option<Vec<usize>> {
+    let mut channels = channels?;
+    channels.sort_unstable();
+    channels.dedup();
+    channels.retain(|index| *index < channel_count);
+    if channels.is_empty() {
+        return None;
+    }
+    if channels.len() == channel_count && channels.iter().copied().eq(0..channel_count) {
+        return None;
+    }
+    Some(channels)
 }
 
 impl Composition {
@@ -88,6 +109,10 @@ impl Composition {
             clean_marker_types: Vec::new(),
             clean_collections: Vec::new(),
             clean_chosen_channel_layout: None,
+            monitor_chain: None,
+            playback_channels: None,
+            clean_monitor_chain: None,
+            clean_playback_channels: None,
         };
         composition.mark_clean();
         composition
@@ -137,6 +162,10 @@ impl Composition {
             clean_marker_types: Vec::new(),
             clean_collections: Vec::new(),
             clean_chosen_channel_layout: None,
+            monitor_chain: None,
+            playback_channels: None,
+            clean_monitor_chain: None,
+            clean_playback_channels: None,
         };
         let peaked = composed
             .pool
@@ -243,6 +272,8 @@ impl Composition {
             || self.marker_types != self.clean_marker_types
             || self.collections != self.clean_collections
             || self.chosen_channel_layout != self.clean_chosen_channel_layout
+            || self.monitor_chain != self.clean_monitor_chain
+            || self.playback_channels != self.clean_playback_channels
     }
 
     fn mark_clean(&mut self) {
@@ -251,6 +282,8 @@ impl Composition {
         self.clean_marker_types = self.marker_types.clone();
         self.clean_collections = self.collections.clone();
         self.clean_chosen_channel_layout = self.chosen_channel_layout.clone();
+        self.clean_monitor_chain = self.monitor_chain.clone();
+        self.clean_playback_channels = self.playback_channels.clone();
     }
 
     pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
@@ -462,6 +495,22 @@ impl Composition {
     pub fn choose_channel_layout(&mut self, name: Option<String>, labels: BTreeMap<usize, String>) {
         self.chosen_channel_layout = name.clone();
         self.apply_channel_layout(name, labels);
+    }
+
+    pub fn monitor_chain(&self) -> Option<&str> {
+        self.monitor_chain.as_deref()
+    }
+
+    pub fn set_monitor_chain(&mut self, chain: Option<String>) {
+        self.monitor_chain = chain.filter(|name| !name.is_empty());
+    }
+
+    pub fn playback_channels(&self) -> Option<&[usize]> {
+        self.playback_channels.as_deref()
+    }
+
+    pub fn set_playback_channels(&mut self, channels: Option<Vec<usize>>) {
+        self.playback_channels = normalize_playback_channels(channels, self.channel_count);
     }
 
     pub fn codec(&self) -> Option<&str> {
@@ -1355,6 +1404,8 @@ impl Composition {
             marker_types: self.marker_types.clone(),
             collections: self.collections.clone(),
             channel_layout: self.chosen_channel_layout.clone(),
+            monitor_chain: self.monitor_chain.clone(),
+            playback_channels: self.playback_channels.clone(),
         }
     }
 
@@ -1413,6 +1464,9 @@ impl Composition {
             .collect();
         composition.bump_next_region_id_from_collections();
         composition.chosen_channel_layout = file.channel_layout;
+        composition.monitor_chain = file.monitor_chain.filter(|name| !name.is_empty());
+        composition.playback_channels =
+            normalize_playback_channels(file.playback_channels, composition.channel_count);
         composition.mark_clean();
         Ok(composition)
     }
@@ -1868,7 +1922,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 3);
+        assert_eq!(value["format_version"], 4);
         let media = &value["media"][0];
         assert!(media.get("path").is_some());
         assert!(media.get("size_bytes").is_some());
@@ -2113,6 +2167,8 @@ mod tests {
             marker_types: Vec::new(),
             collections: Vec::new(),
             channel_layout: None,
+            monitor_chain: None,
+            playback_channels: None,
         };
         let json = ProjectEnvelope::wrap(file).to_json().unwrap();
         let (comp, warnings) = Composition::from_json_reprobing(&json).unwrap();
@@ -2248,7 +2304,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 3);
+        assert_eq!(value["format_version"], 4);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -2290,7 +2346,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 3);
+        assert_eq!(value["format_version"], 4);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()
@@ -2330,6 +2386,34 @@ mod tests {
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value.get("channel_layout").is_none());
+        assert!(value.get("monitor_chain").is_none());
+        assert!(value.get("playback_channels").is_none());
+    }
+
+    #[test]
+    fn project_json_round_trip_keeps_monitor_routing() {
+        let mut comp = Composition::from_media(sine_media(12, 6, 44100)).unwrap();
+        comp.set_monitor_chain(Some("foa".into()));
+        comp.set_playback_channels(Some(vec![0, 1, 2, 3]));
+        assert!(comp.is_modified());
+        let json = comp.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["monitor_chain"], "foa");
+        assert_eq!(value["playback_channels"], serde_json::json!([0, 1, 2, 3]));
+        let restored = Composition::from_json(&json).unwrap();
+        assert_eq!(restored.monitor_chain(), Some("foa"));
+        assert_eq!(restored.playback_channels(), Some(&[0, 1, 2, 3][..]));
+        assert!(!restored.is_modified());
+        restored.assert_invariants();
+    }
+
+    #[test]
+    fn playback_channels_all_clears_to_default() {
+        let mut comp = Composition::from_media(sine_media(8, 2, 44100)).unwrap();
+        comp.set_playback_channels(Some(vec![0, 1]));
+        assert!(comp.playback_channels().is_none());
+        comp.set_playback_channels(Some(vec![5, 1, 1]));
+        assert_eq!(comp.playback_channels(), Some(&[1][..]));
     }
 
     #[test]

@@ -35,6 +35,10 @@ const EXTRA_ICONS: &[(&str, &[u8])] = &[
         "icons/skip-forward.svg",
         include_bytes!("../assets/icons/skip-forward.svg"),
     ),
+    (
+        "icons/monitor-speaker.svg",
+        include_bytes!("../assets/icons/monitor-speaker.svg"),
+    ),
 ];
 
 /// App icons first, then the Lucide subset shipped by gpui-component-assets.

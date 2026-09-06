@@ -366,37 +366,47 @@ impl HostHandle {
     }
 
     pub fn apply_effective_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
-        let labels = match name {
-            Some(name) => self
-                .layout(name)
-                .map(|layout| layout.channels)
-                .unwrap_or_default(),
-            None => BTreeMap::new(),
+        let (labels, default_chain) = match name {
+            Some(name) => {
+                let layout = self.layout(name);
+                let labels = layout
+                    .as_ref()
+                    .map(|layout| layout.channels.clone())
+                    .unwrap_or_default();
+                let chain = layout
+                    .as_ref()
+                    .and_then(|layout| layout.monitor_chain_id().map(str::to_string));
+                (labels, chain)
+            }
+            None => (BTreeMap::new(), None),
         };
         self.with_document(id, |doc| {
-            doc.composition
-                .write()
-                .unwrap()
-                .apply_channel_layout(name.map(str::to_string), labels);
+            let mut composition = doc.composition.write().unwrap();
+            composition.apply_channel_layout(name.map(str::to_string), labels);
+            if composition.monitor_chain().is_none() {
+                if let Some(chain) = default_chain {
+                    composition.set_monitor_chain(Some(chain));
+                }
+            }
             Ok(())
         })
     }
 
     pub fn choose_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
-        let labels = match name {
+        let (labels, default_chain) = match name {
             Some(name) => {
                 let layout = self.layout(name).ok_or_else(|| {
                     mlua::Error::runtime(format!("unknown channel layout `{name}`"))
                 })?;
-                layout.channels
+                let chain = layout.monitor_chain_id().map(str::to_string);
+                (layout.channels, chain)
             }
-            None => BTreeMap::new(),
+            None => (BTreeMap::new(), None),
         };
         self.with_document(id, |doc| {
-            doc.composition
-                .write()
-                .unwrap()
-                .choose_channel_layout(name.map(str::to_string), labels);
+            let mut composition = doc.composition.write().unwrap();
+            composition.choose_channel_layout(name.map(str::to_string), labels);
+            composition.set_monitor_chain(default_chain);
             Ok(())
         })
     }

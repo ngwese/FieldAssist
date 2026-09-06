@@ -107,6 +107,88 @@ impl UserData for LuaComposition {
             }
             after_edit(lua, this.id)
         });
+        fields.add_field_method_get("monitor_chain", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .monitor_chain()
+                    .map(str::to_string))
+            })
+        });
+        fields.add_field_method_set("monitor_chain", |lua, this, value: Value| {
+            with_document(lua, this.id, |doc| {
+                let chain = match value {
+                    Value::Nil => None,
+                    Value::String(name) => {
+                        let name = name.to_str()?.to_owned();
+                        if name.is_empty() {
+                            None
+                        } else {
+                            Some(name)
+                        }
+                    }
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "monitor_chain must be a string or nil, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                doc.composition.write().unwrap().set_monitor_chain(chain);
+                Ok(())
+            })?;
+            after_edit(lua, this.id)
+        });
+        fields.add_field_method_get("playback_channels", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let composition = doc.composition.read().unwrap();
+                match composition.playback_channels() {
+                    None => Ok(Value::Nil),
+                    Some(channels) => {
+                        let table = lua.create_table()?;
+                        for (i, ch) in channels.iter().enumerate() {
+                            table.set(i + 1, *ch as i64)?;
+                        }
+                        Ok(Value::Table(table))
+                    }
+                }
+            })
+        });
+        fields.add_field_method_set("playback_channels", |lua, this, value: Value| {
+            with_document(lua, this.id, |doc| {
+                let channels = match value {
+                    Value::Nil => None,
+                    Value::String(text) if text.to_str()?.eq_ignore_ascii_case("all") => None,
+                    Value::Table(table) => {
+                        let mut channels = Vec::new();
+                        for pair in table.sequence_values::<i64>() {
+                            let index = pair?;
+                            if index < 0 {
+                                return Err(mlua::Error::runtime(
+                                    "playback_channels indices must be non-negative",
+                                ));
+                            }
+                            channels.push(index as usize);
+                        }
+                        Some(channels)
+                    }
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "playback_channels must be an array, \"all\", or nil, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                doc.composition
+                    .write()
+                    .unwrap()
+                    .set_playback_channels(channels);
+                Ok(())
+            })?;
+            after_edit(lua, this.id)
+        });
         fields.add_field_method_get("duration", |lua, this| {
             with_document(lua, this.id, |doc| {
                 Ok(doc.composition.read().unwrap().duration_secs())
