@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Greg Wuller
+// SPDX-License-Identifier: MIT
+
 declare name "MonitorFoa";
 declare version "1.0";
 declare license "MIT";
