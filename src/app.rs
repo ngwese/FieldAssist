@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::Device;
 use gpui::{
@@ -44,6 +44,7 @@ use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
 use crate::components::header_meta::HeaderMeta;
 use crate::components::markers::MarkersPanel;
+use crate::components::messages::MessagesPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::regions::RegionsPanel;
 use crate::components::render_sheet::RenderSheet;
@@ -92,14 +93,17 @@ pub struct AppView {
     header_meta: Entity<HeaderMeta>,
     empty_editors: Entity<EmptyPane>,
     repl: Entity<ReplPanel>,
+    messages: Entity<MessagesPanel>,
     script: ScriptHost,
     idle_composition: Arc<RwLock<Composition>>,
     playback: PlaybackSession,
     app_menu_bar: Option<Entity<AppMenuBar>>,
     pending_opens: Arc<Mutex<Vec<PathBuf>>>,
-    pending_load: Arc<Mutex<Vec<(DocumentId, u64, Result<(Composition, Vec<String>), String>)>>>,
+    pending_load: Arc<
+        Mutex<Vec<(DocumentId, u64, f64, Result<(Composition, Vec<String>), String>)>>,
+    >,
     pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
-    pending_loaded_scripts: Vec<DocumentId>,
+    pending_loaded_scripts: Vec<(DocumentId, f64)>,
     render_sheet: Entity<RenderSheet>,
     render_sheet_open: bool,
     quit_save_queue: Vec<DocumentId>,
@@ -116,6 +120,7 @@ impl AppView {
         composition: Arc<RwLock<Composition>>,
         buffer: Arc<RwLock<Buffer>>,
         source_path: Option<PathBuf>,
+        initial_load_elapsed: Option<f64>,
         playback: PlaybackSession,
         pending_opens: Arc<Mutex<Vec<PathBuf>>>,
         window: &mut Window,
@@ -209,6 +214,7 @@ impl AppView {
         }
         let script = ScriptHost::new().expect("lua runtime");
         let repl = cx.new(|cx| ReplPanel::new(window, cx));
+        let messages = cx.new(|cx| MessagesPanel::new(cx));
         let render_sheet = cx.new(|cx| RenderSheet::new(window, cx));
         cx.observe(&render_sheet, |_, _, cx| cx.notify()).detach();
         repl.update(cx, |repl, _| {
@@ -258,6 +264,7 @@ impl AppView {
             |this, _, event: &DockEvent, window, cx| {
                 if matches!(event, DockEvent::LayoutChanged) {
                     this.sync_tabs_from_layout(window, cx);
+                    this.sync_messages_visible(cx);
                 }
             },
         )
@@ -274,6 +281,7 @@ impl AppView {
             header_meta,
             empty_editors,
             repl,
+            messages,
             script,
             idle_composition,
             playback,
@@ -294,7 +302,7 @@ impl AppView {
         };
         this.load_init_lua(window, cx);
         if let Some(id) = this.session.active() {
-            this.fire_document_scripts(id, window, cx);
+            this.fire_document_scripts(id, initial_load_elapsed.unwrap_or(0.0), window, cx);
         }
         this.refresh_explorer(cx);
         if let Some(id) = this.session.active() {
@@ -669,6 +677,7 @@ impl AppView {
         &mut self,
         id: DocumentId,
         composition: Composition,
+        elapsed: f64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -696,7 +705,7 @@ impl AppView {
             self.update_window_title(window, cx);
         }
         self.refresh_explorer(cx);
-        self.pending_loaded_scripts.push(id);
+        self.pending_loaded_scripts.push((id, elapsed));
         cx.notify();
     }
 
@@ -777,12 +786,15 @@ impl AppView {
     fn show_script_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let opened = !self.script_dock_open(cx);
         if opened {
-            let handle = panel_handle(self.repl.clone());
+            let script_handle = panel_handle(self.repl.clone());
+            let messages_handle = panel_handle(self.messages.clone());
             let size = self.script_dock_size;
             self.dock_area.update(cx, |area, cx| {
                 area.set_dock(
                     DockPlacement::Bottom,
-                    DockLayout::tabs().panel_view(handle, cx),
+                    DockLayout::tabs()
+                        .panel_view(script_handle, cx)
+                        .panel_view(messages_handle, cx),
                     window,
                     cx,
                 );
@@ -791,6 +803,7 @@ impl AppView {
             });
         }
         self.repl.focus_handle(cx).focus(window, cx);
+        self.sync_messages_visible(cx);
         if opened {
             self.sync_view_menus(cx);
             cx.notify();
@@ -807,6 +820,7 @@ impl AppView {
         self.dock_area.update(cx, |area, cx| {
             area.remove_dock(DockPlacement::Bottom, window, cx);
         });
+        self.sync_messages_visible(cx);
         self.sync_view_menus(cx);
         cx.notify();
     }
@@ -829,6 +843,7 @@ impl AppView {
                 repl.append_output(&output, cx);
             });
         }
+        self.flush_script_logs(cx);
     }
 
     fn eval_lua(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -837,17 +852,19 @@ impl AppView {
         self.repl.update(cx, |repl, cx| {
             repl.append_eval(code, &output, cx);
         });
+        self.flush_script_logs(cx);
     }
 
     fn fire_document_scripts(
         &mut self,
         id: DocumentId,
+        elapsed: f64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let _guard = crate::script::enter(self, window, cx);
         self.script.fire_detect_layout(id);
-        self.script.fire_loaded(id);
+        self.script.fire_loaded(id, elapsed);
         let prints = self.script.take_prints();
         if !prints.is_empty() {
             let output = EvalOutput {
@@ -859,11 +876,73 @@ impl AppView {
                 repl.append_output(&output, cx);
             });
         }
+        self.flush_script_logs(cx);
         if let Some(views) = self.views.get(&id).cloned() {
             views.document.update(cx, |_, cx| cx.notify());
             views.waveform.update(cx, |_, cx| cx.notify());
         }
         cx.notify();
+    }
+
+    fn fire_saved_script(
+        &mut self,
+        id: DocumentId,
+        elapsed: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_saved(id, elapsed);
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+    }
+
+    fn flush_script_logs(&mut self, cx: &mut Context<Self>) {
+        let logs = self.script.take_logs();
+        if logs.is_empty() {
+            return;
+        }
+        let visible = self.messages_tab_visible(cx);
+        self.messages.update(cx, |panel, cx| {
+            panel.append(logs, visible, cx);
+        });
+        self.dock_area.update(cx, |_, cx| cx.notify());
+    }
+
+    fn messages_tab_visible(&self, cx: &App) -> bool {
+        if !self.script_dock_open(cx) {
+            return false;
+        }
+        let area = self.dock_area.read(cx);
+        let Some(tree) = area.layout(DockPlacement::Bottom) else {
+            return false;
+        };
+        let panel_id = PanelId::from(self.messages.entity_id());
+        let Some(node) = tree.find_panel_node(panel_id) else {
+            return false;
+        };
+        match tree.find_node(node).map(|node| node.kind()) {
+            Some(PaneRef::Tabs { panels, active_ix }) => panels.get(active_ix) == Some(&panel_id),
+            _ => false,
+        }
+    }
+
+    fn sync_messages_visible(&mut self, cx: &mut Context<Self>) {
+        let visible = self.messages_tab_visible(cx);
+        self.messages.update(cx, |panel, cx| {
+            panel.set_visible(visible, cx);
+        });
+        self.dock_area.update(cx, |_, cx| cx.notify());
     }
 
     fn choose_channel_layout(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1282,12 +1361,17 @@ impl AppView {
             }
             return;
         };
-        let result = views.composition.write().unwrap().save_to_path(&path);
+        let result = {
+            let started = Instant::now();
+            let result = views.composition.write().unwrap().save_to_path(&path);
+            (result, started.elapsed().as_secs_f64())
+        };
         match result {
-            Ok(()) => {
+            (Ok(()), elapsed) => {
                 if let Some(doc) = self.session.get_mut(id) {
                     doc.project_path = Some(path);
                 }
+                self.fire_saved_script(id, elapsed, window, cx);
                 match after {
                     AfterWrite::None => {
                         self.refresh_explorer(cx);
@@ -1303,7 +1387,7 @@ impl AppView {
                     }
                 }
             }
-            Err(err) => {
+            (Err(err), _) => {
                 if after == AfterWrite::ContinueQuit {
                     self.quit_save_queue.clear();
                 }
@@ -1688,16 +1772,16 @@ impl AppView {
 
     fn drain_pending_loaded_scripts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids = std::mem::take(&mut self.pending_loaded_scripts);
-        for id in ids {
+        for (id, elapsed) in ids {
             if self.views.contains_key(&id) {
-                self.fire_document_scripts(id, window, cx);
+                self.fire_document_scripts(id, elapsed, window, cx);
             }
         }
     }
 
     fn drain_pending_load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let completed = std::mem::take(&mut *self.pending_load.lock().unwrap());
-        for (id, epoch, result) in completed {
+        for (id, epoch, elapsed, result) in completed {
             let valid = self
                 .views
                 .get(&id)
@@ -1707,7 +1791,7 @@ impl AppView {
             }
             match result {
                 Ok((composition, warnings)) => {
-                    self.push_loaded_composition(id, composition, window, cx);
+                    self.push_loaded_composition(id, composition, elapsed, window, cx);
                     if !warnings.is_empty() {
                         self.show_media_warning(&warnings.join("\n"), window, cx);
                     }
@@ -1748,9 +1832,11 @@ impl AppView {
         let pending = self.pending_load.clone();
         let progress = views.document.read(cx).progress.clone();
         std::thread::spawn(move || {
+            let started = Instant::now();
             let result = Composition::load_from_path_with_progress(&path, Some(&progress), epoch)
                 .map_err(|err| format!("{err:#}"));
-            pending.lock().unwrap().push((id, epoch, result));
+            let elapsed = started.elapsed().as_secs_f64();
+            pending.lock().unwrap().push((id, epoch, elapsed, result));
         });
     }
 
@@ -2446,7 +2532,7 @@ fn percent_decode(input: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-pub fn run(initial: Option<Composition>, device: Device) {
+pub fn run(initial: Option<Composition>, load_elapsed: Option<f64>, device: Device) {
     let source_path = initial
         .as_ref()
         .and_then(|composition| composition.pool().first().map(|media| media.path.clone()));
@@ -2500,6 +2586,7 @@ pub fn run(initial: Option<Composition>, device: Device) {
                         shared_composition.clone(),
                         shared_buffer.clone(),
                         source_path.clone(),
+                        load_elapsed,
                         playback,
                         pending_opens.clone(),
                         window,

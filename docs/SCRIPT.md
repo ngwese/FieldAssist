@@ -11,12 +11,15 @@ file is loaded **instead** of the embedded default:
 - Windows: `%APPDATA%\snd-review\init.lua`
 - Linux: `$XDG_CONFIG_HOME/snd-review/init.lua` (or `~/.config/snd-review/init.lua`)
 
-`init.lua` is loaded once at startup. Register `loaded` and `detect_layout`
-hooks there. The status bar (right side) shows the effective channel layout
+`init.lua` is loaded once at startup. Register `loaded`, `detect_layout`, and
+`saved` hooks there. The status bar (right side) shows the effective channel layout
 and lets you pick one of the defined layouts; a pick is saved on the
 composition.
 
-`print(...)` writes to the Script panel. Standard Lua libraries are available.
+`print(...)` writes to the Script panel. `app:info`, `app:warn`, and `app:error`
+write to the Messages tab (View → Show Script, then Messages). If stdout is a
+terminal, those log lines are also printed in color. Standard Lua libraries are
+available.
 
 Times on the timeline are **sample indices** (frames), starting at `0`. Channel
 indices are also 0-based.
@@ -27,6 +30,9 @@ indices are also 0-based.
 | --- | --- |
 | `app` | The running application. Always present. |
 | `print(...)` | Writes a line to the Script panel. |
+| `app:info(topic, message)` | Info log to the Messages tab (and stdout if connected). |
+| `app:warn(topic, message)` | Warning log; unseen warnings badge the Messages tab. |
+| `app:error(topic, message)` | Error log; unseen errors badge the Messages tab. |
 
 There is no other host-provided global besides `app`. Open documents are reached
 through `app.active` and `app.documents`.
@@ -39,8 +45,12 @@ local all = app.documents     -- array of open compositions
 local opened = app:open(path) -- open a file; returns the composition
 app:command("edit.trim")      -- run a menu/keymap command by id
 app:dofile("extra.lua")       -- execute a Lua file
-app:on("loaded", function(c)  -- c is the composition that just loaded
-  print("opened", c.name)
+app:info("layout", "stereo")  -- Messages tab (info / warn / error)
+app:on("loaded", function(c, elapsed)
+  app:info("load", string.format("%s in %.0f ms", c.name, elapsed * 1000))
+end)
+app:on("saved", function(c, elapsed)
+  app:info("save", string.format("%s in %.0f ms", c.name, elapsed * 1000))
 end)
 app:define_layout({
   name = "stereo",
@@ -59,7 +69,9 @@ end)
 `app:command` uses the same ids as the keymap (`file.open`, `transport.play_pause`,
 `selection.add_marker`, …). Unknown ids are an error. See [Commands](#commands).
 
-`app:on` accepts `"loaded"` and `"detect_layout"`. `detect_layout` is
+`app:on` accepts `"loaded"`, `"detect_layout"`, and `"saved"`. `loaded` is
+`function(c, elapsed)` and `saved` is `function(c, elapsed)`, where `elapsed`
+is wall-clock seconds for the load or save. `detect_layout` is
 `function(c, chosen)` where `chosen` is the persisted user-explicit layout name
 or `nil`. Return a defined layout name, or `nil` if it cannot be inferred.
 Hooks run in registration order; the last non-nil valid name wins.

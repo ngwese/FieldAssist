@@ -2,6 +2,8 @@
 -- Dump with: FieldAssist --dump-init
 -- Copy to the app config directory to customize.
 
+local started = os.clock()
+
 app:define_layout({
   name = "mono",
   description = "Single channel",
@@ -44,16 +46,34 @@ app:define_layout({
 
 app:on("detect_layout", function(c, chosen)
   if chosen then
+    app:info("layout", chosen)
     return chosen
   end
   local n = c.channels
+  local name
   if n == 1 then
-    return "mono"
+    name = "mono"
   elseif n == 2 then
-    return "stereo"
+    name = "stereo"
   elseif n == 4 then
-    return "1OA"
+    name = "1OA"
   elseif n == 9 then
-    return "2OA"
+    name = "2OA"
   end
+  if name then
+    app:info("layout", name)
+  else
+    app:info("layout", "none")
+  end
+  return name
 end)
+
+app:on("loaded", function(c, elapsed)
+  app:info("load", string.format("%s in %.0f ms", c.name, elapsed * 1000))
+end)
+
+app:on("saved", function(c, elapsed)
+  app:info("save", string.format("%s in %.0f ms", c.name, elapsed * 1000))
+end)
+
+app:info("init", string.format("evaluated in %.0f ms", (os.clock() - started) * 1000))

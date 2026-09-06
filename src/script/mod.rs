@@ -11,7 +11,10 @@ mod region;
 mod selection;
 
 pub use access::{enter, try_invoke_command};
-pub use host::{host_from_lua, with_document, EvalOutput, ScriptHost, TestWorld, EMBEDDED_INIT};
+pub use host::{
+    host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ScriptHost, TestWorld,
+    EMBEDDED_INIT,
+};
 
 #[cfg(test)]
 mod tests {
@@ -388,5 +391,66 @@ mod tests {
             "{:?}",
             out.error
         );
+    }
+
+    #[test]
+    fn log_methods_are_captured() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app:info("layout", "stereo")
+            app:warn("load", "slow")
+            app:error("save", "disk full")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let logs = host.take_logs();
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0].level, LogLevel::Info);
+        assert_eq!(logs[0].topic, "layout");
+        assert_eq!(logs[0].message, "stereo");
+        assert_eq!(logs[1].level, LogLevel::Warn);
+        assert_eq!(logs[1].topic, "load");
+        assert_eq!(logs[2].level, LogLevel::Error);
+        assert_eq!(logs[2].message, "disk full");
+    }
+
+    #[test]
+    fn loaded_hook_receives_elapsed() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:on("loaded", function(c, elapsed)
+              app:info("load", string.format("%s %.3f", c.name, elapsed))
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let id = world.borrow().active.unwrap();
+        host.fire_loaded(id, 0.012);
+        let logs = host.take_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].topic, "load");
+        assert!(logs[0].message.contains("fixture"), "{:?}", logs[0].message);
+        assert!(logs[0].message.contains("0.012"), "{:?}", logs[0].message);
+    }
+
+    #[test]
+    fn saved_hook_receives_elapsed() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:on("saved", function(c, elapsed)
+              app:info("save", string.format("%s %.3f", c.name, elapsed))
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let id = world.borrow().active.unwrap();
+        host.fire_saved(id, 0.250);
+        let logs = host.take_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].topic, "save");
+        assert!(logs[0].message.contains("0.250"), "{:?}", logs[0].message);
     }
 }

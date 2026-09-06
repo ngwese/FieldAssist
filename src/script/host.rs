@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
@@ -22,6 +23,30 @@ use super::layout::ChannelLayoutDef;
 
 pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogEntry {
+    pub level: LogLevel,
+    pub topic: String,
+    pub message: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct EvalOutput {
     pub prints: Vec<String>,
@@ -31,7 +56,9 @@ pub struct EvalOutput {
 
 struct HostInner {
     prints: Vec<String>,
+    logs: Vec<LogEntry>,
     loaded: Vec<Function>,
+    saved: Vec<Function>,
     detect_layout: Vec<Function>,
     layouts: Vec<ChannelLayoutDef>,
     test: Option<Rc<RefCell<TestWorld>>>,
@@ -100,7 +127,9 @@ impl ScriptHost {
         let handle = HostHandle {
             inner: Rc::new(RefCell::new(HostInner {
                 prints: Vec::new(),
+                logs: Vec::new(),
                 loaded: Vec::new(),
+                saved: Vec::new(),
                 detect_layout: Vec::new(),
                 layouts: Vec::new(),
                 test,
@@ -149,16 +178,30 @@ impl ScriptHost {
             .map_err(|err| format!("init.lua: {err}"))
     }
 
-    pub fn fire_loaded(&self, id: DocumentId) {
+    pub fn fire_loaded(&self, id: DocumentId, elapsed: f64) {
         let hooks = self.handle.inner.borrow().loaded.clone();
         let handle = LuaComposition { id };
         for hook in hooks {
-            if let Err(err) = hook.call::<()>(handle) {
+            if let Err(err) = hook.call::<()>((handle, elapsed)) {
                 self.handle
                     .inner
                     .borrow_mut()
                     .prints
                     .push(format!("loaded hook error: {err}"));
+            }
+        }
+    }
+
+    pub fn fire_saved(&self, id: DocumentId, elapsed: f64) {
+        let hooks = self.handle.inner.borrow().saved.clone();
+        let handle = LuaComposition { id };
+        for hook in hooks {
+            if let Err(err) = hook.call::<()>((handle, elapsed)) {
+                self.handle
+                    .inner
+                    .borrow_mut()
+                    .prints
+                    .push(format!("saved hook error: {err}"));
             }
         }
     }
@@ -185,6 +228,10 @@ impl ScriptHost {
 
     pub fn take_prints(&self) -> Vec<String> {
         std::mem::take(&mut self.handle.inner.borrow_mut().prints)
+    }
+
+    pub fn take_logs(&self) -> Vec<LogEntry> {
+        std::mem::take(&mut self.handle.inner.borrow_mut().logs)
     }
 }
 
@@ -248,8 +295,34 @@ impl HostHandle {
         self.inner.borrow_mut().loaded.push(callback);
     }
 
+    pub fn on_saved(&self, callback: Function) {
+        self.inner.borrow_mut().saved.push(callback);
+    }
+
     pub fn on_detect_layout(&self, callback: Function) {
         self.inner.borrow_mut().detect_layout.push(callback);
+    }
+
+    pub fn log(&self, level: LogLevel, topic: String, message: String) {
+        let entry = LogEntry {
+            level,
+            topic,
+            message,
+        };
+        self.write_console(&entry);
+        self.inner.borrow_mut().logs.push(entry);
+    }
+
+    fn write_console(&self, entry: &LogEntry) {
+        if self.inner.borrow().test.is_some() {
+            return;
+        }
+        let stdout = io::stdout();
+        if !stdout.is_terminal() {
+            return;
+        }
+        let mut out = stdout.lock();
+        let _ = writeln!(out, "{}", format_console_line(entry));
     }
 
     pub fn define_layout(&self, layout: ChannelLayoutDef) {
@@ -488,4 +561,28 @@ fn stringify_values(lua: &Lua, values: MultiValue) -> Option<String> {
     } else {
         Some(parts.join("\t"))
     }
+}
+
+pub fn stringify_value(lua: &Lua, value: Value) -> String {
+    let tostring: Function = match lua.globals().get("tostring") {
+        Ok(f) => f,
+        Err(_) => return "<unprintable>".into(),
+    };
+    tostring
+        .call::<String>(value)
+        .unwrap_or_else(|_| "<unprintable>".into())
+}
+
+fn format_console_line(entry: &LogEntry) -> String {
+    let color = match entry.level {
+        LogLevel::Info => "\x1b[36m",
+        LogLevel::Warn => "\x1b[33m",
+        LogLevel::Error => "\x1b[31m",
+    };
+    format!(
+        "{color}{:<5}\x1b[0m  {}  {}",
+        entry.level.as_str(),
+        entry.topic,
+        entry.message
+    )
 }

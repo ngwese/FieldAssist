@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
@@ -62,15 +63,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let composition = match &args.file {
-        Some(path) => Some(
-            model::Composition::load_from_path(path)
-                .with_context(|| format!("failed to load {}", path.display()))?,
-        ),
-        None => None,
+    let (composition, load_elapsed) = match &args.file {
+        Some(path) => {
+            let started = Instant::now();
+            let composition = model::Composition::load_from_path(path)
+                .with_context(|| format!("failed to load {}", path.display()))?;
+            (
+                Some(composition),
+                Some(started.elapsed().as_secs_f64()),
+            )
+        }
+        None => (None, None),
     };
     let device = playback::resolve_output_device(args.output_device.as_deref())?;
-    app::run(composition, device);
+    app::run(composition, load_elapsed, device);
     Ok(())
 }
 
@@ -81,7 +87,8 @@ fn attach_parent_console() {
     use std::fs::OpenOptions;
     use std::os::windows::io::IntoRawHandle;
     use windows_sys::Win32::System::Console::{
-        AttachConsole, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        AttachConsole, GetConsoleMode, SetConsoleMode, SetStdHandle, ATTACH_PARENT_PROCESS,
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
     };
 
     extern "C" {
@@ -105,6 +112,10 @@ fn attach_parent_console() {
         if fd >= 0 {
             _dup2(fd, 1);
             _dup2(fd, 2);
+        }
+        let mut mode = 0u32;
+        if GetConsoleMode(handle, &mut mode) != 0 {
+            let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
         }
     }
 }
