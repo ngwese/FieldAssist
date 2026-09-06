@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, Context, Entity,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
+    div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClickEvent, Context,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
+    Styled as _, Subscription, WeakEntity, Window,
 };
 use gpui_component::{
     button::Button,
@@ -27,6 +28,7 @@ pub struct MonitorPanel {
     document: Option<Entity<BufferDocument>>,
     focus_handle: FocusHandle,
     sliders: HashMap<String, Entity<SliderState>>,
+    slider_defaults: HashMap<String, f32>,
     slider_subs: Vec<Subscription>,
     bound_json: Option<&'static str>,
     _document_observe: Option<Subscription>,
@@ -39,6 +41,7 @@ impl MonitorPanel {
             document: None,
             focus_handle: cx.focus_handle(),
             sliders: HashMap::new(),
+            slider_defaults: HashMap::new(),
             slider_subs: Vec::new(),
             bound_json: None,
             _document_observe: None,
@@ -57,6 +60,7 @@ impl MonitorPanel {
         self.document = None;
         self._document_observe = None;
         self.sliders.clear();
+        self.slider_defaults.clear();
         self.slider_subs.clear();
         self.bound_json = None;
         cx.notify();
@@ -68,6 +72,7 @@ impl MonitorPanel {
         }
         self.bound_json = json;
         self.sliders.clear();
+        self.slider_defaults.clear();
         self.slider_subs.clear();
         let Some(json) = json else {
             return;
@@ -79,6 +84,7 @@ impl MonitorPanel {
             &root.ui,
             &self.app,
             &mut self.sliders,
+            &mut self.slider_defaults,
             &mut self.slider_subs,
             cx,
         );
@@ -231,12 +237,14 @@ impl Render for MonitorPanel {
                         render_schema(
                             &root,
                             &self.sliders,
+                            &self.slider_defaults,
                             &params,
                             &meters,
                             app.clone(),
                             muted,
                             theme.accent,
                             theme.secondary,
+                            cx,
                         )
                     }),
             )
@@ -303,6 +311,7 @@ fn bind_sliders(
     nodes: &[FaustUiNode],
     app: &WeakEntity<AppView>,
     sliders: &mut HashMap<String, Entity<SliderState>>,
+    defaults: &mut HashMap<String, f32>,
     subs: &mut Vec<Subscription>,
     cx: &mut Context<MonitorPanel>,
 ) {
@@ -311,7 +320,7 @@ fn bind_sliders(
             FaustUiNode::VGroup { items, .. }
             | FaustUiNode::HGroup { items, .. }
             | FaustUiNode::TGroup { items, .. } => {
-                bind_sliders(items, app, sliders, subs, cx);
+                bind_sliders(items, app, sliders, defaults, subs, cx);
             }
             FaustUiNode::HSlider {
                 address,
@@ -341,8 +350,8 @@ fn bind_sliders(
                 ..
             } => {
                 let mut state = SliderState::new()
-                    .min(*min)
                     .max(*max)
+                    .min(*min)
                     .step((*step).abs().max(0.0001))
                     .default_value(*init);
                 if *min > 0.0
@@ -365,6 +374,7 @@ fn bind_sliders(
                     }
                 }));
                 sliders.insert(address.clone(), entity);
+                defaults.insert(address.clone(), *init);
             }
             _ => {}
         }
@@ -398,17 +408,20 @@ fn collect_live_nodes(nodes: &[FaustUiNode], out: &mut Vec<String>) {
 fn render_schema(
     root: &FaustUiRoot,
     sliders: &HashMap<String, Entity<SliderState>>,
+    defaults: &HashMap<String, f32>,
     params: &HashMap<String, f32>,
     meters: &HashMap<String, f32>,
     app: WeakEntity<AppView>,
     muted: gpui::Hsla,
     accent: gpui::Hsla,
     secondary: gpui::Hsla,
+    cx: &App,
 ) -> impl IntoElement {
     v_flex().gap_2().children(root.ui.iter().map(|node| {
         render_node(
             node,
             sliders,
+            defaults,
             params,
             meters,
             app.clone(),
@@ -416,6 +429,7 @@ fn render_schema(
             accent,
             secondary,
             true,
+            cx,
         )
     }))
 }
@@ -423,6 +437,7 @@ fn render_schema(
 fn render_node(
     node: &FaustUiNode,
     sliders: &HashMap<String, Entity<SliderState>>,
+    defaults: &HashMap<String, f32>,
     params: &HashMap<String, f32>,
     meters: &HashMap<String, f32>,
     app: WeakEntity<AppView>,
@@ -430,6 +445,7 @@ fn render_node(
     accent: gpui::Hsla,
     secondary: gpui::Hsla,
     skip_outer_label: bool,
+    cx: &App,
 ) -> gpui::AnyElement {
     match node {
         FaustUiNode::VGroup { label, items }
@@ -439,6 +455,7 @@ fn render_node(
                 render_node(
                     child,
                     sliders,
+                    defaults,
                     params,
                     meters,
                     app.clone(),
@@ -446,6 +463,7 @@ fn render_node(
                     accent,
                     secondary,
                     false,
+                    cx,
                 )
             }));
             if skip_outer_label {
@@ -458,21 +476,55 @@ fn render_node(
                     .into_any_element()
             }
         }
-        FaustUiNode::HSlider { label, address, .. }
-        | FaustUiNode::VSlider { label, address, .. }
-        | FaustUiNode::NEntry { label, address, .. } => {
-            let value = params.get(address).copied();
+        FaustUiNode::HSlider {
+            label,
+            address,
+            meta,
+            ..
+        }
+        | FaustUiNode::VSlider {
+            label,
+            address,
+            meta,
+            ..
+        }
+        | FaustUiNode::NEntry {
+            label,
+            address,
+            meta,
+            ..
+        } => {
             let slider = sliders.get(address).cloned();
+            let default = defaults.get(address).copied();
+            let value = slider
+                .as_ref()
+                .map(|state| state.read(cx).value().start())
+                .or_else(|| params.get(address).copied());
+            let id = address_id(address);
             v_flex()
                 .gap_1()
                 .child(
                     h_flex()
                         .justify_between()
                         .child(div().text_xs().child(label.clone()))
-                        .child(div().text_xs().text_color(muted).child(format_param(value))),
+                        .child(resettable_value(
+                            id,
+                            format_param(value, meta_value(meta, "unit")),
+                            muted,
+                            slider.clone(),
+                            address.clone(),
+                            default,
+                            app.clone(),
+                        )),
                 )
                 .when_some(slider, |this, state| {
-                    this.child(Slider::new(&state).horizontal().w_full())
+                    this.child(resettable_slider(
+                        id,
+                        state,
+                        address.clone(),
+                        default,
+                        app.clone(),
+                    ))
                 })
                 .into_any_element()
         }
@@ -484,12 +536,7 @@ fn render_node(
         } => {
             let checked = params.get(address).copied().unwrap_or(*init) > 0.5;
             let address = address.clone();
-            let id = {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                address.hash(&mut hasher);
-                hasher.finish()
-            };
+            let id = address_id(&address);
             Checkbox::new(("monitor-param", id))
                 .label(label.clone())
                 .checked(checked)
@@ -507,6 +554,7 @@ fn render_node(
             address,
             min,
             max,
+            meta,
             ..
         }
         | FaustUiNode::VBargraph {
@@ -514,6 +562,7 @@ fn render_node(
             address,
             min,
             max,
+            meta,
             ..
         } => {
             let value = meters.get(address).copied().unwrap_or(*min);
@@ -529,7 +578,7 @@ fn render_node(
                             div()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(format!("{value:.1}")),
+                                .child(format_value_with_unit(value, 1, meta_value(meta, "unit"))),
                         ),
                 )
                 .child(
@@ -546,9 +595,122 @@ fn render_node(
     }
 }
 
-fn format_param(value: Option<f32>) -> String {
+fn format_param(value: Option<f32>, unit: Option<&str>) -> String {
     match value {
-        Some(value) => format!("{value:.2}"),
+        Some(value) => format_value_with_unit(value, 2, unit),
         None => "—".into(),
+    }
+}
+
+fn format_value_with_unit(value: f32, precision: usize, unit: Option<&str>) -> String {
+    let number = format!("{value:.precision$}");
+    match unit.map(str::trim).filter(|unit| !unit.is_empty()) {
+        Some("%") => format!("{number}%"),
+        Some(unit) => format!("{number} {unit}"),
+        None => number,
+    }
+}
+
+fn address_id(address: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    address.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn reset_slider(
+    state: &Entity<SliderState>,
+    address: &str,
+    default: f32,
+    app: &WeakEntity<AppView>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    state.update(cx, |state, cx| {
+        state.set_value(default, window, cx);
+    });
+    if let Some(app) = app.upgrade() {
+        app.update(cx, |this, _| {
+            this.set_monitor_param(address, default);
+        });
+    }
+}
+
+fn click_on_thumb(position: gpui::Point<gpui::Pixels>, state: &SliderState) -> bool {
+    let bounds = state.bounds();
+    if bounds.size.width <= px(0.) {
+        return false;
+    }
+    let t = state.percentage().end;
+    let x = bounds.left() + bounds.size.width * t;
+    let y = bounds.center().y;
+    (position.x - x).abs() <= px(12.) && (position.y - y).abs() <= px(12.)
+}
+
+fn resettable_value(
+    id: u64,
+    text: String,
+    muted: gpui::Hsla,
+    slider: Option<Entity<SliderState>>,
+    address: String,
+    default: Option<f32>,
+    app: WeakEntity<AppView>,
+) -> impl IntoElement {
+    div()
+        .id(("monitor-param-value", id))
+        .text_xs()
+        .text_color(muted)
+        .cursor_pointer()
+        .on_click(move |event: &ClickEvent, window, cx| {
+            if event.click_count() < 2 {
+                return;
+            }
+            let (Some(state), Some(default)) = (slider.as_ref(), default) else {
+                return;
+            };
+            reset_slider(state, &address, default, &app, window, cx);
+        })
+        .child(text)
+}
+
+fn resettable_slider(
+    id: u64,
+    state: Entity<SliderState>,
+    address: String,
+    default: Option<f32>,
+    app: WeakEntity<AppView>,
+) -> impl IntoElement {
+    let thumb_state = state.clone();
+    div()
+        .id(("monitor-param-slider", id))
+        .w_full()
+        .capture_any_mouse_down(move |event: &MouseDownEvent, window, cx| {
+            if event.button != MouseButton::Left || event.click_count < 2 {
+                return;
+            }
+            let Some(default) = default else {
+                return;
+            };
+            if !click_on_thumb(event.position, thumb_state.read(cx)) {
+                return;
+            }
+            reset_slider(&thumb_state, &address, default, &app, window, cx);
+            cx.stop_propagation();
+        })
+        .child(Slider::new(&state).horizontal().w_full())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_units_from_faust_meta() {
+        assert_eq!(format_value_with_unit(0.0, 2, Some("dB")), "0.00 dB");
+        assert_eq!(format_value_with_unit(700.0, 2, Some("Hz")), "700.00 Hz");
+        assert_eq!(format_value_with_unit(100.0, 2, Some("%")), "100.00%");
+        assert_eq!(format_value_with_unit(-12.5, 1, Some("dB")), "-12.5 dB");
+        assert_eq!(format_param(None, Some("dB")), "—");
+        assert_eq!(format_param(Some(1.5), None), "1.50");
     }
 }

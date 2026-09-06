@@ -81,8 +81,8 @@ impl UserData for LuaApp {
                 "saved" => host.on_saved(callback),
                 _ => {
                     return Err(mlua::Error::runtime(format!(
-                        "unknown event `{event}`; expected \"loaded\", \"detect_layout\", or \"saved\""
-                    )))
+                    "unknown event `{event}`; expected \"loaded\", \"detect_layout\", or \"saved\""
+                )))
                 }
             }
             Ok(())

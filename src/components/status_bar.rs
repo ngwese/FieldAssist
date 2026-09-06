@@ -11,13 +11,14 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     status_bar::StatusBar,
-    ActiveTheme as _, Icon, IconNamed, Sizable as _,
+    ActiveTheme as _, Icon, IconNamed, Selectable as _, Sizable as _,
 };
 
 use crate::model::composition::Composition;
 use crate::model::Buffer;
 
 const HEIGHT: gpui::Pixels = px(24.);
+const MONITOR_ICON_SIZE: gpui::Pixels = px(20.);
 
 pub struct FileStatus {
     pub sample_rate: u32,
@@ -71,6 +72,7 @@ pub struct FileStatusBar {
     progress_message: Option<String>,
     layout: Option<LayoutPicker>,
     on_monitor: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    monitor_selected: bool,
 }
 
 impl FileStatusBar {
@@ -80,6 +82,7 @@ impl FileStatusBar {
             progress_message: None,
             layout: None,
             on_monitor: None,
+            monitor_selected: false,
         }
     }
 
@@ -97,6 +100,11 @@ impl FileStatusBar {
         self.on_monitor = on_monitor;
         self
     }
+
+    pub fn with_monitor_selected(mut self, selected: bool) -> Self {
+        self.monitor_selected = selected;
+        self
+    }
 }
 
 impl RenderOnce for FileStatusBar {
@@ -107,6 +115,7 @@ impl RenderOnce for FileStatusBar {
             .h(HEIGHT)
             .min_h(HEIGHT)
             .max_h(HEIGHT)
+            .py_0()
             .text_xs();
         let has_file = self.file.is_some();
         if let Some(file) = self.file {
@@ -129,11 +138,11 @@ impl RenderOnce for FileStatusBar {
         }
         if self.on_monitor.is_some() || self.layout.is_some() {
             let muted = cx.theme().muted_foreground;
-            if let Some(on_monitor) = self.on_monitor {
-                bar = bar.right(monitor_button(on_monitor, muted));
-            }
             if let Some(layout) = self.layout {
                 bar = bar.right(layout_dropdown(layout, muted));
+            }
+            if let Some(on_monitor) = self.on_monitor {
+                bar = bar.right(monitor_button(on_monitor, muted, self.monitor_selected));
             }
         } else if self.progress_message.is_some() {
             bar = bar.right("");
@@ -150,13 +159,23 @@ impl IconNamed for MonitorSpeakerIcon {
     }
 }
 
-fn monitor_button(on_click: Rc<dyn Fn(&mut Window, &mut App)>, muted: Hsla) -> impl IntoElement {
+fn monitor_button(
+    on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+    muted: Hsla,
+    selected: bool,
+) -> impl IntoElement {
     Button::new("monitor-tab")
         .ghost()
-        .xsmall()
+        .size(MONITOR_ICON_SIZE)
+        .p_0()
         .text_color(muted)
-        .icon(Icon::new(MonitorSpeakerIcon))
-        .tooltip("Monitor")
+        .child(Icon::new(MonitorSpeakerIcon).with_size(MONITOR_ICON_SIZE))
+        .tooltip(if selected {
+            "Hide Monitor"
+        } else {
+            "Show Monitor"
+        })
+        .selected(selected)
         .on_click(move |_, window, cx| {
             (on_click)(window, cx);
         })

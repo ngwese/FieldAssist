@@ -4,8 +4,9 @@
 use gpui::{
     anchored, deferred, div, prelude::FluentBuilder as _, px, transparent_white, Action as _, App,
     AppContext as _, ClickEvent, Context, DismissEvent, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, OwnedMenu, OwnedMenuItem, ParentElement as _,
-    Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    InteractiveElement as _, IntoElement, MouseButton, OwnedMenu, OwnedMenuItem,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -273,12 +274,7 @@ fn append_muted_items(
                                 Kbd::binding_for_action_in(key_action.as_ref(), handle, window)
                             })
                             .or_else(|| Kbd::binding_for_action(key_action.as_ref(), None, window))
-                            .map(|kbd| {
-                                kbd.p_0()
-                                    .flex_nowrap()
-                                    .border_0()
-                                    .bg(transparent_white())
-                            });
+                            .map(|kbd| kbd.p_0().flex_nowrap().border_0().bg(transparent_white()));
                         h_flex()
                             .w_full()
                             .gap_3()

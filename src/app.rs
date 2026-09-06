@@ -262,8 +262,8 @@ impl AppView {
                 DockLayout::tabs()
                     .panel_view(markers_handle, cx)
                     .panel_view(regions_handle, cx)
-                    .panel_view(monitor_handle, cx)
-                    .panel_view(edits_handle, cx),
+                    .panel_view(edits_handle, cx)
+                    .panel_view(monitor_handle, cx),
                 window,
                 cx,
             );
@@ -758,6 +758,15 @@ impl AppView {
         self.dock_area.read(cx).is_dock_open(DockPlacement::Right)
     }
 
+    fn monitor_tab_visible(&self, cx: &App) -> bool {
+        if !self.detail_dock_open(cx) {
+            return false;
+        }
+        let panel_id = PanelId::from(self.monitor.entity_id());
+        Self::panel_tab_slot(&self.dock_area.read(cx), DockPlacement::Right, panel_id)
+            .is_some_and(|(_, ix, active_ix)| ix == active_ix)
+    }
+
     fn explorer_dock_open(&self, cx: &App) -> bool {
         self.dock_area.read(cx).is_dock_open(DockPlacement::Left)
     }
@@ -1063,6 +1072,14 @@ impl AppView {
         self.monitor.update(cx, |_, cx| cx.notify());
         self.update_window_title(window, cx);
         cx.notify();
+    }
+
+    fn toggle_monitor_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.monitor_tab_visible(cx) {
+            self.toggle_detail_dock(window, cx);
+            return;
+        }
+        self.show_monitor_tab(window, cx);
     }
 
     fn show_monitor_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2058,7 +2075,7 @@ impl Render for AppView {
             Rc::new(move |window: &mut Window, cx: &mut App| {
                 if let Some(app) = app.upgrade() {
                     app.update(cx, |this, cx| {
-                        this.show_monitor_tab(window, cx);
+                        this.toggle_monitor_tab(window, cx);
                     });
                 }
             }) as Rc<dyn Fn(&mut Window, &mut App)>
@@ -2106,6 +2123,10 @@ impl Render for AppView {
             "Show Detail"
         };
 
+        let content_foreground = cx
+            .try_global::<ContentForeground>()
+            .map(|color| color.0)
+            .unwrap_or(theme.foreground);
         div()
             .id("app-view")
             .key_context(self.app_key_context(window, cx))
@@ -2130,7 +2151,7 @@ impl Render for AppView {
                 v_flex()
                     .size_full()
                     .bg(theme.background)
-                    .text_color(theme.foreground)
+                    .text_color(content_foreground)
                     .child(
                         TitleBar::new().child(
                             h_flex()
@@ -2218,6 +2239,7 @@ impl Render for AppView {
                                         FileStatusBar::new(file_status)
                                             .with_progress_message(progress_message)
                                             .with_monitor(on_monitor)
+                                            .with_monitor_selected(self.monitor_tab_visible(cx))
                                             .with_layout(layout_picker),
                                     ),
                             )
@@ -2568,11 +2590,20 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     ]
 }
 
+struct ContentForeground(gpui::Hsla);
+
+impl Global for ContentForeground {}
+
 fn apply_muted_chrome(cx: &mut App) {
     let muted = Theme::global(cx).muted_foreground;
+    let content = Theme::global(cx).foreground;
+    cx.set_global(ContentForeground(content));
     let theme = Theme::global_mut(cx);
     theme.tab_foreground = muted;
     theme.tab_active_foreground = muted;
+    // Submenu titles use MenuItemElement's foreground; match the muted chrome
+    // used by custom-rendered menu items.
+    theme.foreground = muted;
     Theme::sync_base(cx);
 }
 
