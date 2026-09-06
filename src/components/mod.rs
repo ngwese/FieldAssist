@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+pub mod app_menu;
 pub mod dock_skin;
 pub mod edits;
 pub mod empty_pane;

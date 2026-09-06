@@ -1,8 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui::{px, App, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window};
-use gpui_component::status_bar::StatusBar;
+use std::rc::Rc;
+
+use gpui::{div, px, App, Hsla, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    status_bar::StatusBar,
+    ActiveTheme as _, Sizable as _,
+};
 
 use crate::model::composition::Composition;
 use crate::model::Buffer;
@@ -49,10 +56,17 @@ impl FileStatus {
     }
 }
 
+pub struct LayoutPicker {
+    pub current: Option<String>,
+    pub choices: Vec<(String, String)>,
+    pub on_choose: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+}
+
 #[derive(IntoElement)]
 pub struct FileStatusBar {
     file: Option<FileStatus>,
     progress_message: Option<String>,
+    layout: Option<LayoutPicker>,
 }
 
 impl FileStatusBar {
@@ -60,6 +74,7 @@ impl FileStatusBar {
         Self {
             file,
             progress_message: None,
+            layout: None,
         }
     }
 
@@ -67,10 +82,15 @@ impl FileStatusBar {
         self.progress_message = message;
         self
     }
+
+    pub fn with_layout(mut self, layout: Option<LayoutPicker>) -> Self {
+        self.layout = layout;
+        self
+    }
 }
 
 impl RenderOnce for FileStatusBar {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut bar = StatusBar::new()
             .w_full()
             .flex_none()
@@ -91,14 +111,60 @@ impl RenderOnce for FileStatusBar {
                         .unwrap_or_else(|| "—".into()),
                 );
         }
-        if let Some(message) = self.progress_message {
+        if let Some(message) = self.progress_message.as_ref() {
             if !has_file {
                 bar = bar.left("");
             }
-            bar = bar.child(message).right("");
+            bar = bar.child(message.clone());
+        }
+        if let Some(layout) = self.layout {
+            bar = bar.right(layout_dropdown(layout, cx.theme().muted_foreground));
+        } else if self.progress_message.is_some() {
+            bar = bar.right("");
         }
         bar
     }
+}
+
+fn layout_dropdown(picker: LayoutPicker, muted: Hsla) -> impl IntoElement {
+    let current = picker.current.clone();
+    let label = current.clone().unwrap_or_else(|| "—".into());
+    let tooltip = picker
+        .choices
+        .iter()
+        .find(|(name, _)| current.as_deref() == Some(name.as_str()))
+        .map(|(_, description)| description.clone())
+        .filter(|description| !description.is_empty())
+        .unwrap_or_else(|| "Channel layout".into());
+    let choices = picker.choices;
+    let on_choose = picker.on_choose;
+    Button::new("channel-layout")
+        .ghost()
+        .xsmall()
+        .text_xs()
+        .text_color(muted)
+        .label(label)
+        .tooltip(tooltip)
+        .dropdown_menu(
+            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+                for (name, _) in choices.clone() {
+                    let checked = current.as_deref() == Some(name.as_str());
+                    let on_choose = on_choose.clone();
+                    let chosen = name.clone();
+                    let item_label = name.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div().text_xs().text_color(muted).child(item_label.clone())
+                        })
+                        .checked(checked)
+                        .on_click(move |_, window, cx| {
+                            (on_choose)(&chosen, window, cx);
+                        }),
+                    );
+                }
+                menu
+            },
+        )
 }
 
 fn format_bit_depth(bits: Option<u32>) -> String {

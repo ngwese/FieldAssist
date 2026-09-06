@@ -5,12 +5,13 @@ mod access;
 mod app;
 mod composition;
 mod host;
+mod layout;
 mod marker;
 mod region;
 mod selection;
 
 pub use access::{enter, try_invoke_command};
-pub use host::{host_from_lua, with_document, EvalOutput, ScriptHost, TestWorld};
+pub use host::{host_from_lua, with_document, EvalOutput, ScriptHost, TestWorld, EMBEDDED_INIT};
 
 #[cfg(test)]
 mod tests {
@@ -175,5 +176,217 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(r#"app:command("edit.trim")"#);
         assert!(out.error.is_none(), "{:?}", out.error);
+    }
+
+    #[test]
+    fn define_layout_and_detect_hook() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:define_layout({
+              name = "stereo",
+              description = "Left / Right",
+              channels = { [0] = "L", [1] = "R" },
+              monitor = { kind = "passthrough" },
+            })
+            app:on("detect_layout", function(c)
+              if c.channels == 2 then return "stereo" end
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            host.layout("stereo").and_then(|layout| layout.monitor),
+            Some(serde_json::json!({ "kind": "passthrough" }))
+        );
+        let id = world.borrow().active.unwrap();
+        host.fire_detect_layout(id);
+        let (layout, label0, label1, chosen) = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            (
+                composition.channel_layout().map(str::to_string),
+                composition.channel_label(0),
+                composition.channel_label(1),
+                composition.chosen_channel_layout().map(str::to_string),
+            )
+        };
+        assert_eq!(layout.as_deref(), Some("stereo"));
+        assert_eq!(label0, "L");
+        assert_eq!(label1, "R");
+        assert!(chosen.is_none());
+    }
+
+    #[test]
+    fn detect_layout_preserves_chosen() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:define_layout({
+              name = "stereo",
+              description = "Left / Right",
+              channels = { [0] = "L", [1] = "R" },
+            })
+            app:define_layout({
+              name = "MS",
+              description = "Mid / Side",
+              channels = { [0] = "M", [1] = "S" },
+            })
+            app:on("detect_layout", function(c, chosen)
+              if chosen then return chosen end
+              return "stereo"
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let id = world.borrow().active.unwrap();
+        host.choose_layout(id, Some("MS")).expect("choose");
+        host.fire_detect_layout(id);
+        let (chosen, layout, label0) = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            (
+                composition.chosen_channel_layout().map(str::to_string),
+                composition.channel_layout().map(str::to_string),
+                composition.channel_label(0),
+            )
+        };
+        assert_eq!(chosen.as_deref(), Some("MS"));
+        assert_eq!(layout.as_deref(), Some("MS"));
+        assert_eq!(label0, "M");
+    }
+
+    #[test]
+    fn detect_layout_ignores_unknown_name() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:define_layout({
+              name = "stereo",
+              description = "Left / Right",
+              channels = { [0] = "L", [1] = "R" },
+            })
+            app:on("detect_layout", function()
+              return "not-a-layout"
+            end)
+            app:on("detect_layout", function()
+              return "stereo"
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let id = world.borrow().active.unwrap();
+        host.fire_detect_layout(id);
+        let prints = host.take_prints();
+        assert!(
+            prints.iter().any(|line| line.contains("unknown layout")),
+            "{prints:?}"
+        );
+        let layout = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            composition.channel_layout().map(str::to_string)
+        };
+        assert_eq!(layout.as_deref(), Some("stereo"));
+    }
+
+    #[test]
+    fn channel_layout_assign_is_user_explicit() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:define_layout({
+              name = "MS",
+              description = "Mid / Side",
+              channels = { [0] = "M", [1] = "S" },
+            })
+            app.active.channel_layout = "MS"
+            return app.active.channel_layout
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("MS"));
+        let id = world.borrow().active.unwrap();
+        let (chosen, label1) = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            (
+                composition.chosen_channel_layout().map(str::to_string),
+                composition.channel_label(1),
+            )
+        };
+        assert_eq!(chosen.as_deref(), Some("MS"));
+        assert_eq!(label1, "S");
+    }
+
+    #[test]
+    fn composition_exposes_media_metadata() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local c = app.active
+            return c.codec, c.bit_depth, c.basename, c.dirname, c.channels, c.sample_rate
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("pcm\t32\tnil\tnil\t2\t44100"));
+    }
+
+    #[test]
+    fn embedded_init_defines_default_layouts() {
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        assert_eq!(
+            host.layout_names(),
+            vec!["mono", "stereo", "MS", "1OA", "2OA"]
+        );
+        assert_eq!(
+            host.layout("stereo").map(|layout| layout.description),
+            Some("Left / Right".into())
+        );
+        let id = world.borrow().active.unwrap();
+        host.fire_detect_layout(id);
+        let layout = {
+            let world = world.borrow();
+            let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+            composition.channel_layout().map(str::to_string)
+        };
+        assert_eq!(layout.as_deref(), Some("stereo"));
+    }
+
+    #[test]
+    fn user_init_takes_precedence_over_embedded() {
+        let dir = std::env::temp_dir().join("fieldassist-init-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("init.lua");
+        std::fs::write(
+            &path,
+            r#"
+            app:define_layout({
+              name = "custom",
+              description = "User",
+              channels = { [0] = "A", [1] = "B" },
+            })
+            "#,
+        )
+        .expect("write init");
+        let (mut host, _) = test_host();
+        host.load_init_from(Some(&dir)).expect("user init");
+        assert_eq!(host.layout_names(), vec!["custom"]);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn unknown_event_is_an_error() {
+        let (mut host, _) = test_host();
+        let out = host.eval(r#"app:on("nope", function() end)"#);
+        assert!(
+            out.error
+                .as_deref()
+                .is_some_and(|err| err.contains("unknown event")),
+            "{:?}",
+            out.error
+        );
     }
 }

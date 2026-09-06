@@ -23,7 +23,6 @@ use gpui_component::{
         PaneRef, PanelId, PanelStyle,
     },
     h_flex,
-    menu::AppMenuBar,
     v_flex, ActiveTheme as _, Disableable as _, GlobalState, IconName, Root, Selectable as _,
     Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
 };
@@ -38,6 +37,7 @@ use crate::commands::{
     TransportPlayPause, TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer,
     ViewFitAll, ViewFrame, ViewScript, ViewZoomIn, ViewZoomOut,
 };
+use crate::components::app_menu::AppMenuBar;
 use crate::components::dock_skin::{CenterTabCloseHandler, CompactDockSkin};
 use crate::components::edits::EditsPanel;
 use crate::components::empty_pane::EmptyPane;
@@ -48,7 +48,7 @@ use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::regions::RegionsPanel;
 use crate::components::render_sheet::RenderSheet;
 use crate::components::repl::ReplPanel;
-use crate::components::status_bar::{FileStatus, FileStatusBar};
+use crate::components::status_bar::{FileStatus, FileStatusBar, LayoutPicker};
 use crate::components::waveform::{ToggleZeroCrossing, WaveformDisplay};
 use crate::components::workspace::WorkspacePanel;
 use crate::model::composition::{
@@ -293,6 +293,9 @@ impl AppView {
             add_marker_at_hover: true,
         };
         this.load_init_lua(window, cx);
+        if let Some(id) = this.session.active() {
+            this.fire_document_scripts(id, window, cx);
+        }
         this.refresh_explorer(cx);
         if let Some(id) = this.session.active() {
             this.spawn_peak_build(id, cx);
@@ -836,8 +839,14 @@ impl AppView {
         });
     }
 
-    fn fire_loaded_script(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
+    fn fire_document_scripts(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_detect_layout(id);
         self.script.fire_loaded(id);
         let prints = self.script.take_prints();
         if !prints.is_empty() {
@@ -850,6 +859,25 @@ impl AppView {
                 repl.append_output(&output, cx);
             });
         }
+        if let Some(views) = self.views.get(&id).cloned() {
+            views.document.update(cx, |_, cx| cx.notify());
+            views.waveform.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
+    }
+
+    fn choose_channel_layout(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.session.active() else {
+            return;
+        };
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.choose_layout(id, Some(name)) {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("channel layout: {err}"), cx);
+            });
+            return;
+        }
+        self.after_script_edit(id, window, cx);
     }
 
     pub(crate) fn session_active(&self) -> Option<DocumentId> {
@@ -1662,7 +1690,7 @@ impl AppView {
         let ids = std::mem::take(&mut self.pending_loaded_scripts);
         for id in ids {
             if self.views.contains_key(&id) {
-                self.fire_loaded_script(id, window, cx);
+                self.fire_document_scripts(id, window, cx);
             }
         }
     }
@@ -1772,6 +1800,30 @@ impl Render for AppView {
         let file_status = views
             .as_ref()
             .and_then(|views| FileStatus::from_composition(&views.composition.read().unwrap()));
+        let layout_picker = file_status.as_ref().map(|_| {
+            let current = views.as_ref().and_then(|views| {
+                views
+                    .composition
+                    .read()
+                    .unwrap()
+                    .channel_layout()
+                    .map(str::to_string)
+            });
+            let choices = self.script.layout_choices();
+            let app = cx.weak_entity();
+            LayoutPicker {
+                current,
+                choices,
+                on_choose: Rc::new(move |name, window, cx| {
+                    let name = name.to_string();
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |this, cx| {
+                            this.choose_channel_layout(&name, window, cx);
+                        });
+                    }
+                }),
+            }
+        });
         let progress_message = views.as_ref().and_then(|views| {
             views
                 .document
@@ -1925,7 +1977,8 @@ impl Render for AppView {
                                     )
                                     .child(
                                         FileStatusBar::new(file_status)
-                                            .with_progress_message(progress_message),
+                                            .with_progress_message(progress_message)
+                                            .with_layout(layout_picker),
                                     ),
                             )
                             .when(self.render_sheet_open, |this| {
@@ -2275,6 +2328,14 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     ]
 }
 
+fn apply_muted_chrome(cx: &mut App) {
+    let muted = Theme::global(cx).muted_foreground;
+    let theme = Theme::global_mut(cx);
+    theme.tab_foreground = muted;
+    theme.tab_active_foreground = muted;
+    Theme::sync_base(cx);
+}
+
 fn apply_app_menus(state: &AppMenuState, cx: &mut App) {
     cx.set_menus(app_menus(state));
     let owned = app_menus(state)
@@ -2413,6 +2474,7 @@ pub fn run(initial: Option<Composition>, device: Device) {
     app.run(move |cx| {
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
+        apply_muted_chrome(cx);
         install_app_menu(cx);
 
         let title = title.clone();

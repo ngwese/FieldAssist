@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -48,10 +49,14 @@ pub struct Composition {
     marker_types: Vec<MarkerType>,
     collections: Vec<RegionCollection>,
     next_region_id: u64,
+    channel_layout: Option<String>,
+    chosen_channel_layout: Option<String>,
+    channel_labels: BTreeMap<usize, String>,
     clean_edit_id: EditId,
     clean_markers: Vec<Marker>,
     clean_marker_types: Vec<MarkerType>,
     clean_collections: Vec<RegionCollection>,
+    clean_chosen_channel_layout: Option<String>,
 }
 
 impl Composition {
@@ -75,10 +80,14 @@ impl Composition {
             marker_types: MarkerType::defaults(),
             collections: Vec::new(),
             next_region_id: 1,
+            channel_layout: None,
+            chosen_channel_layout: None,
+            channel_labels: BTreeMap::new(),
             clean_edit_id: EditId(0),
             clean_markers: Vec::new(),
             clean_marker_types: Vec::new(),
             clean_collections: Vec::new(),
+            clean_chosen_channel_layout: None,
         };
         composition.mark_clean();
         composition
@@ -120,10 +129,14 @@ impl Composition {
             marker_types: MarkerType::defaults(),
             collections: Vec::new(),
             next_region_id: 1,
+            channel_layout: None,
+            chosen_channel_layout: None,
+            channel_labels: BTreeMap::new(),
             clean_edit_id: EditId(0),
             clean_markers: Vec::new(),
             clean_marker_types: Vec::new(),
             clean_collections: Vec::new(),
+            clean_chosen_channel_layout: None,
         };
         let peaked = composed
             .pool
@@ -229,6 +242,7 @@ impl Composition {
             || self.markers.to_vec() != self.clean_markers
             || self.marker_types != self.clean_marker_types
             || self.collections != self.clean_collections
+            || self.chosen_channel_layout != self.clean_chosen_channel_layout
     }
 
     fn mark_clean(&mut self) {
@@ -236,6 +250,7 @@ impl Composition {
         self.clean_markers = self.markers.to_vec();
         self.clean_marker_types = self.marker_types.clone();
         self.clean_collections = self.collections.clone();
+        self.clean_chosen_channel_layout = self.chosen_channel_layout.clone();
     }
 
     pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
@@ -422,6 +437,39 @@ impl Composition {
 
     pub fn pool(&self) -> &MediaPool {
         &self.pool
+    }
+
+    pub fn channel_layout(&self) -> Option<&str> {
+        self.channel_layout.as_deref()
+    }
+
+    pub fn chosen_channel_layout(&self) -> Option<&str> {
+        self.chosen_channel_layout.as_deref()
+    }
+
+    pub fn channel_label(&self, channel: usize) -> String {
+        self.channel_labels
+            .get(&channel)
+            .cloned()
+            .unwrap_or_else(|| format!("Ch {}", channel + 1))
+    }
+
+    pub fn apply_channel_layout(&mut self, name: Option<String>, labels: BTreeMap<usize, String>) {
+        self.channel_layout = name;
+        self.channel_labels = labels;
+    }
+
+    pub fn choose_channel_layout(&mut self, name: Option<String>, labels: BTreeMap<usize, String>) {
+        self.chosen_channel_layout = name.clone();
+        self.apply_channel_layout(name, labels);
+    }
+
+    pub fn codec(&self) -> Option<&str> {
+        self.pool.first().map(|media| media.codec.as_str())
+    }
+
+    pub fn bit_depth(&self) -> Option<u32> {
+        self.pool.first().and_then(|media| media.bits_per_sample)
     }
 
     pub fn clipboard(&self) -> &Clipboard {
@@ -1306,6 +1354,7 @@ impl Composition {
             markers: self.markers.iter().map(StoredMarker::from).collect(),
             marker_types: self.marker_types.clone(),
             collections: self.collections.clone(),
+            channel_layout: self.chosen_channel_layout.clone(),
         }
     }
 
@@ -1363,6 +1412,7 @@ impl Composition {
             .filter(|col| col.name != SELECTION_COLLECTION && !col.name.is_empty())
             .collect();
         composition.bump_next_region_id_from_collections();
+        composition.chosen_channel_layout = file.channel_layout;
         composition.mark_clean();
         Ok(composition)
     }
@@ -2062,6 +2112,7 @@ mod tests {
             markers: Vec::new(),
             marker_types: Vec::new(),
             collections: Vec::new(),
+            channel_layout: None,
         };
         let json = ProjectEnvelope::wrap(file).to_json().unwrap();
         let (comp, warnings) = Composition::from_json_reprobing(&json).unwrap();
@@ -2252,6 +2303,33 @@ mod tests {
         assert_eq!(silent.regions[0].label.as_deref(), Some("gap"));
         assert_eq!(silent.regions[0].start, 2);
         assert_eq!(silent.regions[0].end, 5);
+    }
+
+    #[test]
+    fn project_json_round_trip_keeps_chosen_channel_layout() {
+        use std::collections::BTreeMap;
+
+        let mut comp = Composition::from_media(sine_media(12, 2, 44100)).unwrap();
+        let mut labels = BTreeMap::new();
+        labels.insert(0, "M".into());
+        labels.insert(1, "S".into());
+        comp.choose_channel_layout(Some("MS".into()), labels);
+        assert!(comp.is_modified());
+        let json = comp.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["channel_layout"], "MS");
+        let restored = Composition::from_json(&json).unwrap();
+        assert_eq!(restored.chosen_channel_layout(), Some("MS"));
+        assert!(restored.channel_layout().is_none());
+        assert!(!restored.is_modified());
+    }
+
+    #[test]
+    fn project_json_omits_unset_channel_layout() {
+        let comp = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
+        let json = comp.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("channel_layout").is_none());
     }
 
     #[test]

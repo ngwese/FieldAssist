@@ -165,6 +165,8 @@ pub struct ProjectFile {
     pub marker_types: Vec<MarkerType>,
     #[serde(default)]
     pub collections: Vec<RegionCollection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_layout: Option<String>,
 }
 
 pub const FACOMP_KIND: &str = "facomp";

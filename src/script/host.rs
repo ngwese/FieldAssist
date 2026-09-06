@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
@@ -17,6 +18,9 @@ use crate::session::DocumentId;
 use super::access;
 use super::app::bind_app;
 use super::composition::LuaComposition;
+use super::layout::ChannelLayoutDef;
+
+pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
 
 #[derive(Clone, Debug)]
 pub struct EvalOutput {
@@ -28,6 +32,8 @@ pub struct EvalOutput {
 struct HostInner {
     prints: Vec<String>,
     loaded: Vec<Function>,
+    detect_layout: Vec<Function>,
+    layouts: Vec<ChannelLayoutDef>,
     test: Option<Rc<RefCell<TestWorld>>>,
 }
 
@@ -95,6 +101,8 @@ impl ScriptHost {
             inner: Rc::new(RefCell::new(HostInner {
                 prints: Vec::new(),
                 loaded: Vec::new(),
+                detect_layout: Vec::new(),
+                layouts: Vec::new(),
                 test,
             })),
         };
@@ -123,15 +131,20 @@ impl ScriptHost {
     }
 
     pub fn load_init(&mut self) -> Result<(), String> {
-        let Some(dir) = crate::commands::user_config_dir() else {
-            return Ok(());
-        };
-        let path = dir.join("init.lua");
-        if !path.is_file() {
-            return Ok(());
+        self.load_init_from(crate::commands::user_config_dir().as_deref())
+    }
+
+    pub fn load_init_from(&mut self, config_dir: Option<&Path>) -> Result<(), String> {
+        if let Some(path) = user_init_path(config_dir) {
+            return self
+                .lua
+                .load(path.as_path())
+                .exec()
+                .map_err(|err| format!("init.lua: {err}"));
         }
         self.lua
-            .load(path)
+            .load(EMBEDDED_INIT)
+            .set_name("@<embedded>/init.lua")
             .exec()
             .map_err(|err| format!("init.lua: {err}"))
     }
@@ -148,6 +161,26 @@ impl ScriptHost {
                     .push(format!("loaded hook error: {err}"));
             }
         }
+    }
+
+    pub fn fire_detect_layout(&self, id: DocumentId) {
+        self.handle.fire_detect_layout(id);
+    }
+
+    pub fn layout_names(&self) -> Vec<String> {
+        self.handle.layout_names()
+    }
+
+    pub fn layout_choices(&self) -> Vec<(String, String)> {
+        self.handle.layout_choices()
+    }
+
+    pub fn layout(&self, name: &str) -> Option<super::layout::ChannelLayoutDef> {
+        self.handle.layout(name)
+    }
+
+    pub fn choose_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
+        self.handle.choose_layout(id, name)
     }
 
     pub fn take_prints(&self) -> Vec<String> {
@@ -215,6 +248,149 @@ impl HostHandle {
         self.inner.borrow_mut().loaded.push(callback);
     }
 
+    pub fn on_detect_layout(&self, callback: Function) {
+        self.inner.borrow_mut().detect_layout.push(callback);
+    }
+
+    pub fn define_layout(&self, layout: ChannelLayoutDef) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(existing) = inner
+            .layouts
+            .iter_mut()
+            .find(|defined| defined.name == layout.name)
+        {
+            *existing = layout;
+        } else {
+            inner.layouts.push(layout);
+        }
+    }
+
+    pub fn layout(&self, name: &str) -> Option<ChannelLayoutDef> {
+        self.inner
+            .borrow()
+            .layouts
+            .iter()
+            .find(|layout| layout.name == name)
+            .cloned()
+    }
+
+    pub fn layout_names(&self) -> Vec<String> {
+        self.inner
+            .borrow()
+            .layouts
+            .iter()
+            .map(|layout| layout.name.clone())
+            .collect()
+    }
+
+    pub fn layout_choices(&self) -> Vec<(String, String)> {
+        self.inner
+            .borrow()
+            .layouts
+            .iter()
+            .map(|layout| (layout.name.clone(), layout.description.clone()))
+            .collect()
+    }
+
+    pub fn apply_effective_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
+        let labels = match name {
+            Some(name) => self
+                .layout(name)
+                .map(|layout| layout.channels)
+                .unwrap_or_default(),
+            None => BTreeMap::new(),
+        };
+        self.with_document(id, |doc| {
+            doc.composition
+                .write()
+                .unwrap()
+                .apply_channel_layout(name.map(str::to_string), labels);
+            Ok(())
+        })
+    }
+
+    pub fn choose_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
+        let labels = match name {
+            Some(name) => {
+                let layout = self.layout(name).ok_or_else(|| {
+                    mlua::Error::runtime(format!("unknown channel layout `{name}`"))
+                })?;
+                layout.channels
+            }
+            None => BTreeMap::new(),
+        };
+        self.with_document(id, |doc| {
+            doc.composition
+                .write()
+                .unwrap()
+                .choose_channel_layout(name.map(str::to_string), labels);
+            Ok(())
+        })
+    }
+
+    pub fn fire_detect_layout(&self, id: DocumentId) {
+        let chosen = self
+            .with_document(id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .chosen_channel_layout()
+                    .map(str::to_string))
+            })
+            .ok()
+            .flatten();
+        let hooks = self.inner.borrow().detect_layout.clone();
+        let handle = LuaComposition { id };
+        let mut last = None;
+        for hook in hooks {
+            match hook.call::<Option<String>>((handle, chosen.clone())) {
+                Ok(Some(name)) => {
+                    if self.layout(&name).is_some() {
+                        last = Some(name);
+                    } else {
+                        self.inner
+                            .borrow_mut()
+                            .prints
+                            .push(format!("detect_layout hook error: unknown layout `{name}`"));
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    self.inner
+                        .borrow_mut()
+                        .prints
+                        .push(format!("detect_layout hook error: {err}"));
+                }
+            }
+        }
+        if let Err(err) = self.apply_effective_layout(id, last.as_deref()) {
+            self.inner
+                .borrow_mut()
+                .prints
+                .push(format!("detect_layout hook error: {err}"));
+        }
+    }
+
+    pub fn file_backed_path(&self, id: DocumentId) -> Option<PathBuf> {
+        let media = self
+            .with_document(id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .pool()
+                    .first()
+                    .map(|media| media.path.clone()))
+            })
+            .ok()
+            .flatten();
+        if let Some(path) = media.filter(|path| is_file_backed(path)) {
+            return Some(path);
+        }
+        self.path(id).filter(|path| is_file_backed(path))
+    }
+
     pub fn after_edit(&self, id: DocumentId) -> mlua::Result<()> {
         if self.inner.borrow().test.is_some() {
             return Ok(());
@@ -278,6 +454,15 @@ fn eval_repl(lua: &Lua, code: &str) -> mlua::Result<MultiValue> {
         Ok(values) => Ok(values),
         Err(_) => lua.load(trimmed).set_name("=repl").eval::<MultiValue>(),
     }
+}
+
+pub fn user_init_path(config_dir: Option<&Path>) -> Option<PathBuf> {
+    let path = config_dir?.join("init.lua");
+    path.is_file().then_some(path)
+}
+
+fn is_file_backed(path: &Path) -> bool {
+    !path.to_string_lossy().starts_with("memory:")
 }
 
 fn stringify_values(lua: &Lua, values: MultiValue) -> Option<String> {

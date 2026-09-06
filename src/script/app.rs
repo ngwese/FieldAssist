@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use mlua::{Function, UserData, UserDataFields, UserDataMethods};
+use mlua::{Function, Table, UserData, UserDataFields, UserDataMethods};
 
 use super::composition::LuaComposition;
 use super::host_from_lua;
+use super::layout::layout_from_lua;
 
 pub struct LuaApp;
 
@@ -40,13 +41,22 @@ impl UserData for LuaApp {
                 .exec()
                 .map_err(mlua::Error::runtime)
         });
+        methods.add_method("define_layout", |lua, _, spec: Table| {
+            let layout = layout_from_lua(spec)?;
+            host_from_lua(lua)?.define_layout(layout);
+            Ok(())
+        });
         methods.add_method("on", |lua, _, (event, callback): (String, Function)| {
-            if event != "loaded" {
-                return Err(mlua::Error::runtime(format!(
-                    "unknown event `{event}`; only \"loaded\" is supported"
-                )));
+            let host = host_from_lua(lua)?;
+            match event.as_str() {
+                "loaded" => host.on_loaded(callback),
+                "detect_layout" => host.on_detect_layout(callback),
+                _ => {
+                    return Err(mlua::Error::runtime(format!(
+                        "unknown event `{event}`; expected \"loaded\" or \"detect_layout\""
+                    )))
+                }
             }
-            host_from_lua(lua)?.on_loaded(callback);
             Ok(())
         });
     }

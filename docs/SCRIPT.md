@@ -1,14 +1,20 @@
 # Scripting
 
 FieldAssist embeds Lua 5.4. Scripts run in the **Script** panel (View → Show Script)
-and from `init.lua` in the app config directory:
+and from `init.lua`.
+
+A default `init.lua` is baked into the executable. Dump it with
+`FieldAssist --dump-init`. If a user file exists in the app config directory, that
+file is loaded **instead** of the embedded default:
 
 - macOS: `~/Library/Application Support/snd-review/init.lua`
 - Windows: `%APPDATA%\snd-review\init.lua`
 - Linux: `$XDG_CONFIG_HOME/snd-review/init.lua` (or `~/.config/snd-review/init.lua`)
 
-`init.lua` is loaded once at startup. Use `app:on("loaded", function(c) ... end)`
-there to run code whenever a composition is opened.
+`init.lua` is loaded once at startup. Register `loaded` and `detect_layout`
+hooks there. The status bar (right side) shows the effective channel layout
+and lets you pick one of the defined layouts; a pick is saved on the
+composition.
 
 `print(...)` writes to the Script panel. Standard Lua libraries are available.
 
@@ -36,12 +42,31 @@ app:dofile("extra.lua")       -- execute a Lua file
 app:on("loaded", function(c)  -- c is the composition that just loaded
   print("opened", c.name)
 end)
+app:define_layout({
+  name = "stereo",
+  description = "Left / Right",
+  channels = { [0] = "L", [1] = "R" },
+  -- monitor = { ... },  -- optional; stored, not applied yet
+})
+app:on("detect_layout", function(c, chosen)
+  if chosen then
+    return chosen
+  end
+  if c.channels == 1 then return "mono" end
+end)
 ```
 
 `app:command` uses the same ids as the keymap (`file.open`, `transport.play_pause`,
 `selection.add_marker`, …). Unknown ids are an error. See [Commands](#commands).
 
-The only event name `app:on` accepts is `"loaded"`.
+`app:on` accepts `"loaded"` and `"detect_layout"`. `detect_layout` is
+`function(c, chosen)` where `chosen` is the persisted user-explicit layout name
+or `nil`. Return a defined layout name, or `nil` if it cannot be inferred.
+Hooks run in registration order; the last non-nil valid name wins.
+
+`define_layout` registers (or replaces) a named layout. Channel keys are
+0-based. The default embedded script defines `mono`, `stereo`, `MS`, `1OA`,
+and `2OA`.
 
 ## Composition
 
@@ -57,6 +82,11 @@ markers, regions, and selection live on this object.
 | `frames` | integer | Timeline length in samples. |
 | `sample_rate` | integer | Hz. |
 | `channels` | integer | Channel count. |
+| `codec` | string or nil | First media codec, if any. |
+| `bit_depth` | integer or nil | First media bit depth, if known. |
+| `basename` | string or nil | File name when the source is file-backed. |
+| `dirname` | string or nil | Parent directory when the source is file-backed. |
+| `channel_layout` | string or nil | Effective layout name. Assign a defined name to choose it (saved); assign `nil` to clear. |
 | `duration` | number | Length in seconds. |
 | `position` | integer or nil | Playhead / caret sample. Assignable. |
 | `selection` | Collection | Session selection collection. Assign `nil` to clear. |

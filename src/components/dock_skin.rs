@@ -134,8 +134,7 @@ impl CompactTabGroup {
     ) -> AnyElement {
         let active_id = group.active_panel().map(|panel| panel.panel_id(cx));
         let muted = cx.theme().muted_foreground;
-        let active = cx.theme().foreground;
-        let selected_bg = active.opacity(0.05);
+        let selected_bg = cx.theme().foreground.opacity(0.05);
         let radius = cx.theme().radius;
         let visible: Vec<usize> = group
             .panels()
@@ -161,10 +160,8 @@ impl CompactTabGroup {
                     .rounded(radius)
                     .cursor_pointer()
                     .text_sm()
-                    .when(selected, |this| this.text_color(active).bg(selected_bg))
-                    .when(!selected, |this| {
-                        this.text_color(muted).hover(|this| this.text_color(active))
-                    })
+                    .text_color(muted)
+                    .when(selected, |this| this.bg(selected_bg))
                     .on_click(move |_, window, cx| {
                         group.select_tab(ix, window, cx);
                     })
@@ -212,6 +209,7 @@ impl TabGroupRenderer for CompactTabGroup {
             return self.render_side_tab_bar(group, window, cx);
         }
 
+        let muted = cx.theme().muted_foreground;
         let active_id = group.active_panel().map(|panel| panel.panel_id(cx));
         let visible: Vec<usize> = group
             .panels()
@@ -236,7 +234,11 @@ impl TabGroupRenderer for CompactTabGroup {
             let group_for_close = group.clone();
             let mut tab = Tab::new()
                 .small()
-                .child(Self::panel_title(panel, window, cx))
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(Self::panel_title(panel, window, cx)),
+                )
                 .selected(selected)
                 .on_click(move |_, window, cx| {
                     group_for_select.select_tab(ix, window, cx);

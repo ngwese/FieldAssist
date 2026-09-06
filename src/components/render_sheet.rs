@@ -81,7 +81,7 @@ impl RenderSheet {
         self.sample_rate = composition.sample_rate().max(1);
         let count = composition.channel_count().max(1);
         self.channels_selected = vec![true; count];
-        self.channel_labels = (0..count).map(|ch| channel_label(count, ch)).collect();
+        self.channel_labels = (0..count).map(|ch| composition.channel_label(ch)).collect();
         let filename = format!("{}.{}", composition.display_name(), encoder.extension());
         self.directory.update(cx, |input, cx| {
             input.set_value(directory.to_string_lossy().into_owned(), window, cx);
@@ -465,13 +465,4 @@ fn rate_choices(current: u32) -> Vec<u32> {
         rates.sort_unstable();
     }
     rates
-}
-
-fn channel_label(count: usize, channel: usize) -> String {
-    match (count, channel) {
-        (1, 0) => "Mono".into(),
-        (2, 0) => "L".into(),
-        (2, 1) => "R".into(),
-        _ => format!("Ch {}", channel + 1),
-    }
 }

@@ -37,6 +37,10 @@ struct Args {
     #[arg(long)]
     list_devices: bool,
 
+    /// Print the embedded init.lua to stdout and exit
+    #[arg(long)]
+    dump_init: bool,
+
     /// Output device name or index (default: system default)
     #[arg(long, id = "output")]
     output_device: Option<String>,
@@ -50,6 +54,11 @@ fn main() -> Result<()> {
 
     if args.list_devices {
         playback::print_output_devices()?;
+        return Ok(());
+    }
+
+    if args.dump_init {
+        print!("{}", script::EMBEDDED_INIT);
         return Ok(());
     }
 

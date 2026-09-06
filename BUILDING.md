@@ -14,6 +14,7 @@ cargo build --release
 cargo run --release
 cargo run --release -- path/to/audio.wav
 cargo run --release -- --list-devices
+cargo run --release -- --dump-init
 ```
 
 ## App icon
@@ -81,6 +82,7 @@ a console:
 ```powershell
 .\target\release\FieldAssist.exe
 .\target\release\FieldAssist.exe --help
+.\target\release\FieldAssist.exe --dump-init
 .\target\release\FieldAssist.exe path\to\audio.wav
 ```
 

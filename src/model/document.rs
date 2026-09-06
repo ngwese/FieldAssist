@@ -776,12 +776,7 @@ impl WaveformDataProvider for BufferDocument {
     }
 
     fn channel_label(&self, channel: usize) -> String {
-        match (self.composition.read().unwrap().channel_count(), channel) {
-            (1, 0) => "Mono".into(),
-            (2, 0) => "L".into(),
-            (2, 1) => "R".into(),
-            _ => format!("Ch {}", channel + 1),
-        }
+        self.composition.read().unwrap().channel_label(channel)
     }
 
     fn read_channel(&self, channel: usize, start: usize, dest: &mut [f32]) {

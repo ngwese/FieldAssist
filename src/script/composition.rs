@@ -51,6 +51,62 @@ impl UserData for LuaComposition {
                 Ok(doc.composition.read().unwrap().channel_count() as i64)
             })
         });
+        fields.add_field_method_get("codec", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc.composition.read().unwrap().codec().map(str::to_string))
+            })
+        });
+        fields.add_field_method_get("bit_depth", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .bit_depth()
+                    .map(|bits| bits as i64))
+            })
+        });
+        fields.add_field_method_get("basename", |lua, this| {
+            let host = host_from_lua(lua)?;
+            Ok(host.file_backed_path(this.id).and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            }))
+        });
+        fields.add_field_method_get("dirname", |lua, this| {
+            let host = host_from_lua(lua)?;
+            Ok(host.file_backed_path(this.id).and_then(|path| {
+                path.parent()
+                    .map(|parent| parent.to_string_lossy().into_owned())
+            }))
+        });
+        fields.add_field_method_get("channel_layout", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .channel_layout()
+                    .map(str::to_string))
+            })
+        });
+        fields.add_field_method_set("channel_layout", |lua, this, value: Value| {
+            let host = host_from_lua(lua)?;
+            match value {
+                Value::Nil => host.choose_layout(this.id, None)?,
+                Value::String(name) => {
+                    let name = name.to_str()?.to_owned();
+                    host.choose_layout(this.id, Some(&name))?;
+                }
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "channel_layout must be a string or nil, got {}",
+                        other.type_name()
+                    )))
+                }
+            }
+            after_edit(lua, this.id)
+        });
         fields.add_field_method_get("duration", |lua, this| {
             with_document(lua, this.id, |doc| {
                 Ok(doc.composition.read().unwrap().duration_secs())
