@@ -3,7 +3,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    actions, canvas, div, fill, hsla, point, px, relative, size, App, Bounds, Context,
+    actions, canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context,
     DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
     Pixels, Render, Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
@@ -1243,8 +1243,8 @@ impl Render for WaveformDisplay {
                                             .w(px(48.))
                                             .flex_none()
                                             .h_full()
-                                            .items_center()
-                                            .justify_center()
+                                            .pt(rems(0.5))
+                                            .pl(rems(0.5))
                                             .border_r_1()
                                             .border_color(theme.border)
                                             .text_xs()
