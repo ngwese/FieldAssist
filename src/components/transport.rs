@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use gpui::{
-    px, Action, App, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    px, Action, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
     SharedString, Styled as _, Window,
 };
 use gpui_component::{
@@ -63,6 +63,7 @@ impl RenderOnce for Transport {
         };
         let play_pause_label = if playing { "Pause" } else { "Play" };
         let loop_label = if self.looping { "Loop On" } else { "Loop Off" };
+        let muted = theme.muted_foreground;
 
         h_flex()
             .id("transport-bar")
@@ -85,41 +86,46 @@ impl RenderOnce for Transport {
                         TransportIcon::ChevronsLeft,
                         "Home",
                         TransportHome,
+                        muted,
                     ))
                     .child(transport_button(
                         "transport-prev",
                         TransportIcon::SkipBack,
                         "Previous",
                         TransportPrevious,
+                        muted,
                     ))
                     .child(transport_button(
                         "transport-play-pause",
                         play_pause_icon,
                         play_pause_label,
                         TransportPlayPause,
+                        muted,
                     ))
                     .child(transport_button(
                         "transport-next",
                         TransportIcon::SkipForward,
                         "Next",
                         TransportNext,
+                        muted,
                     ))
                     .child(transport_button(
                         "transport-end",
                         TransportIcon::ChevronsRight,
                         "End",
                         TransportEnd,
+                        muted,
                     ))
                     .child({
-                        let loop_color = if self.looping {
-                            theme.cyan
-                        } else {
-                            theme.secondary_foreground
-                        };
-                        let loop_icon = Icon::new(TransportIcon::Repeat).text_color(loop_color);
-                        transport_button("transport-loop", loop_icon, loop_label, TransportLoop)
-                            .toggled(self.looping)
-                            .text_color(loop_color)
+                        let loop_color = if self.looping { theme.cyan } else { muted };
+                        transport_button(
+                            "transport-loop",
+                            TransportIcon::Repeat,
+                            loop_label,
+                            TransportLoop,
+                            loop_color,
+                        )
+                        .toggled(self.looping)
                     }),
             )
     }
@@ -130,11 +136,13 @@ fn transport_button(
     icon: impl Into<Icon>,
     label: &'static str,
     action: impl Action + Clone,
+    color: Hsla,
 ) -> Button {
     Button::new(id)
         .ghost()
         .with_size(CONTROL_SIZE)
-        .icon(icon)
+        .text_color(color)
+        .icon(Icon::new(icon).text_color(color))
         .tooltip_with_action(label, &action, None)
         .accessibility_label(label)
         .on_click(move |_, window, cx| {
