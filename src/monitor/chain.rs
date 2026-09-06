@@ -9,10 +9,11 @@ pub enum MonitorChain {
     Stereo,
     Ms,
     Foa,
+    FoaFuma,
 }
 
 impl MonitorChain {
-    pub const ALL: [Self; 4] = [Self::Mono, Self::Stereo, Self::Ms, Self::Foa];
+    pub const ALL: [Self; 5] = [Self::Mono, Self::Stereo, Self::Ms, Self::Foa, Self::FoaFuma];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -20,6 +21,7 @@ impl MonitorChain {
             Self::Stereo => "stereo",
             Self::Ms => "ms",
             Self::Foa => "foa",
+            Self::FoaFuma => "foa_fuma",
         }
     }
 
@@ -28,7 +30,8 @@ impl MonitorChain {
             Self::Mono => "Mono",
             Self::Stereo => "Stereo",
             Self::Ms => "M/S",
-            Self::Foa => "1OA",
+            Self::Foa => "B-Format (AmbiX)",
+            Self::FoaFuma => "B-Format (FuMa)",
         }
     }
 
@@ -38,6 +41,7 @@ impl MonitorChain {
             "stereo" => Some(Self::Stereo),
             "ms" => Some(Self::Ms),
             "foa" => Some(Self::Foa),
+            "foa_fuma" => Some(Self::FoaFuma),
             _ => None,
         }
     }
@@ -46,7 +50,7 @@ impl MonitorChain {
         match self {
             Self::Mono => 1,
             Self::Stereo | Self::Ms => 2,
-            Self::Foa => 4,
+            Self::Foa | Self::FoaFuma => 4,
         }
     }
 

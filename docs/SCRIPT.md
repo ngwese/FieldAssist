@@ -77,12 +77,27 @@ or `nil`. Return a defined layout name, or `nil` if it cannot be inferred.
 Hooks run in registration order; the last non-nil valid name wins.
 
 `define_layout` registers (or replaces) a named layout. Channel keys are
-0-based. The default embedded script defines `mono`, `stereo`, `MS`, `1OA`,
-and `2OA`. Optional `monitor = { chain = "stereo" }` (or `"mono"` / `"ms"` /
-`"foa"`) is the default Monitor-tab DSP when that layout is chosen. Detecting
-a layout only fills `c.monitor_chain` when it is still unset. An explicit
-Monitor-tab or script assignment is saved on the `.facomp` and wins on reload.
-Changing layout does not clear a custom `playback_channels` subset.
+0-based. The default embedded script defines `mono`, `stereo`, `MS`,
+`B-Format (AmbiX)`, `B-Format (FuMa)`, and `2OA`. Optional
+`monitor = { chain = "stereo" }` (or `"mono"` / `"ms"` / `"foa"` /
+`"foa_fuma"`) is the default Monitor-tab DSP when that layout is chosen.
+Detecting a layout only fills `c.monitor_chain` when it is still unset. An
+explicit Monitor-tab or script assignment is saved on the `.facomp` and wins
+on reload. Changing layout does not clear a custom `playback_channels` subset.
+
+After honoring a persisted `chosen` name (`"1OA"` is remapped to
+`B-Format (AmbiX)`), detection uses the file `basename` (including
+extension) and channel count:
+
+1. `n >= 4` and basename contains `"fuma"` (case-insensitive) →
+   `B-Format (FuMa)`
+2. Else `n >= 4` and basename contains `"ambix"` → `B-Format (AmbiX)`
+3. Else count fallbacks: `1 → mono`, `2 → stereo`, `4 → B-Format (AmbiX)`,
+   `9 → 2OA`
+
+If both keywords appear, FuMa wins. A file with more than four channels and
+an Ambix/FuMa name still gets the four-channel B-format layout; extra
+channels are unlabeled.
 
 ## Composition
 
@@ -103,7 +118,7 @@ markers, regions, and selection live on this object.
 | `basename` | string or nil | File name when the source is file-backed. |
 | `dirname` | string or nil | Parent directory when the source is file-backed. |
 | `channel_layout` | string or nil | Effective layout name. Assign a defined name to choose it (saved); assign `nil` to clear. |
-| `monitor_chain` | string or nil | Monitor DSP id: `"mono"`, `"stereo"`, `"ms"`, or `"foa"`. Saved on the composition. Assign `nil` for 1:1 device mapping. |
+| `monitor_chain` | string or nil | Monitor DSP id: `"mono"`, `"stereo"`, `"ms"`, `"foa"`, or `"foa_fuma"`. Saved on the composition. Assign `nil` for 1:1 device mapping. |
 | `playback_channels` | array, `"all"`, or nil | 0-based composition channels fed to the monitor DSP, in file order. `nil` or `"all"` means every channel (the default). Extra channels are unused; missing DSP inputs are silence. |
 | `duration` | number | Length in seconds. |
 | `position` | integer or nil | Playhead / caret sample. Assignable. |

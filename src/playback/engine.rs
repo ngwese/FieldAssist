@@ -492,4 +492,24 @@ mod tests {
         assert!((out[0] - 0.4).abs() < 0.05, "{}", out[0]);
         assert!((out[1] + 0.6).abs() < 0.05, "{}", out[1]);
     }
+
+    #[test]
+    fn six_channel_file_routes_foa_fuma_subset() {
+        let mut channels = vec![vec![0.0f32; 40]; 6];
+        for i in 0..40 {
+            channels[0][i] = 1.0 / 2.0f32.sqrt();
+        }
+        let audio = DecodedAudio {
+            sample_rate: 44100,
+            channels,
+            peaks: vec![vec![]; 6],
+        };
+        let shared = PlaybackShared::with_output_layout(Arc::new(audio), 44100, 2);
+        shared.set_monitor(Some(MonitorChain::FoaFuma), Some(vec![0, 1, 2, 3]));
+        shared.set_transport(TransportState::Playing);
+        let mut out = vec![0.0; 20];
+        shared.fill_output(&mut out);
+        assert!((out[0] - 0.7071).abs() < 0.08, "{}", out[0]);
+        assert!((out[1] - out[0]).abs() < 0.03);
+    }
 }

@@ -11,6 +11,7 @@ const CHAINS: &[(&str, &str)] = &[
     ("monitor_stereo", "MonitorStereo"),
     ("monitor_ms", "MonitorMs"),
     ("monitor_foa", "MonitorFoa"),
+    ("monitor_foa_fuma", "MonitorFoaFuma"),
 ];
 
 fn main() {
@@ -21,6 +22,7 @@ fn main() {
         println!("cargo:rerun-if-changed=dsp/{stem}.dsp");
     }
     println!("cargo:rerun-if-changed=dsp/headphone_crossfeed.lib");
+    println!("cargo:rerun-if-changed=dsp/bformat.lib");
 
     compile_faust_chains();
     embed_windows_icon();

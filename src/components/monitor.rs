@@ -21,7 +21,9 @@ use gpui_component::{
 
 use crate::app::AppView;
 use crate::model::document::BufferDocument;
-use crate::monitor::{meta_value, parse_ui_json, FaustUiNode, FaustUiRoot, MonitorChain};
+use crate::monitor::{
+    menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode, FaustUiRoot, MonitorChain,
+};
 
 pub struct MonitorPanel {
     app: WeakEntity<AppView>,
@@ -256,6 +258,57 @@ fn section_label(text: &'static str, muted: gpui::Hsla) -> impl IntoElement {
     div().text_xs().text_color(muted).child(text)
 }
 
+fn menu_dropdown(
+    label: String,
+    address: String,
+    items: Vec<(String, f32)>,
+    current: f32,
+    app: WeakEntity<AppView>,
+    muted: gpui::Hsla,
+) -> impl IntoElement {
+    let selected = items
+        .iter()
+        .min_by(|a, b| {
+            (a.1 - current)
+                .abs()
+                .partial_cmp(&(b.1 - current).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(name, _)| name.clone())
+        .unwrap_or_else(|| format!("{current:.0}"));
+    let id = address_id(&address);
+    v_flex().gap_1().child(div().text_xs().child(label)).child(
+        Button::new(("monitor-menu", id))
+            .outline()
+            .small()
+            .w_full()
+            .label(selected)
+            .dropdown_menu(move |mut menu, _, _| {
+                for (name, value) in &items {
+                    let app = app.clone();
+                    let address = address.clone();
+                    let name_el = name.clone();
+                    let checked = (current - value).abs() < 0.01;
+                    let value = *value;
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div().text_xs().text_color(muted).child(name_el.clone())
+                        })
+                        .checked(checked)
+                        .on_click(move |_, _, cx| {
+                            if let Some(app) = app.upgrade() {
+                                app.update(cx, |this, _| {
+                                    this.set_monitor_param(&address, value);
+                                });
+                            }
+                        }),
+                    );
+                }
+                menu
+            }),
+    )
+}
+
 fn chain_dropdown(
     label: String,
     current: Option<String>,
@@ -321,6 +374,14 @@ fn bind_sliders(
             | FaustUiNode::HGroup { items, .. }
             | FaustUiNode::TGroup { items, .. } => {
                 bind_sliders(items, app, sliders, defaults, subs, cx);
+            }
+            FaustUiNode::NEntry {
+                address,
+                init,
+                meta,
+                ..
+            } if menu_items_from_meta(meta).is_some() => {
+                defaults.insert(address.clone(), *init);
             }
             FaustUiNode::HSlider {
                 address,
@@ -475,6 +536,25 @@ fn render_node(
                     .child(body)
                     .into_any_element()
             }
+        }
+        FaustUiNode::NEntry {
+            label,
+            address,
+            init,
+            meta,
+            ..
+        } if menu_items_from_meta(meta).is_some() => {
+            let items = menu_items_from_meta(meta).unwrap_or_default();
+            let value = params.get(address).copied().unwrap_or(*init);
+            menu_dropdown(
+                label.clone(),
+                address.clone(),
+                items,
+                value,
+                app.clone(),
+                muted,
+            )
+            .into_any_element()
         }
         FaustUiNode::HSlider {
             label,

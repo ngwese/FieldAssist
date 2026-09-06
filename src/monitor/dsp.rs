@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use super::chain::MonitorChain;
 use super::generated::{
-    self, FaustDsp, ParamIndex, MONITOR_FOA_JSON, MONITOR_MONO_JSON, MONITOR_MS_JSON,
-    MONITOR_STEREO_JSON, UI,
+    self, FaustDsp, ParamIndex, MONITOR_FOA_FUMA_JSON, MONITOR_FOA_JSON, MONITOR_MONO_JSON,
+    MONITOR_MS_JSON, MONITOR_STEREO_JSON, UI,
 };
 use super::schema::{collect_addresses, parse_ui_json};
 
@@ -45,6 +45,12 @@ pub fn create_dsp(chain: MonitorChain, sample_rate: u32) -> Box<dyn MonitorDsp> 
             generated::MonitorFoa::new(),
             chain,
             MONITOR_FOA_JSON,
+            sample_rate,
+        )),
+        MonitorChain::FoaFuma => Box::new(FaustAdapter::new(
+            generated::MonitorFoaFuma::new(),
+            chain,
+            MONITOR_FOA_FUMA_JSON,
             sample_rate,
         )),
     }
@@ -388,6 +394,7 @@ mod tests {
         let mut dsp = create_dsp(MonitorChain::Foa, 48000);
         set_named(dsp.as_mut(), "Gain", 0.0);
         set_named(dsp.as_mut(), "Yaw", 0.0);
+        set_named(dsp.as_mut(), "Orientation", 0.0);
         settle(dsp.as_mut());
         let one = vec![1.0f32];
         let zero = vec![0.0f32];
@@ -398,6 +405,95 @@ mod tests {
         let (left, right) = process_block(dsp.as_mut(), &[&zero, &one, &zero, &zero]);
         assert!(left[0] > 0.3, "{}", left[0]);
         assert!(right[0] < -0.3, "{}", right[0]);
+    }
+
+    #[test]
+    fn foa_fuma_w_matches_ambix_after_sn3d_and_x_is_not_y() {
+        let one = vec![1.0f32];
+        let zero = vec![0.0f32];
+        let w_fuma = vec![1.0 / 2.0f32.sqrt()];
+
+        let mut ambix = create_dsp(MonitorChain::Foa, 48000);
+        set_named(ambix.as_mut(), "Gain", 0.0);
+        set_named(ambix.as_mut(), "Yaw", 0.0);
+        set_named(ambix.as_mut(), "Orientation", 0.0);
+        settle(ambix.as_mut());
+        let (aw, _) = process_block(ambix.as_mut(), &[&one, &zero, &zero, &zero]);
+        let (ax, _) = process_block(ambix.as_mut(), &[&zero, &zero, &zero, &one]);
+        let (ay_l, ay_r) = process_block(ambix.as_mut(), &[&zero, &one, &zero, &zero]);
+
+        let mut fuma = create_dsp(MonitorChain::FoaFuma, 48000);
+        set_named(fuma.as_mut(), "Gain", 0.0);
+        set_named(fuma.as_mut(), "Yaw", 0.0);
+        set_named(fuma.as_mut(), "Orientation", 0.0);
+        settle(fuma.as_mut());
+        let (fw, _) = process_block(fuma.as_mut(), &[&w_fuma, &zero, &zero, &zero]);
+        let (fx_l, fx_r) = process_block(fuma.as_mut(), &[&zero, &one, &zero, &zero]);
+        let (fy_l, fy_r) = process_block(fuma.as_mut(), &[&zero, &zero, &one, &zero]);
+
+        assert!(
+            (fw[0] - aw[0]).abs() < 0.04,
+            "fuma W {} ambix W {}",
+            fw[0],
+            aw[0]
+        );
+        assert!(
+            (fx_l[0] - ax[0]).abs() < 0.04 && (fx_r[0] - fx_l[0]).abs() < 0.02,
+            "fuma ch1 should be Ambix X, got L={} R={}",
+            fx_l[0],
+            fx_r[0]
+        );
+        assert!(
+            (fy_l[0] + ay_l[0]).abs() < 0.04 && (fy_r[0] + ay_r[0]).abs() < 0.04,
+            "fuma +Y should pan opposite Ambix +Y, ambix {}/{} fuma {}/{}",
+            ay_l[0],
+            ay_r[0],
+            fy_l[0],
+            fy_r[0]
+        );
+    }
+
+    #[test]
+    fn foa_orientation_down_flips_y_and_endfire_maps_z_to_x() {
+        let one = vec![1.0f32];
+        let zero = vec![0.0f32];
+
+        let mut dsp = create_dsp(MonitorChain::Foa, 48000);
+        set_named(dsp.as_mut(), "Gain", 0.0);
+        set_named(dsp.as_mut(), "Yaw", 0.0);
+        set_named(dsp.as_mut(), "Orientation", 0.0);
+        settle(dsp.as_mut());
+        let (up_w_l, up_w_r) = process_block(dsp.as_mut(), &[&one, &zero, &zero, &zero]);
+        let (up_y_l, up_y_r) = process_block(dsp.as_mut(), &[&zero, &one, &zero, &zero]);
+        let (up_neg_x_l, up_neg_x_r) =
+            process_block(dsp.as_mut(), &[&zero, &zero, &zero, &vec![-1.0]]);
+
+        set_named(dsp.as_mut(), "Orientation", 1.0);
+        settle(dsp.as_mut());
+        let (down_y_l, down_y_r) = process_block(dsp.as_mut(), &[&zero, &one, &zero, &zero]);
+        assert!(
+            (down_y_l[0] + up_y_l[0]).abs() < 0.04 && (down_y_r[0] + up_y_r[0]).abs() < 0.04,
+            "Down should flip Y pan vs Up, up {}/{} down {}/{}",
+            up_y_l[0],
+            up_y_r[0],
+            down_y_l[0],
+            down_y_r[0]
+        );
+
+        set_named(dsp.as_mut(), "Orientation", 2.0);
+        settle(dsp.as_mut());
+        let (end_w_l, end_w_r) = process_block(dsp.as_mut(), &[&one, &zero, &zero, &zero]);
+        let (end_z_l, end_z_r) = process_block(dsp.as_mut(), &[&zero, &zero, &one, &zero]);
+        assert!((end_w_l[0] - up_w_l[0]).abs() < 0.04);
+        assert!((end_w_r[0] - up_w_r[0]).abs() < 0.04);
+        assert!(
+            (end_z_l[0] - up_neg_x_l[0]).abs() < 0.04 && (end_z_r[0] - up_neg_x_r[0]).abs() < 0.04,
+            "Endfire +Z should match Up -X, got {}/{} vs {}/{}",
+            end_z_l[0],
+            end_z_r[0],
+            up_neg_x_l[0],
+            up_neg_x_r[0]
+        );
     }
 
     #[test]
@@ -415,7 +511,14 @@ mod tests {
         }
         let mono = addresses_of(MonitorChain::Mono);
         assert!(!mono.iter().any(|a| a.contains("Headphones")));
-        let foa = addresses_of(MonitorChain::Foa);
-        assert!(!foa.iter().any(|a| a.contains("Headphones")));
+        for chain in [MonitorChain::Foa, MonitorChain::FoaFuma] {
+            let addresses = addresses_of(chain);
+            assert!(!addresses.iter().any(|a| a.contains("Headphones")));
+            assert!(
+                addresses.iter().any(|a| a.contains("Orientation")),
+                "{chain:?} {addresses:?}"
+            );
+            assert!(addresses.iter().any(|a| a.contains("Yaw")));
+        }
     }
 }

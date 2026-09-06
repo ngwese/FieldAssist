@@ -1,0 +1,49 @@
+// SPDX-FileCopyrightText: 2026 Greg Wuller
+// SPDX-License-Identifier: MIT
+//
+// First-order B-format helpers for headphone monitoring.
+//
+// FuMa (Furse-Malham / classic B-format, maxN, file order W X Y Z) to Ambix
+// ACN/SN3D (file order W Y Z X), matching Ambix / Malham:
+//   reorder W X Y Z → W Y Z X
+//   W_sn3d = W_fuma * sqrt(2)
+//   Y_sn3d = -Y_fuma
+//   X and Z unchanged
+//
+// Mic orientation is applied to ACN X/Y/Z after format conversion, before yaw:
+//   Up — identity
+//   Down — inverted / hanging: Y' = -Y, Z' = -Z
+//   Endfire — boom toward source: X' = -Z, Z' = X, Y unchanged (90° about Y)
+
+import("stdfaust.lib");
+
+fuma_to_acn_sn3d(w, x, y, z) = w * sqrt(2.0), (0 - y), z, x;
+
+orient = nentry("Ambisonics/Orientation[style:menu{'Up':0;'Down':1;'Endfire':2}]",
+                0, 0, 2, 1);
+
+gainDb = hslider("Monitor/Gain [unit:dB][style:knob]",
+                 0, -90, 12, 0.1) : ba.db2linear : si.smoo;
+
+yawDeg = hslider("Ambisonics/Yaw [unit:deg]", 0, -180, 180, 0.1) : si.smoo;
+
+// Horizontal stereo speakers at ±30°. Z is unused in the decode.
+foa_decode(w, y, z, x) = l * gainDb, r * gainDb
+with {
+    a = yawDeg * ma.PI / 180.0;
+    c = cos(a);
+    s = sin(a);
+    xp = x * c + y * s;
+    yp = (0 - x) * s + y * c;
+    w0 = w * 0.7071067811865476;
+    l = w0 + xp * 0.8660254037844386 + yp * 0.5;
+    r = w0 + xp * 0.8660254037844386 - yp * 0.5;
+};
+
+foa_stereo(w, y, z, x) = foa_decode(w, y1, z1, x1)
+with {
+    sel = orient;
+    x1 = select3(sel, x, x, (0 - z));
+    y1 = select3(sel, y, (0 - y), y);
+    z1 = select3(sel, z, (0 - z), x);
+};

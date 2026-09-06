@@ -26,10 +26,17 @@ app:define_layout({
 })
 
 app:define_layout({
-  name = "1OA",
-  description = "First-order Ambisonics (Ambix)",
+  name = "B-Format (AmbiX)",
+  description = "First-order Ambisonics (Ambix ACN/SN3D)",
   channels = { [0] = "W", [1] = "Y", [2] = "Z", [3] = "X" },
   monitor = { chain = "foa" },
+})
+
+app:define_layout({
+  name = "B-Format (FuMa)",
+  description = "First-order Ambisonics (Furse-Malham)",
+  channels = { [0] = "W", [1] = "X", [2] = "Y", [3] = "Z" },
+  monitor = { chain = "foa_fuma" },
 })
 
 app:define_layout({
@@ -49,18 +56,26 @@ app:define_layout({
 })
 
 app:on("detect_layout", function(c, chosen)
+  if chosen == "1OA" then
+    chosen = "B-Format (AmbiX)"
+  end
   if chosen then
     app:info("layout", chosen)
     return chosen
   end
   local n = c.channels
+  local base = string.lower(c.basename or "")
   local name
-  if n == 1 then
+  if n >= 4 and string.find(base, "fuma", 1, true) then
+    name = "B-Format (FuMa)"
+  elseif n >= 4 and string.find(base, "ambix", 1, true) then
+    name = "B-Format (AmbiX)"
+  elseif n == 1 then
     name = "mono"
   elseif n == 2 then
     name = "stereo"
   elseif n == 4 then
-    name = "1OA"
+    name = "B-Format (AmbiX)"
   elseif n == 9 then
     name = "2OA"
   end

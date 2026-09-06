@@ -170,6 +170,35 @@ pub fn meta_value<'a>(meta: &'a [HashMap<String, String>], key: &str) -> Option<
         .find_map(|entry| entry.get(key).map(String::as_str))
 }
 
+/// Faust `[style:menu{'Label':value;...}]` entries, in listed order.
+pub fn parse_menu_style(style: &str) -> Option<Vec<(String, f32)>> {
+    let rest = style.trim().strip_prefix("menu")?.trim_start();
+    let inner = rest.strip_prefix('{')?.strip_suffix('}')?;
+    let mut items = Vec::new();
+    for part in inner.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (label, value) = part.split_once(':')?;
+        let label = label
+            .trim()
+            .trim_matches('\'')
+            .trim_matches('"')
+            .to_string();
+        if label.is_empty() {
+            return None;
+        }
+        let value: f32 = value.trim().parse().ok()?;
+        items.push((label, value));
+    }
+    (!items.is_empty()).then_some(items)
+}
+
+pub fn menu_items_from_meta(meta: &[HashMap<String, String>]) -> Option<Vec<(String, f32)>> {
+    parse_menu_style(meta_value(meta, "style")?)
+}
+
 #[allow(dead_code)]
 pub fn flatten_controls(root: &FaustUiRoot) -> Vec<FaustUiNode> {
     let mut out = Vec::new();
@@ -221,5 +250,19 @@ mod tests {
         let root = parse_ui_json(json).unwrap();
         let addresses = collect_addresses(&root);
         assert_eq!(addresses, vec![("/probe/Gain".into(), false)]);
+    }
+
+    #[test]
+    fn parses_faust_menu_style() {
+        let items = parse_menu_style("menu{'Up':0;'Down':1;'Endfire':2}").unwrap();
+        assert_eq!(
+            items,
+            vec![
+                ("Up".into(), 0.0),
+                ("Down".into(), 1.0),
+                ("Endfire".into(), 2.0),
+            ]
+        );
+        assert!(parse_menu_style("knob").is_none());
     }
 }

@@ -1,13 +1,13 @@
 /* ------------------------------------------------------------
 license: "MIT"
-name: "MonitorFoa"
+name: "MonitorFoaFuma"
 version: "1.0"
 Code generated with Faust 2.85.9 (https://faust.grame.fr)
-Compilation options: -lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoa -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0
+Compilation options: -lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoaFuma -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0
 ------------------------------------------------------------ */
 
 #[repr(C)]
-pub struct MonitorFoa {
+pub struct MonitorFoaFuma {
 	fSampleRate: i32,
 	fConst0: F32,
 	fConst1: F32,
@@ -24,10 +24,10 @@ pub const FAUST_OUTPUTS: usize = 2;
 pub const FAUST_ACTIVES: usize = 3;
 pub const FAUST_PASSIVES: usize = 0;
 
-impl MonitorFoa {
+impl MonitorFoaFuma {
 		
-	pub fn new() -> MonitorFoa { 
-		MonitorFoa {
+	pub fn new() -> MonitorFoaFuma { 
+		MonitorFoaFuma {
 			fSampleRate: 0,
 			fConst0: 0.0,
 			fConst1: 0.0,
@@ -41,15 +41,15 @@ impl MonitorFoa {
 	pub fn metadata(&self, m: &mut dyn Meta) { 
 		m.declare("basics.lib/name", r"Faust Basic Element Library");
 		m.declare("basics.lib/version", r"1.22.0");
-		m.declare("compile_options", r"-lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoa -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0");
-		m.declare("filename", r"monitor_foa.dsp");
+		m.declare("compile_options", r"-lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoaFuma -es 1 -mcd 16 -mdd 1024 -mdy 33 -single -ftz 0");
+		m.declare("filename", r"monitor_foa_fuma.dsp");
 		m.declare("license", r"MIT");
 		m.declare("maths.lib/author", r"GRAME");
 		m.declare("maths.lib/copyright", r"GRAME");
 		m.declare("maths.lib/license", r"LGPL with exception");
 		m.declare("maths.lib/name", r"Faust Math Library");
 		m.declare("maths.lib/version", r"2.9.0");
-		m.declare("name", r"MonitorFoa");
+		m.declare("name", r"MonitorFoaFuma");
 		m.declare("platform.lib/name", r"Generic Platform Library");
 		m.declare("platform.lib/version", r"1.3.0");
 		m.declare("signals.lib/name", r"Faust Routing Library");
@@ -87,7 +87,7 @@ impl MonitorFoa {
 		self.instance_clear();
 	}
 	pub fn init(&mut self, sample_rate: i32) {
-		MonitorFoa::class_init(sample_rate);
+		MonitorFoaFuma::class_init(sample_rate);
 		self.instance_init(sample_rate);
 	}
 	
@@ -96,7 +96,7 @@ impl MonitorFoa {
 	}
 	
 	pub fn build_user_interface_static(ui_interface: &mut dyn UI<FaustFloat>) {
-		ui_interface.open_vertical_box("MonitorFoa");
+		ui_interface.open_vertical_box("MonitorFoaFuma");
 		ui_interface.declare(Some(ParamIndex(0)), "style", "menu{'Up':0;'Down':1;'Endfire':2}");
 		ui_interface.add_num_entry("Ambisonics/Orientation", ParamIndex(0), 0.0, 0.0, 2.0, 1.0);
 		ui_interface.declare(Some(ParamIndex(1)), "unit", "deg");
@@ -151,13 +151,13 @@ impl MonitorFoa {
 			self.fRec0[0] = fSlow0 + self.fConst1 * self.fRec0[1];
 			let mut fTemp0: F32 = 0.017453292 * self.fRec0[0];
 			let mut fTemp1: F32 = F32::sin(fTemp0);
-			let mut fTemp2: F32 = (*input3) as F32;
-			let mut fTemp3: F32 = (if iSlow2 != 0 {fTemp2} else {(if iSlow3 != 0 {fTemp2} else {-((*input2) as F32)})});
-			let mut fTemp4: F32 = (*input1) as F32;
-			let mut fTemp5: F32 = (if iSlow2 != 0 {fTemp4} else {(if iSlow3 != 0 {-fTemp4} else {fTemp4})});
+			let mut fTemp2: F32 = (*input1) as F32;
+			let mut fTemp3: F32 = (if iSlow2 != 0 {fTemp2} else {(if iSlow3 != 0 {fTemp2} else {-((*input3) as F32)})});
+			let mut fTemp4: F32 = (*input2) as F32;
+			let mut fTemp5: F32 = (if iSlow2 != 0 {-fTemp4} else {(if iSlow3 != 0 {-(-fTemp4)} else {-fTemp4})});
 			let mut fTemp6: F32 = F32::cos(fTemp0);
 			let mut fTemp7: F32 = 0.5 * (fTemp6 * fTemp5 - fTemp3 * fTemp1);
-			let mut fTemp8: F32 = 0.70710677 * (*input0) as F32 + 0.8660254 * (fTemp3 * fTemp6 + fTemp5 * fTemp1);
+			let mut fTemp8: F32 = 1.0 * (*input0) as F32 + 0.8660254 * (fTemp3 * fTemp6 + fTemp5 * fTemp1);
 			self.fRec1[0] = fSlow4 + self.fConst1 * self.fRec1[1];
 			*output0 = (self.fRec1[0] * (fTemp8 + fTemp7)) as FaustFloat;
 			*output1 = (self.fRec1[0] * (fTemp8 - fTemp7)) as FaustFloat;
@@ -169,7 +169,7 @@ impl MonitorFoa {
 
 }
 
-impl FaustDsp for MonitorFoa {
+impl FaustDsp for MonitorFoaFuma {
 	type T = FaustFloat;
 	fn new() -> Self where Self: Sized {
 		Self::new()

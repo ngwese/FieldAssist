@@ -392,7 +392,14 @@ mod tests {
         host.load_init_from(None).expect("embedded init");
         assert_eq!(
             host.layout_names(),
-            vec!["mono", "stereo", "MS", "1OA", "2OA"]
+            vec![
+                "mono",
+                "stereo",
+                "MS",
+                "B-Format (AmbiX)",
+                "B-Format (FuMa)",
+                "2OA"
+            ]
         );
         assert_eq!(
             host.layout("stereo").map(|layout| layout.description),
@@ -411,12 +418,99 @@ mod tests {
         assert_eq!(layout.as_deref(), Some("stereo"));
         assert_eq!(chain.as_deref(), Some("stereo"));
         assert_eq!(
-            host.layout("1OA")
+            host.layout("B-Format (AmbiX)")
                 .and_then(|layout| layout.monitor_chain_id().map(str::to_string))
                 .as_deref(),
             Some("foa")
         );
+        assert_eq!(
+            host.layout("B-Format (FuMa)")
+                .and_then(|layout| layout.monitor_chain_id().map(str::to_string))
+                .as_deref(),
+            Some("foa_fuma")
+        );
+        assert!(host.layout("1OA").is_none());
         assert!(host.layout("2OA").unwrap().monitor_chain_id().is_none());
+    }
+
+    fn detect_with(channels: usize, filename: Option<&str>) -> (Option<String>, Option<String>) {
+        let world = Rc::new(RefCell::new(TestWorld::new()));
+        let samples = vec![vec![0.0f32; 64]; channels];
+        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let composition = Composition::from_media(media).expect("composition");
+        let path = filename.map(std::path::PathBuf::from);
+        let id = world
+            .borrow_mut()
+            .push(composition, Buffer::empty(), "fixture", path);
+        let mut host = ScriptHost::for_test(world.clone()).expect("lua");
+        host.load_init_from(None).expect("embedded init");
+        host.fire_detect_layout(id);
+        let world = world.borrow();
+        let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+        (
+            composition.channel_layout().map(str::to_string),
+            composition.monitor_chain().map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn detect_layout_uses_basename_keywords_and_count() {
+        let (layout, chain) = detect_with(4, Some("Take_Ambix.wav"));
+        assert_eq!(layout.as_deref(), Some("B-Format (AmbiX)"));
+        assert_eq!(chain.as_deref(), Some("foa"));
+
+        let (layout, chain) = detect_with(4, Some("Take_FuMa.wav"));
+        assert_eq!(layout.as_deref(), Some("B-Format (FuMa)"));
+        assert_eq!(chain.as_deref(), Some("foa_fuma"));
+
+        let (layout, _) = detect_with(4, Some("session_ambix_bformat.wav"));
+        assert_eq!(layout.as_deref(), Some("B-Format (AmbiX)"));
+
+        let (layout, chain) = detect_with(4, None);
+        assert_eq!(layout.as_deref(), Some("B-Format (AmbiX)"));
+        assert_eq!(chain.as_deref(), Some("foa"));
+
+        let (layout, chain) = detect_with(6, Some("Ambix_plus_xy.wav"));
+        assert_eq!(layout.as_deref(), Some("B-Format (AmbiX)"));
+        assert_eq!(chain.as_deref(), Some("foa"));
+
+        let (layout, chain) = detect_with(6, Some("FuMa_plus_xy.wav"));
+        assert_eq!(layout.as_deref(), Some("B-Format (FuMa)"));
+        assert_eq!(chain.as_deref(), Some("foa_fuma"));
+
+        let (layout, _) = detect_with(6, Some("Ambix_and_FuMa.wav"));
+        assert_eq!(layout.as_deref(), Some("B-Format (FuMa)"));
+    }
+
+    #[test]
+    fn detect_layout_remaps_persisted_1oa() {
+        let world = Rc::new(RefCell::new(TestWorld::new()));
+        let samples = vec![vec![0.0f32; 64]; 4];
+        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let composition = Composition::from_media(media).expect("composition");
+        let id = world
+            .borrow_mut()
+            .push(composition, Buffer::empty(), "fixture", None);
+        {
+            let world = world.borrow();
+            world
+                .docs
+                .get(&id)
+                .unwrap()
+                .composition
+                .write()
+                .unwrap()
+                .choose_channel_layout(Some("1OA".into()), Default::default());
+        }
+        let mut host = ScriptHost::for_test(world.clone()).expect("lua");
+        host.load_init_from(None).expect("embedded init");
+        host.fire_detect_layout(id);
+        let world = world.borrow();
+        let composition = world.docs.get(&id).unwrap().composition.read().unwrap();
+        assert_eq!(composition.chosen_channel_layout(), Some("1OA"));
+        assert_eq!(composition.channel_layout(), Some("B-Format (AmbiX)"));
+        assert_eq!(composition.monitor_chain(), Some("foa"));
+        assert_eq!(composition.channel_label(1), "Y");
     }
 
     #[test]
