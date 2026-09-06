@@ -5,9 +5,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, rems, AnyElement, AnyView, App, AppContext as _, Axis, Div,
-    Entity, Global, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, rems, Anchor, AnyElement, AnyView, App, AppContext as _,
+    Axis, ClickEvent, Div, Entity, Global, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -16,16 +17,21 @@ use gpui_component::{
         TabGroupContext, TabGroupRenderer, TilesRenderer,
     },
     h_flex,
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tab::{Tab, TabBar},
     ActiveTheme as _, IconName, Selectable as _, Sizable as _,
 };
 
-/// Host callback used to close a center tab without dropping the document.
-pub struct CenterTabCloseHandler {
+/// Host callbacks for the center waveform tab bar.
+pub struct CenterTabBarHandler {
     pub close: Rc<dyn Fn(u64, &mut Window, &mut App)>,
+    pub pin: Rc<dyn Fn(u64, &mut Window, &mut App)>,
+    pub is_pinned: Rc<dyn Fn(u64, &App) -> bool>,
+    pub close_all: Rc<dyn Fn(&mut Window, &mut App)>,
+    pub close_saved: Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
-impl Global for CenterTabCloseHandler {}
+impl Global for CenterTabBarHandler {}
 
 /// Dock appearance with small tabs, built on [`DockSkin`].
 pub struct CompactDockSkin {
@@ -97,6 +103,14 @@ struct CompactTabGroup {
     inner: Rc<dyn TabGroupRenderer>,
 }
 
+#[derive(Clone)]
+struct OverflowTab {
+    ix: usize,
+    title: SharedString,
+    selected: bool,
+    pinned: bool,
+}
+
 impl CompactTabGroup {
     fn is_tool_dock_group(&self, group: &TabGroupContext, cx: &App) -> bool {
         let panels = group.panels();
@@ -124,6 +138,79 @@ impl CompactTabGroup {
                 .unwrap_or_else(|| handle.title(window, cx)),
             None => SharedString::from(panel.panel_name(cx)).into_any_element(),
         }
+    }
+
+    fn panel_title_string(panel: &Arc<dyn BasePanelView>, cx: &App) -> SharedString {
+        match PanelHandle::of(panel) {
+            Some(handle) => handle
+                .tab_name(cx)
+                .unwrap_or_else(|| SharedString::from(panel.panel_name(cx))),
+            None => SharedString::from(panel.panel_name(cx)),
+        }
+    }
+
+    fn is_pinned(panel_id: u64, cx: &App) -> bool {
+        cx.try_global::<CenterTabBarHandler>()
+            .map(|handler| (handler.is_pinned)(panel_id, cx))
+            .unwrap_or(false)
+    }
+
+    fn overflow_menu(
+        group: TabGroupContext,
+        entries: Vec<OverflowTab>,
+        muted: gpui::Hsla,
+    ) -> impl IntoElement {
+        Button::new("tab-overflow")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Ellipsis)
+            .tooltip("Tabs")
+            .dropdown_menu_with_anchor(
+                Anchor::TopRight,
+                move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+                    menu = menu.scrollable(true);
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| div().text_xs().child("Close All"))
+                            .on_click(move |_, window, cx| {
+                                if let Some(handler) = cx.try_global::<CenterTabBarHandler>() {
+                                    let close_all = handler.close_all.clone();
+                                    close_all(window, cx);
+                                }
+                            }),
+                    );
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| div().text_xs().child("Close Saved"))
+                            .on_click(move |_, window, cx| {
+                                if let Some(handler) = cx.try_global::<CenterTabBarHandler>() {
+                                    let close_saved = handler.close_saved.clone();
+                                    close_saved(window, cx);
+                                }
+                            }),
+                    );
+                    menu = menu.separator();
+                    for entry in entries.clone() {
+                        let title = entry.title.clone();
+                        let pinned = entry.pinned;
+                        let selected = entry.selected;
+                        let ix = entry.ix;
+                        let group = group.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .when(!pinned, |this| this.italic())
+                                    .child(title.clone())
+                            })
+                            .checked(selected)
+                            .on_click(move |_, window, cx| {
+                                group.select_tab(ix, window, cx);
+                            }),
+                        );
+                    }
+                    menu
+                },
+            )
     }
 
     fn render_side_tab_bar(
@@ -225,25 +312,41 @@ impl TabGroupRenderer for CompactTabGroup {
             }
         }
         let mut tabs = Vec::with_capacity(visible.len());
+        let mut overflow = Vec::with_capacity(visible.len());
+        let mut has_closable = false;
         for ix in visible {
             let panel = &group.panels()[ix];
             let selected = !group.is_collapsed() && Some(panel.panel_id(cx)) == active_id;
             let closable = panel.closable(cx);
             let panel_id = panel.panel_id(cx).as_u64();
+            let pinned = Self::is_pinned(panel_id, cx);
             let group_for_select = group.clone();
             let group_for_close = group.clone();
-            let mut tab = Tab::new()
-                .small()
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(Self::panel_title(panel, window, cx)),
-                )
-                .selected(selected)
-                .on_click(move |_, window, cx| {
+            let mut title = div()
+                .text_color(muted)
+                .child(Self::panel_title(panel, window, cx));
+            if !pinned {
+                title = title.italic();
+            }
+            let mut tab = Tab::new().small().child(title).selected(selected).on_click(
+                move |event: &ClickEvent, window, cx| {
+                    if event.click_count() >= 2 {
+                        if let Some(handler) = cx.try_global::<CenterTabBarHandler>() {
+                            let pin = handler.pin.clone();
+                            pin(panel_id, window, cx);
+                        }
+                    }
                     group_for_select.select_tab(ix, window, cx);
-                });
+                },
+            );
             if closable {
+                has_closable = true;
+                overflow.push(OverflowTab {
+                    ix,
+                    title: Self::panel_title_string(panel, cx),
+                    selected,
+                    pinned,
+                });
                 tab = tab.suffix(
                     Button::new(("close-tab", panel_id))
                         .ghost()
@@ -251,7 +354,7 @@ impl TabGroupRenderer for CompactTabGroup {
                         .icon(IconName::Close)
                         .tab_stop(false)
                         .on_click(move |_, window, cx| {
-                            if let Some(handler) = cx.try_global::<CenterTabCloseHandler>() {
+                            if let Some(handler) = cx.try_global::<CenterTabBarHandler>() {
                                 let close = handler.close.clone();
                                 close(panel_id, window, cx);
                             } else {
@@ -266,10 +369,11 @@ impl TabGroupRenderer for CompactTabGroup {
             }
             tabs.push(tab);
         }
-        TabBar::new("tab-bar")
-            .small()
-            .children(tabs)
-            .into_any_element()
+        let mut bar = TabBar::new("tab-bar").small().children(tabs);
+        if has_closable {
+            bar = bar.suffix(Self::overflow_menu(group.clone(), overflow, muted));
+        }
+        bar.into_any_element()
     }
 
     fn render_active_panel(

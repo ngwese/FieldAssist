@@ -37,7 +37,7 @@ use crate::commands::{
     ViewFitAll, ViewFrame, ViewScript, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::app_menu::AppMenuBar;
-use crate::components::dock_skin::{CenterTabCloseHandler, CompactDockSkin};
+use crate::components::dock_skin::{CenterTabBarHandler, CompactDockSkin};
 use crate::components::edits::EditsPanel;
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
@@ -56,7 +56,7 @@ use crate::model::composition::{
     default_marker_type, Composition, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
     MARKER_TYPE_YELLOW,
 };
-use crate::model::{is_facomp_path, Buffer, BufferDocument};
+use crate::model::{is_facomp_path, Buffer, BufferDocument, ChannelScope};
 use crate::playback::{PlaybackSession, TransportState};
 use crate::progress::ProgressState;
 use crate::script::{EvalOutput, ScriptHost};
@@ -121,6 +121,7 @@ pub struct AppView {
     last_waveform_over: bool,
     active_marker_type: String,
     add_marker_at_hover: bool,
+    preview_enabled: bool,
 }
 
 impl AppView {
@@ -315,6 +316,7 @@ impl AppView {
             last_waveform_over: false,
             active_marker_type: default_marker_type().to_string(),
             add_marker_at_hover: true,
+            preview_enabled: false,
         };
         this.load_init_lua(window, cx);
         if let Some(id) = this.session.active() {
@@ -480,6 +482,8 @@ impl AppView {
         if let Some(views) = self.active_views() {
             self.playback.bind_composition(views.composition);
             self.playback.sync_from_document(views.document.read(cx));
+            self.playback
+                .load_monitor_for_document(views.document.read(cx));
             self.edits.update(cx, |edits, cx| {
                 edits.set_target(views.document.clone(), views.waveform.clone(), cx);
             });
@@ -496,9 +500,10 @@ impl AppView {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
             });
         } else {
-            self.playback
-                .bind_composition(self.idle_composition.clone());
+            let idle = self.idle_composition.clone();
+            self.playback.bind_composition(idle.clone());
             self.playback.reload(&Buffer::empty());
+            self.playback.load_session_monitor(&idle.read().unwrap());
             self.edits.update(cx, |edits, cx| edits.clear_target(cx));
             self.markers
                 .update(cx, |markers, cx| markers.clear_target(cx));
@@ -529,8 +534,27 @@ impl AppView {
         }
     }
 
+    fn commit_monitor_for_id(&mut self, id: DocumentId, cx: &mut Context<Self>) {
+        let Some(views) = self.views.get(&id).cloned() else {
+            self.playback.commit_monitor_to_session();
+            return;
+        };
+        views.document.update(cx, |doc, _| {
+            self.playback.commit_monitor_for_document(doc);
+        });
+    }
+
+    fn commit_active_monitor_params(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.session.active() {
+            self.commit_monitor_for_id(id, cx);
+        } else {
+            self.playback.commit_monitor_to_session();
+        }
+    }
+
     fn focus_document(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(old_id) = self.session.focus(id) {
+            self.commit_monitor_for_id(old_id, cx);
             if self.playback.transport_state() == TransportState::Playing {
                 if let Some(old) = self.views.get(&old_id).cloned() {
                     old.document.update(cx, |doc, cx| {
@@ -578,6 +602,7 @@ impl AppView {
     fn show_workspace_tab(
         area: &mut DockArea,
         workspace: Entity<WorkspacePanel>,
+        insert_ix: Option<usize>,
         window: &mut Window,
         cx: &mut Context<DockArea>,
     ) {
@@ -604,19 +629,171 @@ impl AppView {
             window,
             cx,
         );
+        if let Some(insert_ix) = insert_ix {
+            if let Some((node, current_ix, _)) = Self::center_tab_slot(area, panel_id) {
+                if current_ix != insert_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(insert_ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        }
+    }
+
+    fn document_id_for_panel(&self, panel_id: u64) -> Option<DocumentId> {
+        self.views.iter().find_map(|(id, views)| {
+            (PanelId::from(views.workspace.entity_id()).as_u64() == panel_id).then_some(*id)
+        })
+    }
+
+    fn center_tab_document_ids(&self, cx: &App) -> Vec<DocumentId> {
+        let empty = self.empty_editors_id();
+        self.dock_area
+            .read(cx)
+            .layout(DockPlacement::Center)
+            .map(|tree| {
+                tree.panels()
+                    .filter(|id| id.as_u64() != empty)
+                    .filter_map(|panel_id| self.document_id_for_panel(panel_id.as_u64()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn first_transient_id(&self, cx: &App) -> Option<DocumentId> {
+        self.session
+            .first_transient_in(&self.center_tab_document_ids(cx))
+    }
+
+    fn panel_is_pinned(&self, panel_id: u64) -> bool {
+        self.document_id_for_panel(panel_id)
+            .is_some_and(|id| self.session.tab_pinned(id))
+    }
+
+    fn pin_tab(&mut self, id: DocumentId, cx: &mut Context<Self>) {
+        if self.session.pin_tab(id) {
+            self.dock_area.update(cx, |_, cx| cx.notify());
+            cx.notify();
+        }
+    }
+
+    fn pin_center_panel(&mut self, panel_id: u64, cx: &mut Context<Self>) {
+        if let Some(id) = self.document_id_for_panel(panel_id) {
+            self.pin_tab(id, cx);
+        }
     }
 
     fn ensure_tab(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_tab_at(id, None, window, cx);
+    }
+
+    fn ensure_tab_at(
+        &mut self,
+        id: DocumentId,
+        insert_ix: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(views) = self.views.get(&id).cloned() else {
             return;
         };
         self.focus_document(id, window, cx);
         let workspace = views.workspace.clone();
         self.dock_area.update(cx, |area, cx| {
-            Self::show_workspace_tab(area, workspace, window, cx);
+            Self::show_workspace_tab(area, workspace, insert_ix, window, cx);
         });
         self.session.ensure_tab(id);
         self.remove_placeholder(window, cx);
+    }
+
+    fn activate_or_replace_tab(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.get(id).is_some_and(|doc| doc.tab_open) {
+            self.ensure_tab(id, window, cx);
+            return;
+        }
+        if let Some(transient) = self.first_transient_id(cx) {
+            self.replace_transient_tab(transient, id, window, cx);
+            return;
+        }
+        self.ensure_tab(id, window, cx);
+    }
+
+    fn replace_transient_tab(
+        &mut self,
+        old_id: DocumentId,
+        new_id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let insert_ix = self.views.get(&old_id).and_then(|views| {
+            let panel_id = PanelId::from(views.workspace.entity_id());
+            Self::center_tab_slot(&self.dock_area.read(cx), panel_id).map(|(_, ix, _)| ix)
+        });
+        self.close_tab(old_id, window, cx);
+        self.ensure_tab_at(new_id, insert_ix, window, cx);
+    }
+
+    fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for id in self.session.open_tab_ids() {
+            self.close_tab(id, window, cx);
+        }
+    }
+
+    fn close_saved_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<DocumentId> = self
+            .session
+            .open_tab_ids()
+            .into_iter()
+            .filter(|&id| {
+                !self
+                    .views
+                    .get(&id)
+                    .is_some_and(|views| views.composition.read().unwrap().is_modified())
+            })
+            .collect();
+        for id in ids {
+            self.close_tab(id, window, cx);
+        }
+    }
+
+    fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+        self.preview_enabled = !self.preview_enabled;
+        cx.notify();
+    }
+
+    fn apply_preview_if_enabled(&mut self, cx: &mut Context<Self>) {
+        if !self.preview_enabled {
+            return;
+        }
+        self.preview_from_start(cx);
+    }
+
+    fn preview_from_start(&mut self, cx: &mut Context<Self>) {
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        views.document.update(cx, |doc, cx| {
+            doc.set_position_from_playback(0, ChannelScope::all());
+            cx.notify();
+        });
+        self.playback.sync_from_document(views.document.read(cx));
+        self.playback.play_from(0);
+        views.workspace.update(cx, |workspace, cx| {
+            workspace.sync_transport(TransportState::Playing, self.playback.looping(), cx);
+        });
+        cx.notify();
     }
 
     fn close_tab(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
@@ -640,9 +817,7 @@ impl AppView {
         if panel_id == self.empty_editors_id() {
             return;
         }
-        let Some(id) = self.views.iter().find_map(|(id, views)| {
-            (PanelId::from(views.workspace.entity_id()).as_u64() == panel_id).then_some(*id)
-        }) else {
+        let Some(id) = self.document_id_for_panel(panel_id) else {
             return;
         };
         self.close_tab(id, window, cx);
@@ -650,6 +825,7 @@ impl AppView {
 
     fn close_document(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.active() == Some(id) {
+            self.commit_active_monitor_params(cx);
             self.stop_playback_into_active(cx);
         }
         if self.session.get(id).is_some_and(|doc| doc.tab_open) {
@@ -676,13 +852,14 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> DocumentId {
+        self.commit_active_monitor_params(cx);
         let app = cx.weak_entity();
         let id = self.session.push(source_path);
         let views = Self::make_views(id, composition, buffer, app, cx);
         let workspace = views.workspace.clone();
         self.views.insert(id, views);
         self.dock_area.update(cx, |area, cx| {
-            Self::show_workspace_tab(area, workspace, window, cx);
+            Self::show_workspace_tab(area, workspace, None, window, cx);
         });
         self.remove_placeholder(window, cx);
         id
@@ -695,8 +872,14 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            ExplorerEvent::Activate(id) | ExplorerEvent::OpenTab(id) => {
+            ExplorerEvent::Activate(id) => {
+                self.activate_or_replace_tab(id, window, cx);
+                self.apply_preview_if_enabled(cx);
+            }
+            ExplorerEvent::OpenTab(id) => {
                 self.ensure_tab(id, window, cx);
+                self.pin_tab(id, cx);
+                self.apply_preview_if_enabled(cx);
             }
             ExplorerEvent::Close(id) => self.request_close_document(id, window, cx),
         }
@@ -1011,6 +1194,21 @@ impl AppView {
 
     pub(crate) fn set_monitor_param(&self, address: &str, value: f32) {
         self.playback.set_monitor_param(address, value);
+    }
+
+    pub(crate) fn toggle_monitor_params_pin(&mut self, cx: &mut Context<Self>) {
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        views.document.update(cx, |doc, cx| {
+            doc.monitor_params_pinned = !doc.monitor_params_pinned;
+            if !doc.monitor_params_pinned {
+                doc.pinned_monitor_params.clear();
+            }
+            cx.notify();
+        });
+        self.monitor.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     pub(crate) fn set_monitor_chain(
@@ -1970,7 +2168,7 @@ impl AppView {
 
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.session.find_by_path(&path) {
-            self.ensure_tab(id, window, cx);
+            self.activate_or_replace_tab(id, window, cx);
             return;
         }
         self.stop_playback_into_active(cx);
@@ -2080,6 +2278,16 @@ impl Render for AppView {
                 }
             }) as Rc<dyn Fn(&mut Window, &mut App)>
         });
+        let on_preview = {
+            let app = cx.weak_entity();
+            Rc::new(move |_window: &mut Window, cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |this, cx| {
+                        this.toggle_preview(cx);
+                    });
+                }
+            }) as Rc<dyn Fn(&mut Window, &mut App)>
+        };
         let progress_message = views.as_ref().and_then(|views| {
             views
                 .document
@@ -2238,6 +2446,8 @@ impl Render for AppView {
                                     .child(
                                         FileStatusBar::new(file_status)
                                             .with_progress_message(progress_message)
+                                            .with_preview(Some(on_preview))
+                                            .with_preview_selected(self.preview_enabled)
                                             .with_monitor(on_monitor)
                                             .with_monitor_selected(self.monitor_tab_visible(cx))
                                             .with_layout(layout_picker),
@@ -2780,10 +2990,32 @@ pub fn run(initial: Option<Composition>, load_elapsed: Option<f64>, device: Devi
                 });
                 cx.set_global(OpenTarget(view.clone()));
                 let closer = view.clone();
-                cx.set_global(CenterTabCloseHandler {
+                let pinner = view.clone();
+                let pinned = view.clone();
+                let close_all = view.clone();
+                let close_saved = view.clone();
+                cx.set_global(CenterTabBarHandler {
                     close: Rc::new(move |panel_id, window, cx| {
                         closer.update(cx, |this, cx| {
                             this.close_center_panel(panel_id, window, cx);
+                        });
+                    }),
+                    pin: Rc::new(move |panel_id, _, cx| {
+                        pinner.update(cx, |this, cx| {
+                            this.pin_center_panel(panel_id, cx);
+                        });
+                    }),
+                    is_pinned: Rc::new(move |panel_id, cx| {
+                        pinned.read(cx).panel_is_pinned(panel_id)
+                    }),
+                    close_all: Rc::new(move |window, cx| {
+                        close_all.update(cx, |this, cx| {
+                            this.close_all_tabs(window, cx);
+                        });
+                    }),
+                    close_saved: Rc::new(move |window, cx| {
+                        close_saved.update(cx, |this, cx| {
+                            this.close_saved_tabs(window, cx);
                         });
                     }),
                 });

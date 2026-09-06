@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use super::buffer::{Buffer, ChannelScope, RegionId};
@@ -13,6 +13,7 @@ use super::regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 use super::selection::SamplePosition;
 use super::snap::nearest_zero_crossing;
 use crate::components::waveform::WaveformDataProvider;
+use crate::monitor::MonitorChain;
 use crate::progress::ProgressHandle;
 
 const DRAG_THRESHOLD_SAMPLES: usize = 0;
@@ -25,6 +26,9 @@ pub struct BufferDocument {
     pub snap_zero_crossings: bool,
     pub snap_to_marker: bool,
     pub snap_marker_disabled: HashSet<String>,
+    /// When set, this composition restores its own monitor DSP parameters.
+    pub monitor_params_pinned: bool,
+    pub pinned_monitor_params: HashMap<MonitorChain, HashMap<String, f32>>,
     pub progress: ProgressHandle,
     region_drag_anchor: Option<usize>,
     region_drag_id: Option<RegionId>,
@@ -45,10 +49,15 @@ impl BufferDocument {
             composition,
             buffer,
             selection: RegionCollection::new(SELECTION_COLLECTION),
-            current_position: None,
+            current_position: Some(SamplePosition {
+                sample: 0,
+                channels: ChannelScope::all(),
+            }),
             snap_zero_crossings: false,
             snap_to_marker: false,
             snap_marker_disabled: HashSet::new(),
+            monitor_params_pinned: false,
+            pinned_monitor_params: HashMap::new(),
             progress: ProgressHandle::new(),
             region_drag_anchor: None,
             region_drag_id: None,
@@ -556,7 +565,10 @@ impl BufferDocument {
 
     pub fn reset_for_new_buffer(&mut self) {
         self.selection.clear();
-        self.current_position = None;
+        self.current_position = Some(SamplePosition {
+            sample: 0,
+            channels: ChannelScope::all(),
+        });
         self.clear_drag();
     }
 
@@ -830,6 +842,16 @@ mod tests {
         assert!(region.channels.applies_to(0));
         assert!(region.channels.applies_to(1));
         let _ = region.end;
+    }
+
+    #[test]
+    fn new_document_caret_starts_at_zero() {
+        let mut doc = test_document(1000);
+        assert_eq!(doc.current_position.as_ref().map(|p| p.sample), Some(0));
+        doc.set_position(50, ChannelScope::all());
+        doc.reset_for_new_buffer();
+        assert_eq!(doc.current_position.as_ref().map(|p| p.sample), Some(0));
+        assert!(doc.selection.regions.is_empty());
     }
 
     #[test]

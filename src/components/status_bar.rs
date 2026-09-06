@@ -73,6 +73,8 @@ pub struct FileStatusBar {
     layout: Option<LayoutPicker>,
     on_monitor: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     monitor_selected: bool,
+    on_preview: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    preview_selected: bool,
 }
 
 impl FileStatusBar {
@@ -83,6 +85,8 @@ impl FileStatusBar {
             layout: None,
             on_monitor: None,
             monitor_selected: false,
+            on_preview: None,
+            preview_selected: false,
         }
     }
 
@@ -105,6 +109,16 @@ impl FileStatusBar {
         self.monitor_selected = selected;
         self
     }
+
+    pub fn with_preview(mut self, on_preview: Option<Rc<dyn Fn(&mut Window, &mut App)>>) -> Self {
+        self.on_preview = on_preview;
+        self
+    }
+
+    pub fn with_preview_selected(mut self, selected: bool) -> Self {
+        self.preview_selected = selected;
+        self
+    }
 }
 
 impl RenderOnce for FileStatusBar {
@@ -117,6 +131,10 @@ impl RenderOnce for FileStatusBar {
             .max_h(HEIGHT)
             .py_0()
             .text_xs();
+        let muted = cx.theme().muted_foreground;
+        if let Some(on_preview) = self.on_preview {
+            bar = bar.left(preview_button(on_preview, self.preview_selected, muted, cx));
+        }
         let has_file = self.file.is_some();
         if let Some(file) = self.file {
             bar = bar
@@ -137,7 +155,6 @@ impl RenderOnce for FileStatusBar {
             bar = bar.child(message.clone());
         }
         if self.on_monitor.is_some() || self.layout.is_some() {
-            let muted = cx.theme().muted_foreground;
             if let Some(layout) = self.layout {
                 bar = bar.right(layout_dropdown(layout, muted));
             }
@@ -157,6 +174,39 @@ impl IconNamed for MonitorSpeakerIcon {
     fn path(self) -> SharedString {
         "icons/monitor-speaker.svg".into()
     }
+}
+
+struct EarIcon;
+
+impl IconNamed for EarIcon {
+    fn path(self) -> SharedString {
+        "icons/ear.svg".into()
+    }
+}
+
+fn preview_button(
+    on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+    selected: bool,
+    muted: Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let color = if selected { theme.cyan } else { muted };
+    Button::new("preview-toggle")
+        .ghost()
+        .size(MONITOR_ICON_SIZE)
+        .p_0()
+        .text_color(color)
+        .child(
+            Icon::new(EarIcon)
+                .with_size(MONITOR_ICON_SIZE)
+                .text_color(color),
+        )
+        .tooltip("Preview")
+        .toggled(selected)
+        .on_click(move |_, window, cx| {
+            (on_click)(window, cx);
+        })
 }
 
 fn monitor_button(

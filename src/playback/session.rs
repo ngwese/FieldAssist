@@ -53,6 +53,53 @@ impl PlaybackSession {
         self.engine.shared.set_monitor(chain, channels);
     }
 
+    pub fn commit_monitor_for_document(&self, doc: &mut BufferDocument) {
+        let snapshot = self.engine.shared.flush_monitor_working();
+        if doc.monitor_params_pinned {
+            doc.pinned_monitor_params = snapshot;
+        } else {
+            self.engine.shared.merge_monitor_into_session(&snapshot);
+        }
+    }
+
+    pub fn commit_monitor_to_session(&self) {
+        let snapshot = self.engine.shared.flush_monitor_working();
+        self.engine.shared.merge_monitor_into_session(&snapshot);
+    }
+
+    pub fn load_monitor_for_document(&self, doc: &BufferDocument) {
+        let mut working = self.engine.shared.monitor_session_params();
+        if doc.monitor_params_pinned {
+            for (chain, params) in &doc.pinned_monitor_params {
+                working.insert(*chain, params.clone());
+            }
+        }
+        let chain = doc
+            .composition
+            .read()
+            .unwrap()
+            .monitor_chain()
+            .and_then(MonitorChain::parse);
+        let channels = doc
+            .composition
+            .read()
+            .unwrap()
+            .playback_channels()
+            .map(|ch| ch.to_vec());
+        self.engine
+            .shared
+            .replace_monitor_working(chain, channels, working);
+    }
+
+    pub fn load_session_monitor(&self, composition: &Composition) {
+        let chain = composition.monitor_chain().and_then(MonitorChain::parse);
+        let channels = composition.playback_channels().map(|ch| ch.to_vec());
+        let working = self.engine.shared.monitor_session_params();
+        self.engine
+            .shared
+            .replace_monitor_working(chain, channels, working);
+    }
+
     pub fn set_monitor_param(&self, address: &str, value: f32) {
         self.engine.shared.set_monitor_param(address, value);
     }
@@ -126,9 +173,12 @@ impl PlaybackSession {
                 if let Some((start, end)) = self.active_region {
                     self.playhead.set_in_out(start, end);
                 }
-                if let Some(pos) = &doc.current_position {
-                    self.playhead.set_position(pos.sample);
-                }
+                let caret = doc
+                    .current_position
+                    .as_ref()
+                    .map(|pos| pos.sample)
+                    .unwrap_or(0);
+                self.playhead.set_position(caret);
                 self.apply_to_engine();
             }
             return;
@@ -137,6 +187,11 @@ impl PlaybackSession {
         let new_region = Self::region_bounds_from_doc(doc);
         let region_changed = new_region != self.active_region;
         self.active_region = new_region;
+        let caret = doc
+            .current_position
+            .as_ref()
+            .map(|pos| pos.sample)
+            .unwrap_or(0);
 
         if let Some((start, end)) = new_region {
             self.playhead.set_in_out(start, end);
@@ -144,17 +199,17 @@ impl PlaybackSession {
                 if region_changed {
                     self.playhead.set_position(start);
                 }
-            } else if let Some(pos) = &doc.current_position {
-                self.playhead.set_position(pos.sample);
+            } else {
+                self.playhead.set_position(caret);
             }
         } else {
             self.playhead.clear_in_out();
             if self.transport.is_playing() {
-                if let Some(pos) = &doc.current_position {
-                    self.playhead.set_position(pos.sample);
+                if doc.current_position.is_some() {
+                    self.playhead.set_position(caret);
                 }
-            } else if let Some(pos) = &doc.current_position {
-                self.playhead.set_position(pos.sample);
+            } else {
+                self.playhead.set_position(caret);
             }
         }
         self.apply_to_engine();
@@ -170,6 +225,13 @@ impl PlaybackSession {
 
     pub fn start(&mut self) {
         self.playhead.set_position(self.playhead.playback_start());
+        self.transport.set_state(TransportState::Playing);
+        self.engine.shared.bump_epoch();
+        self.apply_to_engine();
+    }
+
+    pub fn play_from(&mut self, sample: usize) {
+        self.playhead.set_position(sample);
         self.transport.set_state(TransportState::Playing);
         self.engine.shared.bump_epoch();
         self.apply_to_engine();

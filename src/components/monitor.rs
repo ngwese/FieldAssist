@@ -10,13 +10,13 @@ use gpui::{
     Styled as _, Subscription, WeakEntity, Window,
 };
 use gpui_component::{
-    button::Button,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     slider::{Slider, SliderEvent, SliderScale, SliderState},
-    v_flex, ActiveTheme as _, Sizable as _,
+    v_flex, ActiveTheme as _, Icon, IconNamed, Sizable as _,
 };
 
 use crate::app::AppView;
@@ -52,6 +52,7 @@ impl MonitorPanel {
 
     pub fn set_target(&mut self, document: Entity<BufferDocument>, cx: &mut Context<Self>) {
         self.document = Some(document);
+        self.bound_json = None;
         if let Some(document) = &self.document {
             self._document_observe = Some(cx.observe(document, |_, _, cx| cx.notify()));
         }
@@ -137,8 +138,9 @@ impl Render for MonitorPanel {
                 .into_any_element();
         };
 
-        let (chain_id, playback, channel_count, labels) = {
-            let composition = document.read(cx).composition.read().unwrap();
+        let (chain_id, playback, channel_count, labels, params_pinned) = {
+            let doc = document.read(cx);
+            let composition = doc.composition.read().unwrap();
             let n = composition.channel_count();
             let labels: Vec<String> = (0..n).map(|ch| composition.channel_label(ch)).collect();
             (
@@ -146,6 +148,7 @@ impl Render for MonitorPanel {
                 composition.playback_channels().map(|ch| ch.to_vec()),
                 n,
                 labels,
+                doc.monitor_params_pinned,
             )
         };
         let chain = chain_id.as_deref().and_then(MonitorChain::parse);
@@ -194,7 +197,7 @@ impl Render for MonitorPanel {
             .px_2()
             .py_2()
             .gap_3()
-            .child(section_label("Chain", muted))
+            .child(chain_header(params_pinned, app.clone(), muted, cx))
             .child(chain_dropdown(
                 chain_label,
                 chain_id.clone(),
@@ -256,6 +259,53 @@ impl Render for MonitorPanel {
 
 fn section_label(text: &'static str, muted: gpui::Hsla) -> impl IntoElement {
     div().text_xs().text_color(muted).child(text)
+}
+
+struct PinIcon;
+
+impl IconNamed for PinIcon {
+    fn path(self) -> gpui::SharedString {
+        "icons/pin.svg".into()
+    }
+}
+
+fn chain_header(
+    pinned: bool,
+    app: WeakEntity<AppView>,
+    muted: gpui::Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    let color = if pinned { cx.theme().cyan } else { muted };
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .child(section_label("Chain", muted))
+        .child(
+            Button::new("monitor-pin")
+                .ghost()
+                .xsmall()
+                .p_0()
+                .text_color(color)
+                .child(
+                    Icon::new(PinIcon)
+                        .with_size(gpui::px(14.))
+                        .text_color(color),
+                )
+                .tooltip(if pinned {
+                    "Unpin monitor parameters"
+                } else {
+                    "Pin monitor parameters"
+                })
+                .toggled(pinned)
+                .on_click(move |_, _, cx| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |this, cx| {
+                            this.toggle_monitor_params_pin(cx);
+                        });
+                    }
+                }),
+        )
 }
 
 fn menu_dropdown(
@@ -410,11 +460,12 @@ fn bind_sliders(
                 meta,
                 ..
             } => {
+                let start = live_or_init(app, address, *init, cx);
                 let mut state = SliderState::new()
                     .max(*max)
                     .min(*min)
                     .step((*step).abs().max(0.0001))
-                    .default_value(*init);
+                    .default_value(start);
                 if *min > 0.0
                     && meta_value(meta, "scale")
                         .is_some_and(|scale| scale.eq_ignore_ascii_case("log"))
@@ -440,6 +491,12 @@ fn bind_sliders(
             _ => {}
         }
     }
+}
+
+fn live_or_init(app: &WeakEntity<AppView>, address: &str, init: f32, cx: &App) -> f32 {
+    app.upgrade()
+        .and_then(|app| app.read(cx).monitor_param(address))
+        .unwrap_or(init)
 }
 
 fn collect_live_addresses(root: &FaustUiRoot) -> Vec<String> {

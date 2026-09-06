@@ -25,6 +25,8 @@ pub struct OpenDocument {
     pub source_path: Option<PathBuf>,
     pub project_path: Option<PathBuf>,
     pub tab_open: bool,
+    /// Pinned tabs stay in the bar; transient tabs may be replaced.
+    pub tab_pinned: bool,
 }
 
 /// Ordered list of open compositions and which one is active.
@@ -91,6 +93,7 @@ impl DocumentSession {
             source_path,
             project_path: None,
             tab_open: true,
+            tab_pinned: false,
         });
         self.active = Some(id);
         id
@@ -128,13 +131,50 @@ impl DocumentSession {
             return false;
         }
         doc.tab_open = false;
+        doc.tab_pinned = false;
         true
     }
 
     pub fn set_tab_open(&mut self, id: DocumentId, open: bool) {
         if let Some(doc) = self.get_mut(id) {
             doc.tab_open = open;
+            if !open {
+                doc.tab_pinned = false;
+            }
         }
+    }
+
+    /// Pin an open tab. Returns false if the document has no tab.
+    pub fn pin_tab(&mut self, id: DocumentId) -> bool {
+        let Some(doc) = self.get_mut(id) else {
+            return false;
+        };
+        if !doc.tab_open || doc.tab_pinned {
+            return false;
+        }
+        doc.tab_pinned = true;
+        true
+    }
+
+    pub fn tab_pinned(&self, id: DocumentId) -> bool {
+        self.get(id)
+            .is_some_and(|doc| doc.tab_open && doc.tab_pinned)
+    }
+
+    /// First open unpinned tab in `order` (typically center tab-bar order).
+    pub fn first_transient_in(&self, order: &[DocumentId]) -> Option<DocumentId> {
+        order.iter().copied().find(|&id| {
+            self.get(id)
+                .is_some_and(|doc| doc.tab_open && !doc.tab_pinned)
+        })
+    }
+
+    pub fn open_tab_ids(&self) -> Vec<DocumentId> {
+        self.documents
+            .iter()
+            .filter(|doc| doc.tab_open)
+            .map(|doc| doc.id)
+            .collect()
     }
 
     /// Drop the document from the session. If it was active, focus another.
@@ -241,5 +281,49 @@ mod tests {
         let id = DocumentId(42);
         assert_eq!(DocumentId::from_tree_id(&id.to_tree_id()), Some(id));
         assert_eq!(DocumentId::from_tree_id("nope"), None);
+    }
+
+    #[test]
+    fn new_tabs_are_transient() {
+        let mut session = DocumentSession::new();
+        let a = session.push(Some(path("a.wav")));
+        assert!(!session.tab_pinned(a));
+        assert!(session.get(a).unwrap().tab_open);
+    }
+
+    #[test]
+    fn pin_then_close_clears_pin() {
+        let mut session = DocumentSession::new();
+        let a = session.push(Some(path("a.wav")));
+        assert!(session.pin_tab(a));
+        assert!(session.tab_pinned(a));
+        assert!(session.close_tab(a));
+        assert!(!session.tab_pinned(a));
+        session.ensure_tab(a);
+        assert!(!session.tab_pinned(a));
+    }
+
+    #[test]
+    fn first_transient_skips_pinned_and_closed() {
+        let mut session = DocumentSession::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        let c = session.push(Some(path("c.wav")));
+        session.pin_tab(a);
+        session.close_tab(b);
+        assert_eq!(session.first_transient_in(&[a, b, c]), Some(c));
+    }
+
+    #[test]
+    fn closing_saved_tabs_leaves_dirty_tabs_open() {
+        let mut session = DocumentSession::new();
+        let saved = session.push(Some(path("a.wav")));
+        let dirty = session.push(Some(path("b.wav")));
+        session.pin_tab(dirty);
+        assert!(session.close_tab(saved));
+        assert!(!session.get(saved).unwrap().tab_open);
+        assert!(session.get(dirty).unwrap().tab_open);
+        assert!(session.tab_pinned(dirty));
+        assert_eq!(session.tab_open_count(), 1);
     }
 }

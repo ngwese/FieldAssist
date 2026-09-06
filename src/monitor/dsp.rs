@@ -19,6 +19,9 @@ pub trait MonitorDsp: Send {
     fn get_param(&self, address: &str) -> Option<f32>;
     fn ui_json(&self) -> &'static str;
     fn meter_addresses(&self) -> &[String];
+    fn control_addresses(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub fn create_dsp(chain: MonitorChain, sample_rate: u32) -> Box<dyn MonitorDsp> {
@@ -187,6 +190,14 @@ impl<D: FaustDsp<T = f32> + Send> MonitorDsp for FaustAdapter<D> {
 
     fn meter_addresses(&self) -> &[String] {
         &self.meters
+    }
+
+    fn control_addresses(&self) -> Vec<String> {
+        self.index_by_address
+            .keys()
+            .filter(|address| !self.meters.iter().any(|meter| meter == *address))
+            .cloned()
+            .collect()
     }
 }
 

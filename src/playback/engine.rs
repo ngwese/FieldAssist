@@ -102,6 +102,39 @@ impl PlaybackShared {
         self.monitor.lock().unwrap().set_param(address, value);
     }
 
+    pub fn flush_monitor_working(
+        &self,
+    ) -> std::collections::HashMap<MonitorChain, std::collections::HashMap<String, f32>> {
+        self.monitor.lock().unwrap().flush_working()
+    }
+
+    pub fn monitor_session_params(
+        &self,
+    ) -> std::collections::HashMap<MonitorChain, std::collections::HashMap<String, f32>> {
+        self.monitor.lock().unwrap().session_params()
+    }
+
+    pub fn merge_monitor_into_session(
+        &self,
+        params: &std::collections::HashMap<MonitorChain, std::collections::HashMap<String, f32>>,
+    ) {
+        self.monitor.lock().unwrap().merge_into_session(params);
+    }
+
+    pub fn replace_monitor_working(
+        &self,
+        chain: Option<MonitorChain>,
+        playback_channels: Option<Vec<usize>>,
+        working: std::collections::HashMap<MonitorChain, std::collections::HashMap<String, f32>>,
+    ) {
+        self.monitor.lock().unwrap().replace_working(
+            chain,
+            playback_channels,
+            self.output_rate,
+            working,
+        );
+    }
+
     pub fn monitor_param(&self, address: &str) -> Option<f32> {
         self.monitor.lock().unwrap().get_param(address)
     }

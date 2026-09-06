@@ -25,6 +25,10 @@ pub struct MonitorHost {
     prev_out: [Vec<f32>; 2],
     pending_params: Vec<(String, f32)>,
     meters: HashMap<String, f32>,
+    /// Per-chain values for the composition currently being monitored.
+    working_params: HashMap<MonitorChain, HashMap<String, f32>>,
+    /// Session-wide defaults. Updated only when leaving an unpinned composition.
+    session_params: HashMap<MonitorChain, HashMap<String, f32>>,
 }
 
 impl MonitorHost {
@@ -45,6 +49,8 @@ impl MonitorHost {
             prev_out: [Vec::new(), Vec::new()],
             pending_params: Vec::new(),
             meters: HashMap::new(),
+            working_params: HashMap::new(),
+            session_params: HashMap::new(),
         }
     }
 
@@ -65,6 +71,23 @@ impl MonitorHost {
     }
 
     pub fn get_param(&self, address: &str) -> Option<f32> {
+        if let Some((_, value)) = self
+            .pending_params
+            .iter()
+            .rev()
+            .find(|(pending, _)| pending == address)
+        {
+            return Some(*value);
+        }
+        if let Some(chain) = self.chain {
+            if let Some(value) = self
+                .working_params
+                .get(&chain)
+                .and_then(|params| params.get(address))
+            {
+                return Some(*value);
+            }
+        }
         self.dsp.as_ref()?.get_param(address)
     }
 
@@ -77,7 +100,55 @@ impl MonitorHost {
     }
 
     pub fn set_param(&mut self, address: impl Into<String>, value: f32) {
-        self.pending_params.push((address.into(), value));
+        let address = address.into();
+        if let Some(chain) = self.chain {
+            self.working_params
+                .entry(chain)
+                .or_default()
+                .insert(address.clone(), value);
+        }
+        self.pending_params.push((address, value));
+    }
+
+    pub fn flush_working(&mut self) -> HashMap<MonitorChain, HashMap<String, f32>> {
+        self.stash_chain_params();
+        self.working_params.clone()
+    }
+
+    pub fn session_params(&self) -> HashMap<MonitorChain, HashMap<String, f32>> {
+        self.session_params.clone()
+    }
+
+    pub fn merge_into_session(&mut self, params: &HashMap<MonitorChain, HashMap<String, f32>>) {
+        for (chain, values) in params {
+            self.session_params.insert(*chain, values.clone());
+        }
+    }
+
+    pub fn replace_working(
+        &mut self,
+        chain: Option<MonitorChain>,
+        playback_channels: Option<Vec<usize>>,
+        sample_rate: u32,
+        working: HashMap<MonitorChain, HashMap<String, f32>>,
+    ) {
+        self.pending_params.clear();
+        self.working_params = working;
+        let sample_rate = sample_rate.max(1);
+        let chain_changed = self.chain != chain;
+        let rate_changed = self.sample_rate != sample_rate;
+        self.playback_channels = playback_channels;
+        self.sample_rate = sample_rate;
+        self.fade_len = fade_frames(sample_rate);
+        if chain_changed || rate_changed {
+            self.recreate_dsp(chain);
+        } else if let Some(chain) = chain {
+            if self.working_params.contains_key(&chain) {
+                self.apply_working_params(chain);
+            } else {
+                self.recreate_dsp(Some(chain));
+            }
+        }
     }
 
     pub fn set_config(
@@ -99,14 +170,20 @@ impl MonitorHost {
             }
             return;
         }
+        self.stash_chain_params();
+        self.recreate_dsp(chain);
+    }
+
+    fn recreate_dsp(&mut self, chain: Option<MonitorChain>) {
         self.chain = chain;
         match chain {
             Some(chain) => {
-                let next = create_dsp(chain, sample_rate);
+                let next = create_dsp(chain, self.sample_rate);
                 if let Some(old) = self.dsp.replace(next) {
                     self.prev_dsp = Some(old);
                     self.fade_remaining = self.fade_len.max(1);
                 }
+                self.apply_working_params(chain);
             }
             None => {
                 self.prev_dsp = self.dsp.take();
@@ -114,6 +191,41 @@ impl MonitorHost {
                     self.fade_remaining = self.fade_len.max(1);
                 }
             }
+        }
+    }
+
+    fn stash_chain_params(&mut self) {
+        let Some(chain) = self.chain else {
+            self.pending_params.clear();
+            return;
+        };
+        let mut saved = self.working_params.remove(&chain).unwrap_or_default();
+        if let Some(dsp) = self.dsp.as_ref() {
+            for address in dsp.control_addresses() {
+                if let Some(value) = dsp.get_param(&address) {
+                    saved.entry(address).or_insert(value);
+                }
+            }
+        }
+        for (address, value) in self.pending_params.drain(..) {
+            saved.insert(address, value);
+        }
+        self.working_params.insert(chain, saved);
+    }
+
+    fn apply_working_params(&mut self, chain: MonitorChain) {
+        let Some(saved) = self.working_params.get(&chain).cloned() else {
+            return;
+        };
+        if let Some(dsp) = self.dsp.as_mut() {
+            for (address, value) in &saved {
+                dsp.set_param(address, *value);
+            }
+        }
+        for (address, value) in saved {
+            self.pending_params
+                .retain(|(pending, _)| pending != &address);
+            self.pending_params.push((address, value));
         }
     }
 
@@ -463,5 +575,103 @@ mod tests {
         host.process_gathered(&gathered, 4, 1, &mut out, 2);
         assert!((out[0] - 0.1).abs() < 1e-6);
         assert!((out[1] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chain_params_survive_switching_chains() {
+        let mut host = MonitorHost::new(44100);
+        host.set_config(Some(MonitorChain::Stereo), None, 44100);
+        host.set_param("/MonitorStereo/Monitor_Gain", -6.0);
+        host.set_config(Some(MonitorChain::Foa), None, 44100);
+        assert!(host.get_param("/MonitorStereo/Monitor_Gain").is_none());
+        host.set_config(Some(MonitorChain::Stereo), None, 44100);
+        let gain = host
+            .get_param("/MonitorStereo/Monitor_Gain")
+            .expect("stereo gain restored");
+        assert!((gain + 6.0).abs() < 1e-5, "{gain}");
+    }
+
+    #[test]
+    fn chain_params_survive_sample_rate_change() {
+        let mut host = MonitorHost::new(44100);
+        host.set_config(Some(MonitorChain::Stereo), None, 44100);
+        host.set_param("/MonitorStereo/Stereo_Width", 40.0);
+        host.set_config(Some(MonitorChain::Stereo), None, 48000);
+        let width = host
+            .get_param("/MonitorStereo/Stereo_Width")
+            .expect("width restored");
+        assert!((width - 40.0).abs() < 1e-5, "{width}");
+    }
+
+    #[test]
+    fn live_edits_do_not_change_session_until_commit() {
+        let mut host = MonitorHost::new(44100);
+        host.set_config(Some(MonitorChain::Stereo), None, 44100);
+        host.set_param("/MonitorStereo/Monitor_Gain", 0.0);
+        let initial = host.flush_working();
+        host.merge_into_session(&initial);
+
+        host.set_param("/MonitorStereo/Monitor_Gain", -6.0);
+        let session_gain = host
+            .session_params()
+            .get(&MonitorChain::Stereo)
+            .and_then(|params| params.get("/MonitorStereo/Monitor_Gain"))
+            .copied()
+            .unwrap_or(0.0);
+        assert!(session_gain.abs() < 1e-5, "{session_gain}");
+
+        let live = host
+            .get_param("/MonitorStereo/Monitor_Gain")
+            .expect("live gain");
+        assert!((live + 6.0).abs() < 1e-5, "{live}");
+    }
+
+    #[test]
+    fn leaving_unpinned_promotes_working_to_session() {
+        let mut host = MonitorHost::new(44100);
+        host.set_config(Some(MonitorChain::Stereo), None, 44100);
+        host.set_param("/MonitorStereo/Monitor_Gain", -3.0);
+        let snapshot = host.flush_working();
+        host.merge_into_session(&snapshot);
+        host.replace_working(Some(MonitorChain::Stereo), None, 44100, HashMap::new());
+        host.replace_working(
+            Some(MonitorChain::Stereo),
+            None,
+            44100,
+            host.session_params(),
+        );
+        let restored = host
+            .get_param("/MonitorStereo/Monitor_Gain")
+            .expect("session gain");
+        assert!((restored + 3.0).abs() < 1e-5, "{restored}");
+    }
+
+    #[test]
+    fn leaving_pinned_does_not_promote_to_session() {
+        let mut host = MonitorHost::new(44100);
+        host.set_config(Some(MonitorChain::Stereo), None, 44100);
+        host.set_param("/MonitorStereo/Monitor_Gain", 0.0);
+        let session = host.flush_working();
+        host.merge_into_session(&session);
+
+        host.set_param("/MonitorStereo/Monitor_Gain", -12.0);
+        let pinned = host.flush_working();
+
+        host.replace_working(
+            Some(MonitorChain::Stereo),
+            None,
+            44100,
+            host.session_params(),
+        );
+        let session_live = host
+            .get_param("/MonitorStereo/Monitor_Gain")
+            .expect("session after leaving pinned");
+        assert!(session_live.abs() < 1e-5, "{session_live}");
+
+        host.replace_working(Some(MonitorChain::Stereo), None, 44100, pinned);
+        let pinned_live = host
+            .get_param("/MonitorStereo/Monitor_Gain")
+            .expect("pinned restore");
+        assert!((pinned_live + 12.0).abs() < 1e-5, "{pinned_live}");
     }
 }
