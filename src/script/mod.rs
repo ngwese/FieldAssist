@@ -920,6 +920,10 @@ mod tests {
         assert_eq!(layout.rows[1].cells.len(), 1);
         assert_eq!(layout.rows[1].cells[0].display_name, "Review");
         assert_eq!(layout.rows[1].cells[0].weight, 1.0);
+        assert_eq!(
+            host.menu_workflows(),
+            vec![("review".into(), "Review".into())]
+        );
     }
 
     #[test]
@@ -1031,6 +1035,90 @@ mod tests {
             .iter()
             .all(|doc| doc.file_path() != Some(nested.join("notes.txt").as_path())));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn menu_workflows_sorted_alphabetically_by_display_name() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app:declare_workflow({
+              name = "zeta",
+              display_name = "Zebra",
+              scopes = { "menu" },
+            }, function() end)
+            app:declare_workflow({
+              name = "alpha",
+              display_name = "Apple",
+              scopes = { "drag-drop", "menu" },
+            }, function() end)
+            app:declare_workflow({
+              name = "drop",
+              display_name = "Drop Only",
+              scopes = { "drag-drop" },
+            }, function() end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let menu: Vec<_> = host
+            .menu_workflows()
+            .into_iter()
+            .map(|(_, display)| display)
+            .collect();
+        assert_eq!(menu, ["Apple", "Zebra"]);
+    }
+
+    #[test]
+    fn menu_start_omits_paths_and_uses_menu_scope() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app:declare_workflow({
+              name = "probe",
+              display_name = "Probe",
+              scopes = { "menu" },
+            }, function(payload)
+              app:info("probe", payload.scope)
+              app:info("probe", tostring(payload.paths))
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.invoke_menu_workflow("probe").expect("menu start");
+        let messages: Vec<_> = host
+            .take_logs()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert_eq!(messages, ["menu", "nil"]);
+    }
+
+    #[test]
+    fn review_menu_start_marks_open_documents_todo() {
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        let _ = host.take_logs();
+        assert!(world
+            .borrow()
+            .session
+            .documents()
+            .iter()
+            .all(|doc| doc.group.is_none()));
+        host.invoke_menu_workflow("review").expect("review menu");
+        let logs = host.take_logs();
+        assert!(
+            logs.iter()
+                .any(|entry| entry.message.contains("menu") && entry.message.contains("todo")),
+            "{logs:?}"
+        );
+        assert!(world
+            .borrow()
+            .session
+            .documents()
+            .iter()
+            .all(|doc| doc.group.as_deref() == Some("todo")));
+        assert_eq!(world.borrow().session.workflow(), Some("review"));
+        assert_eq!(host.active_workflow_name().as_deref(), Some("review"));
     }
 
     #[test]

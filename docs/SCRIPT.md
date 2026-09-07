@@ -70,7 +70,7 @@ app:declare_workflow({
     color = app.theme.semantic.success,
   },
 }, function(payload)
-  -- payload.paths, payload.scope ("drag-drop")
+  -- payload.scope ("drag-drop" or "menu"); payload.paths for drag-drop
 end)
 app:finish_workflow()
 app:cancel_workflow()
@@ -211,7 +211,7 @@ toolbar.
 local Review = app:create_workflow({
   name = "review",
   display_name = "Review",
-  scopes = { "drag-drop" },
+  scopes = { "drag-drop", "menu" },
   drop = { row = 2, priority = 1, color = app.theme.semantic.info },
 })
 
@@ -233,12 +233,13 @@ Review:set_toolbar({
 app:declare_workflow(Review)
 ```
 
-`:start` receives `{ paths = { ... }, scope = "drag-drop" }`, the same payload
-as the one-shot shorthand. `:on("command", handler)` registers a workflow-local
-command callback (last registration wins). These strings are not global
-`app:command` / keymap ids. `:set_toolbar(items)` or `:set_toolbar(nil)` may be
-called from `start`, `resume`, or a command handler. Missing optional methods
-are no-ops.
+`:start` receives `{ scope = "drag-drop", paths = { ... } }` from the drop
+overlay, or `{ scope = "menu" }` (no `paths`) from the Workflow menu. The
+one-shot shorthand uses the same payload. `:on("command", handler)` registers a
+workflow-local command callback (last registration wins). These strings are not
+global `app:command` / keymap ids. `:set_toolbar(items)` or `:set_toolbar(nil)`
+may be called from `start`, `resume`, or a command handler. Missing optional
+methods are no-ops.
 
 `app:finish_workflow()` / `app:cancel_workflow()` end the run: the host calls
 `:finish(session)` or `:cancel(session)` if defined, clears `s.workflow`, and
@@ -257,6 +258,12 @@ row, higher `drop.priority` is first (left); ties sort by `display_name`.
 Box width is `priority / sum(priorities in the row)`. Declaring a workflow
 during a drag does not reshape the overlay; the next drag rebuilds from the
 live registry.
+
+The **Workflow** menu sits after View. **Cancel** is first and is disabled when
+no workflow is running on the session. A divider follows, then one item per
+workflow whose `scopes` include `"menu"`, labeled with `display_name` and
+sorted alphabetically. Choosing an item starts that workflow with
+`scope == "menu"` and no `payload.paths`.
 
 Use `app:alert(subject, body)` for a user-visible error. Uncaught Lua errors go
 to the Script panel. Drop colors may be `{ r, g, b, a }` or a value from
@@ -282,7 +289,8 @@ Built-in **Add** opens audio/`.facomp` into the current session. A dropped
 not already in the current session is opened (existing path wins). Built-in
 **Replace** opens a `.fasession` as a session replace, or calls
 `c:replace(path)` on the active document for audio/`.facomp`. Built-in
-**Review** is a stateful mock: dropped files are kept as-is, dropped folders
+**Review** is a stateful mock: Workflow → Review (`scope == "menu"`) marks every
+open session document `"todo"`. Dropped files are kept as-is, dropped folders
 are expanded with `app:find_files` to readable audio/`.facomp` files, each
 opened document is placed in the `"todo"` group, and the toolbar offers Next /
 Skip / Finish. Finish warns if any session documents are still in `"todo"`.

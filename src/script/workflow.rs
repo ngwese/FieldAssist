@@ -6,6 +6,7 @@ use mlua::{Function, Table, Value};
 use super::marker::color_from_value;
 
 pub const SCOPE_DRAG_DROP: &str = "drag-drop";
+pub const SCOPE_MENU: &str = "menu";
 pub const DEFAULT_WORKFLOW_COLOR: [f32; 4] = [0.45, 0.45, 0.5, 1.0];
 
 #[derive(Clone, Debug)]
@@ -354,6 +355,20 @@ pub fn layout_drop_targets<'a>(
     DropLayout { rows }
 }
 
+/// Workflows bound to the `"menu"` scope, sorted by `display_name` then `name`.
+pub fn workflows_for_menu(workflows: &[WorkflowMeta]) -> Vec<&WorkflowMeta> {
+    let mut items: Vec<&WorkflowMeta> = workflows
+        .iter()
+        .filter(|workflow| workflow.scopes.iter().any(|scope| scope == SCOPE_MENU))
+        .collect();
+    items.sort_by(|a, b| {
+        a.display_name
+            .cmp(&b.display_name)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    items
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +418,21 @@ mod tests {
             .map(|cell| (cell.weight * 100.0).round() as i32)
             .collect();
         assert_eq!(weights, [50, 25, 25]);
+    }
+
+    #[test]
+    fn menu_workflows_sorted_by_display_name() {
+        let workflows = [
+            meta("zeta", "Zebra", 1, 1.0, &[SCOPE_MENU]),
+            meta("drop", "Drop Only", 1, 1.0, &[SCOPE_DRAG_DROP]),
+            meta("alpha", "Apple", 1, 1.0, &[SCOPE_DRAG_DROP, SCOPE_MENU]),
+            meta("same_b", "Same", 1, 1.0, &[SCOPE_MENU]),
+            meta("same_a", "Same", 1, 1.0, &[SCOPE_MENU]),
+        ];
+        let names: Vec<_> = workflows_for_menu(&workflows)
+            .into_iter()
+            .map(|workflow| workflow.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "same_a", "same_b", "zeta"]);
     }
 }

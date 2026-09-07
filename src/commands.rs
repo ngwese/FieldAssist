@@ -54,6 +54,7 @@ actions!(
         AddMarkerAtHover,
         AddMarker,
         DeleteMarker,
+        CancelWorkflow,
     ]
 );
 
@@ -66,6 +67,12 @@ pub struct SetActiveMarkerType {
 #[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
 #[action(namespace = snd_review)]
 pub struct ToggleSnapMarkerType {
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
+#[action(namespace = snd_review)]
+pub struct StartWorkflow {
     pub name: String,
 }
 

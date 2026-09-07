@@ -28,14 +28,14 @@ use gpui_component::{
 
 use crate::assets::AppAssets;
 use crate::commands::{
-    install_keybindings, About, AddMarker, AddMarkerAtHover, Close, DeleteMarker, EditClear,
-    EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim, EditUndo,
-    InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
+    install_keybindings, About, AddMarker, AddMarkerAtHover, CancelWorkflow, Close, DeleteMarker,
+    EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim,
+    EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
     Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
-    SetActiveMarkerType, SnapToMarker, ToggleSnapMarkerType, TransportEnd, TransportHome,
-    TransportLoop, TransportNext, TransportPlayPause, TransportPrevious, TransportStart,
-    TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewScript, ViewZoomIn,
-    ViewZoomOut,
+    SetActiveMarkerType, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
+    TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPrevious,
+    TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewScript,
+    ViewZoomIn, ViewZoomOut,
 };
 use crate::components::app_menu::AppMenuBar;
 use crate::components::dock_skin::{CenterTabBarHandler, CompactDockSkin};
@@ -1035,6 +1035,8 @@ impl AppView {
             snap_to_marker,
             marker_types,
             snap_disabled,
+            workflow_running: self.script.active_workflow_name().is_some(),
+            menu_workflows: self.script.menu_workflows(),
         }
     }
 
@@ -1172,6 +1174,7 @@ impl AppView {
             self.dock_area.update(cx, |_, cx| cx.notify());
         }
         self.refresh_workflow_bar(cx);
+        self.sync_view_menus(cx);
     }
 
     fn refresh_workflow_bar(&mut self, cx: &mut Context<Self>) {
@@ -1548,6 +1551,33 @@ impl AppView {
         self.clear_drop_layout(cx);
         let _guard = crate::script::enter(self, window, cx);
         if let Err(err) = self.script.invoke_workflow(name, paths) {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("workflow `{name}`: {err}"), cx);
+            });
+        }
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn invoke_menu_workflow(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.invoke_menu_workflow(name) {
             self.repl.update(cx, |repl, cx| {
                 repl.append_error(&format!("workflow `{name}`: {err}"), cx);
             });
@@ -3642,6 +3672,19 @@ fn delete_marker(_: &DeleteMarker, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.delete_marker", cx);
 }
 
+fn cancel_workflow_action(_: &CancelWorkflow, cx: &mut App) {
+    update_open_view(cx, |this, window, cx| {
+        this.cancel_outgoing_workflow(window, cx);
+    });
+}
+
+fn start_workflow_action(action: &StartWorkflow, cx: &mut App) {
+    let name = action.name.clone();
+    update_open_view(cx, move |this, window, cx| {
+        this.invoke_menu_workflow(&name, window, cx);
+    });
+}
+
 struct AppMenuState {
     explorer: bool,
     detail: bool,
@@ -3651,6 +3694,8 @@ struct AppMenuState {
     snap_to_marker: bool,
     marker_types: Vec<String>,
     snap_disabled: HashSet<String>,
+    workflow_running: bool,
+    menu_workflows: Vec<(String, String)>,
 }
 
 fn marker_type_menu_item(name: &str, active: &str) -> MenuItem {
@@ -3739,8 +3784,23 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("Zoom Out", ViewZoomOut),
             MenuItem::action("Reset View", ViewFitAll),
         ]),
+        workflow_menu(state),
         Menu::new("Help").items([MenuItem::action("About...", About)]),
     ]
+}
+
+fn workflow_menu(state: &AppMenuState) -> Menu {
+    let mut items = vec![
+        MenuItem::action("Cancel", CancelWorkflow).disabled(!state.workflow_running),
+        MenuItem::separator(),
+    ];
+    for (name, display_name) in &state.menu_workflows {
+        items.push(MenuItem::action(
+            display_name.clone(),
+            StartWorkflow { name: name.clone() },
+        ));
+    }
+    Menu::new("Workflow").items(items)
 }
 
 struct ContentForeground(gpui::Hsla);
@@ -3815,6 +3875,8 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(add_marker_at_hover);
     cx.on_action(add_marker);
     cx.on_action(delete_marker);
+    cx.on_action(cancel_workflow_action);
+    cx.on_action(start_workflow_action);
     install_keybindings(cx);
     apply_app_menus(
         &AppMenuState {
@@ -3829,6 +3891,8 @@ fn install_app_menu(cx: &mut App) {
                 .map(|(name, _)| (*name).to_string())
                 .collect(),
             snap_disabled: HashSet::new(),
+            workflow_running: false,
+            menu_workflows: Vec::new(),
         },
         cx,
     );

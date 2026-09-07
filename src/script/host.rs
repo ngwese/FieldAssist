@@ -22,7 +22,8 @@ use super::layout::ChannelLayoutDef;
 use super::session::LuaSession;
 use super::workflow::{
     layout_drop_targets, prototype_is_stateful, prototype_method, toolbar_from_prototype,
-    DropLayout, ToolbarItem, WorkflowDef, WorkflowMeta, SCOPE_DRAG_DROP,
+    workflows_for_menu, DropLayout, ToolbarItem, WorkflowDef, WorkflowMeta, SCOPE_DRAG_DROP,
+    SCOPE_MENU,
 };
 
 pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
@@ -278,6 +279,27 @@ impl ScriptHost {
     }
 
     pub fn invoke_workflow(&self, name: &str, paths: &[PathBuf]) -> Result<(), String> {
+        self.start_workflow(name, SCOPE_DRAG_DROP, Some(paths))
+    }
+
+    pub fn invoke_menu_workflow(&self, name: &str) -> Result<(), String> {
+        self.start_workflow(name, SCOPE_MENU, None)
+    }
+
+    pub fn menu_workflows(&self) -> Vec<(String, String)> {
+        let metas = self.handle.workflow_metas();
+        workflows_for_menu(&metas)
+            .into_iter()
+            .map(|workflow| (workflow.name.clone(), workflow.display_name.clone()))
+            .collect()
+    }
+
+    fn start_workflow(
+        &self,
+        name: &str,
+        scope: &str,
+        paths: Option<&[PathBuf]>,
+    ) -> Result<(), String> {
         let proto = self
             .handle
             .inner
@@ -300,18 +322,18 @@ impl ScriptHost {
             }
         }
         let payload = self.lua.create_table().map_err(|err| err.to_string())?;
-        payload
-            .set("scope", SCOPE_DRAG_DROP)
-            .map_err(|err| err.to_string())?;
-        let path_table = self.lua.create_table().map_err(|err| err.to_string())?;
-        for (index, path) in paths.iter().enumerate() {
-            path_table
-                .set(index + 1, path.display().to_string())
+        payload.set("scope", scope).map_err(|err| err.to_string())?;
+        if let Some(paths) = paths {
+            let path_table = self.lua.create_table().map_err(|err| err.to_string())?;
+            for (index, path) in paths.iter().enumerate() {
+                path_table
+                    .set(index + 1, path.display().to_string())
+                    .map_err(|err| err.to_string())?;
+            }
+            payload
+                .set("paths", path_table)
                 .map_err(|err| err.to_string())?;
         }
-        payload
-            .set("paths", path_table)
-            .map_err(|err| err.to_string())?;
         if let Some(start) = prototype_method(&proto, "start") {
             start
                 .call::<()>((proto.clone(), payload))

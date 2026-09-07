@@ -1,4 +1,4 @@
--- Built-in drag-drop workflow: review dropped paths (stateful mock).
+-- Built-in workflow: review session documents (stateful mock).
 --
 -- create_workflow builds a prototype table; it is not registered until
 -- declare_workflow at the bottom of this file. Defining :suspend or :resume
@@ -7,8 +7,8 @@
 local Review = app:create_workflow({
   name = "review",
   display_name = "Review",
-  description = "Review dropped files",
-  scopes = { "drag-drop" },
+  description = "Review session documents",
+  scopes = { "drag-drop", "menu" },
   drop = { row = 2, priority = 1, color = app.theme.semantic.info },
 })
 
@@ -77,13 +77,23 @@ local function open_todo(path)
   end
 end
 
--- Host calls :start when files are dropped on the Review overlay cell.
--- Dropping Review again while it is already running calls :start a second
--- time. Folders are expanded to readable audio/.facomp files. After this
--- returns, the host binds the session.
+-- Host calls :start from the Workflow menu (`scope == "menu"`) or when files
+-- are dropped on the Review overlay cell. Dropping Review again while it is
+-- already running calls :start a second time. Folders are expanded to readable
+-- audio/.facomp files. After this returns, the host binds the session.
 function Review:start(payload)
-  local incoming = payload.paths or {}
   local scope = payload.scope or "?"
+  if scope == "menu" then
+    local s = app.session
+    local docs = s.documents or {}
+    for _, doc in ipairs(docs) do
+      doc.group = "todo"
+    end
+    app:info("review", string.format("menu: %d document(s) marked todo", #docs))
+    show_toolbar()
+    return
+  end
+  local incoming = payload.paths or {}
   app:info("review", string.format("%d path(s), scope=%s", #incoming, scope))
   if #incoming == 0 then
     app:info("review", "(none)")
