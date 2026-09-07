@@ -12,10 +12,10 @@ use crate::model::document::BufferDocument;
 use crate::model::Buffer;
 use crate::monitor::MonitorChain;
 
-use super::anchors::{collect_anchors, next_anchor, previous_anchor};
+use super::anchors::{collect_anchors, next_anchor, previous_anchor_near};
 use super::engine::PlaybackEngine;
 use super::playhead::Playhead;
-use super::provider::SharedCompositionProvider;
+use super::provider::{PlaybackDataProvider, SharedCompositionProvider};
 use super::transport::{Transport, TransportState};
 
 pub struct PlaybackSession {
@@ -267,35 +267,34 @@ impl PlaybackSession {
     }
 
     pub fn home(&mut self) {
-        self.playhead.set_position(self.playhead.playback_start());
-        self.transport.set_state(TransportState::Stopped);
-        self.apply_to_engine();
+        self.seek_playhead(self.playhead.playback_start());
     }
 
     pub fn end(&mut self) {
-        self.playhead.set_position(self.playhead.transport_end());
-        self.transport.set_state(TransportState::Stopped);
-        self.apply_to_engine();
+        self.seek_playhead(self.playhead.transport_end());
     }
 
     pub fn previous(&mut self) {
+        self.sync_playhead_from_engine();
         let pos = self.playhead.position();
-        if let Some(anchor) = previous_anchor(&self.anchors, pos) {
-            self.playhead.set_position(anchor);
+        let near = ((self.provider.frames() as f64) * 0.03).round() as usize;
+        if let Some(anchor) = previous_anchor_near(&self.anchors, pos, near) {
+            self.seek_playhead(anchor);
         }
-        if self.transport.state() == TransportState::Playing {
-            self.transport.set_state(TransportState::Stopped);
-        }
-        self.apply_to_engine();
     }
 
     pub fn next(&mut self) {
+        self.sync_playhead_from_engine();
         let pos = self.playhead.position();
         if let Some(anchor) = next_anchor(&self.anchors, pos) {
-            self.playhead.set_position(anchor);
+            self.seek_playhead(anchor);
         }
-        if self.transport.state() == TransportState::Playing {
-            self.transport.set_state(TransportState::Stopped);
+    }
+
+    fn seek_playhead(&mut self, sample: usize) {
+        self.playhead.set_position(sample);
+        if self.transport.is_playing() {
+            self.engine.shared.bump_epoch();
         }
         self.apply_to_engine();
     }

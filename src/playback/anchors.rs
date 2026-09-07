@@ -23,7 +23,23 @@ pub fn collect_anchors(doc: &BufferDocument) -> Vec<usize> {
 }
 
 pub fn previous_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
-    anchors.iter().copied().filter(|a| *a < pos).max()
+    previous_anchor_near(anchors, pos, 0)
+}
+
+/// If `pos` is within `near` samples after the previous anchor N, skip to N-1
+/// so repeated Previous presses can walk backward while playback is moving.
+pub fn previous_anchor_near(anchors: &[usize], pos: usize, near: usize) -> Option<usize> {
+    let n = anchors.iter().copied().filter(|a| *a < pos).max()?;
+    if pos - n <= near {
+        anchors
+            .iter()
+            .copied()
+            .filter(|a| *a < n)
+            .max()
+            .or(Some(n))
+    } else {
+        Some(n)
+    }
 }
 
 pub fn next_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
@@ -58,5 +74,16 @@ mod tests {
         assert_eq!(previous_anchor(&anchors, 150), Some(100));
         assert_eq!(next_anchor(&anchors, 150), Some(200));
         assert_eq!(next_anchor(&anchors, 250), None);
+    }
+
+    #[test]
+    fn previous_skips_anchor_when_within_near_window() {
+        let anchors = [50usize, 100, 200];
+        assert_eq!(previous_anchor_near(&anchors, 150, 30), Some(100));
+        assert_eq!(previous_anchor_near(&anchors, 120, 30), Some(50));
+        assert_eq!(previous_anchor_near(&anchors, 101, 30), Some(50));
+        assert_eq!(previous_anchor_near(&anchors, 100, 30), Some(50));
+        assert_eq!(previous_anchor_near(&anchors, 70, 30), Some(50));
+        assert_eq!(previous_anchor_near(&anchors, 150, 0), Some(100));
     }
 }

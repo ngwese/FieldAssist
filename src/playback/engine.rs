@@ -197,15 +197,7 @@ impl PlaybackShared {
         let step = src_rate as f64 / f64::from(self.output_rate.max(1));
         let epoch = self.epoch.load(Ordering::SeqCst);
         let origin = self.position.load(Ordering::SeqCst);
-
-        // A new Play issued while parked on the last sample should start over.
-        // Natural end-of-buffer always sets Stopped, so this only runs on a
-        // fresh Playing transition from the end.
-        let mut pos_f = if !looping && origin >= end {
-            start_bound as f64
-        } else {
-            origin as f64
-        };
+        let mut pos_f = origin as f64;
 
         let mut monitor = self.monitor.lock().unwrap();
         let n = PLAYBACK_READ_FRAMES * src_ch;
@@ -378,14 +370,14 @@ mod tests {
     }
 
     #[test]
-    fn play_from_last_sample_without_loop_restarts_from_start() {
+    fn playing_at_last_sample_without_loop_stops() {
         let shared = shared(100);
         shared.set_position(99);
         shared.set_transport(TransportState::Playing);
         let mut out = vec![0.0; 8];
         shared.fill_output(&mut out);
-        assert_eq!(shared.transport(), TransportState::Playing);
-        assert_eq!(shared.position(), 8);
+        assert_eq!(shared.transport(), TransportState::Stopped);
+        assert_eq!(shared.position(), 99);
     }
 
     #[test]
