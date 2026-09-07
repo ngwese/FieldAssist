@@ -15,6 +15,7 @@ use super::media::{MediaId, MediaPool, MediaRef};
 use super::pager::BlockPager;
 use super::tree::ClipTree;
 use crate::audio::{ProbedFile, PEAK_BLOCK};
+use crate::model::file_url::encode_file_url;
 use crate::model::regions::{RegionCollection, SELECTION_COLLECTION};
 use crate::progress::ProgressHandle;
 
@@ -238,7 +239,7 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.2);
         }
-        let (mut composition, warnings) = Self::from_json_reprobing(&json)?;
+        let (mut composition, warnings) = Self::from_json_reprobing_at(&json, path.parent())?;
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.85);
         }
@@ -261,7 +262,7 @@ impl Composition {
     }
 
     pub fn save_to_path(&mut self, path: &Path) -> Result<()> {
-        write_atomic(path, &self.to_json()?)?;
+        write_atomic(path, &self.to_json_with_base(path.parent())?)?;
         self.mark_clean();
         Ok(())
     }
@@ -1410,7 +1411,15 @@ impl Composition {
     }
 
     pub fn to_json(&self) -> Result<String> {
-        ProjectEnvelope::wrap(self.to_project_file()).to_json()
+        self.to_json_with_base(None)
+    }
+
+    pub fn to_json_with_base(&self, base: Option<&Path>) -> Result<String> {
+        let mut file = self.to_project_file();
+        for media in &mut file.media {
+            media.prepare_url(base);
+        }
+        ProjectEnvelope::wrap(file).to_json()
     }
 
     pub fn from_project_file(file: ProjectFile) -> Result<Self> {
@@ -1472,16 +1481,29 @@ impl Composition {
     }
 
     pub fn from_json(json: &str) -> Result<Self> {
+        Self::from_json_at(json, None)
+    }
+
+    pub fn from_json_at(json: &str, base: Option<&Path>) -> Result<Self> {
         let envelope = ProjectEnvelope::from_json(json)?;
-        Self::from_project_file(envelope.project)
+        let mut file = envelope.project;
+        for media in &mut file.media {
+            media.resolve_url(base)?;
+        }
+        Self::from_project_file(file)
     }
 
     pub fn from_json_reprobing(json: &str) -> Result<(Self, Vec<String>)> {
+        Self::from_json_reprobing_at(json, None)
+    }
+
+    pub fn from_json_reprobing_at(json: &str, base: Option<&Path>) -> Result<(Self, Vec<String>)> {
         let envelope = ProjectEnvelope::from_json(json)?;
         let mut warnings = Vec::new();
         let mut file = envelope.project;
         let mut resolved = Vec::with_capacity(file.media.len());
-        for media in file.media {
+        for mut media in file.media {
+            media.resolve_url(base)?;
             let path_str = media.path.to_string_lossy();
             if path_str.starts_with("memory://") {
                 resolved.push(media);
@@ -1502,6 +1524,7 @@ impl Composition {
                     let mut next = media_ref_from_probed(probed);
                     next.id = media.id;
                     next.path = media.path;
+                    next.url = media.url;
                     resolved.push(next);
                 }
                 Err(_) => {
@@ -1609,9 +1632,12 @@ fn media_stats_match(media: &MediaRef, meta: &std::fs::Metadata) -> bool {
 }
 
 fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
+    let path = probed.path;
+    let url = encode_file_url(&path, None);
     MediaRef {
         id: MediaId(0),
-        path: probed.path,
+        url,
+        path,
         sample_rate: probed.sample_rate,
         channel_count: probed.channel_count,
         frame_count: probed.frame_count,
@@ -1922,9 +1948,10 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 4);
+        assert_eq!(value["format_version"], 5);
         let media = &value["media"][0];
-        assert!(media.get("path").is_some());
+        assert!(media.get("url").is_some());
+        assert!(media.get("path").is_none());
         assert!(media.get("size_bytes").is_some());
         assert!(media.get("modified").is_some());
         assert_eq!(media["container_format"], "memory");
@@ -2144,6 +2171,7 @@ mod tests {
         let meta = std::fs::metadata(&dummy).unwrap();
         let media = MediaRef {
             id: MediaId(1),
+            url: dummy.to_string_lossy().into_owned(),
             path: dummy.clone(),
             sample_rate: 44100,
             channel_count: 1,
@@ -2304,7 +2332,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 4);
+        assert_eq!(value["format_version"], 5);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -2346,7 +2374,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 4);
+        assert_eq!(value["format_version"], 5);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()

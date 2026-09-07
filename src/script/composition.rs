@@ -6,13 +6,14 @@ use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value
 use crate::model::buffer::{ChannelScope, RegionId};
 use crate::model::document::BufferDocument;
 use crate::model::regions::SELECTION_COLLECTION;
-use crate::session::DocumentId;
+use crate::model::DocumentId;
 
 use super::marker::{
     color_from_value, color_to_lua, list_markers, marker_id_from_lua, parse_add_marker, LuaMarker,
 };
 use super::region::LuaRegion;
 use super::selection::{channels_from_lua, collection_name_from_lua, optional_i64, LuaCollection};
+use super::session::{optional_lua_string, string_map_from_lua, string_map_to_lua};
 use super::{host_from_lua, with_document};
 
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +40,34 @@ impl UserData for LuaComposition {
         fields.add_field_method_get("path", |lua, this| {
             let host = host_from_lua(lua)?;
             Ok(host.path(this.id).map(|path| path.display().to_string()))
+        });
+        fields.add_field_method_get("id", |lua, this| {
+            let host = host_from_lua(lua)?;
+            host.composition_id(this.id)
+        });
+        fields.add_field_method_get("group", |lua, this| {
+            let host = host_from_lua(lua)?;
+            host.document_group(this.id)
+        });
+        fields.add_field_method_set("group", |lua, this, value: Value| {
+            let host = host_from_lua(lua)?;
+            host.set_document_group(this.id, optional_lua_string(value)?)
+        });
+        fields.add_field_method_get("state", |lua, this| {
+            let host = host_from_lua(lua)?;
+            host.document_state(this.id)
+        });
+        fields.add_field_method_set("state", |lua, this, value: Value| {
+            let host = host_from_lua(lua)?;
+            host.set_document_state(this.id, optional_lua_string(value)?)
+        });
+        fields.add_field_method_get("properties", |lua, this| {
+            let host = host_from_lua(lua)?;
+            string_map_to_lua(lua, &host.document_properties(this.id)?)
+        });
+        fields.add_field_method_set("properties", |lua, this, value: Value| {
+            let host = host_from_lua(lua)?;
+            host.set_document_properties(this.id, string_map_from_lua(value)?)
         });
         fields.add_field_method_get("frames", |lua, this| {
             with_document(lua, this.id, |doc| Ok(doc.frames() as i64))
@@ -385,6 +414,12 @@ impl UserData for LuaComposition {
             let removed = with_document(lua, this.id, |doc| Ok(doc.remove_marker_type(&name)))?;
             after_edit(lua, this.id)?;
             Ok(removed)
+        });
+        methods.add_method("save", |lua, this, ()| {
+            host_from_lua(lua)?.save_composition(this.id)
+        });
+        methods.add_method("close", |lua, this, ()| {
+            host_from_lua(lua)?.close_composition(this.id)
         });
         methods.add_method("undo", |lua, this, ()| {
             edit(lua, this.id, |doc| doc.edit_undo())

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -31,10 +31,11 @@ use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, Close, DeleteMarker, EditClear,
     EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim, EditUndo,
     InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
-    Render as RenderFile, Save, SaveAs, SelectAll, SelectNone, SetActiveMarkerType, SnapToMarker,
-    ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
-    TransportPlayPause, TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer,
-    ViewFitAll, ViewFrame, ViewScript, ViewZoomIn, ViewZoomOut,
+    Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
+    SetActiveMarkerType, SnapToMarker, ToggleSnapMarkerType, TransportEnd, TransportHome,
+    TransportLoop, TransportNext, TransportPlayPause, TransportPrevious, TransportStart,
+    TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewScript, ViewZoomIn,
+    ViewZoomOut,
 };
 use crate::components::app_menu::AppMenuBar;
 use crate::components::dock_skin::{CenterTabBarHandler, CompactDockSkin};
@@ -56,11 +57,13 @@ use crate::model::composition::{
     default_marker_type, Composition, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
     MARKER_TYPE_YELLOW,
 };
-use crate::model::{is_facomp_path, Buffer, BufferDocument, ChannelScope};
+use crate::model::{
+    is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, Session,
+    SessionDocksUi, SessionUi, SessionWindowUi,
+};
 use crate::playback::{output_device_name, resolve_output_device, PlaybackSession, TransportState};
 use crate::progress::ProgressState;
 use crate::script::{EvalOutput, LogLevel, ScriptHost};
-use crate::session::{DocumentId, DocumentSession};
 
 struct OpenTarget(Entity<AppView>);
 
@@ -79,11 +82,23 @@ struct DocumentViews {
 enum AfterWrite {
     None,
     Close,
-    ContinueQuit,
+    ContinuePending,
+}
+
+#[derive(Clone)]
+enum PendingContinue {
+    Quit,
+    LoadSession(PathBuf),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AfterSessionWrite {
+    None,
+    Continue,
 }
 
 pub struct AppView {
-    session: DocumentSession,
+    session: Session,
     views: HashMap<DocumentId, DocumentViews>,
     dock_area: Entity<DockArea>,
     explorer: Entity<ExplorerPanel>,
@@ -115,6 +130,7 @@ pub struct AppView {
     render_sheet: Entity<RenderSheet>,
     render_sheet_open: bool,
     quit_save_queue: Vec<DocumentId>,
+    pending_continue: Option<PendingContinue>,
     focus_handle: FocusHandle,
     last_progress: Option<ProgressState>,
     script_dock_size: Pixels,
@@ -134,6 +150,7 @@ impl AppView {
         playback: PlaybackSession,
         output_device: Option<String>,
         pending_opens: Arc<Mutex<Vec<PathBuf>>>,
+        session_path: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -182,7 +199,7 @@ impl AppView {
         } else {
             composition.clone()
         };
-        let mut session = DocumentSession::new();
+        let mut session = Session::new();
         let mut views = HashMap::new();
         let first_workspace = if has_initial {
             let first_id = session.push(source_path);
@@ -312,6 +329,7 @@ impl AppView {
             render_sheet,
             render_sheet_open: false,
             quit_save_queue: Vec::new(),
+            pending_continue: None,
             focus_handle: cx.focus_handle(),
             last_progress: None,
             script_dock_size: px(160.),
@@ -322,6 +340,11 @@ impl AppView {
             output_device,
         };
         this.load_init_lua(window, cx);
+        if let Some(path) = session_path {
+            if let Err(err) = this.replace_session_from_path(&path, window, cx) {
+                this.show_load_error(&err, window, cx);
+            }
+        }
         if let Some(id) = this.session.active() {
             this.fire_document_scripts(id, initial_load_elapsed.unwrap_or(0.0), window, cx);
         }
@@ -1352,12 +1375,69 @@ impl AppView {
         cx.notify();
     }
 
+    pub(crate) fn session(&self) -> &Session {
+        &self.session
+    }
+
+    pub(crate) fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
     pub(crate) fn session_active(&self) -> Option<DocumentId> {
         self.session.active()
     }
 
     pub(crate) fn session_document_ids(&self) -> Vec<DocumentId> {
         self.session.documents().iter().map(|doc| doc.id).collect()
+    }
+
+    pub(crate) fn script_save_session(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.save_session(window, cx);
+        Ok(())
+    }
+
+    pub(crate) fn script_save_session_to(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.write_session(path, AfterSessionWrite::None, window, cx);
+        Ok(())
+    }
+
+    pub(crate) fn script_save_document(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.session.get(id).is_none() {
+            return Err("composition is not open".into());
+        }
+        if let Some(path) = self
+            .session
+            .get(id)
+            .and_then(|doc| doc.project_path.clone())
+        {
+            self.write_project(id, path, AfterWrite::None, window, cx);
+        } else {
+            self.prompt_save_as_for(id, AfterWrite::None, window, cx);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn script_close_document(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_close_document(id, window, cx);
     }
 
     pub(crate) fn script_display_name(&self, id: DocumentId, cx: &App) -> Option<String> {
@@ -1427,6 +1507,10 @@ impl AppView {
             "file.open" => self.prompt_open_file(window, cx),
             "file.save" => self.save_active(window, cx),
             "file.save_as" => self.prompt_save_as(window, cx),
+            "file.save_session" => self.save_session(window, cx),
+            "file.save_session_as" => {
+                self.prompt_save_session_as(AfterSessionWrite::None, window, cx)
+            }
             "file.close" => self.request_close_active(window, cx),
             "file.render" => self.open_render_sheet(window, cx),
             "file.quit" => self.request_quit(window, cx),
@@ -1721,10 +1805,11 @@ impl AppView {
             let path = match receiver.await {
                 Ok(Ok(Some(path))) => path,
                 _ => {
-                    if after == AfterWrite::ContinueQuit {
+                    if after == AfterWrite::ContinuePending {
                         let _ = cx.update(|_, cx| {
                             view.update(cx, |this, _| {
                                 this.quit_save_queue.clear();
+                                this.pending_continue = None;
                             });
                         });
                     }
@@ -1750,8 +1835,9 @@ impl AppView {
     ) {
         let Some(views) = self.views.get(&id) else {
             self.show_save_error("Composition is not open.", window, cx);
-            if after == AfterWrite::ContinueQuit {
+            if after == AfterWrite::ContinuePending {
                 self.quit_save_queue.clear();
+                self.pending_continue = None;
             }
             return;
         };
@@ -1762,9 +1848,7 @@ impl AppView {
         };
         match result {
             (Ok(()), elapsed) => {
-                if let Some(doc) = self.session.get_mut(id) {
-                    doc.project_path = Some(path);
-                }
+                self.session.set_project_path(id, path);
                 self.fire_saved_script(id, elapsed, window, cx);
                 match after {
                     AfterWrite::None => {
@@ -1773,7 +1857,7 @@ impl AppView {
                         cx.notify();
                     }
                     AfterWrite::Close => self.close_document(id, window, cx),
-                    AfterWrite::ContinueQuit => {
+                    AfterWrite::ContinuePending => {
                         self.quit_save_queue.retain(|queued| *queued != id);
                         self.refresh_explorer(cx);
                         self.update_window_title(window, cx);
@@ -1782,8 +1866,9 @@ impl AppView {
                 }
             }
             (Err(err), _) => {
-                if after == AfterWrite::ContinueQuit {
+                if after == AfterWrite::ContinuePending {
                     self.quit_save_queue.clear();
+                    self.pending_continue = None;
                 }
                 self.show_save_error(&format!("{err:#}"), window, cx);
             }
@@ -1893,20 +1978,40 @@ impl AppView {
     }
 
     fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let modified = self.modified_compositions(cx);
-        if modified.is_empty() {
-            cx.quit();
-            return;
-        }
-        self.prompt_quit_unsaved(modified, window, cx);
+        self.pending_continue = Some(PendingContinue::Quit);
+        self.resolve_unsaved_then_continue(window, cx);
     }
 
-    fn prompt_quit_unsaved(
+    fn request_open_session(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_continue = Some(PendingContinue::LoadSession(path));
+        self.resolve_unsaved_then_continue(window, cx);
+    }
+
+    fn resolve_unsaved_then_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let modified = self.modified_compositions(cx);
+        if !modified.is_empty() {
+            self.prompt_unsaved_then_continue(modified, window, cx);
+            return;
+        }
+        self.after_compositions_clean(window, cx);
+    }
+
+    fn pending_continue_is_quit(&self) -> bool {
+        matches!(self.pending_continue, Some(PendingContinue::Quit))
+    }
+
+    fn prompt_unsaved_then_continue(
         &mut self,
         items: Vec<(DocumentId, SharedString)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let quitting = self.pending_continue_is_quit();
+        let description = if quitting {
+            "Save changes to these compositions before quitting?"
+        } else {
+            "Save changes to these compositions before opening this session?"
+        };
         let list = cx.new(|cx| QuitUnsavedList::new(items, cx));
         let view = cx.entity();
         list.update(cx, |list, _| {
@@ -1914,7 +2019,7 @@ impl AppView {
             list.set_handler(Rc::new(move |action, ids, window, cx| {
                 window.close_dialog(cx);
                 let _ = view.update(cx, |this, cx| match action {
-                    QuitUnsavedAction::Discard => cx.quit(),
+                    QuitUnsavedAction::Discard => this.after_compositions_clean(window, cx),
                     QuitUnsavedAction::SaveAll | QuitUnsavedAction::SaveSelected => {
                         this.start_quit_saves(ids, window, cx);
                     }
@@ -1924,11 +2029,99 @@ impl AppView {
         window.open_alert_dialog(cx, move |alert, _, _| {
             alert
                 .title("Unsaved changes")
-                .description("Save changes to these compositions before quitting?")
+                .description(description)
                 .width(px(520.))
                 .child(list.clone())
                 .footer(div())
         });
+    }
+
+    fn after_compositions_clean(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.is_dirty() {
+            self.prompt_save_session_then_continue(window, cx);
+            return;
+        }
+        self.finish_pending_continue(window, cx);
+    }
+
+    fn prompt_save_session_then_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let quitting = self.pending_continue_is_quit();
+        let description = if quitting {
+            "Save the current session before quitting?"
+        } else {
+            "Save the current session before opening another?"
+        };
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            alert
+                .title("Unsaved session")
+                .description(description)
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("session-dont-save")
+                                .outline()
+                                .label("Don't Save")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.finish_pending_continue(window, cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("session-cancel")
+                                .outline()
+                                .label("Cancel")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, _| {
+                                            this.pending_continue = None;
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("session-save")
+                                .primary()
+                                .label("Save")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.save_session_then_continue(window, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
+    fn save_session_then_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.session.path().map(Path::to_path_buf) {
+            self.write_session(path, AfterSessionWrite::Continue, window, cx);
+        } else {
+            self.prompt_save_session_as(AfterSessionWrite::Continue, window, cx);
+        }
+    }
+
+    fn finish_pending_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.pending_continue.take() {
+            Some(PendingContinue::Quit) => cx.quit(),
+            Some(PendingContinue::LoadSession(path)) => {
+                if let Err(err) = self.replace_session_from_path(&path, window, cx) {
+                    self.show_load_error(&err, window, cx);
+                }
+            }
+            None => {}
+        }
     }
 
     fn start_quit_saves(
@@ -1944,7 +2137,7 @@ impl AppView {
     fn pump_quit_saves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         loop {
             let Some(id) = self.quit_save_queue.first().copied() else {
-                cx.quit();
+                self.after_compositions_clean(window, cx);
                 return;
             };
             if self.session.get(id).is_none() {
@@ -1956,10 +2149,10 @@ impl AppView {
                 .get(id)
                 .and_then(|doc| doc.project_path.clone())
             {
-                self.write_project(id, path, AfterWrite::ContinueQuit, window, cx);
+                self.write_project(id, path, AfterWrite::ContinuePending, window, cx);
                 return;
             }
-            self.prompt_save_as_for(id, AfterWrite::ContinueQuit, window, cx);
+            self.prompt_save_as_for(id, AfterWrite::ContinuePending, window, cx);
             return;
         }
     }
@@ -2203,6 +2396,10 @@ impl AppView {
     }
 
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if is_fasession_path(&path) {
+            self.request_open_session(path, window, cx);
+            return;
+        }
         if let Some(id) = self.session.find_by_path(&path) {
             self.activate_or_replace_tab(id, window, cx);
             return;
@@ -2212,11 +2409,19 @@ impl AppView {
         let buffer = Arc::new(RwLock::new(Buffer::empty()));
         let id = self.add_document(composition, buffer, Some(path.clone()), window, cx);
         if is_facomp_path(&path) {
-            if let Some(doc) = self.session.get_mut(id) {
-                doc.project_path = Some(path.clone());
-            }
+            self.session.set_project_path(id, path.clone());
         }
         self.apply_active(window, cx);
+        self.spawn_document_load(id, path, window, cx);
+    }
+
+    fn spawn_document_load(
+        &mut self,
+        id: DocumentId,
+        path: PathBuf,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(views) = self.views.get(&id) else {
             return;
         };
@@ -2232,6 +2437,276 @@ impl AppView {
             let elapsed = started.elapsed().as_secs_f64();
             pending.lock().unwrap().push((id, epoch, elapsed, result));
         });
+    }
+
+    fn save_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.session.path().map(Path::to_path_buf) {
+            self.write_session(path, AfterSessionWrite::None, window, cx);
+        } else {
+            self.prompt_save_session_as(AfterSessionWrite::None, window, cx);
+        }
+    }
+
+    fn prompt_save_session_as(
+        &mut self,
+        after: AfterSessionWrite,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = self.suggested_session_directory();
+        let suggested = self
+            .session
+            .path()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "session.fasession".into());
+        let receiver = cx.prompt_for_new_path(&directory, Some(&suggested));
+        let view = cx.entity();
+        cx.spawn_in(window, async move |_, cx| {
+            let path = match receiver.await {
+                Ok(Ok(Some(path))) => path,
+                _ => {
+                    if after == AfterSessionWrite::Continue {
+                        let _ = cx.update(|_, cx| {
+                            view.update(cx, |this, _| {
+                                this.pending_continue = None;
+                            });
+                        });
+                    }
+                    return;
+                }
+            };
+            let _ = cx.update(|window, cx| {
+                view.update(cx, |this, cx| {
+                    this.write_session(path, after, window, cx);
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn suggested_session_directory(&self) -> PathBuf {
+        if let Some(parent) = self.session.path().and_then(|path| path.parent()) {
+            return parent.to_path_buf();
+        }
+        if let Some(parent) = self.session.documents().iter().find_map(|doc| {
+            doc.file_path()
+                .and_then(|path| path.parent())
+                .map(Path::to_path_buf)
+        }) {
+            return parent;
+        }
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    fn capture_session_ui(&self, window: &Window, cx: &App) -> Option<SessionUi> {
+        if !self.session.capture_ui() {
+            return None;
+        }
+        let bounds = window.bounds();
+        Some(SessionUi {
+            window: Some(SessionWindowUi {
+                x: f32::from(bounds.origin.x),
+                y: f32::from(bounds.origin.y),
+                width: f32::from(bounds.size.width),
+                height: f32::from(bounds.size.height),
+            }),
+            docks: Some(SessionDocksUi {
+                explorer: self.explorer_dock_open(cx),
+                detail: self.detail_dock_open(cx),
+                script: self.script_dock_open(cx),
+            }),
+        })
+    }
+
+    fn write_session(
+        &mut self,
+        path: PathBuf,
+        after: AfterSessionWrite,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let titles: HashMap<DocumentId, String> = self
+            .session
+            .documents()
+            .iter()
+            .map(|doc| (doc.id, self.display_title(doc.id, cx).to_string()))
+            .collect();
+        let ui = self.capture_session_ui(window, cx);
+        let result = self.session.save_to_path(
+            &path,
+            |id| titles.get(&id).cloned().unwrap_or_else(|| id.to_string()),
+            ui,
+        );
+        match result {
+            Ok(()) => {
+                self.fire_session_saved_script(window, cx);
+                match after {
+                    AfterSessionWrite::None => {
+                        cx.notify();
+                    }
+                    AfterSessionWrite::Continue => self.finish_pending_continue(window, cx),
+                }
+            }
+            Err(err) => {
+                if after == AfterSessionWrite::Continue {
+                    self.pending_continue = None;
+                }
+                self.show_save_error(&format!("{err:#}"), window, cx);
+            }
+        }
+    }
+
+    fn replace_session_from_path(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let json = std::fs::read_to_string(path).map_err(|err| format!("{err:#}"))?;
+        let loaded = crate::model::session::Session::from_json(&json, Some(path))
+            .map_err(|err| format!("{err:#}"))?;
+        self.teardown_all_documents(window, cx);
+        let ui = loaded.ui;
+        let active = loaded.session.active();
+        let docs: Vec<DocumentId> = loaded
+            .session
+            .documents()
+            .iter()
+            .map(|doc| doc.id)
+            .collect();
+        self.session = loaded.session;
+        for id in docs {
+            self.attach_session_document(id, window, cx);
+        }
+        if let Some(id) = active {
+            if self.session.get(id).is_some() {
+                self.focus_document(id, window, cx);
+            }
+        }
+        self.apply_session_ui(ui.as_ref(), window, cx);
+        self.session.mark_clean();
+        self.refresh_explorer(cx);
+        self.update_window_title(window, cx);
+        self.sync_view_menus(cx);
+        self.fire_session_loaded_script(window, cx);
+        cx.notify();
+        Ok(())
+    }
+
+    fn teardown_all_documents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<DocumentId> = self.session.documents().iter().map(|doc| doc.id).collect();
+        for id in ids {
+            if self.session.active() == Some(id) {
+                self.commit_active_monitor_params(cx);
+                self.stop_playback_into_active(cx);
+            }
+            if self.session.get(id).is_some_and(|doc| doc.tab_open) {
+                if let Some(views) = self.views.get(&id) {
+                    let workspace = views.workspace.clone();
+                    self.dock_area.update(cx, |area, cx| {
+                        area.remove_panel(workspace, window, cx);
+                    });
+                }
+            }
+            if let Some(views) = self.views.get(&id) {
+                views.document.read(cx).progress.cancel();
+            }
+            self.views.remove(&id);
+        }
+        self.ensure_placeholder(window, cx);
+    }
+
+    fn attach_session_document(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.session.get(id).cloned() else {
+            return;
+        };
+        let composition = Arc::new(RwLock::new(Composition::new(44100, 2)));
+        let buffer = Arc::new(RwLock::new(Buffer::empty()));
+        let app = cx.weak_entity();
+        let views = Self::make_views(id, composition, buffer, app, cx);
+        let workspace = views.workspace.clone();
+        self.views.insert(id, views);
+        if doc.tab_open {
+            self.dock_area.update(cx, |area, cx| {
+                Self::show_workspace_tab(area, workspace, None, window, cx);
+            });
+            self.remove_placeholder(window, cx);
+        }
+        if let Some(path) = doc.file_path().map(Path::to_path_buf) {
+            self.spawn_document_load(id, path, window, cx);
+        }
+    }
+
+    fn apply_session_ui(
+        &mut self,
+        ui: Option<&SessionUi>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.session.capture_ui() {
+            return;
+        }
+        let Some(ui) = ui else {
+            return;
+        };
+        if let Some(bounds) = &ui.window {
+            if bounds.width > 0.0 && bounds.height > 0.0 {
+                window.resize(size(px(bounds.width), px(bounds.height)));
+            }
+        }
+        if let Some(docks) = &ui.docks {
+            if self.explorer_dock_open(cx) != docks.explorer {
+                self.toggle_explorer_dock(window, cx);
+            }
+            if self.detail_dock_open(cx) != docks.detail {
+                self.toggle_detail_dock(window, cx);
+            }
+            if docks.script {
+                self.show_script_dock(window, cx);
+            } else {
+                self.hide_script_dock(window, cx);
+            }
+        }
+    }
+
+    fn fire_session_loaded_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_session_loaded();
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+    }
+
+    fn fire_session_saved_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_session_saved();
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
     }
 
     fn prompt_open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2578,6 +3053,14 @@ fn save_as(_: &SaveAs, cx: &mut App) {
     let _ = crate::commands::dispatch("file.save_as", cx);
 }
 
+fn save_session(_: &SaveSession, cx: &mut App) {
+    let _ = crate::commands::dispatch("file.save_session", cx);
+}
+
+fn save_session_as(_: &SaveSessionAs, cx: &mut App) {
+    let _ = crate::commands::dispatch("file.save_session_as", cx);
+}
+
 fn close(_: &Close, cx: &mut App) {
     let _ = crate::commands::dispatch("file.close", cx);
 }
@@ -2794,6 +3277,8 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("Open...", Open),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As...", SaveAs),
+            MenuItem::action("Save Session", SaveSession),
+            MenuItem::action("Save Session As...", SaveSessionAs),
             MenuItem::action("Close", Close),
             MenuItem::separator(),
             MenuItem::action("Render...", RenderFile),
@@ -2869,6 +3354,8 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(open);
     cx.on_action(save);
     cx.on_action(save_as);
+    cx.on_action(save_session);
+    cx.on_action(save_session_as);
     cx.on_action(close);
     cx.on_action(render_cmd);
     cx.on_action(quit);
@@ -2971,6 +3458,7 @@ pub fn run(
     load_elapsed: Option<f64>,
     device: Device,
     output_spec: Option<String>,
+    session_path: Option<PathBuf>,
 ) {
     let source_path = initial
         .as_ref()
@@ -3030,6 +3518,7 @@ pub fn run(
                         playback,
                         output_device,
                         pending_opens.clone(),
+                        session_path.clone(),
                         window,
                         cx,
                     )

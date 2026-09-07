@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+
+use crate::model::file_url::{encode_file_url, resolve_file_url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaId(pub u64);
@@ -14,6 +16,9 @@ pub struct MediaId(pub u64);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaRef {
     pub id: MediaId,
+    #[serde(rename = "url", alias = "path")]
+    pub url: String,
+    #[serde(skip)]
     pub path: PathBuf,
     pub sample_rate: u32,
     pub channel_count: usize,
@@ -35,6 +40,7 @@ impl MediaRef {
         let channel_count = samples.len();
         Self {
             id,
+            url: format!("memory://{id:?}"),
             path: PathBuf::from(format!("memory://{id:?}")),
             sample_rate,
             channel_count,
@@ -47,6 +53,31 @@ impl MediaRef {
             hash: None,
             samples: Some(Arc::new(samples)),
         }
+    }
+
+    pub fn prepare_url(&mut self, base: Option<&Path>) {
+        let lossy = self.path.to_string_lossy();
+        if lossy.starts_with("memory://") {
+            self.url = lossy.into_owned();
+            return;
+        }
+        self.url = encode_file_url(&self.path, base);
+    }
+
+    pub fn resolve_url(&mut self, base: Option<&Path>) -> anyhow::Result<()> {
+        if self.url.starts_with("memory://")
+            || self.url.is_empty() && self.path.to_string_lossy().starts_with("memory://")
+        {
+            if self.path.as_os_str().is_empty() {
+                self.path = PathBuf::from(&self.url);
+            }
+            return Ok(());
+        }
+        if self.url.is_empty() && !self.path.as_os_str().is_empty() {
+            self.url = self.path.to_string_lossy().into_owned();
+        }
+        self.path = resolve_file_url(&self.url, base)?;
+        Ok(())
     }
 }
 

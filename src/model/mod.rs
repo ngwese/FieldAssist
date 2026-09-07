@@ -4,8 +4,10 @@
 pub mod buffer;
 pub mod composition;
 pub mod document;
+pub mod file_url;
 pub mod regions;
 pub mod selection;
+pub mod session;
 pub mod snap;
 
 pub use buffer::{Buffer, BufferSource, ChannelScope, Region, RegionId};
@@ -17,3 +19,7 @@ pub use composition::{
 pub use document::BufferDocument;
 pub use regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 pub use selection::SamplePosition;
+pub use session::{
+    is_fasession_path, DocumentId, Session, SessionDocksUi, SessionDocument, SessionId, SessionUi,
+    SessionWindowUi,
+};

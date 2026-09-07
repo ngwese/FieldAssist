@@ -9,6 +9,7 @@ mod layout;
 mod marker;
 mod region;
 mod selection;
+mod session;
 
 pub use access::{enter, try_invoke_command};
 pub use host::{
@@ -670,5 +671,137 @@ mod tests {
             "{:?}",
             out.error
         );
+    }
+
+    #[test]
+    fn session_and_document_metadata_round_trip() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local s = app.session
+            s.workflow = "review"
+            s.capture_ui = false
+            s.properties = { batch = "2026-09" }
+            local c = app.active
+            c.group = "day1"
+            c.state = "reviewed"
+            c.properties = { reviewer = "greg" }
+            return s.id ~= nil, s.workflow, s.capture_ui, s.properties.batch,
+                   c.id, c.group, c.state, c.properties.reviewer, #app.documents, #s.documents
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = out.result.expect("result");
+        let parts: Vec<&str> = result.split('\t').collect();
+        assert_eq!(parts[0], "true");
+        assert_eq!(parts[1], "review");
+        assert_eq!(parts[2], "false");
+        assert_eq!(parts[3], "2026-09");
+        assert_eq!(parts[5], "day1");
+        assert_eq!(parts[6], "reviewed");
+        assert_eq!(parts[7], "greg");
+        assert_eq!(parts[8], "1");
+        assert_eq!(parts[9], "1");
+        {
+            let world = world.borrow();
+            assert_eq!(world.session.workflow(), Some("review"));
+            assert!(!world.session.capture_ui());
+            assert_eq!(
+                world.session.properties().get("batch").map(String::as_str),
+                Some("2026-09")
+            );
+            let id = world.active.unwrap();
+            let doc = world.session.get(id).unwrap();
+            assert_eq!(doc.group.as_deref(), Some("day1"));
+            assert_eq!(doc.state.as_deref(), Some("reviewed"));
+            assert_eq!(
+                doc.properties.get("reviewer").map(String::as_str),
+                Some("greg")
+            );
+        }
+
+        let out = host.eval(
+            r#"
+            app.session.workflow = nil
+            app.active.group = nil
+            app.active.state = nil
+            app.active.properties = {}
+            return app.session.workflow == nil, app.active.group == nil,
+                   app.active.state == nil, app.active.properties.reviewer == nil
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true\ttrue\ttrue\ttrue"));
+    }
+
+    #[test]
+    fn session_properties_reject_non_strings() {
+        let (mut host, _) = test_host();
+        let out = host.eval(r#"app.session.properties = { batch = 1 }"#);
+        assert!(
+            out.error
+                .as_deref()
+                .is_some_and(|err| err.contains("must be a string")),
+            "{:?}",
+            out.error
+        );
+    }
+
+    #[test]
+    fn composition_close_removes_from_session() {
+        let (mut host, world) = test_host();
+        let out = host.eval("app.active:close(); return app.active == nil, #app.documents");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true\t0"));
+        assert!(world.borrow().session.is_empty());
+    }
+
+    #[test]
+    fn session_save_as_writes_json() {
+        let (mut host, world) = test_host();
+        let dir = std::env::temp_dir().join("fa-lua-session");
+        let _ = std::fs::create_dir_all(&dir);
+        let wav = dir.join("take.wav");
+        std::fs::write(&wav, b"wav").unwrap();
+        {
+            let mut world = world.borrow_mut();
+            let id = world.active.unwrap();
+            world.session.set_project_path(id, wav.clone());
+        }
+        let path = dir.join("batch.fasession");
+        let path_lua = path.to_string_lossy().replace('\\', "/");
+        let out = host.eval(&format!(
+            r#"
+            app.session.workflow = "review"
+            app.session:save_as("{path_lua}")
+            return app.session.path ~= nil
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(json.contains("fasession"), "{json}");
+        assert!(json.contains("review"), "{json}");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wav);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_loaded_hook_runs() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app:on("session_loaded", function(s)
+              app:info("session", s.id)
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.fire_session_loaded();
+        let logs = host.take_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].topic, "session");
+        assert!(!logs[0].message.is_empty());
     }
 }

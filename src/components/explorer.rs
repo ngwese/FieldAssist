@@ -16,7 +16,7 @@ use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
 };
 
-use crate::session::DocumentId;
+use crate::model::DocumentId;
 
 actions!(explorer, [ConfirmSelected, SelectPrev, SelectNext]);
 
@@ -209,7 +209,7 @@ impl Render for ExplorerPanel {
                 let show_close = hovered_close == Some(id);
                 let explorer = explorer.clone();
                 h_flex()
-                    .id(("composition", id.0))
+                    .id(SharedString::from(format!("composition-{id}")))
                     .w_full()
                     .flex_none()
                     .items_center()

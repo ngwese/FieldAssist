@@ -4,7 +4,7 @@
 use mlua::{UserData, UserDataFields};
 
 use crate::model::buffer::RegionId;
-use crate::session::DocumentId;
+use crate::model::DocumentId;
 
 use super::selection::channels_to_lua;
 use super::with_document;

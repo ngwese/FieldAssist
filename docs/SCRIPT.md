@@ -11,8 +11,9 @@ file is loaded **instead** of the embedded default:
 - Windows: `%APPDATA%\snd-review\init.lua`
 - Linux: `$XDG_CONFIG_HOME/snd-review/init.lua` (or `~/.config/snd-review/init.lua`)
 
-`init.lua` is loaded once at startup. Register `loaded`, `detect_layout`, and
-`saved` hooks there. The status bar (right side) shows the effective channel layout
+`init.lua` is loaded once at startup. Register `loaded`, `detect_layout`,
+`saved`, `session_loaded`, and `session_saved` hooks there. The status bar
+(right side) shows the effective channel layout
 and lets you pick one of the defined layouts; a pick is saved on the
 composition. Output device selection is session-level: set `app.output_device` in
 `init.lua` to pin a device across launches.
@@ -36,13 +37,14 @@ indices are also 0-based.
 | `app:error(topic, message)` | Error log; unseen errors badge the Messages tab. |
 
 There is no other host-provided global besides `app`. Open documents are reached
-through `app.active` and `app.documents`.
+through `app.active`, `app.documents`, and `app.session`.
 
 ## `app`
 
 ```lua
 local c = app.active          -- composition, or nil if none is open
 local all = app.documents     -- array of open compositions
+local s = app.session         -- the one active session (always present)
 local opened = app:open(path) -- open a file; returns the composition
 app.output_device = "Focusrite" -- substring match; nil = System Default
 local names = app.output_devices -- live output device names
@@ -54,6 +56,12 @@ app:on("loaded", function(c, elapsed)
 end)
 app:on("saved", function(c, elapsed)
   app:info("save", string.format("%s in %.0f ms", c.name, elapsed * 1000))
+end)
+app:on("session_loaded", function(s)
+  app:info("session", s.path)
+end)
+app:on("session_saved", function(s)
+  app:info("session", "saved")
 end)
 app:define_layout({
   name = "stereo",
@@ -72,12 +80,37 @@ end)
 `app:command` uses the same ids as the keymap (`file.open`, `transport.play_pause`,
 `selection.add_marker`, …). Unknown ids are an error. See [Commands](#commands).
 
-`app:on` accepts `"loaded"`, `"detect_layout"`, and `"saved"`. `loaded` is
-`function(c, elapsed)` and `saved` is `function(c, elapsed)`, where `elapsed`
-is wall-clock seconds for the load or save. `detect_layout` is
-`function(c, chosen)` where `chosen` is the persisted user-explicit layout name
-or `nil`. Return a defined layout name, or `nil` if it cannot be inferred.
-Hooks run in registration order; the last non-nil valid name wins.
+`app:on` accepts `"loaded"`, `"detect_layout"`, `"saved"`, `"session_loaded"`,
+and `"session_saved"`. `loaded` is `function(c, elapsed)` and `saved` is
+`function(c, elapsed)`, where `elapsed` is wall-clock seconds for the load or
+save. `session_loaded` and `session_saved` are `function(s)` with the session
+object. `detect_layout` is `function(c, chosen)` where `chosen` is the
+persisted user-explicit layout name or `nil`. Return a defined layout name, or
+`nil` if it cannot be inferred. Hooks run in registration order; the last
+non-nil valid name wins.
+
+## Session
+
+`app.session` is always present. There is one active session. Audio and
+`.facomp` files add documents to it; opening a `.fasession` replaces it.
+`s.workflow` is a name only — FieldAssist does not auto-run a workflow from it.
+
+```lua
+local s = app.session
+print(s.id, s.path, s.workflow)
+s.workflow = "review"          -- nil to clear
+s.capture_ui = true
+s.properties = { batch = "2026-09" }   -- string→string; nil values rejected
+local all = s.documents        -- same composition objects as app.documents
+local c = s.active             -- or nil
+c = s:open(path)               -- audio/facomp → add; .fasession → replace
+s:save()
+s:save_as(path)
+```
+
+`s.id` is the session UUID (read-only). `s.path` is the `.fasession` file, or
+`nil` until it is saved. `app.active`, `app.documents`, and `app:open` remain
+aliases of `s.active`, `s.documents`, and `s:open`.
 
 `app.output_device` is the session output device name, or `nil` for System
 Default (the host default device). Assignment uses the same name, index, and
@@ -118,7 +151,11 @@ markers, regions, and selection live on this object.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `name` | string | Display title (file name when saved). |
+| `id` | string | Document UUID in the session (read-only). |
 | `path` | string or nil | Source or project path, if any. |
+| `group` | string or nil | Session grouping label. Assign `nil` to clear. |
+| `state` | string or nil | Session workflow state. Assign `nil` to clear. |
+| `properties` | table | String→string map on the session (not saved in `.facomp`). |
 | `frames` | integer | Timeline length in samples. |
 | `sample_rate` | integer | Hz. |
 | `channels` | integer | Channel count. |
@@ -137,9 +174,14 @@ markers, regions, and selection live on this object.
 | `markers` | array of Marker | User markers, ordered by frame then type. |
 | `marker_types` | array of `{ name, color }` | Composition type registry. |
 
-Reading `markers`, `regions`, `collections`, or `marker_types` returns a
-snapshot table. Later adds/removes do not update a table you already hold;
-read the field again. Region and Marker objects themselves are live.
+Reading `markers`, `regions`, `collections`, `marker_types`, or `properties`
+returns a snapshot table. Later adds/removes do not update a table you already
+hold; read the field again. Region and Marker objects themselves are live.
+
+```lua
+c:save()   -- File → Save for this composition
+c:close()  -- File → Close (prompts if unsaved)
+```
 
 ### Selection methods
 
@@ -294,8 +336,8 @@ Anywhere a channel scope is accepted (`select`, `add_region`):
 
 `app:command(id)` runs the same actions as menus and key bindings:
 
-**File:** `file.open`, `file.save`, `file.save_as`, `file.close`, `file.render`,
-`file.quit`
+**File:** `file.open`, `file.save`, `file.save_as`, `file.save_session`,
+`file.save_session_as`, `file.close`, `file.render`, `file.quit`
 
 **Help:** `help.about`
 

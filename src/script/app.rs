@@ -6,11 +6,13 @@ use mlua::{Function, Table, UserData, UserDataFields, UserDataMethods, Value};
 use super::composition::LuaComposition;
 use super::host::{host_from_lua, stringify_value, LogLevel};
 use super::layout::layout_from_lua;
+use super::session::LuaSession;
 
 pub struct LuaApp;
 
 impl UserData for LuaApp {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("session", |_, _| Ok(LuaSession));
         fields.add_field_method_get("active", |lua, _| {
             let host = host_from_lua(lua)?;
             Ok(host.active().map(|id| LuaComposition { id }))
@@ -101,10 +103,12 @@ impl UserData for LuaApp {
                 "loaded" => host.on_loaded(callback),
                 "detect_layout" => host.on_detect_layout(callback),
                 "saved" => host.on_saved(callback),
+                "session_loaded" => host.on_session_loaded(callback),
+                "session_saved" => host.on_session_saved(callback),
                 _ => {
                     return Err(mlua::Error::runtime(format!(
-                    "unknown event `{event}`; expected \"loaded\", \"detect_layout\", or \"saved\""
-                )))
+                        "unknown event `{event}`; expected \"loaded\", \"detect_layout\", \"saved\", \"session_loaded\", or \"session_saved\""
+                    )))
                 }
             }
             Ok(())

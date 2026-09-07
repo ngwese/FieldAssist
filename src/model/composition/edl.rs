@@ -174,7 +174,7 @@ pub struct ProjectFile {
 }
 
 pub const FACOMP_KIND: &str = "facomp";
-pub const FACOMP_FORMAT_VERSION: u32 = 4;
+pub const FACOMP_FORMAT_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectEnvelope {
@@ -201,7 +201,7 @@ impl ProjectEnvelope {
             bail!("not a snd-review composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            1 | 2 | 3 | 4 => Ok(envelope),
+            1 | 2 | 3 | 4 | 5 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer snd-review (format_version {n})")

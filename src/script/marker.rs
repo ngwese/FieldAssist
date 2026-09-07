@@ -5,7 +5,7 @@ use mlua::{FromLua, Lua, MultiValue, Table, UserData, UserDataFields, UserDataMe
 
 use crate::model::composition::{default_marker_type, Marker, MarkerId};
 use crate::model::document::BufferDocument;
-use crate::session::DocumentId;
+use crate::model::DocumentId;
 
 use super::selection::optional_i64;
 use super::{host_from_lua, with_document};

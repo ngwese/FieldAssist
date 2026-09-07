@@ -23,7 +23,6 @@ mod playback;
 mod progress;
 mod render;
 mod script;
-mod session;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,7 +31,7 @@ mod session;
     after_help = "Supports WAV, FLAC, MP3, OGG, M4A, and other formats enabled by Symphonia."
 )]
 struct Args {
-    /// Path to an audio file
+    /// Path to an audio file, composition, or session
     file: Option<PathBuf>,
 
     /// List available output audio devices and exit
@@ -64,17 +63,28 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (composition, load_elapsed) = match &args.file {
+    let (composition, load_elapsed, session_path) = match &args.file {
+        Some(path) if model::is_fasession_path(path) => (None, None, Some(path.clone())),
         Some(path) => {
             let started = Instant::now();
             let composition = model::Composition::load_from_path(path)
                 .with_context(|| format!("failed to load {}", path.display()))?;
-            (Some(composition), Some(started.elapsed().as_secs_f64()))
+            (
+                Some(composition),
+                Some(started.elapsed().as_secs_f64()),
+                None,
+            )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     let device = playback::resolve_output_device(args.output_device.as_deref())?;
-    app::run(composition, load_elapsed, device, args.output_device);
+    app::run(
+        composition,
+        load_elapsed,
+        device,
+        args.output_device,
+        session_path,
+    );
     Ok(())
 }
 

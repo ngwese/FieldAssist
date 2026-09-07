@@ -14,7 +14,7 @@ use gpui_component::{
     h_flex, v_flex, ActiveTheme as _, Disableable as _,
 };
 
-use crate::session::DocumentId;
+use crate::model::DocumentId;
 
 #[derive(Clone, Copy, Debug)]
 pub enum QuitUnsavedAction {
@@ -144,9 +144,9 @@ impl Render for QuitUnsavedList {
                         let selected = self.selection.selected.contains(&ix);
                         let name = name.clone();
                         let list = list.clone();
-                        let row_id = id.0;
+                        let row_id = SharedString::from(format!("quit-unsaved-{id}"));
                         h_flex()
-                            .id(("quit-unsaved-item", row_id))
+                            .id(row_id)
                             .w_full()
                             .flex_none()
                             .items_center()

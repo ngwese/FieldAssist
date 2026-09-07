@@ -15,8 +15,8 @@ use gpui_component::{
 use crate::components::transport::Transport;
 use crate::components::waveform::WaveformDisplay;
 use crate::model::document::BufferDocument;
+use crate::model::DocumentId;
 use crate::playback::TransportState;
-use crate::session::DocumentId;
 
 type ActivatedFn = Rc<dyn Fn(DocumentId, &mut Window, &mut App)>;
 

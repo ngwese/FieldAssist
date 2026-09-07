@@ -5,7 +5,7 @@ use mlua::{FromLua, Lua, MetaMethod, UserData, UserDataFields, UserDataMethods, 
 
 use crate::model::buffer::ChannelScope;
 use crate::model::regions::SELECTION_COLLECTION;
-use crate::session::DocumentId;
+use crate::model::DocumentId;
 
 use super::region::LuaRegion;
 use super::with_document;
