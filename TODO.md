@@ -10,3 +10,5 @@
       that has edits
 - [ ] Group and order monitor chain controls (see stereo
       crossfeed)
+- [ ] Package Windows app as MSIX and declare supported file
+      types in the application manifest
