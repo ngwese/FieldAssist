@@ -24,6 +24,28 @@ impl UserData for LuaApp {
                 .collect();
             Ok(docs)
         });
+        fields.add_field_method_get("output_device", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.output_device())
+        });
+        fields.add_field_method_set("output_device", |lua, _, value: Value| {
+            let host = host_from_lua(lua)?;
+            let spec = match value {
+                Value::Nil => None,
+                Value::String(name) => Some(name.to_str()?.to_owned()),
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "output_device must be a string or nil, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            host.set_output_device(spec.as_deref())
+        });
+        fields.add_field_method_get("output_devices", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.output_devices())
+        });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {

@@ -57,9 +57,9 @@ use crate::model::composition::{
     MARKER_TYPE_YELLOW,
 };
 use crate::model::{is_facomp_path, Buffer, BufferDocument, ChannelScope};
-use crate::playback::{PlaybackSession, TransportState};
+use crate::playback::{output_device_name, resolve_output_device, PlaybackSession, TransportState};
 use crate::progress::ProgressState;
-use crate::script::{EvalOutput, ScriptHost};
+use crate::script::{EvalOutput, LogLevel, ScriptHost};
 use crate::session::{DocumentId, DocumentSession};
 
 struct OpenTarget(Entity<AppView>);
@@ -122,6 +122,7 @@ pub struct AppView {
     active_marker_type: String,
     add_marker_at_hover: bool,
     preview_enabled: bool,
+    output_device: Option<String>,
 }
 
 impl AppView {
@@ -131,6 +132,7 @@ impl AppView {
         source_path: Option<PathBuf>,
         initial_load_elapsed: Option<f64>,
         playback: PlaybackSession,
+        output_device: Option<String>,
         pending_opens: Arc<Mutex<Vec<PathBuf>>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -317,6 +319,7 @@ impl AppView {
             active_marker_type: default_marker_type().to_string(),
             add_marker_at_hover: true,
             preview_enabled: false,
+            output_device,
         };
         this.load_init_lua(window, cx);
         if let Some(id) = this.session.active() {
@@ -1194,6 +1197,39 @@ impl AppView {
 
     pub(crate) fn set_monitor_param(&self, address: &str, value: f32) {
         self.playback.set_monitor_param(address, value);
+    }
+
+    pub(crate) fn output_device(&self) -> Option<&str> {
+        self.output_device.as_deref()
+    }
+
+    pub(crate) fn set_output_device(
+        &mut self,
+        spec: Option<&str>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let device = resolve_output_device(spec).map_err(|err| err.to_string())?;
+        self.playback
+            .set_output_device(&device)
+            .map_err(|err| err.to_string())?;
+        self.output_device = spec.map(|_| output_device_name(&device));
+        self.monitor.update(cx, |_, cx| cx.notify());
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn select_output_device(
+        &mut self,
+        spec: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(err) = self.set_output_device(spec, window, cx) {
+            self.script
+                .log(LogLevel::Error, "output".into(), err.clone());
+            self.flush_script_logs(cx);
+        }
     }
 
     pub(crate) fn toggle_monitor_params_pin(&mut self, cx: &mut Context<Self>) {
@@ -2930,12 +2966,18 @@ fn percent_decode(input: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-pub fn run(initial: Option<Composition>, load_elapsed: Option<f64>, device: Device) {
+pub fn run(
+    initial: Option<Composition>,
+    load_elapsed: Option<f64>,
+    device: Device,
+    output_spec: Option<String>,
+) {
     let source_path = initial
         .as_ref()
         .and_then(|composition| composition.pool().first().map(|media| media.path.clone()));
     let composition = initial.unwrap_or_else(|| Composition::new(44100, 2));
     let title = AppView::composition_title(&composition);
+    let output_device = output_spec.map(|_| output_device_name(&device));
 
     let shared_composition = Arc::new(RwLock::new(composition));
     let shared_buffer = Arc::new(RwLock::new(Buffer::empty()));
@@ -2986,6 +3028,7 @@ pub fn run(initial: Option<Composition>, load_elapsed: Option<f64>, device: Devi
                         source_path.clone(),
                         load_elapsed,
                         playback,
+                        output_device,
                         pending_opens.clone(),
                         window,
                         cx,

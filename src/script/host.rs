@@ -80,6 +80,8 @@ pub struct TestWorld {
     pub names: HashMap<DocumentId, String>,
     pub active: Option<DocumentId>,
     next_id: u64,
+    pub output_device: Option<String>,
+    pub output_devices: Vec<String>,
 }
 
 impl TestWorld {
@@ -90,6 +92,8 @@ impl TestWorld {
             names: HashMap::new(),
             active: None,
             next_id: 0,
+            output_device: None,
+            output_devices: Vec::new(),
         }
     }
 
@@ -233,6 +237,10 @@ impl ScriptHost {
     pub fn take_logs(&self) -> Vec<LogEntry> {
         std::mem::take(&mut self.handle.inner.borrow_mut().logs)
     }
+
+    pub fn log(&self, level: LogLevel, topic: String, message: String) {
+        self.handle.log(level, topic, message);
+    }
 }
 
 impl HostHandle {
@@ -289,6 +297,34 @@ impl HostHandle {
             Ok(result) => result,
             Err(err) => Err(err),
         }
+    }
+
+    pub fn output_device(&self) -> Option<String> {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().output_device.clone();
+        }
+        access::with_view(|view, _, _| view.output_device().map(str::to_string))
+            .ok()
+            .flatten()
+    }
+
+    pub fn output_devices(&self) -> Vec<String> {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().output_devices.clone();
+        }
+        crate::playback::list_output_devices()
+            .map(|devices| devices.into_iter().map(|info| info.name).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn set_output_device(&self, spec: Option<&str>) -> mlua::Result<()> {
+        if let Some(test) = &self.inner.borrow().test {
+            test.borrow_mut().output_device = spec.map(str::to_string);
+            return Ok(());
+        }
+        access::with_view(|view, window, cx| view.set_output_device(spec, window, cx))
+            .map_err(mlua::Error::runtime)?
+            .map_err(mlua::Error::runtime)
     }
 
     pub fn on_loaded(&self, callback: Function) {

@@ -74,7 +74,7 @@ fn main() -> Result<()> {
         None => (None, None),
     };
     let device = playback::resolve_output_device(args.output_device.as_deref())?;
-    app::run(composition, load_elapsed, device);
+    app::run(composition, load_elapsed, device, args.output_device);
     Ok(())
 }
 

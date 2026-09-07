@@ -1,6 +1,9 @@
 -- Default FieldAssist init script.
 -- Dump with: FieldAssist --dump-init
 -- Copy to the app config directory to customize.
+--
+-- Optional: pin an output device across launches (substring match).
+-- app.output_device = "Focusrite"
 
 local started = os.clock()
 

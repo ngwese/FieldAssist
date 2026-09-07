@@ -42,6 +42,13 @@ impl PlaybackSession {
         })
     }
 
+    pub fn set_output_device(&mut self, device: &Device) -> Result<()> {
+        self.stop();
+        self.engine.reopen(device)?;
+        self.apply_to_engine();
+        Ok(())
+    }
+
     pub fn bind_composition(&self, composition: Arc<RwLock<Composition>>) {
         self.provider.bind(composition.clone());
         self.sync_monitor(&composition.read().unwrap());

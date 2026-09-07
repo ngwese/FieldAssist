@@ -609,4 +609,66 @@ mod tests {
         assert_eq!(logs[0].topic, "save");
         assert!(logs[0].message.contains("0.250"), "{:?}", logs[0].message);
     }
+
+    #[test]
+    fn output_device_round_trips_in_test_world() {
+        let (mut host, world) = test_host();
+
+        let out = host.eval("return #app.output_devices");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("0"));
+
+        world.borrow_mut().output_devices = vec!["Speakers (Realtek)".into(), "Headphones".into()];
+
+        let out = host.eval("return app.output_device == nil");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+
+        let out = host.eval(
+            r#"
+            app.output_device = "Speakers (Realtek)"
+            return app.output_device
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("Speakers (Realtek)"));
+        assert_eq!(
+            world.borrow().output_device.as_deref(),
+            Some("Speakers (Realtek)")
+        );
+
+        let out = host.eval(
+            r#"
+            app.output_device = nil
+            return app.output_device == nil
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+        assert!(world.borrow().output_device.is_none());
+
+        let out = host.eval(
+            r#"
+            return #app.output_devices, app.output_devices[1], app.output_devices[2]
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            out.result.as_deref(),
+            Some("2\tSpeakers (Realtek)\tHeadphones")
+        );
+    }
+
+    #[test]
+    fn output_device_rejects_non_string() {
+        let (mut host, _) = test_host();
+        let out = host.eval("app.output_device = 1");
+        assert!(
+            out.error
+                .as_deref()
+                .is_some_and(|err| err.contains("string or nil")),
+            "{:?}",
+            out.error
+        );
+    }
 }

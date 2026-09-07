@@ -15,10 +15,14 @@ pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
     for (index, device) in host.output_devices()?.enumerate() {
-        let name = device.to_string();
+        let name = output_device_name(&device);
         devices.push(OutputDeviceInfo { index, name });
     }
     Ok(devices)
+}
+
+pub fn output_device_name(device: &Device) -> String {
+    device.to_string()
 }
 
 pub fn resolve_output_device(spec: Option<&str>) -> Result<Device> {
@@ -41,7 +45,7 @@ pub fn resolve_output_device(spec: Option<&str>) -> Result<Device> {
             .ok_or_else(|| anyhow!("output device index {index} out of range"));
     }
 
-    let names: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
+    let names: Vec<String> = devices.iter().map(output_device_name).collect();
 
     if let Some(index) = names.iter().position(|n| n == spec) {
         return Ok(devices[index].clone());
@@ -64,4 +68,19 @@ pub fn print_output_devices() -> Result<()> {
         println!("[{}] {}", info.index, info.name);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_none_uses_host_default() {
+        let host = cpal::default_host();
+        let Some(expected) = host.default_output_device() else {
+            return;
+        };
+        let resolved = resolve_output_device(None).expect("default output device");
+        assert_eq!(output_device_name(&resolved), output_device_name(&expected));
+    }
 }

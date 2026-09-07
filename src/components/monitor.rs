@@ -130,11 +130,34 @@ impl Render for MonitorPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
+        let app = self.app.clone();
+        let output_selected = app
+            .upgrade()
+            .and_then(|app| app.read(cx).output_device().map(str::to_string));
+
+        v_flex()
+            .id("monitor-panel")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .child(self.render_chain_scroll(muted, theme.accent, theme.secondary, cx))
+            .child(output_section(output_selected, app, muted, theme.border))
+    }
+}
+
+impl MonitorPanel {
+    fn render_chain_scroll(
+        &mut self,
+        muted: gpui::Hsla,
+        accent: gpui::Hsla,
+        secondary: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let Some(document) = self.document.clone() else {
             return v_flex()
-                .id("monitor-panel")
-                .track_focus(&self.focus_handle)
-                .size_full()
+                .id("monitor-chain-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
                 .into_any_element();
         };
 
@@ -190,9 +213,9 @@ impl Render for MonitorPanel {
             .to_string();
 
         v_flex()
-            .id("monitor-panel")
-            .track_focus(&self.focus_handle)
-            .size_full()
+            .id("monitor-chain-scroll")
+            .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
             .px_2()
             .py_2()
@@ -247,8 +270,8 @@ impl Render for MonitorPanel {
                             &meters,
                             app.clone(),
                             muted,
-                            theme.accent,
-                            theme.secondary,
+                            accent,
+                            secondary,
                             cx,
                         )
                     }),
@@ -259,6 +282,80 @@ impl Render for MonitorPanel {
 
 fn section_label(text: &'static str, muted: gpui::Hsla) -> impl IntoElement {
     div().text_xs().text_color(muted).child(text)
+}
+
+fn output_section(
+    selected: Option<String>,
+    app: WeakEntity<AppView>,
+    muted: gpui::Hsla,
+    border: gpui::Hsla,
+) -> impl IntoElement {
+    v_flex()
+        .flex_none()
+        .w_full()
+        .border_t_1()
+        .border_color(border)
+        .px_2()
+        .py_2()
+        .gap_1()
+        .child(section_label("Output", muted))
+        .child(output_dropdown(selected, app, muted))
+}
+
+fn output_dropdown(
+    selected: Option<String>,
+    app: WeakEntity<AppView>,
+    muted: gpui::Hsla,
+) -> impl IntoElement {
+    let label = selected
+        .clone()
+        .unwrap_or_else(|| "System Default".to_string());
+    Button::new("monitor-output")
+        .outline()
+        .small()
+        .w_full()
+        .label(label)
+        .dropdown_menu(
+            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+                let app_default = app.clone();
+                let default_selected = selected.is_none();
+                menu = menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        div().text_xs().text_color(muted).child("System Default")
+                    })
+                    .checked(default_selected)
+                    .on_click(move |_, window, cx| {
+                        if let Some(app) = app_default.upgrade() {
+                            app.update(cx, |this, cx| {
+                                this.select_output_device(None, window, cx);
+                            });
+                        }
+                    }),
+                );
+                if let Ok(devices) = crate::playback::list_output_devices() {
+                    for info in devices {
+                        let app = app.clone();
+                        let name = info.name.clone();
+                        let checked = selected.as_deref() == Some(name.as_str());
+                        let item_label = name.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                div().text_xs().text_color(muted).child(item_label.clone())
+                            })
+                            .checked(checked)
+                            .on_click(move |_, window, cx| {
+                                if let Some(app) = app.upgrade() {
+                                    app.update(cx, |this, cx| {
+                                        this.select_output_device(Some(&name), window, cx);
+                                    });
+                                }
+                            }),
+                        );
+                    }
+                }
+                menu
+            },
+        )
 }
 
 struct PinIcon;

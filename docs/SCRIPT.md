@@ -14,7 +14,8 @@ file is loaded **instead** of the embedded default:
 `init.lua` is loaded once at startup. Register `loaded`, `detect_layout`, and
 `saved` hooks there. The status bar (right side) shows the effective channel layout
 and lets you pick one of the defined layouts; a pick is saved on the
-composition.
+composition. Output device selection is session-level: set `app.output_device` in
+`init.lua` to pin a device across launches.
 
 `print(...)` writes to the Script panel. `app:info`, `app:warn`, and `app:error`
 write to the Messages tab (View → Show Script, then Messages). If stdout is a
@@ -43,6 +44,8 @@ through `app.active` and `app.documents`.
 local c = app.active          -- composition, or nil if none is open
 local all = app.documents     -- array of open compositions
 local opened = app:open(path) -- open a file; returns the composition
+app.output_device = "Focusrite" -- substring match; nil = System Default
+local names = app.output_devices -- live output device names
 app:command("edit.trim")      -- run a menu/keymap command by id
 app:dofile("extra.lua")       -- execute a Lua file
 app:info("layout", "stereo")  -- Messages tab (info / warn / error)
@@ -75,6 +78,12 @@ is wall-clock seconds for the load or save. `detect_layout` is
 `function(c, chosen)` where `chosen` is the persisted user-explicit layout name
 or `nil`. Return a defined layout name, or `nil` if it cannot be inferred.
 Hooks run in registration order; the last non-nil valid name wins.
+
+`app.output_device` is the session output device name, or `nil` for System
+Default (the host default device). Assignment uses the same name, index, and
+substring matching as `--output`. Unknown names are a Lua runtime error. The
+value is not saved on the `.facomp`; persist it from `init.lua`.
+`app.output_devices` is a read-only array of current device names.
 
 `define_layout` registers (or replaces) a named layout. Channel keys are
 0-based. The default embedded script defines `mono`, `stereo`, `MS`,

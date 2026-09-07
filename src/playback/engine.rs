@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -26,8 +26,8 @@ pub struct PlaybackShared {
     pub in_point: AtomicUsize,
     pub out_point: AtomicUsize,
     epoch: AtomicUsize,
-    output_rate: u32,
-    output_channels: usize,
+    output_rate: AtomicU32,
+    output_channels: AtomicUsize,
     monitor: Mutex<MonitorHost>,
 }
 
@@ -43,16 +43,16 @@ impl PlaybackShared {
         output_channels: usize,
     ) -> Self {
         Self {
-            output_rate,
-            output_channels: output_channels.max(1),
+            output_rate: AtomicU32::new(output_rate.max(1)),
+            output_channels: AtomicUsize::new(output_channels.max(1)),
             provider,
             position: AtomicUsize::new(0),
             transport: AtomicU8::new(TransportState::Stopped.to_u8()),
-            looping: std::sync::atomic::AtomicBool::new(false),
+            looping: AtomicBool::new(false),
             in_point: AtomicUsize::new(IN_OUT_NONE),
             out_point: AtomicUsize::new(IN_OUT_NONE),
             epoch: AtomicUsize::new(0),
-            monitor: Mutex::new(MonitorHost::new(output_rate)),
+            monitor: Mutex::new(MonitorHost::new(output_rate.max(1))),
         }
     }
 
@@ -88,14 +88,26 @@ impl PlaybackShared {
     }
 
     pub fn output_rate(&self) -> u32 {
-        self.output_rate
+        self.output_rate.load(Ordering::SeqCst)
+    }
+
+    pub fn set_output_layout(&self, sample_rate: u32, channels: usize) {
+        let sample_rate = sample_rate.max(1);
+        let channels = channels.max(1);
+        self.output_rate.store(sample_rate, Ordering::SeqCst);
+        self.output_channels.store(channels, Ordering::SeqCst);
+        let mut monitor = self.monitor.lock().unwrap();
+        let chain = monitor.chain();
+        let playback_channels = monitor.playback_channels().map(|ch| ch.to_vec());
+        monitor.set_config(chain, playback_channels, sample_rate);
     }
 
     pub fn set_monitor(&self, chain: Option<MonitorChain>, playback_channels: Option<Vec<usize>>) {
+        let rate = self.output_rate();
         self.monitor
             .lock()
             .unwrap()
-            .set_config(chain, playback_channels, self.output_rate);
+            .set_config(chain, playback_channels, rate);
     }
 
     pub fn set_monitor_param(&self, address: &str, value: f32) {
@@ -127,12 +139,11 @@ impl PlaybackShared {
         playback_channels: Option<Vec<usize>>,
         working: std::collections::HashMap<MonitorChain, std::collections::HashMap<String, f32>>,
     ) {
-        self.monitor.lock().unwrap().replace_working(
-            chain,
-            playback_channels,
-            self.output_rate,
-            working,
-        );
+        let rate = self.output_rate();
+        self.monitor
+            .lock()
+            .unwrap()
+            .replace_working(chain, playback_channels, rate, working);
     }
 
     pub fn monitor_param(&self, address: &str) -> Option<f32> {
@@ -184,7 +195,7 @@ impl PlaybackShared {
         if src_ch == 0 {
             return;
         }
-        let out_ch = self.output_channels.max(1);
+        let out_ch = self.output_channels.load(Ordering::SeqCst).max(1);
         let out_frames = output.len() / out_ch;
         if out_frames == 0 {
             return;
@@ -194,7 +205,7 @@ impl PlaybackShared {
         let start_bound = self.playback_start();
         let looping = self.looping.load(Ordering::SeqCst);
         let src_rate = self.provider.sample_rate().max(1);
-        let step = src_rate as f64 / f64::from(self.output_rate.max(1));
+        let step = src_rate as f64 / f64::from(self.output_rate().max(1));
         let epoch = self.epoch.load(Ordering::SeqCst);
         let origin = self.position.load(Ordering::SeqCst);
         let mut pos_f = origin as f64;
@@ -268,43 +279,98 @@ pub struct PlaybackEngine {
 
 impl PlaybackEngine {
     pub fn open(device: &Device, provider: Arc<dyn PlaybackDataProvider>) -> Result<Self> {
-        let default_config = device
-            .default_output_config()
-            .context("failed to get default output config")?;
-
-        let sample_format = default_config.sample_format();
-        let stream_config = StreamConfig {
-            channels: default_config.channels(),
-            sample_rate: default_config.sample_rate(),
-            buffer_size: cpal::BufferSize::Default,
-        };
-        let output_rate = stream_config.sample_rate;
-        let output_channels = stream_config.channels as usize;
-        let shared = Arc::new(PlaybackShared::with_output_layout(
-            provider,
-            output_rate,
-            output_channels,
-        ));
-        let shared_cb = shared.clone();
-
-        let stream = build_output_stream(device, stream_config, sample_format, shared_cb.clone())
-            .or_else(|_| {
-                let fallback = StreamConfig {
-                    channels: default_config.channels(),
-                    sample_rate: default_config.sample_rate(),
-                    buffer_size: cpal::BufferSize::Default,
-                };
-                build_output_stream(device, fallback, sample_format, shared_cb)
-            })
-            .context("failed to build output stream")?;
-
-        stream.play().context("failed to start output stream")?;
-
+        let (stream, shared) = open_output_stream(device, provider)?;
         Ok(Self {
             _stream: stream,
             shared,
         })
     }
+
+    pub fn reopen(&mut self, device: &Device) -> Result<()> {
+        self.shared.bump_epoch();
+        let (stream, output_rate, output_channels) =
+            build_playing_stream(device, self.shared.clone())?;
+        self._stream = stream;
+        self.shared.set_output_layout(output_rate, output_channels);
+        Ok(())
+    }
+}
+
+fn open_output_stream(
+    device: &Device,
+    provider: Arc<dyn PlaybackDataProvider>,
+) -> Result<(Stream, Arc<PlaybackShared>)> {
+    let default_config = device
+        .default_output_config()
+        .context("failed to get default output config")?;
+    let sample_format = default_config.sample_format();
+    let stream_config = StreamConfig {
+        channels: default_config.channels(),
+        sample_rate: default_config.sample_rate(),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let output_rate = stream_config.sample_rate;
+    let output_channels = stream_config.channels as usize;
+    let shared = Arc::new(PlaybackShared::with_output_layout(
+        provider,
+        output_rate,
+        output_channels,
+    ));
+    let stream = build_playing_stream_from_config(
+        device,
+        &default_config,
+        sample_format,
+        stream_config,
+        shared.clone(),
+    )?;
+    Ok((stream, shared))
+}
+
+fn build_playing_stream(
+    device: &Device,
+    shared: Arc<PlaybackShared>,
+) -> Result<(Stream, u32, usize)> {
+    let default_config = device
+        .default_output_config()
+        .context("failed to get default output config")?;
+    let sample_format = default_config.sample_format();
+    let stream_config = StreamConfig {
+        channels: default_config.channels(),
+        sample_rate: default_config.sample_rate(),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let output_rate = stream_config.sample_rate;
+    let output_channels = stream_config.channels as usize;
+    let stream = build_playing_stream_from_config(
+        device,
+        &default_config,
+        sample_format,
+        stream_config,
+        shared,
+    )?;
+    Ok((stream, output_rate, output_channels))
+}
+
+fn build_playing_stream_from_config(
+    device: &Device,
+    default_config: &cpal::SupportedStreamConfig,
+    sample_format: SampleFormat,
+    stream_config: StreamConfig,
+    shared: Arc<PlaybackShared>,
+) -> Result<Stream> {
+    let shared_cb = shared.clone();
+    let stream = build_output_stream(device, stream_config, sample_format, shared_cb.clone())
+        .or_else(|_| {
+            let fallback = StreamConfig {
+                channels: default_config.channels(),
+                sample_rate: default_config.sample_rate(),
+                buffer_size: cpal::BufferSize::Default,
+            };
+            build_output_stream(device, fallback, sample_format, shared_cb)
+        })
+        .context("failed to build output stream")?;
+    stream.play().context("failed to start output stream")?;
+    Ok(stream)
 }
 
 fn build_output_stream(
@@ -367,6 +433,18 @@ mod tests {
             peaks: vec![vec![]],
         };
         PlaybackShared::new(Arc::new(audio), 44100)
+    }
+
+    #[test]
+    fn set_output_layout_updates_rate_and_channels() {
+        let shared = shared(20);
+        shared.set_output_layout(48000, 2);
+        assert_eq!(shared.output_rate(), 48000);
+        shared.set_output_layout(44100, 2);
+        shared.set_transport(TransportState::Playing);
+        let mut out = vec![0.0; 8];
+        shared.fill_output(&mut out);
+        assert_eq!(shared.position(), 4);
     }
 
     #[test]
