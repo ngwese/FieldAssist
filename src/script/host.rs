@@ -21,7 +21,8 @@ use super::composition::LuaComposition;
 use super::layout::ChannelLayoutDef;
 use super::session::LuaSession;
 use super::workflow::{
-    layout_drop_targets, DropLayout, WorkflowDef, WorkflowMeta, SCOPE_DRAG_DROP,
+    layout_drop_targets, prototype_is_stateful, prototype_method, toolbar_from_prototype,
+    DropLayout, ToolbarItem, WorkflowDef, WorkflowMeta, SCOPE_DRAG_DROP,
 };
 
 pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
@@ -60,6 +61,13 @@ pub struct EvalOutput {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResumeWorkflow {
+    None,
+    Resumed,
+    Unknown { name: String },
+}
+
 struct HostInner {
     prints: Vec<String>,
     logs: Vec<LogEntry>,
@@ -71,6 +79,7 @@ struct HostInner {
     detect_layout: Vec<Function>,
     layouts: Vec<ChannelLayoutDef>,
     workflows: BTreeMap<String, WorkflowDef>,
+    active_workflow: Option<String>,
     detached_sessions: HashMap<SessionId, Session>,
     test: Option<Rc<RefCell<TestWorld>>>,
 }
@@ -162,6 +171,7 @@ impl ScriptHost {
                 detect_layout: Vec::new(),
                 layouts: Vec::new(),
                 workflows: BTreeMap::new(),
+                active_workflow: None,
                 detached_sessions: HashMap::new(),
                 test,
             })),
@@ -268,14 +278,27 @@ impl ScriptHost {
     }
 
     pub fn invoke_workflow(&self, name: &str, paths: &[PathBuf]) -> Result<(), String> {
-        let func = self
+        let proto = self
             .handle
             .inner
             .borrow()
             .workflows
             .get(name)
-            .map(|workflow| workflow.func.clone())
+            .map(|workflow| workflow.prototype.clone())
             .ok_or_else(|| format!("unknown workflow `{name}`"))?;
+        let stateful = prototype_is_stateful(&proto);
+        if stateful {
+            let current = self.handle.inner.borrow().active_workflow.clone();
+            if let Some(current) = current {
+                if current != name {
+                    let _ = self.handle.alert(
+                        "Cannot start workflow".into(),
+                        format!("`{current}` is already running."),
+                    );
+                    return Ok(());
+                }
+            }
+        }
         let payload = self.lua.create_table().map_err(|err| err.to_string())?;
         payload
             .set("scope", SCOPE_DRAG_DROP)
@@ -289,7 +312,48 @@ impl ScriptHost {
         payload
             .set("paths", path_table)
             .map_err(|err| err.to_string())?;
-        func.call::<()>(payload).map_err(|err| err.to_string())
+        if let Some(start) = prototype_method(&proto, "start") {
+            start
+                .call::<()>((proto.clone(), payload))
+                .map_err(|err| err.to_string())?;
+        }
+        if stateful {
+            self.handle.bind_active_workflow(name);
+        }
+        Ok(())
+    }
+
+    pub fn dispatch_workflow_command(&self, command: &str) -> Result<(), String> {
+        self.handle.dispatch_workflow_command(command)
+    }
+
+    pub fn finish_workflow(&self) -> Result<(), String> {
+        self.handle.finish_workflow()
+    }
+
+    pub fn cancel_workflow(&self) -> Result<(), String> {
+        self.handle.cancel_workflow()
+    }
+
+    pub fn suspend_workflow(&self) -> Result<bool, String> {
+        self.handle.suspend_workflow()
+    }
+
+    pub fn resume_workflow(&self) -> Result<ResumeWorkflow, String> {
+        self.handle.resume_workflow()
+    }
+
+    pub fn clear_session_workflow(&self) {
+        let _ = self.handle.set_session_workflow(None, None);
+        self.handle.inner.borrow_mut().active_workflow = None;
+    }
+
+    pub fn toolbar_snapshot(&self) -> Option<(String, Vec<ToolbarItem>)> {
+        self.handle.toolbar_snapshot()
+    }
+
+    pub fn active_workflow_name(&self) -> Option<String> {
+        self.handle.inner.borrow().active_workflow.clone()
     }
 
     pub fn fire_loaded(&self, id: DocumentId, elapsed: f64) {
@@ -770,6 +834,11 @@ impl HostHandle {
         .unwrap_or_default()
     }
 
+    pub fn session_group_count(&self, which: Option<SessionId>, group: &str) -> usize {
+        self.with_session_kind(which, |session| session.group_count(group))
+            .unwrap_or(0)
+    }
+
     pub fn sessions(&self) -> Vec<LuaSession> {
         let mut sessions = vec![LuaSession::active()];
         let mut detached: Vec<SessionId> = self
@@ -824,6 +893,143 @@ impl HostHandle {
             .borrow_mut()
             .workflows
             .insert(workflow.meta.name.clone(), workflow);
+    }
+
+    pub fn toolbar_changed(&self, _prototype: &mlua::Table) -> mlua::Result<()> {
+        Ok(())
+    }
+
+    pub fn dispatch_workflow_command(&self, command: &str) -> Result<(), String> {
+        let Some(name) = self.inner.borrow().active_workflow.clone() else {
+            return Ok(());
+        };
+        let proto = self
+            .inner
+            .borrow()
+            .workflows
+            .get(&name)
+            .map(|workflow| workflow.prototype.clone())
+            .ok_or_else(|| format!("unknown workflow `{name}`"))?;
+        let handler = match proto.get::<Value>("__fa_command") {
+            Ok(Value::Function(func)) => func,
+            _ => return Ok(()),
+        };
+        handler.call::<()>(command).map_err(|err| err.to_string())
+    }
+
+    pub fn finish_workflow(&self) -> Result<(), String> {
+        self.end_active_workflow("finish")
+    }
+
+    pub fn cancel_workflow(&self) -> Result<(), String> {
+        self.end_active_workflow("cancel")
+    }
+
+    fn end_active_workflow(&self, method: &str) -> Result<(), String> {
+        let Some(name) = self.inner.borrow().active_workflow.clone() else {
+            return Ok(());
+        };
+        let proto = self
+            .inner
+            .borrow()
+            .workflows
+            .get(&name)
+            .map(|workflow| workflow.prototype.clone());
+        if let Some(proto) = proto {
+            if let Some(func) = prototype_method(&proto, method) {
+                func.call::<()>((proto, LuaSession::active()))
+                    .map_err(|err| err.to_string())?;
+            }
+        }
+        self.inner.borrow_mut().active_workflow = None;
+        let _ = self.set_session_workflow(None, None);
+        Ok(())
+    }
+
+    fn bind_active_workflow(&self, name: &str) {
+        self.inner.borrow_mut().active_workflow = Some(name.to_string());
+        let _ = self.set_session_workflow(None, Some(name.to_string()));
+    }
+
+    pub fn suspend_workflow(&self) -> Result<bool, String> {
+        let Some(name) = self.inner.borrow().active_workflow.clone() else {
+            return Ok(true);
+        };
+        let Some(proto) = self
+            .inner
+            .borrow()
+            .workflows
+            .get(&name)
+            .map(|workflow| workflow.prototype.clone())
+        else {
+            return Ok(true);
+        };
+        let Some(func) = prototype_method(&proto, "suspend") else {
+            return Ok(true);
+        };
+        let result: Value = func
+            .call((proto, LuaSession::active()))
+            .map_err(|err| err.to_string())?;
+        match result {
+            Value::Nil | Value::Boolean(true) => Ok(true),
+            Value::Boolean(false) => Ok(false),
+            other => Err(format!(
+                "suspend must return a boolean or nil, got {}",
+                other.type_name()
+            )),
+        }
+    }
+
+    pub fn resume_workflow(&self) -> Result<ResumeWorkflow, String> {
+        let Some(name) = self.session_workflow(None) else {
+            self.inner.borrow_mut().active_workflow = None;
+            return Ok(ResumeWorkflow::None);
+        };
+        let proto = self
+            .inner
+            .borrow()
+            .workflows
+            .get(&name)
+            .map(|workflow| workflow.prototype.clone());
+        let Some(proto) = proto else {
+            self.inner.borrow_mut().active_workflow = None;
+            self.log(
+                LogLevel::Error,
+                "workflow".into(),
+                format!("unknown workflow `{name}`"),
+            );
+            return Ok(ResumeWorkflow::Unknown { name });
+        };
+        if !prototype_is_stateful(&proto) {
+            self.inner.borrow_mut().active_workflow = None;
+            self.log(
+                LogLevel::Error,
+                "workflow".into(),
+                format!("workflow `{name}` is not stateful"),
+            );
+            return Ok(ResumeWorkflow::Unknown { name });
+        }
+        if let Some(func) = prototype_method(&proto, "resume") {
+            func.call::<()>((proto, LuaSession::active()))
+                .map_err(|err| err.to_string())?;
+        }
+        self.inner.borrow_mut().active_workflow = Some(name);
+        Ok(ResumeWorkflow::Resumed)
+    }
+
+    pub fn toolbar_snapshot(&self) -> Option<(String, Vec<ToolbarItem>)> {
+        let name = self.inner.borrow().active_workflow.clone()?;
+        let workflow = self.inner.borrow().workflows.get(&name).map(|workflow| {
+            (
+                workflow.meta.display_name.clone(),
+                workflow.prototype.clone(),
+            )
+        })?;
+        let items = toolbar_from_prototype(&workflow.1);
+        if items.is_empty() {
+            return None;
+        }
+        Some((workflow.0, items))
     }
 
     pub fn workflow_metas(&self) -> Vec<WorkflowMeta> {

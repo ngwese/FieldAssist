@@ -4,6 +4,7 @@
 mod access;
 mod app;
 mod composition;
+mod files;
 mod host;
 mod layout;
 mod marker;
@@ -15,10 +16,10 @@ mod workflow;
 
 pub use access::{enter, try_invoke_command};
 pub use host::{
-    host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ScriptHost, TestWorld,
-    EMBEDDED_INIT,
+    host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ResumeWorkflow, ScriptHost,
+    TestWorld, EMBEDDED_INIT,
 };
-pub use workflow::DropLayout;
+pub use workflow::{DropLayout, ToolbarItem};
 
 #[cfg(test)]
 mod tests {
@@ -786,6 +787,19 @@ mod tests {
     }
 
     #[test]
+    fn session_group_count_matches_assigned_groups() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app.active.group = "todo"
+            return app.session:group_count("todo"), app.session:group_count("other")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("1\t0"));
+    }
+
+    #[test]
     fn session_properties_reject_non_strings() {
         let (mut host, _) = test_host();
         let out = host.eval(r#"app.session.properties = { batch = 1 }"#);
@@ -910,7 +924,7 @@ mod tests {
 
     #[test]
     fn review_workflow_logs_dropped_paths() {
-        let (mut host, _) = test_host();
+        let (mut host, world) = test_host();
         host.load_init_from(None).expect("embedded init");
         let _ = host.take_logs();
         host.invoke_workflow(
@@ -933,6 +947,255 @@ mod tests {
         assert!(messages
             .iter()
             .any(|message| message.contains("batch.fasession")));
+        assert_eq!(world.borrow().session.workflow(), Some("review"));
+        host.dispatch_workflow_command("next").expect("next");
+        let logs = host.take_logs();
+        assert!(
+            logs.iter()
+                .any(|entry| entry.message.contains("command next")),
+            "{logs:?}"
+        );
+        host.finish_workflow().expect("finish");
+        assert!(world.borrow().session.workflow().is_none());
+        assert!(host.toolbar_snapshot().is_none());
+    }
+
+    #[test]
+    fn find_files_filters_by_extension_list_and_predicate() {
+        let dir = std::env::temp_dir().join("fieldassist-lua-find-files");
+        let nested = dir.join("nested");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&nested).expect("dir");
+        std::fs::write(dir.join("take.wav"), b"wav").expect("wav");
+        std::fs::write(nested.join("more.flac"), b"flac").expect("flac");
+        std::fs::write(nested.join("notes.txt"), b"txt").expect("txt");
+        std::fs::write(dir.join("edit.facomp"), b"{}").expect("facomp");
+        let path_lua = dir.to_string_lossy().replace('\\', "/");
+        let (mut host, _) = test_host();
+        let out = host.eval(&format!(
+            r#"
+            local dir = "{path_lua}"
+            local by_ext = app:find_files(dir, {{ "wav", ".FLAC", "facomp" }})
+            local by_fn = app:find_files(dir, function(dirname, basename)
+              return basename:match("%.txt$") ~= nil and dirname == "nested"
+            end)
+            return table.concat(by_ext, ","), table.concat(by_fn, ","), #app:find_files(dir)
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            out.result.as_deref(),
+            Some("edit.facomp,nested/more.flac,take.wav\tnested/notes.txt\t4")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn review_expands_folders_and_groups_documents_todo() {
+        let dir = std::env::temp_dir().join("fieldassist-review-folder");
+        let nested = dir.join("nested");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&nested).expect("dir");
+        let wav = dir.join("take.wav");
+        let flac = nested.join("more.flac");
+        std::fs::write(&wav, b"wav").expect("wav");
+        std::fs::write(&flac, b"flac").expect("flac");
+        std::fs::write(nested.join("notes.txt"), b"txt").expect("txt");
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        let _ = host.take_logs();
+        host.invoke_workflow("review", &[dir.clone()])
+            .expect("review");
+        let groups: Vec<_> = world
+            .borrow()
+            .session
+            .documents()
+            .iter()
+            .filter_map(|doc| {
+                let path = doc.file_path()?;
+                if path == wav.as_path() || path == flac.as_path() {
+                    Some((path.to_path_buf(), doc.group.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert!(groups
+            .iter()
+            .all(|(_, group)| group.as_deref() == Some("todo")));
+        assert!(world
+            .borrow()
+            .session
+            .documents()
+            .iter()
+            .all(|doc| doc.file_path() != Some(nested.join("notes.txt").as_path())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oneshot_shorthand_does_not_bind_session_workflow() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:declare_workflow({
+              name = "oneshot",
+              scopes = { "drag-drop" },
+            }, function(payload)
+              app:info("oneshot", payload.scope)
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.invoke_workflow("oneshot", &[PathBuf::from("take.wav")])
+            .expect("invoke");
+        assert!(world.borrow().session.workflow().is_none());
+        assert!(host.active_workflow_name().is_none());
+        assert!(host.toolbar_snapshot().is_none());
+    }
+
+    #[test]
+    fn prototype_start_binds_and_finish_cancel_clear() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "stateful",
+              display_name = "Stateful",
+              scopes = { "drag-drop" },
+            })
+            function W:start(_payload) end
+            function W:suspend(_session) return true end
+            function W:resume(_session) end
+            W:set_toolbar({ { command = "go", label = "Go" } })
+            app:declare_workflow(W)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.invoke_workflow("stateful", &[]).expect("start");
+        assert_eq!(world.borrow().session.workflow(), Some("stateful"));
+        assert_eq!(host.active_workflow_name().as_deref(), Some("stateful"));
+        let snapshot = host.toolbar_snapshot().expect("toolbar");
+        assert_eq!(snapshot.0, "Stateful");
+        assert_eq!(snapshot.1[0].command, "go");
+        host.finish_workflow().expect("finish");
+        assert!(world.borrow().session.workflow().is_none());
+        assert!(host.active_workflow_name().is_none());
+        assert!(host.toolbar_snapshot().is_none());
+
+        host.invoke_workflow("stateful", &[]).expect("start again");
+        assert_eq!(world.borrow().session.workflow(), Some("stateful"));
+        host.cancel_workflow().expect("cancel");
+        assert!(world.borrow().session.workflow().is_none());
+        assert!(host.active_workflow_name().is_none());
+    }
+
+    #[test]
+    fn second_stateful_start_is_rejected_same_name_allowed() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local function make(name)
+              local W = app:create_workflow({
+                name = name,
+                scopes = { "drag-drop" },
+              })
+              function W:start(_payload) end
+              function W:suspend(_session) return true end
+              app:declare_workflow(W)
+            end
+            make("alpha")
+            make("beta")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.invoke_workflow("alpha", &[]).expect("alpha");
+        host.invoke_workflow("beta", &[]).expect("beta blocked");
+        let alerts = host.take_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].0, "Cannot start workflow");
+        assert_eq!(world.borrow().session.workflow(), Some("alpha"));
+        host.invoke_workflow("alpha", &[]).expect("same name");
+        assert_eq!(world.borrow().session.workflow(), Some("alpha"));
+        assert!(host.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn suspend_false_is_reported_to_host() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "block",
+              scopes = { "drag-drop" },
+            })
+            function W:start(_payload) end
+            function W:suspend(_session) return false end
+            app:declare_workflow(W)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.invoke_workflow("block", &[]).expect("start");
+        let allowed = host.suspend_workflow().expect("suspend");
+        assert!(!allowed);
+    }
+
+    #[test]
+    fn resume_restores_stateful_workflow_from_session() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "stateful",
+              display_name = "Stateful",
+              scopes = { "drag-drop" },
+            })
+            function W:start(_payload) end
+            function W:suspend(_session) return true end
+            function W:resume(session)
+              app:info("stateful", session.properties.note or "")
+              W:set_toolbar({ { command = "go", label = "Go" } })
+            end
+            app:declare_workflow(W)
+            app.session.workflow = "stateful"
+            app.session.properties = { note = "hello" }
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(world.borrow().session.workflow(), Some("stateful"));
+        let result = host.resume_workflow().expect("resume");
+        assert_eq!(result, ResumeWorkflow::Resumed);
+        let logs = host.take_logs();
+        assert!(
+            logs.iter().any(|entry| entry.message == "hello"),
+            "{logs:?}"
+        );
+        let snapshot = host.toolbar_snapshot().expect("toolbar");
+        assert_eq!(snapshot.0, "Stateful");
+        assert_eq!(snapshot.1[0].label, "Go");
+    }
+
+    #[test]
+    fn unknown_resume_logs_error_and_does_not_clear() {
+        let (mut host, world) = test_host();
+        let out = host.eval(r#"app.session.workflow = "ghost""#);
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = host.resume_workflow().expect("resume");
+        assert_eq!(
+            result,
+            ResumeWorkflow::Unknown {
+                name: "ghost".into()
+            }
+        );
+        assert_eq!(world.borrow().session.workflow(), Some("ghost"));
+        assert!(host.active_workflow_name().is_none());
+        assert!(host.toolbar_snapshot().is_none());
+        let logs = host.take_logs();
+        assert!(
+            logs.iter()
+                .any(|entry| { entry.level == LogLevel::Error && entry.message.contains("ghost") }),
+            "{logs:?}"
+        );
     }
 
     #[test]

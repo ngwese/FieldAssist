@@ -53,8 +53,12 @@ app.output_device = "Focusrite" -- substring match; nil = System Default
 local names = app.output_devices -- live output device names
 app:command("edit.trim")      -- run a menu/keymap command by id
 app:dofile("extra.lua")       -- execute a Lua file
+app:find_files(dir)           -- recursive files; paths relative to dir
+app:find_files(dir, { "wav", "facomp" })
+app:find_files(dir, function(dirname, basename) return true end)
 app:info("layout", "stereo")  -- Messages tab (info / warn / error)
 app:alert("Cannot replace", "Drop a single file.")
+app:create_workflow({ name = "review", scopes = { "drag-drop" } })
 app:declare_workflow({
   name = "add",
   display_name = "Add",       -- optional; defaults to name
@@ -68,6 +72,8 @@ app:declare_workflow({
 }, function(payload)
   -- payload.paths, payload.scope ("drag-drop")
 end)
+app:finish_workflow()
+app:cancel_workflow()
 app:on("loaded", function(c, elapsed)
   app:info("load", string.format("%s in %.0f ms", c.name, elapsed * 1000))
 end)
@@ -96,6 +102,16 @@ end)
 
 `app:command` uses the same ids as the keymap (`file.open`, `transport.play_pause`,
 `selection.add_marker`, …). Unknown ids are an error. See [Commands](#commands).
+
+`app:find_files(dir)` walks `dir` recursively and returns a list of file paths
+**relative** to `dir`, using `/` as the separator. Directories and symlinks are
+skipped. A non-directory `dir` is a Lua error. The optional second argument
+filters the walk:
+
+- a list of extensions (`"wav"` or `".WAV"`) keeps matching files
+- a function `function(dirname, basename)` is called for each file;
+  `dirname` is the parent relative to `dir` (empty at the root of the walk),
+  `basename` is the file name. A truthy return keeps the file.
 
 `app:on` accepts `"loaded"`, `"detect_layout"`, `"saved"`, `"session_loaded"`,
 and `"session_saved"`. `loaded` is `function(c, elapsed)` and `saved` is
@@ -134,18 +150,22 @@ documents to it; `s:open` of a `.fasession` replaces it. File → Open and the
 CLI use that same type-based behavior. Drag-drop onto the center waveform
 uses Lua workflows instead (see [Workflows](#workflows)).
 
-`s.workflow` is session metadata only — FieldAssist does not auto-run a
-workflow from it.
+`s.workflow` is the host-assigned name of the running stateful workflow. It is
+persisted in `.fasession` so the workflow can resume when the session is opened
+again. Scripts should not set it to bind a workflow; the host writes it after
+`:start` on a stateful prototype. One-shot handlers never bind. Assign `nil`
+only when clearing an unknown name from a Keep/Clear prompt (the host APIs
+`app:finish_workflow()` / `app:cancel_workflow()` are the normal way to unbind).
 
 ```lua
 local s = app.session
 print(s.id, s.path, s.workflow)
-s.workflow = "review"          -- nil to clear
 s.capture_ui = true
 s.properties = { batch = "2026-09" }   -- string→string; nil values rejected
 local all = s.documents        -- same composition objects as app.documents
 local c = s.active             -- or nil
 c = s:open(path)               -- audio/facomp → add; .fasession → replace
+print(s:group_count("todo"))   -- documents with c.group == "todo"
 s:save()
 s:save_as(path)
 
@@ -158,7 +178,8 @@ print(#app.sessions)           -- active session plus any loaded sessions
 ```
 
 `s.id` is the session UUID (read-only). `s.path` is the `.fasession` file, or
-`nil` until it is saved. `app.active`, `app.documents`, and `app:open` remain
+`nil` until it is saved. `s:group_count(name)` is the number of documents whose
+`group` equals `name`. `app.active`, `app.documents`, and `app:open` remain
 aliases of `s.active`, `s.documents`, and `s:open`. `app:load_session` holds
 another session in memory for scripts (document `path` / `id` / `name` work;
 edits require the composition to be open in the UI). `open` / `save` /
@@ -174,9 +195,60 @@ Review are embedded. At startup FieldAssist loads:
 2. `init.lua` (user file if present, otherwise the embedded default)
 3. User `workflow_*.lua` next to `init.lua` (sorted by filename)
 
-`app:declare_workflow(properties, func)` registers a workflow. A later
-declaration with the same `name` replaces the previous one, so a user file or
-`init.lua` can override a built-in. Phase 1 uses one scope: `"drag-drop"`.
+`app:create_workflow(properties)` builds a prototype table (`name`,
+`display_name`, `description`, `scopes`, `drop`) but does not register it.
+`app:declare_workflow(prototype)` registers it (a later declaration with the
+same `name` replaces the previous one). `app:declare_workflow(properties, func)`
+is shorthand: create, set `:start` to `func` (payload only, no `self`), and
+declare. Add and Replace use the shorthand; they are one-shot.
+
+A prototype is **stateful** when it defines `:suspend` or `:resume`. After
+`:start` returns, the host binds `s.workflow` to that name (one running stateful
+workflow per active session). One-shot handlers never bind and never show a
+toolbar.
+
+```lua
+local Review = app:create_workflow({
+  name = "review",
+  display_name = "Review",
+  scopes = { "drag-drop" },
+  drop = { row = 2, priority = 1, color = app.theme.semantic.info },
+})
+
+function Review:start(payload) ... end
+function Review:suspend(session)   -- persist on `session.properties`; return false to abort save/quit
+  return true
+end
+function Review:resume(session) ... end
+function Review:cancel(session) ... end   -- optional
+function Review:finish(session) ... end   -- optional
+
+Review:on("command", function(command) ... end)
+Review:set_toolbar({
+  { command = "next", label = "Next" },
+  { command = "skip", label = "Skip" },
+  { command = "finish", label = "Finish" },
+})
+
+app:declare_workflow(Review)
+```
+
+`:start` receives `{ paths = { ... }, scope = "drag-drop" }`, the same payload
+as the one-shot shorthand. `:on("command", handler)` registers a workflow-local
+command callback (last registration wins). These strings are not global
+`app:command` / keymap ids. `:set_toolbar(items)` or `:set_toolbar(nil)` may be
+called from `start`, `resume`, or a command handler. Missing optional methods
+are no-ops.
+
+`app:finish_workflow()` / `app:cancel_workflow()` end the run: the host calls
+`:finish(session)` or `:cancel(session)` if defined, clears `s.workflow`, and
+hides the toolbar.
+
+Drop overlay still lists every declared workflow whose `scopes` include
+`"drag-drop"`. One-shot vs stateful is not a layout distinction. Dropping the
+**same** running workflow calls `:start` again. Dropping a **different**
+stateful workflow while one is running shows `app:alert` and does not start.
+One-shot Add/Replace may still run while Review is active.
 
 When files are dragged over the center waveform (or the empty editor pane),
 drag-drop workflows are collected, sorted, and laid out **once** for that
@@ -186,18 +258,34 @@ Box width is `priority / sum(priorities in the row)`. Declaring a workflow
 during a drag does not reshape the overlay; the next drag rebuilds from the
 live registry.
 
-The handler receives `{ paths = { ... }, scope = "drag-drop" }`. Use
-`app:alert(subject, body)` for a user-visible error. Uncaught Lua errors go
+Use `app:alert(subject, body)` for a user-visible error. Uncaught Lua errors go
 to the Script panel. Drop colors may be `{ r, g, b, a }` or a value from
 `app.theme.named` / `app.theme.semantic`.
+
+The host calls `:suspend(session)` before File → Save Session / Save Session As,
+and during quit or open-session after compositions are clean (before the unsaved
+session prompt). Return `false` to abort that save or quit (the host alerts).
+A Lua error in `:suspend` is reported in the Script panel and also aborts.
+
+`:resume(session)` runs after a `.fasession` is installed as the UI session when
+`s.workflow` names a declared stateful prototype. An unknown or one-shot name
+logs an error, shows no toolbar, and prompts Keep (leave `s.workflow`) or Clear
+(unbind the name only; no `:cancel` / `:finish`; other `s.properties` stay).
+Replacing the active session cancels a running outgoing workflow, then resumes
+the incoming session’s workflow if any.
+
+A workflow bar sits between the dock and the status bar while toolbar items are
+set. It shows the workflow `display_name` and the script buttons.
 
 Built-in **Add** opens audio/`.facomp` into the current session. A dropped
 `.fasession` is loaded with `app:load_session` and each document whose path is
 not already in the current session is opened (existing path wins). Built-in
 **Replace** opens a `.fasession` as a session replace, or calls
 `c:replace(path)` on the active document for audio/`.facomp`. Built-in
-**Review** (second row) is a mock: it logs `app:info` lines for the drop
-scope and each path.
+**Review** is a stateful mock: dropped files are kept as-is, dropped folders
+are expanded with `app:find_files` to readable audio/`.facomp` files, each
+opened document is placed in the `"todo"` group, and the toolbar offers Next /
+Skip / Finish. Finish warns if any session documents are still in `"todo"`.
 
 `app.output_device` is the session output device name, or `nil` for System
 Default (the host default device). Assignment uses the same name, index, and

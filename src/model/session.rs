@@ -216,6 +216,13 @@ impl Session {
         self.documents.iter().filter(|doc| doc.tab_open).count()
     }
 
+    pub fn group_count(&self, group: &str) -> usize {
+        self.documents
+            .iter()
+            .filter(|doc| doc.group.as_deref() == Some(group))
+            .count()
+    }
+
     pub fn active(&self) -> Option<DocumentId> {
         self.active
     }

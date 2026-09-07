@@ -52,6 +52,7 @@ use crate::components::render_sheet::RenderSheet;
 use crate::components::repl::ReplPanel;
 use crate::components::status_bar::{FileStatus, FileStatusBar, LayoutPicker};
 use crate::components::waveform::{ToggleZeroCrossing, WaveformDisplay};
+use crate::components::workflow_bar::WorkflowBar;
 use crate::components::workspace::WorkspacePanel;
 use crate::model::composition::{
     default_marker_type, Composition, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
@@ -63,7 +64,7 @@ use crate::model::{
 };
 use crate::playback::{output_device_name, resolve_output_device, PlaybackSession, TransportState};
 use crate::progress::ProgressState;
-use crate::script::{DropLayout, EvalOutput, LogLevel, ScriptHost};
+use crate::script::{DropLayout, EvalOutput, LogLevel, ResumeWorkflow, ScriptHost, ToolbarItem};
 
 struct OpenTarget(Entity<AppView>);
 
@@ -142,6 +143,7 @@ pub struct AppView {
     output_device: Option<String>,
     drop_layout: Option<Arc<DropLayout>>,
     pending_replace: Option<(DocumentId, PathBuf)>,
+    workflow_bar: Option<(String, Vec<ToolbarItem>)>,
 }
 
 impl AppView {
@@ -343,6 +345,7 @@ impl AppView {
             output_device,
             drop_layout: None,
             pending_replace: None,
+            workflow_bar: None,
         };
         this.load_init_lua(window, cx);
         if let Some(path) = session_path {
@@ -1161,14 +1164,22 @@ impl AppView {
 
     fn flush_script_logs(&mut self, cx: &mut Context<Self>) {
         let logs = self.script.take_logs();
-        if logs.is_empty() {
-            return;
+        if !logs.is_empty() {
+            let visible = self.messages_tab_visible(cx);
+            self.messages.update(cx, |panel, cx| {
+                panel.append(logs, visible, cx);
+            });
+            self.dock_area.update(cx, |_, cx| cx.notify());
         }
-        let visible = self.messages_tab_visible(cx);
-        self.messages.update(cx, |panel, cx| {
-            panel.append(logs, visible, cx);
-        });
-        self.dock_area.update(cx, |_, cx| cx.notify());
+        self.refresh_workflow_bar(cx);
+    }
+
+    fn refresh_workflow_bar(&mut self, cx: &mut Context<Self>) {
+        let next = self.script.toolbar_snapshot();
+        if self.workflow_bar != next {
+            self.workflow_bar = next;
+            cx.notify();
+        }
     }
 
     fn messages_tab_visible(&self, cx: &App) -> bool {
@@ -1539,6 +1550,33 @@ impl AppView {
         if let Err(err) = self.script.invoke_workflow(name, paths) {
             self.repl.update(cx, |repl, cx| {
                 repl.append_error(&format!("workflow `{name}`: {err}"), cx);
+            });
+        }
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn dispatch_workflow_command(
+        &mut self,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.dispatch_workflow_command(command) {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("workflow command `{command}`: {err}"), cx);
             });
         }
         let prints = self.script.take_prints();
@@ -2281,6 +2319,10 @@ impl AppView {
     }
 
     fn after_compositions_clean(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.suspend_active_workflow(window, cx) {
+            self.pending_continue = None;
+            return;
+        }
         if self.session.should_prompt_save() {
             self.prompt_save_session_then_continue(window, cx);
             return;
@@ -2770,6 +2812,12 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.suspend_active_workflow(window, cx) {
+            if after == AfterSessionWrite::Continue {
+                self.pending_continue = None;
+            }
+            return;
+        }
         let titles: HashMap<DocumentId, String> = self
             .session
             .documents()
@@ -2807,6 +2855,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.cancel_outgoing_workflow(window, cx);
         let json = std::fs::read_to_string(path).map_err(|err| format!("{err:#}"))?;
         let loaded = crate::model::session::Session::from_json(&json, Some(path))
             .map_err(|err| format!("{err:#}"))?;
@@ -2834,6 +2883,7 @@ impl AppView {
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
         self.fire_session_loaded_script(window, cx);
+        self.resume_bound_workflow(window, cx);
         cx.notify();
         Ok(())
     }
@@ -2951,6 +3001,134 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+    }
+
+    fn suspend_active_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let _guard = crate::script::enter(self, window, cx);
+        let result = self.script.suspend_workflow();
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        match result {
+            Ok(true) => true,
+            Ok(false) => {
+                self.script_alert(
+                    "Cannot continue",
+                    "The running workflow blocked this action.",
+                    window,
+                    cx,
+                );
+                false
+            }
+            Err(err) => {
+                self.repl.update(cx, |repl, cx| {
+                    repl.append_error(&format!("workflow suspend: {err}"), cx);
+                });
+                false
+            }
+        }
+    }
+
+    fn cancel_outgoing_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.cancel_workflow() {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("workflow cancel: {err}"), cx);
+            });
+        }
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+    }
+
+    fn resume_bound_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = crate::script::enter(self, window, cx);
+        let result = self.script.resume_workflow();
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        match result {
+            Ok(ResumeWorkflow::None | ResumeWorkflow::Resumed) => {}
+            Ok(ResumeWorkflow::Unknown { name }) => {
+                self.prompt_unknown_workflow(&name, window, cx);
+            }
+            Err(err) => {
+                self.repl.update(cx, |repl, cx| {
+                    repl.append_error(&format!("workflow resume: {err}"), cx);
+                });
+            }
+        }
+    }
+
+    fn prompt_unknown_workflow(&self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let description = format!(
+            "This session is bound to `{name}`, which is not a declared stateful workflow."
+        );
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            alert
+                .title("Unknown workflow")
+                .description(description.clone())
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("workflow-keep")
+                                .outline()
+                                .label("Keep")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.refresh_workflow_bar(cx);
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("workflow-clear")
+                                .primary()
+                                .label("Clear")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.script.clear_session_workflow();
+                                            this.refresh_workflow_bar(cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
     }
 
     fn prompt_open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3194,6 +3372,9 @@ impl Render for AppView {
                                             .w_full()
                                             .child(self.dock_area.clone()),
                                     )
+                                    .when_some(self.workflow_bar.clone(), |this, (title, items)| {
+                                        this.child(WorkflowBar::new(title, items, cx.weak_entity()))
+                                    })
                                     .child(
                                         FileStatusBar::new(file_status)
                                             .with_progress_message(progress_message)

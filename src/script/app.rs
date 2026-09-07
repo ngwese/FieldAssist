@@ -1,14 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use mlua::{Function, Table, UserData, UserDataFields, UserDataMethods, Value};
+use std::path::Path;
+
+use mlua::{Function, MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use super::composition::LuaComposition;
+use super::files::{find_files, find_files_matching, normalize_extension};
 use super::host::{host_from_lua, stringify_value, LogLevel};
 use super::layout::layout_from_lua;
 use super::session::LuaSession;
 use super::theme::LuaTheme;
-use super::workflow::workflow_from_lua;
+use super::workflow::{create_prototype, workflow_from_lua, workflow_from_prototype};
 
 pub struct LuaApp;
 
@@ -77,19 +80,53 @@ impl UserData for LuaApp {
                 .exec()
                 .map_err(mlua::Error::runtime)
         });
+        methods.add_method("find_files", |lua, _, args: MultiValue| {
+            find_files_from_lua(lua, args)
+        });
         methods.add_method("define_layout", |lua, _, spec: Table| {
             let layout = layout_from_lua(spec)?;
             host_from_lua(lua)?.define_layout(layout);
             Ok(())
         });
-        methods.add_method(
-            "declare_workflow",
-            |lua, _, (properties, func): (Table, Function)| {
-                let workflow = workflow_from_lua(properties, func)?;
-                host_from_lua(lua)?.declare_workflow(workflow);
-                Ok(())
-            },
-        );
+        methods.add_method("create_workflow", |lua, _, properties: Table| {
+            create_prototype(lua, properties)
+        });
+        methods.add_method("declare_workflow", |lua, _, args: MultiValue| {
+            let mut args = args.into_iter();
+            let first = args.next().ok_or_else(|| {
+                mlua::Error::runtime(
+                    "declare_workflow expects a prototype or (properties, function)",
+                )
+            })?;
+            let second = args.next();
+            match (first, second) {
+                (Value::Table(properties), Some(Value::Function(func))) => {
+                    let workflow = workflow_from_lua(lua, properties, func)?;
+                    host_from_lua(lua)?.declare_workflow(workflow);
+                }
+                (Value::Table(prototype), None | Some(Value::Nil)) => {
+                    let workflow = workflow_from_prototype(prototype)?;
+                    host_from_lua(lua)?.declare_workflow(workflow);
+                }
+                (other, _) => {
+                    return Err(mlua::Error::runtime(format!(
+                    "declare_workflow expects a prototype table or (properties, function), got {}",
+                    other.type_name()
+                )))
+                }
+            }
+            Ok(())
+        });
+        methods.add_method("finish_workflow", |lua, _, ()| {
+            host_from_lua(lua)?
+                .finish_workflow()
+                .map_err(mlua::Error::runtime)
+        });
+        methods.add_method("cancel_workflow", |lua, _, ()| {
+            host_from_lua(lua)?
+                .cancel_workflow()
+                .map_err(mlua::Error::runtime)
+        });
         methods.add_method("alert", |lua, _, (subject, body): (Value, Value)| {
             let host = host_from_lua(lua)?;
             host.alert(stringify_value(lua, subject), stringify_value(lua, body))
@@ -138,6 +175,74 @@ impl UserData for LuaApp {
             Ok(())
         });
     }
+}
+
+fn find_files_from_lua(lua: &mlua::Lua, args: MultiValue) -> mlua::Result<Table> {
+    let mut args = args.into_iter();
+    let dir = match args.next() {
+        Some(Value::String(path)) => path.to_str()?.to_owned(),
+        Some(other) => {
+            return Err(mlua::Error::runtime(format!(
+                "find_files expects a directory path, got {}",
+                other.type_name()
+            )))
+        }
+        None => return Err(mlua::Error::runtime("find_files expects a directory path")),
+    };
+    let paths = match args.next() {
+        None | Some(Value::Nil) => {
+            find_files(Path::new(&dir), None).map_err(mlua::Error::runtime)?
+        }
+        Some(Value::Table(table)) => {
+            let extensions = extensions_from_lua(table)?;
+            find_files(Path::new(&dir), Some(&extensions)).map_err(mlua::Error::runtime)?
+        }
+        Some(Value::Function(predicate)) => {
+            find_files_matching(Path::new(&dir), |dirname, basename| {
+                let value: Value = predicate
+                    .call((dirname, basename))
+                    .map_err(|err| err.to_string())?;
+                Ok(lua_is_truthy(value))
+            })
+            .map_err(mlua::Error::runtime)?
+        }
+        Some(other) => {
+            return Err(mlua::Error::runtime(format!(
+                "find_files filter must be a list of extensions or a function, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let table = lua.create_table()?;
+    for (index, path) in paths.iter().enumerate() {
+        table.set(index + 1, path.as_str())?;
+    }
+    Ok(table)
+}
+
+fn extensions_from_lua(table: Table) -> mlua::Result<Vec<String>> {
+    let mut extensions = Vec::new();
+    for value in table.sequence_values::<Value>() {
+        match value? {
+            Value::String(text) => {
+                let ext = normalize_extension(&text.to_str()?);
+                if !ext.is_empty() {
+                    extensions.push(ext);
+                }
+            }
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "find_files extensions must be strings, got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    }
+    Ok(extensions)
+}
+
+fn lua_is_truthy(value: Value) -> bool {
+    !matches!(value, Value::Nil | Value::Boolean(false))
 }
 
 pub fn bind_app(lua: &mlua::Lua) -> mlua::Result<()> {

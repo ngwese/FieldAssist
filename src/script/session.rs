@@ -83,6 +83,10 @@ impl UserData for LuaSession {
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("group_count", |lua, this, group: String| {
+            let host = host_from_lua(lua)?;
+            Ok(host.session_group_count(this.id, &group) as i64)
+        });
         methods.add_method("open", |lua, this, path: String| {
             let host = host_from_lua(lua)?;
             if this.id.is_some() {

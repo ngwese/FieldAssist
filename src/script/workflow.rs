@@ -22,7 +22,13 @@ pub struct WorkflowMeta {
 
 pub struct WorkflowDef {
     pub meta: WorkflowMeta,
-    pub func: Function,
+    pub prototype: Table,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolbarItem {
+    pub command: String,
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,7 +49,7 @@ pub struct DropCell {
     pub weight: f64,
 }
 
-pub fn workflow_from_lua(properties: Table, func: Function) -> mlua::Result<WorkflowDef> {
+pub fn workflow_meta_from_lua(properties: Table) -> mlua::Result<WorkflowMeta> {
     let name: String = properties.get("name")?;
     if name.is_empty() {
         return Err(mlua::Error::runtime("workflow name is required"));
@@ -77,6 +83,71 @@ pub fn workflow_from_lua(properties: Table, func: Function) -> mlua::Result<Work
     };
     let scopes = string_list_from_lua(properties.get("scopes")?)?;
     let (row, priority, color) = drop_spec_from_lua(properties.get("drop")?)?;
+    Ok(WorkflowMeta {
+        name,
+        display_name,
+        description,
+        scopes,
+        row,
+        priority,
+        color,
+    })
+}
+
+pub fn create_prototype(lua: &mlua::Lua, properties: Table) -> mlua::Result<Table> {
+    let meta = workflow_meta_from_lua(properties)?;
+    let proto = lua.create_table()?;
+    proto.set("__fa_name", meta.name.clone())?;
+    proto.set("__fa_display_name", meta.display_name.clone())?;
+    proto.set("__fa_description", meta.description.clone())?;
+    proto.set("__fa_row", meta.row)?;
+    proto.set("__fa_priority", meta.priority)?;
+    let scopes = lua.create_table()?;
+    for (index, scope) in meta.scopes.iter().enumerate() {
+        scopes.set(index + 1, scope.as_str())?;
+    }
+    proto.set("__fa_scopes", scopes)?;
+    let color = lua.create_table()?;
+    for (index, component) in meta.color.iter().enumerate() {
+        color.set(index + 1, *component)?;
+    }
+    proto.set("__fa_color", color)?;
+    proto.set("on", lua.create_function(prototype_on)?)?;
+    proto.set("set_toolbar", lua.create_function(prototype_set_toolbar)?)?;
+    Ok(proto)
+}
+
+pub fn workflow_from_lua(
+    lua: &mlua::Lua,
+    properties: Table,
+    func: Function,
+) -> mlua::Result<WorkflowDef> {
+    let prototype = create_prototype(lua, properties)?;
+    let start =
+        lua.create_function(move |_, (_this, payload): (Table, Table)| func.call::<()>(payload))?;
+    prototype.set("start", start)?;
+    workflow_from_prototype(prototype)
+}
+
+pub fn workflow_from_prototype(prototype: Table) -> mlua::Result<WorkflowDef> {
+    let name: String = prototype.get("__fa_name")?;
+    if name.is_empty() {
+        return Err(mlua::Error::runtime("workflow prototype is missing a name"));
+    }
+    let display_name: String = prototype
+        .get::<Option<String>>("__fa_display_name")?
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| name.clone());
+    let description: String = prototype
+        .get::<Option<String>>("__fa_description")?
+        .unwrap_or_default();
+    let scopes = match prototype.get::<Value>("__fa_scopes")? {
+        Value::Nil => Vec::new(),
+        value => string_list_from_lua(value)?,
+    };
+    let row = optional_i64(prototype.get("__fa_row")?, 1)?;
+    let priority = optional_positive_number(prototype.get("__fa_priority")?, 1.0)?;
+    let color = color_from_value(prototype.get("__fa_color")?)?.unwrap_or(DEFAULT_WORKFLOW_COLOR);
     Ok(WorkflowDef {
         meta: WorkflowMeta {
             name,
@@ -87,8 +158,87 @@ pub fn workflow_from_lua(properties: Table, func: Function) -> mlua::Result<Work
             priority,
             color,
         },
-        func,
+        prototype,
     })
+}
+
+pub fn prototype_method(prototype: &Table, name: &str) -> Option<Function> {
+    match prototype.get::<Value>(name) {
+        Ok(Value::Function(func)) => Some(func),
+        _ => None,
+    }
+}
+
+pub fn prototype_is_stateful(prototype: &Table) -> bool {
+    prototype_method(prototype, "suspend").is_some()
+        || prototype_method(prototype, "resume").is_some()
+}
+
+pub fn toolbar_from_prototype(prototype: &Table) -> Vec<ToolbarItem> {
+    parse_toolbar(prototype.get("__fa_toolbar").unwrap_or(Value::Nil)).unwrap_or_default()
+}
+
+pub fn parse_toolbar(value: Value) -> mlua::Result<Vec<ToolbarItem>> {
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Table(table) => {
+            let mut items = Vec::new();
+            for row in table.sequence_values::<Value>() {
+                let Value::Table(row) = row? else {
+                    return Err(mlua::Error::runtime(
+                        "toolbar items must be tables with command and label",
+                    ));
+                };
+                let command: String = row.get("command")?;
+                if command.is_empty() {
+                    return Err(mlua::Error::runtime("toolbar command is required"));
+                }
+                let label: String = match row.get::<Value>("label")? {
+                    Value::Nil => command.clone(),
+                    Value::String(text) => {
+                        let text = text.to_str()?.to_owned();
+                        if text.is_empty() {
+                            command.clone()
+                        } else {
+                            text
+                        }
+                    }
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "toolbar label must be a string, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                items.push(ToolbarItem { command, label });
+            }
+            Ok(items)
+        }
+        other => Err(mlua::Error::runtime(format!(
+            "toolbar must be a list of items or nil, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn prototype_on(
+    lua: &mlua::Lua,
+    (this, event, handler): (Table, String, Function),
+) -> mlua::Result<()> {
+    if event != "command" {
+        return Err(mlua::Error::runtime(format!(
+            "unknown workflow event `{event}`; expected \"command\""
+        )));
+    }
+    this.set("__fa_command", handler)?;
+    let _ = lua;
+    Ok(())
+}
+
+fn prototype_set_toolbar(lua: &mlua::Lua, (this, items): (Table, Value)) -> mlua::Result<()> {
+    parse_toolbar(items.clone())?;
+    this.set("__fa_toolbar", items)?;
+    super::host::host_from_lua(lua)?.toolbar_changed(&this)
 }
 
 fn drop_spec_from_lua(value: Value) -> mlua::Result<(i64, f64, [f32; 4])> {

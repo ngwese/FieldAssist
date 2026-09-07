@@ -18,4 +18,5 @@ pub mod repl;
 pub mod status_bar;
 pub mod transport;
 pub mod waveform;
+pub mod workflow_bar;
 pub mod workspace;
