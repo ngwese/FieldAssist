@@ -432,7 +432,7 @@ impl AppView {
             .unwrap_or_else(|| crate::APP_NAME.into())
     }
 
-    fn refresh_explorer(&self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_explorer(&self, cx: &mut Context<Self>) {
         let docs: Vec<_> = self
             .session
             .documents()
@@ -442,7 +442,12 @@ impl AppView {
                     .views
                     .get(&doc.id)
                     .is_some_and(|views| views.composition.read().unwrap().is_modified());
-                (doc.id, self.display_title(doc.id, cx), modified)
+                (
+                    doc.id,
+                    self.display_title(doc.id, cx),
+                    modified,
+                    doc.group.clone(),
+                )
             })
             .collect();
         let active = self.session.active();
@@ -916,6 +921,10 @@ impl AppView {
                 self.apply_preview_if_enabled(cx);
             }
             ExplorerEvent::Close(id) => self.request_close_document(id, window, cx),
+            ExplorerEvent::SetGroup { id, group } => {
+                self.session.set_document_group(id, group);
+                self.refresh_explorer(cx);
+            }
         }
     }
 

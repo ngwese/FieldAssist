@@ -1090,7 +1090,16 @@ impl HostHandle {
             } else {
                 Err(mlua::Error::runtime("composition is not open"))
             }
-        })
+        })?;
+        self.refresh_explorer();
+        Ok(())
+    }
+
+    pub fn refresh_explorer(&self) {
+        if self.inner.borrow().test.is_some() {
+            return;
+        }
+        let _ = access::with_view(|view, _, cx| view.refresh_explorer(cx));
     }
 
     pub fn document_state(&self, id: DocumentId) -> mlua::Result<Option<String>> {
