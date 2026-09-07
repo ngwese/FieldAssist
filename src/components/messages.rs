@@ -119,7 +119,7 @@ impl Render for MessagesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
-        let info = cx.theme().info;
+        let info = cx.theme().green;
         let warning = cx.theme().warning;
         let danger = cx.theme().danger;
         let entries = self.entries.clone();
