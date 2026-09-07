@@ -11,8 +11,10 @@ file is loaded **instead** of the embedded default:
 - Windows: `%APPDATA%\snd-review\init.lua`
 - Linux: `$XDG_CONFIG_HOME/snd-review/init.lua` (or `~/.config/snd-review/init.lua`)
 
-`init.lua` is loaded once at startup. Register `loaded`, `detect_layout`,
-`saved`, `session_loaded`, and `session_saved` hooks there. The status bar
+`init.lua` is loaded once at startup, **after** the built-in workflow scripts
+and **before** user `workflow_*.lua` files in the same config directory.
+Register `loaded`, `detect_layout`, `saved`, `session_loaded`, and
+`session_saved` hooks in `init.lua`. The status bar
 (right side) shows the effective channel layout
 and lets you pick one of the defined layouts; a pick is saved on the
 composition. Output device selection is session-level: set `app.output_device` in
@@ -35,6 +37,7 @@ indices are also 0-based.
 | `app:info(topic, message)` | Info log to the Messages tab (and stdout if connected). |
 | `app:warn(topic, message)` | Warning log; unseen warnings badge the Messages tab. |
 | `app:error(topic, message)` | Error log; unseen errors badge the Messages tab. |
+| `app:alert(subject, body)` | Modal dialog (same widget as a failed file open). |
 
 There is no other host-provided global besides `app`. Open documents are reached
 through `app.active`, `app.documents`, and `app.session`.
@@ -51,6 +54,20 @@ local names = app.output_devices -- live output device names
 app:command("edit.trim")      -- run a menu/keymap command by id
 app:dofile("extra.lua")       -- execute a Lua file
 app:info("layout", "stereo")  -- Messages tab (info / warn / error)
+app:alert("Cannot replace", "Drop a single file.")
+app:declare_workflow({
+  name = "add",
+  display_name = "Add",       -- optional; defaults to name
+  description = "Add to the session",
+  scopes = { "drag-drop" },
+  drop = {                    -- optional; used by drag-drop
+    row = 1,                  -- default 1
+    priority = 1,             -- default 1; sort key and width weight
+    color = app.theme.semantic.success,
+  },
+}, function(payload)
+  -- payload.paths, payload.scope ("drag-drop")
+end)
 app:on("loaded", function(c, elapsed)
   app:info("load", string.format("%s in %.0f ms", c.name, elapsed * 1000))
 end)
@@ -89,11 +106,36 @@ persisted user-explicit layout name or `nil`. Return a defined layout name, or
 `nil` if it cannot be inferred. Hooks run in registration order; the last
 non-nil valid name wins.
 
+`app.theme.named` and `app.theme.semantic` are the current GPUI theme colors as
+`{ r, g, b, a }` tables (`0..1`). They can be passed to `drop.color` (and
+anywhere else a color table is accepted). Values are read from the live theme
+when the field is accessed, so `declare_workflow` snapshots the color at
+registration. Unknown names are a Lua runtime error.
+
+Named palette: `red`, `red_light`, `green`, `green_light`, `blue`,
+`blue_light`, `yellow`, `yellow_light`, `magenta`, `magenta_light`, `cyan`,
+`cyan_light`.
+
+Semantic: `accent`, `accent_foreground`, `background`, `border`, `danger`,
+`danger_active`, `danger_foreground`, `danger_hover`, `drop_target`,
+`foreground`, `info`, `info_active`, `info_foreground`, `info_hover`, `input`,
+`link`, `link_active`, `link_hover`, `muted`, `muted_foreground`, `popover`,
+`popover_foreground`, `primary`, `primary_active`, `primary_foreground`,
+`primary_hover`, `ring`, `secondary`, `secondary_active`,
+`secondary_foreground`, `secondary_hover`, `selection`, `success`,
+`success_active`, `success_foreground`, `success_hover`, `warning`,
+`warning_active`, `warning_foreground`, `warning_hover`, `chart_1` … `chart_5`,
+`chart_bullish`, `chart_bearish`.
+
 ## Session
 
-`app.session` is always present. There is one active session. Audio and
-`.facomp` files add documents to it; opening a `.fasession` replaces it.
-`s.workflow` is a name only — FieldAssist does not auto-run a workflow from it.
+`app.session` is always the UI-active session. Audio and `.facomp` files add
+documents to it; `s:open` of a `.fasession` replaces it. File → Open and the
+CLI use that same type-based behavior. Drag-drop onto the center waveform
+uses Lua workflows instead (see [Workflows](#workflows)).
+
+`s.workflow` is session metadata only — FieldAssist does not auto-run a
+workflow from it.
 
 ```lua
 local s = app.session
@@ -106,11 +148,56 @@ local c = s.active             -- or nil
 c = s:open(path)               -- audio/facomp → add; .fasession → replace
 s:save()
 s:save_as(path)
+
+local incoming = app:load_session(path)  -- .fasession; does not replace s
+for _, doc in ipairs(incoming.documents) do
+  print(doc.path)
+end
+incoming:close()               -- drop a Lua-held session; not the active one
+print(#app.sessions)           -- active session plus any loaded sessions
 ```
 
 `s.id` is the session UUID (read-only). `s.path` is the `.fasession` file, or
 `nil` until it is saved. `app.active`, `app.documents`, and `app:open` remain
-aliases of `s.active`, `s.documents`, and `s:open`.
+aliases of `s.active`, `s.documents`, and `s:open`. `app:load_session` holds
+another session in memory for scripts (document `path` / `id` / `name` work;
+edits require the composition to be open in the UI). `open` / `save` /
+`save_as` are only available on the active session.
+
+## Workflows
+
+Workflows are Lua files named `workflow_<name>.lua`. Built-in Add, Replace, and
+Review are embedded. At startup FieldAssist loads:
+
+1. Embedded `workflow_add.lua`, `workflow_replace.lua`, and
+   `workflow_review.lua`
+2. `init.lua` (user file if present, otherwise the embedded default)
+3. User `workflow_*.lua` next to `init.lua` (sorted by filename)
+
+`app:declare_workflow(properties, func)` registers a workflow. A later
+declaration with the same `name` replaces the previous one, so a user file or
+`init.lua` can override a built-in. Phase 1 uses one scope: `"drag-drop"`.
+
+When files are dragged over the center waveform (or the empty editor pane),
+drag-drop workflows are collected, sorted, and laid out **once** for that
+gesture. Rows use `drop.row` (missing row numbers are not padded). Within a
+row, higher `drop.priority` is first (left); ties sort by `display_name`.
+Box width is `priority / sum(priorities in the row)`. Declaring a workflow
+during a drag does not reshape the overlay; the next drag rebuilds from the
+live registry.
+
+The handler receives `{ paths = { ... }, scope = "drag-drop" }`. Use
+`app:alert(subject, body)` for a user-visible error. Uncaught Lua errors go
+to the Script panel. Drop colors may be `{ r, g, b, a }` or a value from
+`app.theme.named` / `app.theme.semantic`.
+
+Built-in **Add** opens audio/`.facomp` into the current session. A dropped
+`.fasession` is loaded with `app:load_session` and each document whose path is
+not already in the current session is opened (existing path wins). Built-in
+**Replace** opens a `.fasession` as a session replace, or calls
+`c:replace(path)` on the active document for audio/`.facomp`. Built-in
+**Review** (second row) is a mock: it logs `app:info` lines for the drop
+scope and each path.
 
 `app.output_device` is the session output device name, or `nil` for System
 Default (the host default device). Assignment uses the same name, index, and
@@ -181,6 +268,7 @@ hold; read the field again. Region and Marker objects themselves are live.
 ```lua
 c:save()   -- File → Save for this composition
 c:close()  -- File → Close (prompts if unsaved)
+c:replace(path)  -- reload this document from audio/.facomp (prompts if unsaved)
 ```
 
 ### Selection methods

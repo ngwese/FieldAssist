@@ -3,6 +3,7 @@
 
 pub mod app_menu;
 pub mod dock_skin;
+pub mod drop_overlay;
 pub mod edits;
 pub mod empty_pane;
 pub mod explorer;

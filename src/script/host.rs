@@ -11,17 +11,23 @@ use std::sync::{Arc, RwLock};
 
 use mlua::{Function, Lua, MultiValue, Value};
 
-use crate::model::composition::Composition;
+use crate::model::composition::{is_facomp_path, Composition};
 use crate::model::document::BufferDocument;
-use crate::model::{Buffer, DocumentId, Session, SessionDocument};
+use crate::model::{is_fasession_path, Buffer, DocumentId, Session, SessionDocument, SessionId};
 
 use super::access;
 use super::app::bind_app;
 use super::composition::LuaComposition;
 use super::layout::ChannelLayoutDef;
 use super::session::LuaSession;
+use super::workflow::{
+    layout_drop_targets, DropLayout, WorkflowDef, WorkflowMeta, SCOPE_DRAG_DROP,
+};
 
 pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
+const EMBEDDED_WORKFLOW_ADD: &str = include_str!("../../assets/workflow_add.lua");
+const EMBEDDED_WORKFLOW_REPLACE: &str = include_str!("../../assets/workflow_replace.lua");
+const EMBEDDED_WORKFLOW_REVIEW: &str = include_str!("../../assets/workflow_review.lua");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogLevel {
@@ -57,12 +63,15 @@ pub struct EvalOutput {
 struct HostInner {
     prints: Vec<String>,
     logs: Vec<LogEntry>,
+    alerts: Vec<(String, String)>,
     loaded: Vec<Function>,
     saved: Vec<Function>,
     session_loaded: Vec<Function>,
     session_saved: Vec<Function>,
     detect_layout: Vec<Function>,
     layouts: Vec<ChannelLayoutDef>,
+    workflows: BTreeMap<String, WorkflowDef>,
+    detached_sessions: HashMap<SessionId, Session>,
     test: Option<Rc<RefCell<TestWorld>>>,
 }
 
@@ -145,12 +154,15 @@ impl ScriptHost {
             inner: Rc::new(RefCell::new(HostInner {
                 prints: Vec::new(),
                 logs: Vec::new(),
+                alerts: Vec::new(),
                 loaded: Vec::new(),
                 saved: Vec::new(),
                 session_loaded: Vec::new(),
                 session_saved: Vec::new(),
                 detect_layout: Vec::new(),
                 layouts: Vec::new(),
+                workflows: BTreeMap::new(),
+                detached_sessions: HashMap::new(),
                 test,
             })),
         };
@@ -183,6 +195,13 @@ impl ScriptHost {
     }
 
     pub fn load_init_from(&mut self, config_dir: Option<&Path>) -> Result<(), String> {
+        self.load_embedded_workflows()?;
+        self.load_init_script(config_dir)?;
+        self.load_user_workflows(config_dir)?;
+        Ok(())
+    }
+
+    fn load_init_script(&mut self, config_dir: Option<&Path>) -> Result<(), String> {
         if let Some(path) = user_init_path(config_dir) {
             return self
                 .lua
@@ -195,6 +214,82 @@ impl ScriptHost {
             .set_name("@<embedded>/init.lua")
             .exec()
             .map_err(|err| format!("init.lua: {err}"))
+    }
+
+    fn load_embedded_workflows(&mut self) -> Result<(), String> {
+        self.lua
+            .load(EMBEDDED_WORKFLOW_ADD)
+            .set_name("@<embedded>/workflow_add.lua")
+            .exec()
+            .map_err(|err| format!("workflow_add.lua: {err}"))?;
+        self.lua
+            .load(EMBEDDED_WORKFLOW_REPLACE)
+            .set_name("@<embedded>/workflow_replace.lua")
+            .exec()
+            .map_err(|err| format!("workflow_replace.lua: {err}"))?;
+        self.lua
+            .load(EMBEDDED_WORKFLOW_REVIEW)
+            .set_name("@<embedded>/workflow_review.lua")
+            .exec()
+            .map_err(|err| format!("workflow_review.lua: {err}"))?;
+        Ok(())
+    }
+
+    fn load_user_workflows(&mut self, config_dir: Option<&Path>) -> Result<(), String> {
+        let Some(dir) = config_dir else {
+            return Ok(());
+        };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(format!("workflows: {err}")),
+        };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_workflow_filename)
+            })
+            .collect();
+        files.sort();
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("workflow.lua");
+            self.lua
+                .load(path.as_path())
+                .exec()
+                .map_err(|err| format!("{name}: {err}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn invoke_workflow(&self, name: &str, paths: &[PathBuf]) -> Result<(), String> {
+        let func = self
+            .handle
+            .inner
+            .borrow()
+            .workflows
+            .get(name)
+            .map(|workflow| workflow.func.clone())
+            .ok_or_else(|| format!("unknown workflow `{name}`"))?;
+        let payload = self.lua.create_table().map_err(|err| err.to_string())?;
+        payload
+            .set("scope", SCOPE_DRAG_DROP)
+            .map_err(|err| err.to_string())?;
+        let path_table = self.lua.create_table().map_err(|err| err.to_string())?;
+        for (index, path) in paths.iter().enumerate() {
+            path_table
+                .set(index + 1, path.display().to_string())
+                .map_err(|err| err.to_string())?;
+        }
+        payload
+            .set("paths", path_table)
+            .map_err(|err| err.to_string())?;
+        func.call::<()>(payload).map_err(|err| err.to_string())
     }
 
     pub fn fire_loaded(&self, id: DocumentId, elapsed: f64) {
@@ -228,7 +323,7 @@ impl ScriptHost {
     pub fn fire_session_loaded(&self) {
         let hooks = self.handle.inner.borrow().session_loaded.clone();
         for hook in hooks {
-            if let Err(err) = hook.call::<()>(LuaSession) {
+            if let Err(err) = hook.call::<()>(LuaSession::active()) {
                 self.handle
                     .inner
                     .borrow_mut()
@@ -241,7 +336,7 @@ impl ScriptHost {
     pub fn fire_session_saved(&self) {
         let hooks = self.handle.inner.borrow().session_saved.clone();
         for hook in hooks {
-            if let Err(err) = hook.call::<()>(LuaSession) {
+            if let Err(err) = hook.call::<()>(LuaSession::active()) {
                 self.handle
                     .inner
                     .borrow_mut()
@@ -279,6 +374,18 @@ impl ScriptHost {
         std::mem::take(&mut self.handle.inner.borrow_mut().logs)
     }
 
+    pub fn take_alerts(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.handle.inner.borrow_mut().alerts)
+    }
+
+    pub fn workflow_metas(&self) -> Vec<WorkflowMeta> {
+        self.handle.workflow_metas()
+    }
+
+    pub fn drop_layout(&self) -> DropLayout {
+        layout_drop_targets(&self.handle.workflow_metas(), SCOPE_DRAG_DROP)
+    }
+
     pub fn log(&self, level: LogLevel, topic: String, message: String) {
         self.handle.log(level, topic, message);
     }
@@ -309,28 +416,54 @@ impl HostHandle {
 
     pub fn display_name(&self, id: DocumentId) -> Option<String> {
         if let Some(test) = &self.inner.borrow().test {
-            return test.borrow().names.get(&id).cloned();
+            if let Some(name) = test.borrow().names.get(&id).cloned() {
+                return Some(name);
+            }
         }
-        access::with_view(|view, _, cx| view.script_display_name(id, cx)).ok()?
+        if let Ok(Some(name)) = access::with_view(|view, _, cx| view.script_display_name(id, cx)) {
+            return Some(name);
+        }
+        self.lookup_document(id).and_then(|doc| {
+            doc.file_path()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        })
     }
 
     pub fn path(&self, id: DocumentId) -> Option<PathBuf> {
         if let Some(test) = &self.inner.borrow().test {
-            return test.borrow().paths.get(&id).cloned().flatten();
+            if let Some(path) = test.borrow().paths.get(&id).cloned().flatten() {
+                return Some(path);
+            }
         }
-        access::with_view(|view, _, _| view.script_path(id))
-            .ok()
-            .flatten()
+        if let Ok(Some(path)) = access::with_view(|view, _, _| view.script_path(id)) {
+            return Some(path);
+        }
+        self.lookup_document(id)
+            .and_then(|doc| doc.file_path().map(Path::to_path_buf))
     }
 
     pub fn open(&self, path: &str) -> mlua::Result<DocumentId> {
-        if self.inner.borrow().test.is_some() {
+        let path = PathBuf::from(path);
+        if let Some(test) = self.inner.borrow().test.clone() {
+            return open_in_test(&test, &path);
+        }
+        access::with_view(|view, window, cx| view.script_open(path, window, cx))
+            .map_err(mlua::Error::runtime)?
+            .map_err(mlua::Error::runtime)
+    }
+
+    pub fn replace_composition(&self, id: DocumentId, path: &str) -> mlua::Result<DocumentId> {
+        let path = PathBuf::from(path);
+        if is_fasession_path(&path) {
             return Err(mlua::Error::runtime(
-                "app:open is not available in script tests",
+                "cannot replace a composition with a session file",
             ));
         }
-        let path = PathBuf::from(path);
-        access::with_view(|view, window, cx| view.script_open(path, window, cx))
+        if let Some(test) = self.inner.borrow().test.clone() {
+            return replace_in_test(&test, id, &path);
+        }
+        access::with_view(|view, window, cx| view.script_replace_document(id, path, window, cx))
             .map_err(mlua::Error::runtime)?
             .map_err(mlua::Error::runtime)
     }
@@ -565,50 +698,150 @@ impl HostHandle {
         self.path(id).filter(|path| is_file_backed(path))
     }
 
-    pub fn session_id(&self) -> String {
-        self.with_session(|session| session.id().to_string())
+    pub fn session_id(&self, which: Option<SessionId>) -> String {
+        self.with_session_kind(which, |session| session.id().to_string())
             .unwrap_or_default()
     }
 
-    pub fn session_path(&self) -> Option<String> {
-        self.with_session(|session| session.path().map(|path| path.display().to_string()))
+    pub fn session_path(&self, which: Option<SessionId>) -> Option<String> {
+        self.with_session_kind(which, |session| {
+            session.path().map(|path| path.display().to_string())
+        })
+        .flatten()
+    }
+
+    pub fn session_workflow(&self, which: Option<SessionId>) -> Option<String> {
+        self.with_session_kind(which, |session| session.workflow().map(str::to_string))
             .flatten()
     }
 
-    pub fn session_workflow(&self) -> Option<String> {
-        self.with_session(|session| session.workflow().map(str::to_string))
-            .flatten()
-    }
-
-    pub fn set_session_workflow(&self, workflow: Option<String>) -> mlua::Result<()> {
-        self.with_session_mut(|session| {
+    pub fn set_session_workflow(
+        &self,
+        which: Option<SessionId>,
+        workflow: Option<String>,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
             session.set_workflow(workflow);
             Ok(())
         })
     }
 
-    pub fn session_capture_ui(&self) -> bool {
-        self.with_session(|session| session.capture_ui())
+    pub fn session_capture_ui(&self, which: Option<SessionId>) -> bool {
+        self.with_session_kind(which, |session| session.capture_ui())
             .unwrap_or(true)
     }
 
-    pub fn set_session_capture_ui(&self, capture_ui: bool) -> mlua::Result<()> {
-        self.with_session_mut(|session| {
+    pub fn set_session_capture_ui(
+        &self,
+        which: Option<SessionId>,
+        capture_ui: bool,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
             session.set_capture_ui(capture_ui);
             Ok(())
         })
     }
 
-    pub fn session_properties(&self) -> BTreeMap<String, String> {
-        self.with_session(|session| session.properties().clone())
+    pub fn session_properties(&self, which: Option<SessionId>) -> BTreeMap<String, String> {
+        self.with_session_kind(which, |session| session.properties().clone())
             .unwrap_or_default()
     }
 
-    pub fn set_session_properties(&self, properties: BTreeMap<String, String>) -> mlua::Result<()> {
-        self.with_session_mut(|session| {
+    pub fn set_session_properties(
+        &self,
+        which: Option<SessionId>,
+        properties: BTreeMap<String, String>,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
             session.set_properties(properties);
             Ok(())
         })
+    }
+
+    pub fn session_active_document(&self, which: Option<SessionId>) -> Option<DocumentId> {
+        self.with_session_kind(which, |session| session.active())
+            .flatten()
+    }
+
+    pub fn session_documents(&self, which: Option<SessionId>) -> Vec<DocumentId> {
+        self.with_session_kind(which, |session| {
+            session.documents().iter().map(|doc| doc.id).collect()
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn sessions(&self) -> Vec<LuaSession> {
+        let mut sessions = vec![LuaSession::active()];
+        let mut detached: Vec<SessionId> = self
+            .inner
+            .borrow()
+            .detached_sessions
+            .keys()
+            .copied()
+            .collect();
+        detached.sort_by_key(|id| id.0);
+        sessions.extend(detached.into_iter().map(|id| LuaSession { id: Some(id) }));
+        sessions
+    }
+
+    pub fn load_session(&self, path: &str) -> mlua::Result<SessionId> {
+        let path = PathBuf::from(path);
+        if !is_fasession_path(&path) {
+            return Err(mlua::Error::runtime(
+                "load_session expects a .fasession file",
+            ));
+        }
+        let json =
+            std::fs::read_to_string(&path).map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let loaded = Session::from_json(&json, Some(&path))
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let id = loaded.session.id();
+        self.inner
+            .borrow_mut()
+            .detached_sessions
+            .insert(id, loaded.session);
+        Ok(id)
+    }
+
+    pub fn close_session(&self, which: Option<SessionId>) -> mlua::Result<()> {
+        let Some(id) = which else {
+            return Err(mlua::Error::runtime("cannot close the active session"));
+        };
+        if self
+            .inner
+            .borrow_mut()
+            .detached_sessions
+            .remove(&id)
+            .is_none()
+        {
+            return Err(mlua::Error::runtime("session is not loaded"));
+        }
+        Ok(())
+    }
+
+    pub fn declare_workflow(&self, workflow: WorkflowDef) {
+        self.inner
+            .borrow_mut()
+            .workflows
+            .insert(workflow.meta.name.clone(), workflow);
+    }
+
+    pub fn workflow_metas(&self) -> Vec<WorkflowMeta> {
+        self.inner
+            .borrow()
+            .workflows
+            .values()
+            .map(|workflow| workflow.meta.clone())
+            .collect()
+    }
+
+    pub fn alert(&self, subject: String, body: String) -> mlua::Result<()> {
+        if self.inner.borrow().test.is_some() {
+            self.inner.borrow_mut().alerts.push((subject, body));
+            return Ok(());
+        }
+        access::with_view(|view, window, cx| view.script_alert(&subject, &body, window, cx))
+            .map_err(mlua::Error::runtime)
     }
 
     pub fn composition_id(&self, id: DocumentId) -> mlua::Result<String> {
@@ -617,13 +850,13 @@ impl HostHandle {
     }
 
     pub fn document_group(&self, id: DocumentId) -> mlua::Result<Option<String>> {
-        self.with_session(|session| session.get(id).map(|doc| doc.group.clone()))
-            .ok_or_else(|| mlua::Error::runtime("session is not available"))?
+        self.lookup_document(id)
+            .map(|doc| doc.group)
             .ok_or_else(|| mlua::Error::runtime("composition is not open"))
     }
 
     pub fn set_document_group(&self, id: DocumentId, group: Option<String>) -> mlua::Result<()> {
-        self.with_session_mut(|session| {
+        self.with_document_session_mut(id, |session| {
             if session.set_document_group(id, group) {
                 Ok(())
             } else {
@@ -633,13 +866,13 @@ impl HostHandle {
     }
 
     pub fn document_state(&self, id: DocumentId) -> mlua::Result<Option<String>> {
-        self.with_session(|session| session.get(id).map(|doc| doc.state.clone()))
-            .ok_or_else(|| mlua::Error::runtime("session is not available"))?
+        self.lookup_document(id)
+            .map(|doc| doc.state)
             .ok_or_else(|| mlua::Error::runtime("composition is not open"))
     }
 
     pub fn set_document_state(&self, id: DocumentId, state: Option<String>) -> mlua::Result<()> {
-        self.with_session_mut(|session| {
+        self.with_document_session_mut(id, |session| {
             if session.set_document_state(id, state) {
                 Ok(())
             } else {
@@ -649,8 +882,8 @@ impl HostHandle {
     }
 
     pub fn document_properties(&self, id: DocumentId) -> mlua::Result<BTreeMap<String, String>> {
-        self.with_session(|session| session.get(id).map(|doc| doc.properties.clone()))
-            .ok_or_else(|| mlua::Error::runtime("session is not available"))?
+        self.lookup_document(id)
+            .map(|doc| doc.properties)
             .ok_or_else(|| mlua::Error::runtime("composition is not open"))
     }
 
@@ -659,7 +892,7 @@ impl HostHandle {
         id: DocumentId,
         properties: BTreeMap<String, String>,
     ) -> mlua::Result<()> {
-        self.with_session_mut(|session| {
+        self.with_document_session_mut(id, |session| {
             if session.set_document_properties(id, properties) {
                 Ok(())
             } else {
@@ -722,8 +955,94 @@ impl HostHandle {
     }
 
     fn require_document(&self, id: DocumentId) -> mlua::Result<()> {
-        if self.with_session(|session| session.get(id).is_some()) == Some(true) {
+        if self.lookup_document(id).is_some() {
             return Ok(());
+        }
+        Err(mlua::Error::runtime("composition is not open"))
+    }
+
+    fn lookup_document(&self, id: DocumentId) -> Option<SessionDocument> {
+        if let Some(doc) = self
+            .with_session(|session| session.get(id).cloned())
+            .flatten()
+        {
+            return Some(doc);
+        }
+        let inner = self.inner.borrow();
+        for session in inner.detached_sessions.values() {
+            if let Some(doc) = session.get(id) {
+                return Some(doc.clone());
+            }
+        }
+        None
+    }
+
+    fn with_session_kind<R>(
+        &self,
+        which: Option<SessionId>,
+        f: impl FnOnce(&Session) -> R,
+    ) -> Option<R> {
+        match which {
+            None => self.with_session(f),
+            Some(id) => {
+                if let Some(session) = self.inner.borrow().detached_sessions.get(&id).cloned() {
+                    return Some(f(&session));
+                }
+                self.with_session(|session| {
+                    if session.id() == id {
+                        Some(f(session))
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+            }
+        }
+    }
+
+    fn with_session_kind_mut<R>(
+        &self,
+        which: Option<SessionId>,
+        f: impl FnOnce(&mut Session) -> mlua::Result<R>,
+    ) -> mlua::Result<R> {
+        match which {
+            None => self.with_session_mut(f),
+            Some(id) => {
+                {
+                    let mut inner = self.inner.borrow_mut();
+                    if let Some(session) = inner.detached_sessions.get_mut(&id) {
+                        return f(session);
+                    }
+                }
+                self.with_session_mut(|session| {
+                    if session.id() == id {
+                        f(session)
+                    } else {
+                        Err(mlua::Error::runtime("session is not loaded"))
+                    }
+                })
+            }
+        }
+    }
+
+    fn with_document_session_mut<R>(
+        &self,
+        id: DocumentId,
+        f: impl FnOnce(&mut Session) -> mlua::Result<R>,
+    ) -> mlua::Result<R> {
+        let in_active = self
+            .with_session(|session| session.get(id).is_some())
+            .unwrap_or(false);
+        if in_active {
+            return self.with_session_mut(f);
+        }
+        let mut inner = self.inner.borrow_mut();
+        if let Some(session) = inner
+            .detached_sessions
+            .values_mut()
+            .find(|session| session.get(id).is_some())
+        {
+            return f(session);
         }
         Err(mlua::Error::runtime("composition is not open"))
     }
@@ -813,6 +1132,92 @@ fn eval_repl(lua: &Lua, code: &str) -> mlua::Result<MultiValue> {
 pub fn user_init_path(config_dir: Option<&Path>) -> Option<PathBuf> {
     let path = config_dir?.join("init.lua");
     path.is_file().then_some(path)
+}
+
+fn is_workflow_filename(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("workflow_") && lower.ends_with(".lua")
+}
+
+fn open_in_test(test: &Rc<RefCell<TestWorld>>, path: &Path) -> mlua::Result<DocumentId> {
+    if is_fasession_path(path) {
+        let json =
+            std::fs::read_to_string(path).map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let loaded = Session::from_json(&json, Some(path))
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        let mut world = test.borrow_mut();
+        world.docs.clear();
+        world.paths.clear();
+        world.names.clear();
+        world.session = loaded.session;
+        let docs: Vec<SessionDocument> = world.session.documents().to_vec();
+        for doc in docs {
+            let name = doc
+                .file_path()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| doc.id.to_string());
+            let composition = Composition::new(44100, 2);
+            let composition = Arc::new(RwLock::new(composition));
+            let buffer = Arc::new(RwLock::new(Buffer::empty()));
+            let document = BufferDocument::with_shared(composition, buffer);
+            world.docs.insert(doc.id, document);
+            world
+                .paths
+                .insert(doc.id, doc.file_path().map(Path::to_path_buf));
+            world.names.insert(doc.id, name);
+        }
+        world.active = world.session.active();
+        return world
+            .active
+            .ok_or_else(|| mlua::Error::runtime("session has no documents"));
+    }
+    if let Some(id) = test.borrow().session.find_by_path(path) {
+        test.borrow_mut().active = Some(id);
+        test.borrow_mut().session.focus(id);
+        return Ok(id);
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut world = test.borrow_mut();
+    let id = world.push(
+        Composition::new(44100, 2),
+        Buffer::empty(),
+        name,
+        Some(path.to_path_buf()),
+    );
+    if is_facomp_path(path) {
+        world.session.set_project_path(id, path.to_path_buf());
+    }
+    Ok(id)
+}
+
+fn replace_in_test(
+    test: &Rc<RefCell<TestWorld>>,
+    id: DocumentId,
+    path: &Path,
+) -> mlua::Result<DocumentId> {
+    if test.borrow().session.get(id).is_none() {
+        return Err(mlua::Error::runtime("composition is not open"));
+    }
+    if let Some(existing) = test.borrow().session.find_by_path(path) {
+        test.borrow_mut().active = Some(existing);
+        test.borrow_mut().session.focus(existing);
+        return Ok(existing);
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut world = test.borrow_mut();
+    world.session.replace_document_path(id, path.to_path_buf());
+    world.paths.insert(id, Some(path.to_path_buf()));
+    world.names.insert(id, name);
+    world.active = Some(id);
+    world.session.focus(id);
+    Ok(id)
 }
 
 fn is_file_backed(path: &Path) -> bool {

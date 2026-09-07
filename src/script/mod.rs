@@ -10,16 +10,20 @@ mod marker;
 mod region;
 mod selection;
 mod session;
+mod theme;
+mod workflow;
 
 pub use access::{enter, try_invoke_command};
 pub use host::{
     host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ScriptHost, TestWorld,
     EMBEDDED_INIT,
 };
+pub use workflow::DropLayout;
 
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::path::PathBuf;
     use std::rc::Rc;
 
     use crate::model::composition::{Composition, MediaId, MediaRef};
@@ -573,6 +577,53 @@ mod tests {
     }
 
     #[test]
+    fn theme_named_and_semantic_colors_are_rgba_tables() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local function check(color)
+              assert(type(color) == "table")
+              assert(#color == 4)
+              for i = 1, 4 do
+                assert(type(color[i]) == "number")
+                assert(color[i] >= 0 and color[i] <= 1)
+              end
+            end
+            check(app.theme.named.green)
+            check(app.theme.named.red_light)
+            check(app.theme.semantic.success)
+            check(app.theme.semantic.warning)
+            check(app.theme.semantic.info)
+            app:declare_workflow({
+              name = "themed",
+              scopes = { "drag-drop" },
+              drop = { color = app.theme.named.green },
+            }, function() end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let unknown = host.eval("return app.theme.named.nope");
+        assert!(
+            unknown
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("unknown field")),
+            "{:?}",
+            unknown.error
+        );
+        let metas = host.workflow_metas();
+        let themed = metas
+            .iter()
+            .find(|meta| meta.name == "themed")
+            .expect("themed");
+        let expected = {
+            let rgba: gpui::Rgba = gpui_component::ThemeColor::default().green.into();
+            [rgba.r, rgba.g, rgba.b, rgba.a]
+        };
+        assert_eq!(themed.color, expected);
+    }
+
+    #[test]
     fn loaded_hook_receives_elapsed() {
         let (mut host, world) = test_host();
         let out = host.eval(
@@ -803,5 +854,227 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].topic, "session");
         assert!(!logs[0].message.is_empty());
+    }
+
+    #[test]
+    fn declare_workflow_replaces_by_name_and_defaults() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app:declare_workflow({
+              name = "add",
+              scopes = { "drag-drop" },
+            }, function() end)
+            app:declare_workflow({
+              name = "add",
+              display_name = "Merge",
+              scopes = { "drag-drop" },
+              drop = { row = 2, priority = 3 },
+            }, function() end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let metas = host.workflow_metas();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].name, "add");
+        assert_eq!(metas[0].display_name, "Merge");
+        assert_eq!(metas[0].row, 2);
+        assert_eq!(metas[0].priority, 3.0);
+    }
+
+    #[test]
+    fn embedded_workflows_register_add_replace_and_review() {
+        let (mut host, _) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        let mut names: Vec<_> = host
+            .workflow_metas()
+            .into_iter()
+            .map(|meta| meta.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["add", "replace", "review"]);
+        let layout = host.drop_layout();
+        assert_eq!(layout.rows.len(), 2);
+        let display: Vec<_> = layout.rows[0]
+            .cells
+            .iter()
+            .map(|cell| cell.display_name.as_str())
+            .collect();
+        assert_eq!(display, ["Add", "Replace"]);
+        assert_eq!(layout.rows[0].cells[0].weight, 0.5);
+        assert_eq!(layout.rows[0].cells[1].weight, 0.5);
+        assert_eq!(layout.rows[1].cells.len(), 1);
+        assert_eq!(layout.rows[1].cells[0].display_name, "Review");
+        assert_eq!(layout.rows[1].cells[0].weight, 1.0);
+    }
+
+    #[test]
+    fn review_workflow_logs_dropped_paths() {
+        let (mut host, _) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        let _ = host.take_logs();
+        host.invoke_workflow(
+            "review",
+            &[PathBuf::from("take.wav"), PathBuf::from("batch.fasession")],
+        )
+        .expect("review");
+        let logs = host.take_logs();
+        assert!(logs
+            .iter()
+            .all(|entry| entry.level == LogLevel::Info && entry.topic == "review"));
+        let messages: Vec<_> = logs.iter().map(|entry| entry.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("2 path") && message.contains("drag-drop")),
+            "{messages:?}"
+        );
+        assert!(messages.iter().any(|message| message.contains("take.wav")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("batch.fasession")));
+    }
+
+    #[test]
+    fn user_workflow_file_overrides_builtin() {
+        let dir = std::env::temp_dir().join("fieldassist-workflow-override");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("init.lua"), "app:info('init', 'user')\n").expect("init");
+        std::fs::write(
+            dir.join("workflow_add.lua"),
+            r#"
+            app:declare_workflow({
+              name = "add",
+              display_name = "Custom Add",
+              scopes = { "drag-drop" },
+              drop = { row = 1, priority = 1 },
+            }, function() end)
+            "#,
+        )
+        .expect("workflow");
+        let (mut host, _) = test_host();
+        host.load_init_from(Some(&dir)).expect("user workflows");
+        let add = host
+            .workflow_metas()
+            .into_iter()
+            .find(|meta| meta.name == "add")
+            .expect("add");
+        assert_eq!(add.display_name, "Custom Add");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_session_does_not_replace_active() {
+        let dir = std::env::temp_dir().join("fieldassist-load-session");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let wav = dir.join("take.wav");
+        std::fs::write(&wav, b"wav").expect("wav");
+        let session_path = dir.join("batch.fasession");
+        let mut incoming = crate::model::Session::new();
+        incoming.insert(crate::model::SessionDocument::new(
+            crate::model::DocumentId::from_u128(9),
+            Some(wav.clone()),
+        ));
+        incoming
+            .save_to_path(&session_path, |_| "take.wav".into(), None)
+            .expect("save session");
+        let (mut host, world) = test_host();
+        let active_id = world.borrow().session.id().to_string();
+        let path_lua = session_path.to_string_lossy().replace('\\', "/");
+        let out = host.eval(&format!(
+            r#"
+            local incoming = app:load_session("{path_lua}")
+            local active = app.session.id
+            incoming:close()
+            return incoming.id ~= active, active, #app.sessions
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(
+            out.result
+                .as_deref()
+                .is_some_and(|value| value.starts_with("true")),
+            "{:?}",
+            out.result
+        );
+        assert_eq!(world.borrow().session.id().to_string(), active_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_workflow_merges_session_and_skips_matching_path() {
+        let dir = std::env::temp_dir().join("fieldassist-add-merge");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let existing = dir.join("keep.wav");
+        let extra = dir.join("extra.wav");
+        std::fs::write(&existing, b"a").expect("existing");
+        std::fs::write(&extra, b"b").expect("extra");
+        let session_path = dir.join("incoming.fasession");
+        let mut incoming = crate::model::Session::new();
+        incoming.insert(crate::model::SessionDocument::new(
+            crate::model::DocumentId::from_u128(11),
+            Some(existing.clone()),
+        ));
+        incoming.insert(crate::model::SessionDocument::new(
+            crate::model::DocumentId::from_u128(12),
+            Some(extra.clone()),
+        ));
+        incoming
+            .save_to_path(
+                &session_path,
+                |id| {
+                    if id == crate::model::DocumentId::from_u128(11) {
+                        "keep.wav".into()
+                    } else {
+                        "extra.wav".into()
+                    }
+                },
+                None,
+            )
+            .expect("save session");
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("workflows");
+        let keep_id = world.borrow_mut().push(
+            crate::model::composition::Composition::new(44100, 2),
+            crate::model::Buffer::empty(),
+            "keep.wav",
+            Some(existing.clone()),
+        );
+        let before = world.borrow().session.documents().len();
+        let err = host.invoke_workflow("add", &[session_path.clone()]);
+        assert!(err.is_ok(), "{err:?}");
+        let world = world.borrow();
+        assert_eq!(world.session.documents().len(), before + 1);
+        assert!(world.session.get(keep_id).is_some());
+        assert!(world.session.find_by_path(&extra).is_some());
+        let _ = keep_id;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_workflow_alerts_on_multiple_files() {
+        let (mut host, _) = test_host();
+        host.load_init_from(None).expect("workflows");
+        host.invoke_workflow("replace", &[PathBuf::from("a.wav"), PathBuf::from("b.wav")])
+            .expect("invoke");
+        let alerts = host.take_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].0, "Cannot replace");
+    }
+
+    #[test]
+    fn replace_workflow_replaces_active_document() {
+        let dir = std::env::temp_dir().join("fieldassist-replace-doc");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let next = dir.join("next.wav");
+        std::fs::write(&next, b"wav").expect("wav");
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("workflows");
+        let id = world.borrow().active.expect("active");
+        host.invoke_workflow("replace", &[next.clone()])
+            .expect("invoke");
+        let world = world.borrow();
+        assert_eq!(world.paths.get(&id).cloned().flatten(), Some(next.clone()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

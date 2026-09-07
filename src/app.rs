@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 use cpal::Device;
 use gpui::{
     div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, App, AppContext as _,
-    Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, Global,
-    InteractiveElement as _, IntoElement, KeyContext, Menu, MenuItem, ParentElement as _,
-    PathPromptOptions, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    Bounds, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement,
+    KeyContext, Menu, MenuItem, ParentElement as _, PathPromptOptions, Pixels, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity,
+    Window, WindowBounds, WindowOptions,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -63,7 +63,7 @@ use crate::model::{
 };
 use crate::playback::{output_device_name, resolve_output_device, PlaybackSession, TransportState};
 use crate::progress::ProgressState;
-use crate::script::{EvalOutput, LogLevel, ScriptHost};
+use crate::script::{DropLayout, EvalOutput, LogLevel, ScriptHost};
 
 struct OpenTarget(Entity<AppView>);
 
@@ -83,6 +83,7 @@ enum AfterWrite {
     None,
     Close,
     ContinuePending,
+    Replace,
 }
 
 #[derive(Clone)]
@@ -139,6 +140,8 @@ pub struct AppView {
     add_marker_at_hover: bool,
     preview_enabled: bool,
     output_device: Option<String>,
+    drop_layout: Option<Arc<DropLayout>>,
+    pending_replace: Option<(DocumentId, PathBuf)>,
 }
 
 impl AppView {
@@ -219,7 +222,7 @@ impl AppView {
             }));
         });
         let empty_editors = cx.new(|cx| {
-            EmptyPane::new("EmptyEditorsPanel", "No open editors", cx)
+            EmptyPane::new("EmptyEditorsPanel", "No open editors", app.clone(), cx)
                 .with_message("Drop an audio file here or use File → Open…")
         });
         let initial_target = session.active().and_then(|id| views.get(&id).cloned());
@@ -338,6 +341,8 @@ impl AppView {
             add_marker_at_hover: true,
             preview_enabled: false,
             output_device,
+            drop_layout: None,
+            pending_replace: None,
         };
         this.load_init_lua(window, cx);
         if let Some(path) = session_path {
@@ -380,8 +385,8 @@ impl AppView {
             cx.notify();
         })
         .detach();
-        let workspace =
-            cx.new(|cx| WorkspacePanel::new(id, document.clone(), waveform.clone(), cx));
+        let workspace = cx
+            .new(|cx| WorkspacePanel::new(id, document.clone(), waveform.clone(), app.clone(), cx));
         workspace.update(cx, |workspace, _| {
             workspace.set_on_activated(Rc::new(move |id, window, cx| {
                 let _ = app.update(cx, |this, cx| this.focus_document(id, window, cx));
@@ -1463,6 +1468,225 @@ impl AppView {
             .ok_or_else(|| format!("failed to open {}", path.display()))
     }
 
+    pub(crate) fn script_alert(
+        &self,
+        subject: &str,
+        body: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let subject = subject.to_string();
+        let body = body.to_string();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            alert.title(subject.clone()).description(body.clone())
+        });
+    }
+
+    /// Expire a file-drop snapshot when no drag is active.
+    /// Layout is created by [`Self::ensure_file_drop_layout`], which only runs
+    /// for `ExternalPaths` (OS file drags), not dock splitter drags.
+    pub(crate) fn sync_file_drop_layout(&mut self, cx: &App) -> Option<Arc<DropLayout>> {
+        if !cx.has_active_drag() {
+            self.drop_layout = None;
+        }
+        self.drop_layout.clone()
+    }
+
+    /// Snapshot drop-target layout for an OS file drag. `notify` is deferred
+    /// because GPUI takes `active_drag` while computing `drag_over` styles.
+    pub(crate) fn ensure_file_drop_layout(&mut self, cx: &mut Context<Self>) {
+        if self.drop_layout.is_some() {
+            return;
+        }
+        self.drop_layout = Some(Arc::new(self.script.drop_layout()));
+        let empty = self.empty_editors.clone();
+        let workspaces: Vec<_> = self
+            .views
+            .values()
+            .map(|views| views.workspace.clone())
+            .collect();
+        cx.defer(move |cx| {
+            empty.update(cx, |_, cx| cx.notify());
+            for workspace in workspaces {
+                workspace.update(cx, |_, cx| cx.notify());
+            }
+        });
+    }
+
+    fn clear_drop_layout(&mut self, cx: &mut Context<Self>) {
+        if self.drop_layout.take().is_some() {
+            self.notify_drop_targets(cx);
+        }
+    }
+
+    fn notify_drop_targets(&mut self, cx: &mut Context<Self>) {
+        self.empty_editors.update(cx, |_, cx| cx.notify());
+        for views in self.views.values() {
+            views.workspace.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn invoke_drop_workflow(
+        &mut self,
+        name: &str,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_drop_layout(cx);
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.invoke_workflow(name, paths) {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("workflow `{name}`: {err}"), cx);
+            });
+        }
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn script_replace_document(
+        &mut self,
+        id: DocumentId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<DocumentId, String> {
+        if is_fasession_path(&path) {
+            return Err("cannot replace a composition with a session file".into());
+        }
+        if self.session.get(id).is_none() {
+            self.open_path(path.clone(), window, cx);
+            return self
+                .session
+                .find_by_path(&path)
+                .or_else(|| self.session.active())
+                .ok_or_else(|| format!("failed to open {}", path.display()));
+        }
+        if let Some(existing) = self.session.find_by_path(&path) {
+            if existing != id {
+                self.activate_or_replace_tab(existing, window, cx);
+            }
+            return Ok(existing);
+        }
+        let modified = self
+            .views
+            .get(&id)
+            .is_some_and(|views| views.composition.read().unwrap().is_modified());
+        if !modified {
+            self.finish_replace_document(id, path.clone(), window, cx);
+            return Ok(id);
+        }
+        self.pending_replace = Some((id, path));
+        self.prompt_unsaved_replace(id, window, cx);
+        Ok(id)
+    }
+
+    fn prompt_unsaved_replace(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self.display_title(id, cx);
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            alert
+                .title("Unsaved changes")
+                .description(format!("Save changes to {name} before replacing?"))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("replace-dont-save")
+                                .outline()
+                                .label("Don't Save")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            if let Some((id, path)) = this.pending_replace.take() {
+                                                this.finish_replace_document(id, path, window, cx);
+                                            }
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("replace-cancel")
+                                .outline()
+                                .label("Cancel")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, _| {
+                                            this.pending_replace = None;
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("replace-save")
+                                .primary()
+                                .label("Save")
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.save_then_replace(id, window, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
+    fn save_then_replace(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self
+            .session
+            .get(id)
+            .and_then(|doc| doc.project_path.clone())
+        {
+            self.write_project(id, path, AfterWrite::Replace, window, cx);
+        } else {
+            self.prompt_save_as_for(id, AfterWrite::Replace, window, cx);
+        }
+    }
+
+    fn finish_replace_document(
+        &mut self,
+        id: DocumentId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_playback_into_active(cx);
+        if let Some(views) = self.views.get(&id) {
+            views.document.read(cx).progress.cancel();
+        }
+        self.session.replace_document_path(id, path.clone());
+        self.focus_document(id, window, cx);
+        self.apply_active(window, cx);
+        self.spawn_document_load(id, path, window, cx);
+        self.refresh_explorer(cx);
+        self.update_window_title(window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn script_with_document<R>(
         &mut self,
         id: DocumentId,
@@ -1813,6 +2037,13 @@ impl AppView {
                             });
                         });
                     }
+                    if after == AfterWrite::Replace {
+                        let _ = cx.update(|_, cx| {
+                            view.update(cx, |this, _| {
+                                this.pending_replace = None;
+                            });
+                        });
+                    }
                     return;
                 }
             };
@@ -1839,6 +2070,9 @@ impl AppView {
                 self.quit_save_queue.clear();
                 self.pending_continue = None;
             }
+            if after == AfterWrite::Replace {
+                self.pending_replace = None;
+            }
             return;
         };
         let result = {
@@ -1863,12 +2097,22 @@ impl AppView {
                         self.update_window_title(window, cx);
                         self.pump_quit_saves(window, cx);
                     }
+                    AfterWrite::Replace => {
+                        self.refresh_explorer(cx);
+                        self.update_window_title(window, cx);
+                        if let Some((replace_id, path)) = self.pending_replace.take() {
+                            self.finish_replace_document(replace_id, path, window, cx);
+                        }
+                    }
                 }
             }
             (Err(err), _) => {
                 if after == AfterWrite::ContinuePending {
                     self.quit_save_queue.clear();
                     self.pending_continue = None;
+                }
+                if after == AfterWrite::Replace {
+                    self.pending_replace = None;
                 }
                 self.show_save_error(&format!("{err:#}"), window, cx);
             }
@@ -2037,7 +2281,7 @@ impl AppView {
     }
 
     fn after_compositions_clean(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.session.is_dirty() {
+        if self.session.should_prompt_save() {
             self.prompt_save_session_then_continue(window, cx);
             return;
         }
@@ -2807,7 +3051,6 @@ impl Render for AppView {
                 .snapshot()
                 .map(|state| state.message())
         });
-        let drop_highlight = theme.secondary;
         let explorer_open = self.explorer_dock_open(cx);
         let explorer_icon = if explorer_open {
             IconName::PanelLeft
@@ -2852,12 +3095,6 @@ impl Render for AppView {
             .track_focus(&self.focus_handle)
             .relative()
             .size_full()
-            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_highlight))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                for path in paths.paths() {
-                    this.open_path(path.clone(), window, cx);
-                }
-            }))
             .on_action(cx.listener(|this, _: &ToggleZeroCrossing, _, cx| {
                 if let Some(views) = this.active_views() {
                     views.document.update(cx, |doc, _| {
@@ -3277,11 +3514,12 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("Open...", Open),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As...", SaveAs),
-            MenuItem::action("Save Session", SaveSession),
-            MenuItem::action("Save Session As...", SaveSessionAs),
             MenuItem::action("Close", Close),
             MenuItem::separator(),
             MenuItem::action("Render...", RenderFile),
+            MenuItem::separator(),
+            MenuItem::action("Save Session", SaveSession),
+            MenuItem::action("Save Session As...", SaveSessionAs),
             MenuItem::separator(),
             MenuItem::action("Quit", Quit),
         ]),

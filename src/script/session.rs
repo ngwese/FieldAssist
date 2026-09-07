@@ -3,55 +3,78 @@
 
 use std::collections::BTreeMap;
 
-use mlua::{Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
+
+use crate::model::SessionId;
 
 use super::composition::LuaComposition;
 use super::host::host_from_lua;
 
-pub struct LuaSession;
+#[derive(Clone, Copy, Debug)]
+pub struct LuaSession {
+    /// `None` is the UI-active session; `Some` is a Lua-held loaded session.
+    pub id: Option<SessionId>,
+}
+
+impl LuaSession {
+    pub fn active() -> Self {
+        Self { id: None }
+    }
+}
+
+impl FromLua for LuaSession {
+    fn from_lua(value: Value, _: &Lua) -> mlua::Result<Self> {
+        match value {
+            Value::UserData(data) => data.borrow::<Self>().map(|this| *this),
+            _ => Err(mlua::Error::runtime("expected a session")),
+        }
+    }
+}
 
 impl UserData for LuaSession {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("id", |lua, _| {
+        fields.add_field_method_get("id", |lua, this| {
             let host = host_from_lua(lua)?;
-            Ok(host.session_id())
+            Ok(host.session_id(this.id))
         });
-        fields.add_field_method_get("path", |lua, _| {
+        fields.add_field_method_get("path", |lua, this| {
             let host = host_from_lua(lua)?;
-            Ok(host.session_path())
+            Ok(host.session_path(this.id))
         });
-        fields.add_field_method_get("workflow", |lua, _| {
+        fields.add_field_method_get("workflow", |lua, this| {
             let host = host_from_lua(lua)?;
-            Ok(host.session_workflow())
+            Ok(host.session_workflow(this.id))
         });
-        fields.add_field_method_set("workflow", |lua, _, value: Value| {
+        fields.add_field_method_set("workflow", |lua, this, value: Value| {
             let host = host_from_lua(lua)?;
-            host.set_session_workflow(optional_lua_string(value)?)
+            host.set_session_workflow(this.id, optional_lua_string(value)?)
         });
-        fields.add_field_method_get("capture_ui", |lua, _| {
+        fields.add_field_method_get("capture_ui", |lua, this| {
             let host = host_from_lua(lua)?;
-            Ok(host.session_capture_ui())
+            Ok(host.session_capture_ui(this.id))
         });
-        fields.add_field_method_set("capture_ui", |lua, _, value: bool| {
+        fields.add_field_method_set("capture_ui", |lua, this, value: bool| {
             let host = host_from_lua(lua)?;
-            host.set_session_capture_ui(value)
+            host.set_session_capture_ui(this.id, value)
         });
-        fields.add_field_method_get("properties", |lua, _| {
+        fields.add_field_method_get("properties", |lua, this| {
             let host = host_from_lua(lua)?;
-            string_map_to_lua(lua, &host.session_properties())
+            string_map_to_lua(lua, &host.session_properties(this.id))
         });
-        fields.add_field_method_set("properties", |lua, _, value: Value| {
+        fields.add_field_method_set("properties", |lua, this, value: Value| {
             let host = host_from_lua(lua)?;
-            host.set_session_properties(string_map_from_lua(value)?)
+            host.set_session_properties(this.id, string_map_from_lua(value)?)
         });
-        fields.add_field_method_get("active", |lua, _| {
+        fields.add_field_method_get("active", |lua, this| {
             let host = host_from_lua(lua)?;
-            Ok(host.active().map(|id| LuaComposition { id }))
+            Ok(host
+                .session_active_document(this.id)
+                .map(|id| LuaComposition { id }))
         });
-        fields.add_field_method_get("documents", |lua, _| {
+        fields.add_field_method_get("documents", |lua, this| {
             let host = host_from_lua(lua)?;
             let docs: Vec<LuaComposition> = host
-                .documents()
+                .session_documents(this.id)
                 .into_iter()
                 .map(|id| LuaComposition { id })
                 .collect();
@@ -60,13 +83,36 @@ impl UserData for LuaSession {
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("open", |lua, _, path: String| {
+        methods.add_method("open", |lua, this, path: String| {
             let host = host_from_lua(lua)?;
+            if this.id.is_some() {
+                return Err(mlua::Error::runtime(
+                    "open is only available on the active session",
+                ));
+            }
             host.open(&path).map(|id| LuaComposition { id })
         });
-        methods.add_method("save", |lua, _, ()| host_from_lua(lua)?.save_session(None));
-        methods.add_method("save_as", |lua, _, path: String| {
-            host_from_lua(lua)?.save_session(Some(path))
+        methods.add_method("save", |lua, this, ()| {
+            let host = host_from_lua(lua)?;
+            if this.id.is_some() {
+                return Err(mlua::Error::runtime(
+                    "save is only available on the active session",
+                ));
+            }
+            host.save_session(None)
+        });
+        methods.add_method("save_as", |lua, this, path: String| {
+            let host = host_from_lua(lua)?;
+            if this.id.is_some() {
+                return Err(mlua::Error::runtime(
+                    "save_as is only available on the active session",
+                ));
+            }
+            host.save_session(Some(path))
+        });
+        methods.add_method("close", |lua, this, ()| {
+            let host = host_from_lua(lua)?;
+            host.close_session(this.id)
         });
     }
 }

@@ -182,6 +182,12 @@ impl Session {
         self.dirty
     }
 
+    /// Untitled sessions exist from launch until the user saves or loads one.
+    /// Those should not prompt on quit or replace, even if modified.
+    pub fn should_prompt_save(&self) -> bool {
+        self.dirty && self.path.is_some()
+    }
+
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
@@ -334,6 +340,22 @@ impl Session {
         if changed {
             self.mark_dirty();
         }
+    }
+
+    /// Point an existing document at a new audio or `.facomp` file.
+    pub fn replace_document_path(&mut self, id: DocumentId, path: PathBuf) -> bool {
+        let Some(doc) = self.get_mut(id) else {
+            return false;
+        };
+        if super::composition::is_facomp_path(&path) {
+            doc.project_path = Some(path);
+            doc.source_path = None;
+        } else {
+            doc.source_path = Some(path);
+            doc.project_path = None;
+        }
+        self.mark_dirty();
+        true
     }
 
     pub fn set_document_group(&mut self, id: DocumentId, group: Option<String>) -> bool {
@@ -851,6 +873,34 @@ mod tests {
         let parsed: DocumentId = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, id);
         assert_eq!(id.to_string(), Uuid::from_u128(99).to_string());
+    }
+
+    #[test]
+    fn untitled_dirty_session_does_not_prompt_save() {
+        let mut session = Session::new();
+        assert!(!session.should_prompt_save());
+        session.push(Some(path("a.wav")));
+        assert!(session.is_dirty());
+        assert!(!session.should_prompt_save());
+    }
+
+    #[test]
+    fn saved_dirty_session_prompts_save() {
+        let dir = std::env::temp_dir().join("fa-session-prompt");
+        let _ = std::fs::create_dir_all(&dir);
+        let wav = dir.join("a.wav");
+        std::fs::write(&wav, b"wav").unwrap();
+        let session_path = dir.join("batch.fasession");
+
+        let mut session = Session::new();
+        session.push(Some(wav));
+        session.save_to_path(&session_path, named, None).unwrap();
+        assert!(!session.should_prompt_save());
+        session.push(Some(path("b.wav")));
+        assert!(session.should_prompt_save());
+
+        let _ = std::fs::remove_file(&session_path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

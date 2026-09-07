@@ -7,12 +7,18 @@ use super::composition::LuaComposition;
 use super::host::{host_from_lua, stringify_value, LogLevel};
 use super::layout::layout_from_lua;
 use super::session::LuaSession;
+use super::theme::LuaTheme;
+use super::workflow::workflow_from_lua;
 
 pub struct LuaApp;
 
 impl UserData for LuaApp {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("session", |_, _| Ok(LuaSession));
+        fields.add_field_method_get("session", |_, _| Ok(LuaSession::active()));
+        fields.add_field_method_get("sessions", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.sessions())
+        });
         fields.add_field_method_get("active", |lua, _| {
             let host = host_from_lua(lua)?;
             Ok(host.active().map(|id| LuaComposition { id }))
@@ -48,12 +54,18 @@ impl UserData for LuaApp {
             let host = host_from_lua(lua)?;
             Ok(host.output_devices())
         });
+        fields.add_field_method_get("theme", |_, _| Ok(LuaTheme));
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("open", |lua, _, path: String| {
             let host = host_from_lua(lua)?;
             host.open(&path).map(|id| LuaComposition { id })
+        });
+        methods.add_method("load_session", |lua, _, path: String| {
+            let host = host_from_lua(lua)?;
+            host.load_session(&path)
+                .map(|id| LuaSession { id: Some(id) })
         });
         methods.add_method("command", |lua, _, id: String| {
             host_from_lua(lua)?
@@ -69,6 +81,18 @@ impl UserData for LuaApp {
             let layout = layout_from_lua(spec)?;
             host_from_lua(lua)?.define_layout(layout);
             Ok(())
+        });
+        methods.add_method(
+            "declare_workflow",
+            |lua, _, (properties, func): (Table, Function)| {
+                let workflow = workflow_from_lua(properties, func)?;
+                host_from_lua(lua)?.declare_workflow(workflow);
+                Ok(())
+            },
+        );
+        methods.add_method("alert", |lua, _, (subject, body): (Value, Value)| {
+            let host = host_from_lua(lua)?;
+            host.alert(stringify_value(lua, subject), stringify_value(lua, body))
         });
         methods.add_method("info", |lua, _, (topic, message): (Value, Value)| {
             let host = host_from_lua(lua)?;

@@ -4,14 +4,17 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, Styled as _, Window,
+    div, prelude::FluentBuilder as _, App, Context, Entity, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Styled as _, WeakEntity, Window,
 };
 use gpui_component::{
     dock::{BasePanel, Panel, PanelEvent},
     v_flex,
 };
 
+use crate::app::AppView;
+use crate::components::drop_overlay::file_drop_overlay;
 use crate::components::transport::Transport;
 use crate::components::waveform::WaveformDisplay;
 use crate::model::document::BufferDocument;
@@ -28,6 +31,7 @@ pub struct WorkspacePanel {
     looping: bool,
     on_activated: Option<ActivatedFn>,
     last_doc_fingerprint: Option<(u64, String)>,
+    app: WeakEntity<AppView>,
 }
 
 impl WorkspacePanel {
@@ -35,6 +39,7 @@ impl WorkspacePanel {
         document_id: DocumentId,
         document: Entity<BufferDocument>,
         waveform: Entity<WaveformDisplay>,
+        app: WeakEntity<AppView>,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&document, |this, entity, cx| {
@@ -56,6 +61,7 @@ impl WorkspacePanel {
             looping: false,
             on_activated: None,
             last_doc_fingerprint: None,
+            app,
         }
     }
 
@@ -133,15 +139,31 @@ impl Panel for WorkspacePanel {
 }
 
 impl Render for WorkspacePanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let app = self.app.clone();
+        let layout = self
+            .app
+            .upgrade()
+            .and_then(|app| app.update(cx, |this, cx| this.sync_file_drop_layout(cx)));
         v_flex()
             .size_full()
             .child(
                 div()
+                    .id("workspace-waveform")
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(self.waveform.clone()),
+                    .drag_over::<ExternalPaths>(move |style, _, _, cx| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |this, cx| this.ensure_file_drop_layout(cx));
+                        }
+                        style
+                    })
+                    .child(self.waveform.clone())
+                    .when_some(layout, |this, layout| {
+                        this.child(file_drop_overlay(layout, self.app.clone()))
+                    }),
             )
             .child(Transport::new(self.transport_state, self.looping))
     }

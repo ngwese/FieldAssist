@@ -421,6 +421,11 @@ impl UserData for LuaComposition {
         methods.add_method("close", |lua, this, ()| {
             host_from_lua(lua)?.close_composition(this.id)
         });
+        methods.add_method("replace", |lua, this, path: String| {
+            host_from_lua(lua)?
+                .replace_composition(this.id, &path)
+                .map(|id| LuaComposition { id })
+        });
         methods.add_method("undo", |lua, this, ()| {
             edit(lua, this.id, |doc| doc.edit_undo())
         });
