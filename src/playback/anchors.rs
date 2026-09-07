@@ -31,12 +31,7 @@ pub fn previous_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
 pub fn previous_anchor_near(anchors: &[usize], pos: usize, near: usize) -> Option<usize> {
     let n = anchors.iter().copied().filter(|a| *a < pos).max()?;
     if pos - n <= near {
-        anchors
-            .iter()
-            .copied()
-            .filter(|a| *a < n)
-            .max()
-            .or(Some(n))
+        anchors.iter().copied().filter(|a| *a < n).max().or(Some(n))
     } else {
         Some(n)
     }
