@@ -8,3 +8,5 @@
       determine stall when the file must be probed
 - [ ] Find the performance regression when loading a composition
       that has edits
+- [ ] Group and order monitor chain controls (see stereo
+      crossfeed)
