@@ -16,3 +16,7 @@
       workflow toolbar controls (buttons use `command` +
       `:on("command", …)`; path/toggle use inline `on_path` /
       `on_change`)
+- [ ] Fix long-running workflows to use a workflow instance
+      instead of mutating the prototype (toolbar, output path,
+      and other run state today live on the shared prototype)
+
