@@ -3,7 +3,9 @@
 
 use std::path::Path;
 
-use mlua::{Function, MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{
+    FromLua, Function, MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value,
+};
 
 use super::composition::LuaComposition;
 use super::files::{find_files, find_files_matching, normalize_extension};
@@ -25,6 +27,11 @@ impl UserData for LuaApp {
         fields.add_field_method_get("active", |lua, _| {
             let host = host_from_lua(lua)?;
             Ok(host.active().map(|id| LuaComposition { id }))
+        });
+        fields.add_field_method_set("active", |lua, _, value: Value| {
+            let host = host_from_lua(lua)?;
+            let doc = LuaComposition::from_lua(value, lua)?;
+            host.set_active(doc.id)
         });
         fields.add_field_method_get("documents", |lua, _| {
             let host = host_from_lua(lua)?;
@@ -58,6 +65,18 @@ impl UserData for LuaApp {
             Ok(host.output_devices())
         });
         fields.add_field_method_get("theme", |_, _| Ok(LuaTheme));
+        fields.add_field_method_get("looping", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.looping())
+        });
+        fields.add_field_method_get("preview", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.preview())
+        });
+        fields.add_field_method_get("explorer", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.explorer())
+        });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {

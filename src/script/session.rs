@@ -71,6 +71,16 @@ impl UserData for LuaSession {
                 .session_active_document(this.id)
                 .map(|id| LuaComposition { id }))
         });
+        fields.add_field_method_set("active", |lua, this, value: Value| {
+            let host = host_from_lua(lua)?;
+            if this.id.is_some() {
+                return Err(mlua::Error::runtime(
+                    "active can only be set on the UI session",
+                ));
+            }
+            let doc = LuaComposition::from_lua(value, lua)?;
+            host.set_active(doc.id)
+        });
         fields.add_field_method_get("documents", |lua, this| {
             let host = host_from_lua(lua)?;
             let docs: Vec<LuaComposition> = host

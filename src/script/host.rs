@@ -22,8 +22,8 @@ use super::layout::ChannelLayoutDef;
 use super::session::LuaSession;
 use super::workflow::{
     layout_drop_targets, prototype_is_stateful, prototype_method, toolbar_from_prototype,
-    workflows_for_menu, DropLayout, ToolbarItem, WorkflowDef, WorkflowMeta, SCOPE_DRAG_DROP,
-    SCOPE_MENU,
+    toolbar_row_id, workflows_for_menu, DropLayout, ToolbarItem, WorkflowDef, WorkflowMeta,
+    SCOPE_DRAG_DROP, SCOPE_MENU,
 };
 
 pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
@@ -104,6 +104,11 @@ pub struct TestWorld {
     next_id: u128,
     pub output_device: Option<String>,
     pub output_devices: Vec<String>,
+    pub looping: bool,
+    pub preview: bool,
+    pub explorer: bool,
+    pub detail: bool,
+    pub script: bool,
 }
 
 impl TestWorld {
@@ -117,6 +122,11 @@ impl TestWorld {
             next_id: 0,
             output_device: None,
             output_devices: Vec::new(),
+            looping: false,
+            preview: false,
+            explorer: false,
+            detail: false,
+            script: false,
         }
     }
 
@@ -349,6 +359,24 @@ impl ScriptHost {
         self.handle.dispatch_workflow_command(command)
     }
 
+    pub fn dispatch_toolbar_path(&self, id: &str, paths: &[PathBuf]) -> Result<String, String> {
+        self.handle
+            .dispatch_toolbar_path(&self.lua, id, paths)
+            .map_err(|err| err.to_string())
+    }
+
+    pub fn dispatch_toolbar_toggle(&self, id: &str) -> Result<bool, String> {
+        self.handle
+            .dispatch_toolbar_toggle(id)
+            .map_err(|err| err.to_string())
+    }
+
+    pub fn set_toolbar_path_value(&self, id: &str, value: &str) -> Result<(), String> {
+        self.handle
+            .set_toolbar_path_value(id, value)
+            .map_err(|err| err.to_string())
+    }
+
     pub fn finish_workflow(&self) -> Result<(), String> {
         self.handle.finish_workflow()
     }
@@ -487,6 +515,42 @@ impl HostHandle {
             .flatten()
     }
 
+    pub fn set_active(&self, id: DocumentId) -> mlua::Result<()> {
+        if let Some(test) = self.inner.borrow().test.clone() {
+            let mut world = test.borrow_mut();
+            if world.session.get(id).is_none() {
+                return Err(mlua::Error::runtime("composition is not open"));
+            }
+            world.session.focus(id);
+            world.active = Some(id);
+            return Ok(());
+        }
+        access::with_view(|view, window, cx| view.script_activate_document(id, window, cx))
+            .map_err(mlua::Error::runtime)?
+            .map_err(mlua::Error::runtime)
+    }
+
+    pub fn looping(&self) -> bool {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().looping;
+        }
+        access::with_view(|view, _, _| view.playback_looping()).unwrap_or(false)
+    }
+
+    pub fn preview(&self) -> bool {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().preview;
+        }
+        access::with_view(|view, _, _| view.preview_enabled()).unwrap_or(false)
+    }
+
+    pub fn explorer(&self) -> bool {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().explorer;
+        }
+        access::with_view(|view, _, cx| view.explorer_dock_open(cx)).unwrap_or(false)
+    }
+
     pub fn documents(&self) -> Vec<DocumentId> {
         if let Some(test) = &self.inner.borrow().test {
             return test
@@ -556,7 +620,22 @@ impl HostHandle {
 
     pub fn command(&self, id: &str) -> Result<(), String> {
         crate::commands::validate_command_id(id)?;
-        if self.inner.borrow().test.is_some() {
+        if let Some(test) = self.inner.borrow().test.clone() {
+            let mut world = test.borrow_mut();
+            match id {
+                "transport.loop" => world.looping = !world.looping,
+                "transport.preview" => world.preview = !world.preview,
+                "view.show-explorer" => world.explorer = true,
+                "view.hide-explorer" => world.explorer = false,
+                "view.toggle-explorer" => world.explorer = !world.explorer,
+                "view.show-detail" => world.detail = true,
+                "view.hide-detail" => world.detail = false,
+                "view.toggle-detail" => world.detail = !world.detail,
+                "view.show-script" => world.script = true,
+                "view.hide-script" => world.script = false,
+                "view.toggle-script" => world.script = !world.script,
+                _ => {}
+            }
             return Ok(());
         }
         match access::with_view(|view, window, cx| view.invoke_command(id, window, cx)) {
@@ -918,6 +997,10 @@ impl HostHandle {
     }
 
     pub fn toolbar_changed(&self, _prototype: &mlua::Table) -> mlua::Result<()> {
+        if self.inner.borrow().test.is_some() {
+            return Ok(());
+        }
+        let _ = access::with_view(|view, _, cx| view.refresh_workflow_bar(cx));
         Ok(())
     }
 
@@ -937,6 +1020,109 @@ impl HostHandle {
             _ => return Ok(()),
         };
         handler.call::<()>(command).map_err(|err| err.to_string())
+    }
+
+    pub fn dispatch_toolbar_path(
+        &self,
+        lua: &Lua,
+        id: &str,
+        paths: &[PathBuf],
+    ) -> mlua::Result<String> {
+        let row = self.toolbar_row(id)?;
+        let value = match row.get::<Value>("on_path")? {
+            Value::Function(func) => {
+                let table = lua.create_table()?;
+                for (index, path) in paths.iter().enumerate() {
+                    table.set(index + 1, path.display().to_string())?;
+                }
+                match func.call::<Value>(table)? {
+                    Value::Nil => first_path_string(paths),
+                    Value::String(text) => text.to_str()?.to_owned(),
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "on_path must return a string or nil, got {}",
+                            other.type_name()
+                        )))
+                    }
+                }
+            }
+            Value::Nil => first_path_string(paths),
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "on_path must be a function, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        row.set("value", value.as_str())?;
+        Ok(value)
+    }
+
+    pub fn dispatch_toolbar_toggle(&self, id: &str) -> mlua::Result<bool> {
+        let row = self.toolbar_row(id)?;
+        let current = match row.get::<Value>("value")? {
+            Value::Nil => false,
+            Value::Boolean(value) => value,
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "toggle value must be a boolean, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let next = match row.get::<Value>("on_change")? {
+            Value::Function(func) => match func.call::<Value>(current)? {
+                Value::Boolean(value) => value,
+                Value::Nil => !current,
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "on_change must return a boolean, got {}",
+                        other.type_name()
+                    )))
+                }
+            },
+            Value::Nil => !current,
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "on_change must be a function, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        row.set("value", next)?;
+        Ok(next)
+    }
+
+    pub fn set_toolbar_path_value(&self, id: &str, value: &str) -> mlua::Result<()> {
+        let row = self.toolbar_row(id)?;
+        row.set("value", value)?;
+        Ok(())
+    }
+
+    fn toolbar_row(&self, id: &str) -> mlua::Result<mlua::Table> {
+        let Some(name) = self.inner.borrow().active_workflow.clone() else {
+            return Err(mlua::Error::runtime("no workflow is running"));
+        };
+        let proto = self
+            .inner
+            .borrow()
+            .workflows
+            .get(&name)
+            .map(|workflow| workflow.prototype.clone())
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown workflow `{name}`")))?;
+        let toolbar = match proto.get::<Value>("__fa_toolbar")? {
+            Value::Table(table) => table,
+            _ => return Err(mlua::Error::runtime("workflow has no toolbar")),
+        };
+        for row in toolbar.sequence_values::<Value>() {
+            let Value::Table(row) = row? else {
+                continue;
+            };
+            if toolbar_row_id(&row)?.as_deref() == Some(id) {
+                return Ok(row);
+            }
+        }
+        Err(mlua::Error::runtime(format!("no toolbar item `{id}`")))
     }
 
     pub fn finish_workflow(&self) -> Result<(), String> {
@@ -1374,6 +1560,13 @@ pub fn user_init_path(config_dir: Option<&Path>) -> Option<PathBuf> {
 fn is_workflow_filename(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.starts_with("workflow_") && lower.ends_with(".lua")
+}
+
+fn first_path_string(paths: &[PathBuf]) -> String {
+    paths
+        .first()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default()
 }
 
 fn open_in_test(test: &Rc<RefCell<TestWorld>>, path: &Path) -> mlua::Result<DocumentId> {

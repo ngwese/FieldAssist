@@ -19,7 +19,7 @@ pub use host::{
     host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ResumeWorkflow, ScriptHost,
     TestWorld, EMBEDDED_INIT,
 };
-pub use workflow::{DropLayout, ToolbarItem};
+pub use workflow::{DropLayout, PathBrowse, ToolbarAlign, ToolbarItem};
 
 #[cfg(test)]
 mod tests {
@@ -42,6 +42,30 @@ mod tests {
             .push(composition, Buffer::empty(), "fixture", None);
         let host = ScriptHost::for_test(world.clone()).expect("lua");
         (host, world)
+    }
+
+    fn item_kind(item: &ToolbarItem) -> &'static str {
+        match item {
+            ToolbarItem::Button { .. } => "button",
+            ToolbarItem::Path { .. } => "path",
+            ToolbarItem::Toggle { .. } => "toggle",
+            ToolbarItem::Message { .. } => "message",
+            ToolbarItem::Divider { .. } => "divider",
+        }
+    }
+
+    fn message_text(item: &ToolbarItem) -> Option<&str> {
+        match item {
+            ToolbarItem::Message { text, .. } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    fn toggle_value(item: &ToolbarItem) -> Option<bool> {
+        match item {
+            ToolbarItem::Toggle { value, .. } => Some(*value),
+            _ => None,
+        }
     }
 
     #[test]
@@ -952,16 +976,30 @@ mod tests {
             .iter()
             .any(|message| message.contains("batch.fasession")));
         assert_eq!(world.borrow().session.workflow(), Some("review"));
-        host.dispatch_workflow_command("next").expect("next");
-        let logs = host.take_logs();
-        assert!(
-            logs.iter()
-                .any(|entry| entry.message.contains("command next")),
-            "{logs:?}"
+        assert!(world.borrow().looping);
+        assert!(world.borrow().preview);
+        assert!(world.borrow().explorer);
+        let snapshot = host.toolbar_snapshot().expect("toolbar");
+        assert_eq!(snapshot.0, "Review");
+        let kinds: Vec<_> = snapshot.1.iter().map(item_kind).collect();
+        assert_eq!(
+            kinds,
+            ["button", "button", "button", "toggle", "divider", "message", "path", "button"]
         );
+        assert_eq!(snapshot.1[0].command(), Some("previous"));
+        assert_eq!(snapshot.1[1].command(), Some("next"));
+        assert_eq!(snapshot.1[2].command(), Some("drop"));
+        assert_eq!(snapshot.1[0].align(), crate::script::ToolbarAlign::Left);
+        assert_eq!(snapshot.1[6].align(), crate::script::ToolbarAlign::Right);
+        assert_eq!(snapshot.1[7].command(), Some("finish"));
+        assert_eq!(snapshot.1[7].align(), crate::script::ToolbarAlign::Right);
+        host.dispatch_workflow_command("next").expect("next");
         host.finish_workflow().expect("finish");
         assert!(world.borrow().session.workflow().is_none());
         assert!(host.toolbar_snapshot().is_none());
+        assert!(!world.borrow().looping);
+        assert!(!world.borrow().preview);
+        assert!(world.borrow().explorer);
     }
 
     #[test]
@@ -1119,6 +1157,175 @@ mod tests {
             .all(|doc| doc.group.as_deref() == Some("todo")));
         assert_eq!(world.borrow().session.workflow(), Some("review"));
         assert_eq!(host.active_workflow_name().as_deref(), Some("review"));
+        assert!(world.borrow().looping);
+        assert!(world.borrow().preview);
+        assert!(world.borrow().explorer);
+        let snapshot = host.toolbar_snapshot().expect("toolbar");
+        assert_eq!(message_text(&snapshot.1[5]), Some("0 of 1 files reviewed"));
+    }
+
+    #[test]
+    fn review_next_cycles_todo_and_reviewed_updates_group() {
+        let (mut host, world) = test_host();
+        let samples = vec![vec![0.0; 1000], vec![0.0; 1000]];
+        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let composition = Composition::from_media(media).expect("composition");
+        let second = world
+            .borrow_mut()
+            .push(composition, Buffer::empty(), "second", None);
+        host.load_init_from(None).expect("embedded init");
+        let _ = host.take_logs();
+        host.invoke_menu_workflow("review").expect("review menu");
+        let first = world
+            .borrow()
+            .session
+            .documents()
+            .first()
+            .map(|doc| doc.id)
+            .expect("first");
+        assert_eq!(world.borrow().active, Some(second));
+        host.dispatch_workflow_command("previous")
+            .expect("previous");
+        assert_eq!(world.borrow().active, Some(first));
+        host.dispatch_workflow_command("previous")
+            .expect("previous wrap");
+        assert_eq!(world.borrow().active, Some(second));
+        host.dispatch_workflow_command("next").expect("next");
+        assert_eq!(world.borrow().active, Some(first));
+        host.dispatch_workflow_command("next").expect("next wrap");
+        assert_eq!(world.borrow().active, Some(second));
+        host.dispatch_toolbar_toggle("reviewed").expect("reviewed");
+        assert_eq!(
+            world
+                .borrow()
+                .session
+                .get(second)
+                .and_then(|doc| doc.group.clone()),
+            Some("reviewed".into())
+        );
+        let snapshot = host.toolbar_snapshot().expect("toolbar");
+        assert_eq!(toggle_value(&snapshot.1[3]), Some(true));
+        assert_eq!(message_text(&snapshot.1[5]), Some("1 of 2 files reviewed"));
+        host.dispatch_workflow_command("next")
+            .expect("skip reviewed");
+        assert_eq!(world.borrow().active, Some(first));
+        assert_eq!(
+            toggle_value(&host.toolbar_snapshot().unwrap().1[3]),
+            Some(false)
+        );
+        host.dispatch_workflow_command("drop").expect("drop");
+        assert_eq!(
+            world
+                .borrow()
+                .session
+                .get(first)
+                .and_then(|doc| doc.group.clone()),
+            Some("drop".into())
+        );
+        assert_eq!(
+            message_text(&host.toolbar_snapshot().unwrap().1[5]),
+            Some("1 of 1 files reviewed")
+        );
+    }
+
+    #[test]
+    fn review_start_again_does_not_toggle_playback_off() {
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        host.invoke_menu_workflow("review").expect("review");
+        assert!(world.borrow().looping);
+        assert!(world.borrow().preview);
+        assert!(world.borrow().explorer);
+        host.invoke_menu_workflow("review").expect("again");
+        assert!(world.borrow().looping);
+        assert!(world.borrow().preview);
+        assert!(world.borrow().explorer);
+        host.finish_workflow().expect("finish");
+        assert!(!world.borrow().looping);
+        assert!(!world.borrow().preview);
+        assert!(world.borrow().explorer);
+    }
+
+    #[test]
+    fn view_pane_show_and_hide_are_idempotent() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            app:command("view.show-explorer")
+            app:command("view.show-explorer")
+            app:command("view.show-detail")
+            app:command("view.hide-script")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(world.borrow().explorer);
+        assert!(world.borrow().detail);
+        assert!(!world.borrow().script);
+        let out = host.eval(
+            r#"
+            app:command("view.hide-explorer")
+            app:command("view.hide-explorer")
+            app:command("view.toggle-script")
+            app:command("view.toggle-detail")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(!world.borrow().explorer);
+        assert!(!world.borrow().detail);
+        assert!(world.borrow().script);
+    }
+
+    #[test]
+    fn review_resume_shows_explorer() {
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("embedded init");
+        let out = host.eval(r#"app.session.workflow = "review""#);
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            host.resume_workflow().expect("resume"),
+            ResumeWorkflow::Resumed
+        );
+        assert!(world.borrow().explorer);
+        assert!(world.borrow().looping);
+        assert!(world.borrow().preview);
+    }
+
+    #[test]
+    fn set_item_updates_toolbar_snapshot() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "stateful",
+              display_name = "Stateful",
+              scopes = { "drag-drop" },
+            })
+            function W:start(_payload)
+              W:set_toolbar({
+                { command = "go", label = "Go" },
+                { kind = "message", id = "m", text = "a" },
+              })
+            end
+            function W:suspend(_session) return true end
+            W:on("command", function(command)
+              if command == "go" then
+                W:set_item("m", { text = "b" })
+              end
+            end)
+            app:declare_workflow(W)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.invoke_workflow("stateful", &[]).expect("start");
+        assert_eq!(
+            message_text(&host.toolbar_snapshot().unwrap().1[1]),
+            Some("a")
+        );
+        host.dispatch_workflow_command("go").expect("go");
+        assert_eq!(
+            message_text(&host.toolbar_snapshot().unwrap().1[1]),
+            Some("b")
+        );
     }
 
     #[test]
@@ -1165,7 +1372,7 @@ mod tests {
         assert_eq!(host.active_workflow_name().as_deref(), Some("stateful"));
         let snapshot = host.toolbar_snapshot().expect("toolbar");
         assert_eq!(snapshot.0, "Stateful");
-        assert_eq!(snapshot.1[0].command, "go");
+        assert_eq!(snapshot.1[0].command(), Some("go"));
         host.finish_workflow().expect("finish");
         assert!(world.borrow().session.workflow().is_none());
         assert!(host.active_workflow_name().is_none());
@@ -1260,7 +1467,7 @@ mod tests {
         );
         let snapshot = host.toolbar_snapshot().expect("toolbar");
         assert_eq!(snapshot.0, "Stateful");
-        assert_eq!(snapshot.1[0].label, "Go");
+        assert_eq!(snapshot.1[0].label(), Some("Go"));
     }
 
     #[test]

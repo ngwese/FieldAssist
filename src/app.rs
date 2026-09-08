@@ -33,9 +33,10 @@ use crate::commands::{
     EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
     Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
     SetActiveMarkerType, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
-    TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPrevious,
-    TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewScript,
-    ViewZoomIn, ViewZoomOut,
+    TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
+    TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
+    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewScript, ViewShowDetail,
+    ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::app_menu::AppMenuBar;
 use crate::components::dock_skin::{CenterTabBarHandler, CompactDockSkin};
@@ -144,6 +145,7 @@ pub struct AppView {
     drop_layout: Option<Arc<DropLayout>>,
     pending_replace: Option<(DocumentId, PathBuf)>,
     workflow_bar: Option<(String, Vec<ToolbarItem>)>,
+    workflow_bar_view: Entity<WorkflowBar>,
 }
 
 impl AppView {
@@ -310,6 +312,7 @@ impl AppView {
         )
         .detach();
 
+        let workflow_bar_view = cx.new(|_| WorkflowBar::new(app.clone()));
         let mut this = Self {
             session,
             views,
@@ -346,6 +349,7 @@ impl AppView {
             drop_layout: None,
             pending_replace: None,
             workflow_bar: None,
+            workflow_bar_view,
         };
         this.load_init_lua(window, cx);
         if let Some(path) = session_path {
@@ -812,6 +816,28 @@ impl AppView {
         cx.notify();
     }
 
+    pub(crate) fn preview_enabled(&self) -> bool {
+        self.preview_enabled
+    }
+
+    pub(crate) fn playback_looping(&self) -> bool {
+        self.playback.looping()
+    }
+
+    pub(crate) fn script_activate_document(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.session.get(id).is_none() {
+            return Err("composition is not open".into());
+        }
+        self.activate_or_replace_tab(id, window, cx);
+        self.apply_preview_if_enabled(cx);
+        Ok(())
+    }
+
     fn apply_preview_if_enabled(&mut self, cx: &mut Context<Self>) {
         if !self.preview_enabled {
             return;
@@ -972,12 +998,24 @@ impl AppView {
         cx.notify();
     }
 
+    fn set_detail_dock(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.detail_dock_open(cx) != open {
+            self.toggle_detail_dock(window, cx);
+        }
+    }
+
     fn toggle_explorer_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dock_area.update(cx, |area, cx| {
             area.toggle_dock(DockPlacement::Left, window, cx);
         });
         self.sync_view_menus(cx);
         cx.notify();
+    }
+
+    fn set_explorer_dock(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.explorer_dock_open(cx) != open {
+            self.toggle_explorer_dock(window, cx);
+        }
     }
 
     fn detail_dock_open(&self, cx: &App) -> bool {
@@ -993,7 +1031,7 @@ impl AppView {
             .is_some_and(|(_, ix, active_ix)| ix == active_ix)
     }
 
-    fn explorer_dock_open(&self, cx: &App) -> bool {
+    pub(crate) fn explorer_dock_open(&self, cx: &App) -> bool {
         self.dock_area.read(cx).is_dock_open(DockPlacement::Left)
     }
 
@@ -1186,10 +1224,13 @@ impl AppView {
         self.sync_view_menus(cx);
     }
 
-    fn refresh_workflow_bar(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_workflow_bar(&mut self, cx: &mut Context<Self>) {
         let next = self.script.toolbar_snapshot();
         if self.workflow_bar != next {
-            self.workflow_bar = next;
+            self.workflow_bar = next.clone();
+            self.workflow_bar_view.update(cx, |bar, cx| {
+                bar.set_snapshot(next, cx);
+            });
             cx.notify();
         }
     }
@@ -1633,6 +1674,80 @@ impl AppView {
         cx.notify();
     }
 
+    pub(crate) fn dispatch_toolbar_path(
+        &mut self,
+        id: &str,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _guard = crate::script::enter(self, window, cx);
+        match self.script.dispatch_toolbar_path(id, paths) {
+            Ok(_) => {}
+            Err(err) => {
+                self.repl.update(cx, |repl, cx| {
+                    repl.append_error(&format!("toolbar path `{id}`: {err}"), cx);
+                });
+            }
+        }
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn dispatch_toolbar_toggle(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.dispatch_toolbar_toggle(id) {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("toolbar toggle `{id}`: {err}"), cx);
+            });
+        }
+        let prints = self.script.take_prints();
+        if !prints.is_empty() {
+            let output = EvalOutput {
+                prints,
+                result: None,
+                error: None,
+            };
+            self.repl.update(cx, |repl, cx| {
+                repl.append_output(&output, cx);
+            });
+        }
+        self.flush_script_logs(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_toolbar_path_value(
+        &mut self,
+        id: &str,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let _guard = crate::script::enter(self, window, cx);
+        if let Err(err) = self.script.set_toolbar_path_value(id, value) {
+            self.repl.update(cx, |repl, cx| {
+                repl.append_error(&format!("toolbar path `{id}`: {err}"), cx);
+            });
+        }
+        self.flush_script_logs(cx);
+    }
+
     pub(crate) fn script_replace_document(
         &mut self,
         id: DocumentId,
@@ -1848,6 +1963,9 @@ impl AppView {
                 self.playback.toggle_loop();
                 cx.notify();
             }
+            "transport.preview" => {
+                self.toggle_preview(cx);
+            }
             "view.fit_all" => {
                 if let Some(views) = self.active_views() {
                     views.waveform.update(cx, |view, cx| view.fit(cx));
@@ -1868,9 +1986,15 @@ impl AppView {
                     views.waveform.update(cx, |view, cx| view.zoom_out(cx));
                 }
             }
-            "view.explorer" => self.toggle_explorer_dock(window, cx),
-            "view.detail" => self.toggle_detail_dock(window, cx),
-            "view.script" => self.toggle_script_dock(window, cx),
+            "view.show-explorer" => self.set_explorer_dock(true, window, cx),
+            "view.hide-explorer" => self.set_explorer_dock(false, window, cx),
+            "view.toggle-explorer" => self.toggle_explorer_dock(window, cx),
+            "view.show-detail" => self.set_detail_dock(true, window, cx),
+            "view.hide-detail" => self.set_detail_dock(false, window, cx),
+            "view.toggle-detail" => self.toggle_detail_dock(window, cx),
+            "view.show-script" => self.show_script_dock(window, cx),
+            "view.hide-script" => self.hide_script_dock(window, cx),
+            "view.toggle-script" => self.toggle_script_dock(window, cx),
             "edit.undo" => self.run_edit(cx, |doc| {
                 doc.edit_undo();
             }),
@@ -2994,12 +3118,8 @@ impl AppView {
             }
         }
         if let Some(docks) = &ui.docks {
-            if self.explorer_dock_open(cx) != docks.explorer {
-                self.toggle_explorer_dock(window, cx);
-            }
-            if self.detail_dock_open(cx) != docks.detail {
-                self.toggle_detail_dock(window, cx);
-            }
+            self.set_explorer_dock(docks.explorer, window, cx);
+            self.set_detail_dock(docks.detail, window, cx);
             if docks.script {
                 self.show_script_dock(window, cx);
             } else {
@@ -3411,8 +3531,8 @@ impl Render for AppView {
                                             .w_full()
                                             .child(self.dock_area.clone()),
                                     )
-                                    .when_some(self.workflow_bar.clone(), |this, (title, items)| {
-                                        this.child(WorkflowBar::new(title, items, cx.weak_entity()))
+                                    .when(self.workflow_bar.is_some(), |this| {
+                                        this.child(self.workflow_bar_view.clone())
                                     })
                                     .child(
                                         FileStatusBar::new(file_status)
@@ -3562,6 +3682,10 @@ fn transport_loop(_: &TransportLoop, cx: &mut App) {
     let _ = crate::commands::dispatch("transport.loop", cx);
 }
 
+fn transport_preview(_: &TransportPreview, cx: &mut App) {
+    let _ = crate::commands::dispatch("transport.preview", cx);
+}
+
 fn view_fit_all(_: &ViewFitAll, cx: &mut App) {
     let _ = crate::commands::dispatch("view.fit_all", cx);
 }
@@ -3579,15 +3703,39 @@ fn view_zoom_out(_: &ViewZoomOut, cx: &mut App) {
 }
 
 fn view_explorer(_: &ViewExplorer, cx: &mut App) {
-    let _ = crate::commands::dispatch("view.explorer", cx);
+    let _ = crate::commands::dispatch("view.toggle-explorer", cx);
+}
+
+fn view_show_explorer(_: &ViewShowExplorer, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.show-explorer", cx);
+}
+
+fn view_hide_explorer(_: &ViewHideExplorer, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.hide-explorer", cx);
 }
 
 fn view_detail(_: &ViewDetail, cx: &mut App) {
-    let _ = crate::commands::dispatch("view.detail", cx);
+    let _ = crate::commands::dispatch("view.toggle-detail", cx);
+}
+
+fn view_show_detail(_: &ViewShowDetail, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.show-detail", cx);
+}
+
+fn view_hide_detail(_: &ViewHideDetail, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.hide-detail", cx);
 }
 
 fn view_script(_: &ViewScript, cx: &mut App) {
-    let _ = crate::commands::dispatch("view.script", cx);
+    let _ = crate::commands::dispatch("view.toggle-script", cx);
+}
+
+fn view_show_script(_: &ViewShowScript, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.show-script", cx);
+}
+
+fn view_hide_script(_: &ViewHideScript, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.hide-script", cx);
 }
 
 fn edit_undo(_: &EditUndo, cx: &mut App) {
@@ -3856,13 +4004,20 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(transport_next);
     cx.on_action(transport_end);
     cx.on_action(transport_loop);
+    cx.on_action(transport_preview);
     cx.on_action(view_fit_all);
     cx.on_action(view_frame);
     cx.on_action(view_zoom_in);
     cx.on_action(view_zoom_out);
     cx.on_action(view_explorer);
+    cx.on_action(view_show_explorer);
+    cx.on_action(view_hide_explorer);
     cx.on_action(view_detail);
+    cx.on_action(view_show_detail);
+    cx.on_action(view_hide_detail);
     cx.on_action(view_script);
+    cx.on_action(view_show_script);
+    cx.on_action(view_hide_script);
     cx.on_action(edit_undo);
     cx.on_action(edit_redo);
     cx.on_action(edit_cut);

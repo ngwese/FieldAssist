@@ -28,6 +28,7 @@ actions!(
         TransportNext,
         TransportEnd,
         TransportLoop,
+        TransportPreview,
         ViewFitAll,
         ViewFrame,
         ViewZoomIn,
@@ -35,6 +36,12 @@ actions!(
         ViewExplorer,
         ViewDetail,
         ViewScript,
+        ViewShowExplorer,
+        ViewHideExplorer,
+        ViewShowDetail,
+        ViewHideDetail,
+        ViewShowScript,
+        ViewHideScript,
         EditUndo,
         EditRedo,
         EditCut,
@@ -102,9 +109,15 @@ const KNOWN_COMMANDS: &[&str] = &[
     "view.frame",
     "view.zoom_in",
     "view.zoom_out",
-    "view.explorer",
-    "view.detail",
-    "view.script",
+    "view.show-explorer",
+    "view.hide-explorer",
+    "view.toggle-explorer",
+    "view.show-detail",
+    "view.hide-detail",
+    "view.toggle-detail",
+    "view.show-script",
+    "view.hide-script",
+    "view.toggle-script",
     "transport.home",
     "transport.previous",
     "transport.start",
@@ -113,6 +126,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "transport.next",
     "transport.end",
     "transport.loop",
+    "transport.preview",
     "edit.undo",
     "edit.redo",
     "edit.cut",
@@ -340,9 +354,15 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "view.frame" => KeyBinding::new(keystrokes, ViewFrame, Some(context)),
         "view.zoom_in" => KeyBinding::new(keystrokes, ViewZoomIn, Some(context)),
         "view.zoom_out" => KeyBinding::new(keystrokes, ViewZoomOut, Some(context)),
-        "view.explorer" => KeyBinding::new(keystrokes, ViewExplorer, Some(context)),
-        "view.detail" => KeyBinding::new(keystrokes, ViewDetail, Some(context)),
-        "view.script" => KeyBinding::new(keystrokes, ViewScript, Some(context)),
+        "view.show-explorer" => KeyBinding::new(keystrokes, ViewShowExplorer, Some(context)),
+        "view.hide-explorer" => KeyBinding::new(keystrokes, ViewHideExplorer, Some(context)),
+        "view.toggle-explorer" => KeyBinding::new(keystrokes, ViewExplorer, Some(context)),
+        "view.show-detail" => KeyBinding::new(keystrokes, ViewShowDetail, Some(context)),
+        "view.hide-detail" => KeyBinding::new(keystrokes, ViewHideDetail, Some(context)),
+        "view.toggle-detail" => KeyBinding::new(keystrokes, ViewDetail, Some(context)),
+        "view.show-script" => KeyBinding::new(keystrokes, ViewShowScript, Some(context)),
+        "view.hide-script" => KeyBinding::new(keystrokes, ViewHideScript, Some(context)),
+        "view.toggle-script" => KeyBinding::new(keystrokes, ViewScript, Some(context)),
         "transport.home" => KeyBinding::new(keystrokes, TransportHome, Some(context)),
         "transport.previous" => KeyBinding::new(keystrokes, TransportPrevious, Some(context)),
         "transport.start" => KeyBinding::new(keystrokes, TransportStart, Some(context)),
@@ -351,6 +371,7 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "transport.next" => KeyBinding::new(keystrokes, TransportNext, Some(context)),
         "transport.end" => KeyBinding::new(keystrokes, TransportEnd, Some(context)),
         "transport.loop" => KeyBinding::new(keystrokes, TransportLoop, Some(context)),
+        "transport.preview" => KeyBinding::new(keystrokes, TransportPreview, Some(context)),
         "edit.undo" => KeyBinding::new(keystrokes, EditUndo, Some(context)),
         "edit.redo" => KeyBinding::new(keystrokes, EditRedo, Some(context)),
         "edit.cut" => KeyBinding::new(keystrokes, EditCut, Some(context)),
@@ -527,6 +548,27 @@ mod tests {
         }
         let err = validate_command_id("not.a.command").unwrap_err();
         assert!(err.contains("unknown command"));
+    }
+
+    #[test]
+    fn pane_view_commands_are_known_and_bindable() {
+        for id in [
+            "view.show-explorer",
+            "view.hide-explorer",
+            "view.toggle-explorer",
+            "view.show-detail",
+            "view.hide-detail",
+            "view.toggle-detail",
+            "view.show-script",
+            "view.hide-script",
+            "view.toggle-script",
+        ] {
+            assert!(is_known_command(id), "{id}");
+            assert!(binding_for(id, "f12").is_some(), "{id}");
+        }
+        assert!(!is_known_command("view.explorer"));
+        assert!(!is_known_command("view.detail"));
+        assert!(!is_known_command("view.script"));
     }
 
     #[test]

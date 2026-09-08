@@ -225,10 +225,16 @@ function Review:finish(session) ... end   -- optional
 
 Review:on("command", function(command) ... end)
 Review:set_toolbar({
+  { command = "previous", label = "Previous" },
   { command = "next", label = "Next" },
-  { command = "skip", label = "Skip" },
-  { command = "finish", label = "Finish" },
+  { command = "drop", label = "Drop" },
+  { id = "reviewed", kind = "toggle", label = "Reviewed", value = false },
+  { kind = "divider" },
+  { id = "progress", kind = "message", text = "0 of 0 files reviewed" },
+  { id = "output", kind = "path", label = "Output", browse = "directory", align = "right" },
+  { command = "finish", label = "Finish", align = "right" },
 })
+Review:set_item("progress", { text = "1 of 3 files reviewed" })
 
 app:declare_workflow(Review)
 ```
@@ -238,8 +244,31 @@ overlay, or `{ scope = "menu" }` (no `paths`) from the Workflow menu. The
 one-shot shorthand uses the same payload. `:on("command", handler)` registers a
 workflow-local command callback (last registration wins). These strings are not
 global `app:command` / keymap ids. `:set_toolbar(items)` or `:set_toolbar(nil)`
-may be called from `start`, `resume`, or a command handler. Missing optional
-methods are no-ops.
+may be called from `start`, `resume`, or a command handler. `:set_item(id, props)`
+merges fields onto the existing row with that `id` (buttons default `id` to
+`command`) without dropping callbacks. Missing optional methods are no-ops.
+
+Each toolbar item may set `align = "left"` or `"right"` (default `"left"`). The
+bar shows the workflow `display_name`, then left-aligned items, a spacer, then
+right-aligned items, in list order within each side.
+
+| `kind` | Fields |
+| --- | --- |
+| `button` (or omitted when `command` is set) | `command`, `label` (defaults to `command`), optional `id` |
+| `path` | `id`, optional `label`, `value`, `browse = "file"` / `"directory"` / `false`, optional `on_path(paths)` returning the string to show |
+| `toggle` | `id`, `label`, `value`, `on_color`, `off_color`, optional `on_change(current)` returning the next boolean |
+| `message` | `id`, `text`, optional `color` |
+| `divider` | optional `id`; a muted vertical rule, no interaction |
+
+Drop or browse on a path field calls `on_path` with a list of paths when that
+callback is set; otherwise the first path is used. Colors use the same `{ r,g,b,a }`
+or `app.theme.named` / `app.theme.semantic` tables as drop colors.
+
+`app.looping` and `app.preview` are read-only booleans for the transport loop
+and status-bar Preview toggles. `app.explorer` is whether the left Compositions
+dock is open. Prefer `view.show-explorer` / `view.hide-explorer` over reading
+that flag and toggling. `app.active` (and the UI session’s `session.active`)
+may be assigned a composition to focus it.
 
 `app:finish_workflow()` / `app:cancel_workflow()` end the run: the host calls
 `:finish(session)` or `:cancel(session)` if defined, clears `s.workflow`, and
@@ -282,18 +311,25 @@ Replacing the active session cancels a running outgoing workflow, then resumes
 the incoming session’s workflow if any.
 
 A workflow bar sits between the dock and the status bar while toolbar items are
-set. It shows the workflow `display_name` and the script buttons.
+set. It shows the workflow `display_name` and the script widgets.
 
 Built-in **Add** opens audio/`.facomp` into the current session. A dropped
 `.fasession` is loaded with `app:load_session` and each document whose path is
 not already in the current session is opened (existing path wins). Built-in
 **Replace** opens a `.fasession` as a session replace, or calls
 `c:replace(path)` on the active document for audio/`.facomp`. Built-in
-**Review** is a stateful mock: Workflow → Review (`scope == "menu"`) marks every
+**Review** is stateful: Workflow → Review (`scope == "menu"`) marks every
 open session document `"todo"`. Dropped files are kept as-is, dropped folders
-are expanded with `app:find_files` to readable audio/`.facomp` files, each
-opened document is placed in the `"todo"` group, and the toolbar offers Next /
-Skip / Finish. Finish warns if any session documents are still in `"todo"`.
+are expanded with `app:find_files` to readable audio/`.facomp` files, and each
+opened document is placed in the `"todo"` group. The toolbar has Previous,
+Next, Drop, a Reviewed toggle, a progress message, an Output directory field,
+and Finish. Previous and Next cycle the `"todo"` group (wrapping). Drop moves
+the active composition to `"drop"`. Reviewed moves it between `"todo"` and
+`"reviewed"`. Progress is `N of M files reviewed` from the todo and reviewed
+groups. Start and resume turn transport loop and Preview on (`transport.loop`
+/ `transport.preview`) and show the explorer (`view.show-explorer`); `:finish`
+turns loop and Preview off. Finish warns if any session documents are still in
+`"todo"`.
 
 `app.output_device` is the session output device name, or `nil` for System
 Default (the host default device). Assignment uses the same name, index, and
@@ -526,11 +562,16 @@ Anywhere a channel scope is accepted (`select`, `add_region`):
 **Help:** `help.about`
 
 **View:** `view.fit_all`, `view.frame`, `view.zoom_in`, `view.zoom_out`,
-`view.explorer`, `view.detail`, `view.script`
+`view.show-explorer`, `view.hide-explorer`, `view.toggle-explorer`,
+`view.show-detail`, `view.hide-detail`, `view.toggle-detail`,
+`view.show-script`, `view.hide-script`, `view.toggle-script`
+
+Show and hide are idempotent. Menus and the status-bar pane buttons use the
+toggle variants.
 
 **Transport:** `transport.home`, `transport.previous`, `transport.start`,
 `transport.play_pause`, `transport.stop`, `transport.next`, `transport.end`,
-`transport.loop`
+`transport.loop`, `transport.preview`
 
 **Edit:** `edit.undo`, `edit.redo`, `edit.cut`, `edit.copy`, `edit.paste`,
 `edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`

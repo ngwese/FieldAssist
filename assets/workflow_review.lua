@@ -1,4 +1,4 @@
--- Built-in workflow: review session documents (stateful mock).
+-- Built-in workflow: review session documents.
 --
 -- create_workflow builds a prototype table; it is not registered until
 -- declare_workflow at the bottom of this file. Defining :suspend or :resume
@@ -56,13 +56,139 @@ local function expand_item(path)
   return paths
 end
 
--- Toolbar clicks send workflow-local command strings (not app:command ids).
+local function ensure_flag(id, want)
+  local current = (id == "transport.loop") and app.looping or app.preview
+  if current ~= want then
+    app:command(id)
+  end
+end
+
+local function set_review_playback(on)
+  ensure_flag("transport.loop", on)
+  ensure_flag("transport.preview", on)
+end
+
+local function progress_text()
+  local s = app.session
+  local reviewed = s:group_count("reviewed")
+  local total = reviewed + s:group_count("todo")
+  return string.format("%d of %d files reviewed", reviewed, total)
+end
+
+local function sync_chrome()
+  local active = app.active
+  local on = active ~= nil and active.group == "reviewed"
+  Review:set_item("progress", { text = progress_text() })
+  Review:set_item("reviewed", { value = on })
+end
+
 local function show_toolbar()
+  local off = app.theme.semantic.muted_foreground
+  local on = app.theme.semantic.success
   Review:set_toolbar({
+    { command = "previous", label = "Previous" },
     { command = "next", label = "Next" },
-    { command = "skip", label = "Skip" },
-    { command = "finish", label = "Finish" },
+    { command = "drop", label = "Drop" },
+    {
+      id = "reviewed",
+      kind = "toggle",
+      label = "Reviewed",
+      value = false,
+      off_color = off,
+      on_color = on,
+      on_change = function(current)
+        local doc = app.active
+        if not doc then
+          return current
+        end
+        local next_on = not current
+        if next_on then
+          doc.group = "reviewed"
+        else
+          doc.group = "todo"
+        end
+        sync_chrome()
+        return next_on
+      end,
+    },
+    { kind = "divider" },
+    { id = "progress", kind = "message", text = progress_text() },
+    {
+      id = "output",
+      kind = "path",
+      label = "Output",
+      value = Review.output or "",
+      browse = "directory",
+      align = "right",
+      on_path = function(paths)
+        local path = paths and paths[1] or nil
+        if not path or path == "" then
+          return Review.output or ""
+        end
+        Review.output = path
+        return path
+      end,
+    },
+    { command = "finish", label = "Finish", align = "right" },
   })
+  sync_chrome()
+end
+
+local function todo_docs()
+  local docs = {}
+  for _, doc in ipairs(app.session.documents or {}) do
+    if doc.group == "todo" then
+      docs[#docs + 1] = doc
+    end
+  end
+  return docs
+end
+
+local function todo_index(todos)
+  local active = app.active
+  if not active then
+    return 0
+  end
+  for i, doc in ipairs(todos) do
+    if doc.id == active.id then
+      return i
+    end
+  end
+  return 0
+end
+
+local function go_next()
+  local todos = todo_docs()
+  if #todos == 0 then
+    sync_chrome()
+    return
+  end
+  local ix = todo_index(todos)
+  app.active = todos[(ix % #todos) + 1]
+  sync_chrome()
+end
+
+local function go_previous()
+  local todos = todo_docs()
+  if #todos == 0 then
+    sync_chrome()
+    return
+  end
+  local ix = todo_index(todos)
+  if ix <= 1 then
+    app.active = todos[#todos]
+  else
+    app.active = todos[ix - 1]
+  end
+  sync_chrome()
+end
+
+local function drop_active()
+  local doc = app.active
+  if doc then
+    doc.group = "drop"
+  end
+  sync_chrome()
 end
 
 local function open_todo(path)
@@ -91,6 +217,8 @@ function Review:start(payload)
     end
     app:info("review", string.format("menu: %d document(s) marked todo", #docs))
     show_toolbar()
+    set_review_playback(true)
+    app:command("view.show-explorer")
     return
   end
   local incoming = payload.paths or {}
@@ -106,14 +234,21 @@ function Review:start(payload)
     end
   end
   show_toolbar()
+  set_review_playback(true)
+  app:command("view.show-explorer")
 end
 
 -- Host calls this when a toolbar button is clicked. `command` is the string
--- from set_toolbar (next / skip / finish). Finish asks the host to end the
--- run, which then calls :finish below.
+-- from set_toolbar (previous / next / drop / finish). Finish asks the host to
+-- end the run, which then calls :finish below.
 Review:on("command", function(command)
-  app:info("review", string.format("command %s", tostring(command)))
-  if command == "finish" then
+  if command == "previous" then
+    go_previous()
+  elseif command == "next" then
+    go_next()
+  elseif command == "drop" then
+    drop_active()
+  elseif command == "finish" then
     app:finish_workflow()
   end
 end)
@@ -121,24 +256,31 @@ end)
 -- Host calls :suspend before Save Session / Save Session As, and during quit
 -- or open-session after compositions are clean (before the unsaved-session
 -- prompt). Return false to abort that save or quit.
-function Review:suspend(_session)
+function Review:suspend(session)
+  local s = session or app.session
+  local props = s.properties or {}
+  props.output = Review.output or props.output or ""
+  s.properties = props
   return true
 end
 
 -- Host calls :resume after a .fasession is installed as the UI session when
--- s.workflow is "review". Cache session document counts on this prototype,
--- log completion, and restore the toolbar.
+-- s.workflow is "review". Restore the toolbar, output path, and playback chrome.
 function Review:resume(session)
   local s = session or app.session
-  self.total = #(s.documents or {})
-  self.todo = s:group_count("todo")
-  local done = self.total - self.todo
+  local props = s.properties or {}
+  Review.output = props.output or Review.output or ""
+  local total = #(s.documents or {})
+  local todo = s:group_count("todo")
+  local done = s:group_count("reviewed")
   local pct = 100
-  if self.total > 0 then
-    pct = math.floor((done * 100 / self.total) + 0.5)
+  if total > 0 then
+    pct = math.floor((done * 100 / total) + 0.5)
   end
-  app:info("review", string.format("%d%% (%d/%d)", pct, done, self.total))
+  app:info("review", string.format("%d%% (%d/%d)", pct, done, total))
   show_toolbar()
+  set_review_playback(true)
+  app:command("view.show-explorer")
 end
 
 -- Host calls :cancel when the running session is discarded (replaced by
@@ -151,6 +293,7 @@ end
 -- Host calls :finish after app:finish_workflow() (here, the Finish button).
 -- Then the host clears s.workflow and hides the toolbar.
 function Review:finish(session)
+  set_review_playback(false)
   local s = session or app.session
   local n = s:group_count("todo")
   if n > 0 then
