@@ -91,11 +91,11 @@ app:on("detect_layout", function(c, chosen)
 end)
 
 app:on("loaded", function(c, elapsed)
-  app:info("load", string.format("%s in %.0f ms", c.name, elapsed * 1000))
+  app:info("load", string.format("%s in %.2f ms", c.name, elapsed * 1000))
 end)
 
 app:on("saved", function(c, elapsed)
-  app:info("save", string.format("%s in %.0f ms", c.name, elapsed * 1000))
+  app:info("save", string.format("%s in %.2f ms", c.name, elapsed * 1000))
 end)
 
-app:info("init", string.format("evaluated in %.0f ms", (os.clock() - started) * 1000))
+app:info("init", string.format("evaluated in %.2f ms", (os.clock() - started) * 1000))
