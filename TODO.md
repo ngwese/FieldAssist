@@ -12,3 +12,7 @@
       crossfeed)
 - [ ] Package Windows app as MSIX and declare supported file
       types in the application manifest
+- [ ] Clean up inconsistent command vs callback structure on
+      workflow toolbar controls (buttons use `command` +
+      `:on("command", …)`; path/toggle use inline `on_path` /
+      `on_change`)
