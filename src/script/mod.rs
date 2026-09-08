@@ -1203,16 +1203,11 @@ mod tests {
                 .and_then(|doc| doc.group.clone()),
             Some("reviewed".into())
         );
-        let snapshot = host.toolbar_snapshot().expect("toolbar");
-        assert_eq!(toggle_value(&snapshot.1[3]), Some(true));
-        assert_eq!(message_text(&snapshot.1[5]), Some("1 of 2 files reviewed"));
-        host.dispatch_workflow_command("next")
-            .expect("skip reviewed");
+        // Reviewed-on advances like Next to the remaining todo.
         assert_eq!(world.borrow().active, Some(first));
-        assert_eq!(
-            toggle_value(&host.toolbar_snapshot().unwrap().1[3]),
-            Some(false)
-        );
+        let snapshot = host.toolbar_snapshot().expect("toolbar");
+        assert_eq!(toggle_value(&snapshot.1[3]), Some(false));
+        assert_eq!(message_text(&snapshot.1[5]), Some("1 of 2 files reviewed"));
         host.dispatch_workflow_command("drop").expect("drop");
         assert_eq!(
             world

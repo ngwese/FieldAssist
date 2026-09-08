@@ -325,7 +325,8 @@ opened document is placed in the `"todo"` group. The toolbar has Previous,
 Next, Drop, a Reviewed toggle, a progress message, an Output directory field,
 and Finish. Previous and Next cycle the `"todo"` group (wrapping). Drop moves
 the active composition to `"drop"`. Reviewed moves it between `"todo"` and
-`"reviewed"`. Progress is `N of M files reviewed` from the todo and reviewed
+`"reviewed"`; turning Reviewed on also advances to the next `"todo"` document
+(same as Next). Progress is `N of M files reviewed` from the todo and reviewed
 groups. Start and resume turn transport loop and Preview on (`transport.loop`
 / `transport.preview`) and show the explorer (`view.show-explorer`); `:finish`
 turns loop and Preview off. Finish warns if any session documents are still in

@@ -82,58 +82,6 @@ local function sync_chrome()
   Review:set_item("reviewed", { value = on })
 end
 
-local function show_toolbar()
-  local off = app.theme.semantic.muted_foreground
-  local on = app.theme.semantic.success
-  Review:set_toolbar({
-    { command = "previous", label = "Previous" },
-    { command = "next", label = "Next" },
-    { command = "drop", label = "Drop" },
-    {
-      id = "reviewed",
-      kind = "toggle",
-      label = "Reviewed",
-      value = false,
-      off_color = off,
-      on_color = on,
-      on_change = function(current)
-        local doc = app.active
-        if not doc then
-          return current
-        end
-        local next_on = not current
-        if next_on then
-          doc.group = "reviewed"
-        else
-          doc.group = "todo"
-        end
-        sync_chrome()
-        return next_on
-      end,
-    },
-    { kind = "divider" },
-    { id = "progress", kind = "message", text = progress_text() },
-    {
-      id = "output",
-      kind = "path",
-      label = "Output",
-      value = Review.output or "",
-      browse = "directory",
-      align = "right",
-      on_path = function(paths)
-        local path = paths and paths[1] or nil
-        if not path or path == "" then
-          return Review.output or ""
-        end
-        Review.output = path
-        return path
-      end,
-    },
-    { command = "finish", label = "Finish", align = "right" },
-  })
-  sync_chrome()
-end
-
 local function todo_docs()
   local docs = {}
   for _, doc in ipairs(app.session.documents or {}) do
@@ -188,6 +136,73 @@ local function drop_active()
   if doc then
     doc.group = "drop"
   end
+  sync_chrome()
+end
+
+-- Toggle Reviewed. Turning it on also advances like Next. Returns the
+-- toggle value the host should keep (matches active after any advance).
+local function set_reviewed(on)
+  local doc = app.active
+  if not doc then
+    return false
+  end
+  if on then
+    local todos = todo_docs()
+    local ix = todo_index(todos)
+    local target = nil
+    if #todos > 1 and ix >= 1 then
+      target = todos[(ix % #todos) + 1]
+    end
+    doc.group = "reviewed"
+    if target then
+      app.active = target
+    end
+  else
+    doc.group = "todo"
+  end
+  sync_chrome()
+  local active = app.active
+  return active ~= nil and active.group == "reviewed"
+end
+
+local function show_toolbar()
+  local off = app.theme.semantic.muted_foreground
+  local on = app.theme.semantic.success
+  Review:set_toolbar({
+    { command = "previous", label = "Previous" },
+    { command = "next", label = "Next" },
+    { command = "drop", label = "Drop" },
+    {
+      id = "reviewed",
+      kind = "toggle",
+      label = "Reviewed",
+      value = false,
+      off_color = off,
+      on_color = on,
+      on_change = function(current)
+        return set_reviewed(not current)
+      end,
+    },
+    { kind = "divider" },
+    { id = "progress", kind = "message", text = progress_text() },
+    {
+      id = "output",
+      kind = "path",
+      label = "Output",
+      value = Review.output or "",
+      browse = "directory",
+      align = "right",
+      on_path = function(paths)
+        local path = paths and paths[1] or nil
+        if not path or path == "" then
+          return Review.output or ""
+        end
+        Review.output = path
+        return path
+      end,
+    },
+    { command = "finish", label = "Finish", align = "right" },
+  })
   sync_chrome()
 end
 
