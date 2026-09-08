@@ -103,11 +103,16 @@ impl WorkflowBar {
                     return;
                 }
                 let value = input.read(cx).value().to_string();
-                if let Some(app) = app.upgrade() {
-                    app.update(cx, |this, cx| {
-                        this.set_toolbar_path_value(&item_id, &value, window, cx);
-                    });
-                }
+                let item_id = item_id.clone();
+                let app = app.clone();
+                // Defer so AppView can refresh without nesting a WorkflowBar update.
+                cx.defer_in(window, move |_, window, cx| {
+                    if let Some(app) = app.upgrade() {
+                        app.update(cx, |this, cx| {
+                            this.set_toolbar_path_value(&item_id, &value, window, cx);
+                        });
+                    }
+                });
             },
         )
         .detach();
@@ -263,13 +268,17 @@ impl WorkflowBar {
                                 let field_id = field_id.clone();
                                 move |paths: &ExternalPaths, window, cx| {
                                     let paths: Vec<PathBuf> = paths.paths().to_vec();
-                                    if let Some(app) = app.upgrade() {
-                                        app.update(cx, |this, cx| {
-                                            this.dispatch_toolbar_path(
-                                                &field_id, &paths, window, cx,
-                                            );
-                                        });
-                                    }
+                                    let app = app.clone();
+                                    let field_id = field_id.clone();
+                                    window.defer(cx, move |window, cx| {
+                                        if let Some(app) = app.upgrade() {
+                                            app.update(cx, |this, cx| {
+                                                this.dispatch_toolbar_path(
+                                                    &field_id, &paths, window, cx,
+                                                );
+                                            });
+                                        }
+                                    });
                                 }
                             })
                             .child(Input::new(&input).small().w_full()),

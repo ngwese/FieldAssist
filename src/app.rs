@@ -1745,7 +1745,18 @@ impl AppView {
                 repl.append_error(&format!("toolbar path `{id}`: {err}"), cx);
             });
         }
-        self.flush_script_logs(cx);
+        // The path Input already shows `value`. Refreshing the bar here would
+        // re-enter WorkflowBar while handling InputEvent::Change.
+        self.workflow_bar = self.script.toolbar_snapshot();
+        let logs = self.script.take_logs();
+        if !logs.is_empty() {
+            let visible = self.messages_tab_visible(cx);
+            self.messages.update(cx, |panel, cx| {
+                panel.append(logs, visible, cx);
+            });
+            self.dock_area.update(cx, |_, cx| cx.notify());
+        }
+        self.sync_view_menus(cx);
     }
 
     pub(crate) fn script_replace_document(
