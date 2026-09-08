@@ -55,13 +55,9 @@ pub struct Composition {
     channel_labels: BTreeMap<usize, String>,
     clean_edit_id: EditId,
     clean_markers: Vec<Marker>,
-    clean_marker_types: Vec<MarkerType>,
     clean_collections: Vec<RegionCollection>,
-    clean_chosen_channel_layout: Option<String>,
     monitor_chain: Option<String>,
     playback_channels: Option<Vec<usize>>,
-    clean_monitor_chain: Option<String>,
-    clean_playback_channels: Option<Vec<usize>>,
 }
 
 fn normalize_playback_channels(
@@ -79,6 +75,15 @@ fn normalize_playback_channels(
         return None;
     }
     Some(channels)
+}
+
+/// Named region collections that contribute to dirty state. The transient
+/// `"selection"` collection is ignored, as are empty collections.
+fn named_regions(collections: &[RegionCollection]) -> Vec<&RegionCollection> {
+    collections
+        .iter()
+        .filter(|col| col.name != SELECTION_COLLECTION && !col.regions.is_empty())
+        .collect()
 }
 
 impl Composition {
@@ -107,13 +112,9 @@ impl Composition {
             channel_labels: BTreeMap::new(),
             clean_edit_id: EditId(0),
             clean_markers: Vec::new(),
-            clean_marker_types: Vec::new(),
             clean_collections: Vec::new(),
-            clean_chosen_channel_layout: None,
             monitor_chain: None,
             playback_channels: None,
-            clean_monitor_chain: None,
-            clean_playback_channels: None,
         };
         composition.mark_clean();
         composition
@@ -160,13 +161,9 @@ impl Composition {
             channel_labels: BTreeMap::new(),
             clean_edit_id: EditId(0),
             clean_markers: Vec::new(),
-            clean_marker_types: Vec::new(),
             clean_collections: Vec::new(),
-            clean_chosen_channel_layout: None,
             monitor_chain: None,
             playback_channels: None,
-            clean_monitor_chain: None,
-            clean_playback_channels: None,
         };
         let peaked = composed
             .pool
@@ -270,21 +267,13 @@ impl Composition {
     pub fn is_modified(&self) -> bool {
         self.edl.current_id() != self.clean_edit_id
             || self.markers.to_vec() != self.clean_markers
-            || self.marker_types != self.clean_marker_types
-            || self.collections != self.clean_collections
-            || self.chosen_channel_layout != self.clean_chosen_channel_layout
-            || self.monitor_chain != self.clean_monitor_chain
-            || self.playback_channels != self.clean_playback_channels
+            || named_regions(&self.collections) != named_regions(&self.clean_collections)
     }
 
     fn mark_clean(&mut self) {
         self.clean_edit_id = self.edl.current_id();
         self.clean_markers = self.markers.to_vec();
-        self.clean_marker_types = self.marker_types.clone();
         self.clean_collections = self.collections.clone();
-        self.clean_chosen_channel_layout = self.chosen_channel_layout.clone();
-        self.clean_monitor_chain = self.monitor_chain.clone();
-        self.clean_playback_channels = self.playback_channels.clone();
     }
 
     pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
@@ -1903,6 +1892,41 @@ mod tests {
     }
 
     #[test]
+    fn layout_monitor_and_marker_types_do_not_dirty() {
+        use std::collections::BTreeMap;
+
+        let mut comp = Composition::from_media(sine_media(12, 2, 44100)).unwrap();
+        assert!(!comp.is_modified());
+        let mut labels = BTreeMap::new();
+        labels.insert(0, "L".into());
+        labels.insert(1, "R".into());
+        comp.choose_channel_layout(Some("stereo".into()), labels);
+        comp.set_monitor_chain(Some("stereo".into()));
+        comp.set_playback_channels(Some(vec![0]));
+        assert!(comp.add_marker_type("Red", [1.0, 0.0, 0.0, 1.0]));
+        assert!(!comp.is_modified());
+        assert!(comp.ensure_collection("empty").is_some());
+        assert!(!comp.is_modified());
+    }
+
+    #[test]
+    fn named_regions_are_dirty() {
+        use crate::model::buffer::ChannelScope;
+
+        let mut comp = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
+        assert!(!comp.is_modified());
+        let id = comp
+            .add_named_region("silent", 2, 5, ChannelScope::all(), Some("gap".into()))
+            .expect("region");
+        assert!(comp.is_modified());
+        assert!(comp
+            .collection_mut("silent")
+            .expect("silent")
+            .remove(id));
+        assert!(!comp.is_modified());
+    }
+
+    #[test]
     fn save_clears_dirty() {
         let mut live = Composition::from_media(sine_media(12, 1, 44100)).unwrap();
         live.remove(2, 2);
@@ -2398,7 +2422,7 @@ mod tests {
         labels.insert(0, "M".into());
         labels.insert(1, "S".into());
         comp.choose_channel_layout(Some("MS".into()), labels);
-        assert!(comp.is_modified());
+        assert!(!comp.is_modified());
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["channel_layout"], "MS");
@@ -2423,7 +2447,7 @@ mod tests {
         let mut comp = Composition::from_media(sine_media(12, 6, 44100)).unwrap();
         comp.set_monitor_chain(Some("foa".into()));
         comp.set_playback_channels(Some(vec![0, 1, 2, 3]));
-        assert!(comp.is_modified());
+        assert!(!comp.is_modified());
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["monitor_chain"], "foa");
