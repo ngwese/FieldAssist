@@ -198,13 +198,13 @@ impl ProjectEnvelope {
 
         let envelope: Self = serde_json::from_str(json).context("parse project JSON")?;
         if envelope.kind != FACOMP_KIND {
-            bail!("not a snd-review composition (kind {:?})", envelope.kind);
+            bail!("not a FieldAssist composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
             1 | 2 | 3 | 4 | 5 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
-                bail!("this file requires a newer snd-review (format_version {n})")
+                bail!("this file requires a newer FieldAssist (format_version {n})")
             }
             n => bail!("unsupported format_version {n}"),
         }

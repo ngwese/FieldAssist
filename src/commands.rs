@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 actions!(
-    snd_review,
+    FieldAssist,
     [
         Open,
         Save,
@@ -66,19 +66,19 @@ actions!(
 );
 
 #[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
-#[action(namespace = snd_review)]
+#[action(namespace = FieldAssist)]
 pub struct SetActiveMarkerType {
     pub name: String,
 }
 
 #[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
-#[action(namespace = snd_review)]
+#[action(namespace = FieldAssist)]
 pub struct ToggleSnapMarkerType {
     pub name: String,
 }
 
 #[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
-#[action(namespace = snd_review)]
+#[action(namespace = FieldAssist)]
 pub struct StartWorkflow {
     pub name: String,
 }
@@ -209,19 +209,19 @@ fn resolved_bindings() -> HashMap<String, String> {
     let mut map = match parse_and_flatten(DEFAULT_KEYMAP, platform) {
         Ok(map) => map,
         Err(err) => {
-            eprintln!("snd-review: failed to parse default keymap: {err}");
+            eprintln!("FieldAssist: failed to parse default keymap: {err}");
             HashMap::new()
         }
     };
     match read_user_keymap() {
         None => {}
         Some(Err(err)) => {
-            eprintln!("snd-review: failed to read user keymap: {err}");
+            eprintln!("FieldAssist: failed to read user keymap: {err}");
         }
         Some(Ok(text)) => match parse_and_flatten(&text, platform) {
             Ok(user) => merge_bindings(&mut map, user),
             Err(err) => {
-                eprintln!("snd-review: failed to parse user keymap, using defaults: {err}");
+                eprintln!("FieldAssist: failed to parse user keymap, using defaults: {err}");
             }
         },
     }
@@ -279,7 +279,7 @@ fn user_keymap_path() -> Option<PathBuf> {
             PathBuf::from(home)
                 .join("Library")
                 .join("Application Support")
-                .join("snd-review")
+                .join("FieldAssist")
                 .join("keymap.json"),
         )
     }
@@ -288,7 +288,7 @@ fn user_keymap_path() -> Option<PathBuf> {
         let appdata = std::env::var_os("APPDATA")?;
         Some(
             PathBuf::from(appdata)
-                .join("snd-review")
+                .join("FieldAssist")
                 .join("keymap.json"),
         )
     }
@@ -300,7 +300,7 @@ fn user_keymap_path() -> Option<PathBuf> {
                 let home = std::env::var_os("HOME")?;
                 Some(PathBuf::from(home).join(".config"))
             })?;
-        Some(dir.join("snd-review").join("keymap.json"))
+        Some(dir.join("FieldAssist").join("keymap.json"))
     }
 }
 
@@ -333,11 +333,11 @@ fn binding_for(command_id: &str, keystrokes: &str) -> Option<KeyBinding> {
 
 fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBinding> {
     if !is_known_command(command_id) {
-        eprintln!("snd-review: unknown command {command_id:?} bound to {keystrokes:?}");
+        eprintln!("FieldAssist: unknown command {command_id:?} bound to {keystrokes:?}");
         return None;
     }
     if !valid_keystrokes(keystrokes) {
-        eprintln!("snd-review: invalid keystroke {keystrokes:?} for {command_id}");
+        eprintln!("FieldAssist: invalid keystroke {keystrokes:?} for {command_id}");
         return None;
     }
     Some(match command_id {

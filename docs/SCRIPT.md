@@ -7,9 +7,9 @@ A default `init.lua` is baked into the executable. Dump it with
 `FieldAssist --dump-init`. If a user file exists in the app config directory, that
 file is loaded **instead** of the embedded default:
 
-- macOS: `~/Library/Application Support/snd-review/init.lua`
-- Windows: `%APPDATA%\snd-review\init.lua`
-- Linux: `$XDG_CONFIG_HOME/snd-review/init.lua` (or `~/.config/snd-review/init.lua`)
+- macOS: `~/Library/Application Support/FieldAssist/init.lua`
+- Windows: `%APPDATA%\FieldAssist\init.lua`
+- Linux: `$XDG_CONFIG_HOME/FieldAssist/init.lua` (or `~/.config/FieldAssist/init.lua`)
 
 `init.lua` is loaded once at startup, **after** the built-in workflow scripts
 and **before** user `workflow_*.lua` files in the same config directory.

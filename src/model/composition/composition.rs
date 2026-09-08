@@ -210,7 +210,7 @@ impl Composition {
         path.hash(&mut hasher);
         std::time::SystemTime::now().hash(&mut hasher);
         let spill = std::env::temp_dir()
-            .join("snd-review")
+            .join("FieldAssist")
             .join("blocks")
             .join(format!("{:x}", hasher.finish()));
         Ok((
@@ -247,7 +247,7 @@ impl Composition {
         path.hash(&mut hasher);
         std::time::SystemTime::now().hash(&mut hasher);
         let spill = std::env::temp_dir()
-            .join("snd-review")
+            .join("FieldAssist")
             .join("blocks")
             .join(format!("{:x}", hasher.finish()));
         composition = composition.with_spill_dir(spill)?;
@@ -1987,7 +1987,7 @@ mod tests {
         .err()
         .unwrap()
         .to_string();
-        assert!(err.contains("newer snd-review"));
+        assert!(err.contains("newer FieldAssist"));
     }
 
     #[test]
