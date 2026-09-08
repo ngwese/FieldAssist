@@ -2908,7 +2908,7 @@ impl AppView {
             .path()
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "session.fasession".into());
+            .unwrap_or_else(|| self.session.suggested_fasession_name());
         let receiver = cx.prompt_for_new_path(&directory, Some(&suggested));
         let view = cx.entity();
         cx.spawn_in(window, async move |_, cx| {

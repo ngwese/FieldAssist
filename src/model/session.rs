@@ -148,6 +148,14 @@ impl Session {
         self.workflow.as_deref()
     }
 
+    pub fn suggested_fasession_name(&self) -> String {
+        let stem = self
+            .workflow()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("session");
+        format!("{stem}.fasession")
+    }
+
     pub fn set_workflow(&mut self, workflow: Option<String>) {
         let workflow = workflow.filter(|name| !name.is_empty());
         if self.workflow != workflow {
@@ -908,6 +916,16 @@ mod tests {
 
         let _ = std::fs::remove_file(&session_path);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suggested_fasession_name_uses_workflow_or_session() {
+        let mut session = Session::new();
+        assert_eq!(session.suggested_fasession_name(), "session.fasession");
+        session.set_workflow(Some("review".into()));
+        assert_eq!(session.suggested_fasession_name(), "review.fasession");
+        session.set_workflow(Some(String::new()));
+        assert_eq!(session.suggested_fasession_name(), "session.fasession");
     }
 
     #[test]
