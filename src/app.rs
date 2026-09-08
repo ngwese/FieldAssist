@@ -1745,8 +1745,9 @@ impl AppView {
                 repl.append_error(&format!("toolbar path `{id}`: {err}"), cx);
             });
         }
-        // The path Input already shows `value`. Refreshing the bar here would
-        // re-enter WorkflowBar while handling InputEvent::Change.
+        // Sync the AppView snapshot only. Do not refresh WorkflowBar here: the
+        // path InputEvent handler already updated local items, and refreshing
+        // can nest a WorkflowBar update during text input flush_effects.
         self.workflow_bar = self.script.toolbar_snapshot();
         let logs = self.script.take_logs();
         if !logs.is_empty() {

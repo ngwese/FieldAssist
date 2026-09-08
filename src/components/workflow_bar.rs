@@ -7,19 +7,44 @@ use std::path::PathBuf;
 use gpui::{
     div, prelude::FluentBuilder as _, px, rems, AppContext as _, Context, Entity, ExternalPaths,
     Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, Rgba, SharedString, Styled as _, WeakEntity, Window,
+    PathPromptOptions, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
+    WeakEntity, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _, StyledExt as _,
+    tooltip::Tooltip,
+    ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _, Size, StyleSized as _,
+    StyledExt as _,
 };
 
 use crate::app::AppView;
 use crate::script::{PathBrowse, ToolbarAlign, ToolbarItem};
 
-const PATH_FIELD_WIDTH: gpui::Rems = rems(16.);
+const PATH_FIELD_WIDTH: gpui::Rems = rems(32.);
+/// Approx. characters visible in the unfocused path preview at small size.
+const PATH_DISPLAY_CHARS: usize = 48;
+
+/// Shorten `text` to at most `max_chars`, keeping the start and end with `…`
+/// in the middle. Used for unfocused path previews.
+fn middle_ellipsis(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".into();
+    }
+    let keep = max_chars - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    let mut out = String::with_capacity(max_chars);
+    out.extend(chars.iter().take(head));
+    out.push('…');
+    out.extend(chars.iter().skip(chars.len() - tail));
+    out
+}
 
 struct SquareIcon;
 
@@ -98,15 +123,31 @@ impl WorkflowBar {
         cx.subscribe_in(
             &input,
             window,
-            move |_, input, event: &InputEvent, window, cx| {
+            move |this, input, event: &InputEvent, window, cx| {
                 if !matches!(event, InputEvent::Change) {
                     return;
                 }
                 let value = input.read(cx).value().to_string();
+                // Keep local items in sync so blur does not restore a stale
+                // snapshot into the Input.
+                for item in &mut this.items {
+                    if let ToolbarItem::Path {
+                        id,
+                        value: stored,
+                        ..
+                    } = item
+                    {
+                        if id == &item_id {
+                            *stored = value.clone();
+                            break;
+                        }
+                    }
+                }
                 let item_id = item_id.clone();
                 let app = app.clone();
-                // Defer so AppView can refresh without nesting a WorkflowBar update.
-                cx.defer_in(window, move |_, window, cx| {
+                // Window defer — not defer_in — so we do not re-lease WorkflowBar
+                // before AppView updates (refresh would nest and panic).
+                window.defer(cx, move |window, cx| {
                     if let Some(app) = app.upgrade() {
                         app.update(cx, |this, cx| {
                             this.set_toolbar_path_value(&item_id, &value, window, cx);
@@ -116,6 +157,11 @@ impl WorkflowBar {
             },
         )
         .detach();
+        let focus = input.read(cx).focus_handle(cx);
+        cx.on_focus(&focus, window, |_, _, cx| cx.notify())
+            .detach();
+        cx.on_blur(&focus, window, |_, _, cx| cx.notify())
+            .detach();
         self.inputs.insert(id.to_string(), input.clone());
         input
     }
@@ -247,6 +293,9 @@ impl WorkflowBar {
                 let input = self.path_input(&id, &value, window, cx);
                 let app = self.app.clone();
                 let field_id = id.clone();
+                let focused = input.read(cx).focus_handle(cx).is_focused(window);
+                let full = input.read(cx).value().to_string();
+                let theme = cx.theme().clone();
                 let row = h_flex()
                     .id(("workflow-path", ix))
                     .gap_2()
@@ -281,7 +330,48 @@ impl WorkflowBar {
                                     });
                                 }
                             })
-                            .child(Input::new(&input).small().w_full()),
+                            .map(|this| {
+                                // Keep a fixed small-input height so focus/blur
+                                // does not resize the toolbar.
+                                this.h_6().map(|this| {
+                                    if focused {
+                                        this.child(Input::new(&input).small().w_full().h_full())
+                                    } else {
+                                        let focus = input.read(cx).focus_handle(cx);
+                                        let preview =
+                                            middle_ellipsis(&full, PATH_DISPLAY_CHARS);
+                                        this.child(
+                                            div()
+                                                .id(("workflow-path-preview", ix))
+                                                .w_full()
+                                                .h_full()
+                                                .flex()
+                                                .items_center()
+                                                .input_px(Size::Small)
+                                                .rounded(cx.theme().radius)
+                                                .border_1()
+                                                .border_color(theme.input)
+                                                .bg(theme.background)
+                                                .input_text_size(Size::Small)
+                                                .text_color(theme.foreground)
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .cursor_text()
+                                                .tooltip({
+                                                    let full = full.clone();
+                                                    move |window, cx| {
+                                                        Tooltip::new(full.clone())
+                                                            .build(window, cx)
+                                                    }
+                                                })
+                                                .child(preview)
+                                                .on_click(move |_, window, cx| {
+                                                    focus.focus(window, cx);
+                                                }),
+                                        )
+                                    }
+                                })
+                            }),
                     )
                     .when_some(browse, |this, browse| {
                         let app_id = id.clone();
@@ -355,4 +445,24 @@ fn rgba(color: [f32; 4]) -> Hsla {
         a: color[3],
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::middle_ellipsis;
+
+    #[test]
+    fn middle_ellipsis_keeps_short_strings() {
+        assert_eq!(middle_ellipsis("short", 10), "short");
+    }
+
+    #[test]
+    fn middle_ellipsis_shows_head_and_tail() {
+        let path = r"C:\Users\g1988\proj\takes\MixPre-003_Ambix.WAV";
+        let shown = middle_ellipsis(path, 24);
+        assert!(shown.contains('…'), "{shown}");
+        assert!(shown.starts_with(r"C:\Users"), "{shown}");
+        assert!(shown.ends_with("Ambix.WAV"), "{shown}");
+        assert!(shown.chars().count() <= 24, "{shown}");
+    }
 }
