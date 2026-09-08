@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, px, App, Hsla, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _,
-    Window,
+    div, prelude::FluentBuilder as _, px, rems, App, Hsla, IntoElement, ParentElement as _,
+    RenderOnce, SharedString, Styled as _, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -130,7 +130,8 @@ impl RenderOnce for FileStatusBar {
             .min_h(HEIGHT)
             .max_h(HEIGHT)
             .py_0()
-            .text_xs();
+            .text_xs()
+            .when(cfg!(target_os = "macos"), |this| this.px(rems(1.)));
         let muted = cx.theme().muted_foreground;
         if let Some(on_preview) = self.on_preview {
             bar = bar.left(preview_button(on_preview, self.preview_selected, muted, cx));
