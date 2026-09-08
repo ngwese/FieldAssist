@@ -255,7 +255,14 @@ impl Composition {
     }
 
     pub fn suggested_facomp_name(&self) -> String {
-        format!("{}.facomp", self.display_name())
+        let stem = self
+            .pool()
+            .first()
+            .and_then(|media| media.path.file_stem())
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.display_name());
+        format!("{stem}.facomp")
     }
 
     pub fn save_to_path(&mut self, path: &Path) -> Result<()> {
@@ -2015,12 +2022,12 @@ mod tests {
     }
 
     #[test]
-    fn suggested_facomp_name_appends_extension() {
+    fn suggested_facomp_name_uses_basename_stem() {
         let media = sine_media(4, 1, 44100);
         let mut media = media;
         media.path = std::path::PathBuf::from("take.wav");
         let comp = Composition::from_media(media).unwrap();
-        assert_eq!(comp.suggested_facomp_name(), "take.wav.facomp");
+        assert_eq!(comp.suggested_facomp_name(), "take.facomp");
         assert_eq!(comp.display_name(), "take.wav");
     }
 
