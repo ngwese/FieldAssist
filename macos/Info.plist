@@ -61,6 +61,83 @@
 				<string>opus</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>FieldAssist Composition</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>AppIcon</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.afofo.app.FieldAssist.facomp</string>
+			</array>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>facomp</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>FieldAssist Session</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>AppIcon</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.afofo.app.FieldAssist.fasession</string>
+			</array>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>fasession</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.afofo.app.FieldAssist.facomp</string>
+			<key>UTTypeDescription</key>
+			<string>FieldAssist Composition</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeIconFile</key>
+			<string>AppIcon</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>facomp</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.afofo.app.FieldAssist.fasession</string>
+			<key>UTTypeDescription</key>
+			<string>FieldAssist Session</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeIconFile</key>
+			<string>AppIcon</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>fasession</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>
