@@ -62,17 +62,19 @@ terminal:
 open target/release/FieldAssist.app
 ```
 
-Install into `~/Applications` and put `FieldAssist` on your PATH (no sudo):
+Install into `~/Applications` and put `FieldAssist` / `field-assist` on your
+PATH (no sudo):
 
 ```bash
 ./script/bundle-macos --install
 FieldAssist --help
-FieldAssist path/to/audio.wav
+field-assist path/to/audio.wav
 ```
 
 That copies the bundle to `~/Applications/FieldAssist.app` and symlinks
-`~/.local/bin/FieldAssist` to the binary inside it. If `~/.local/bin` is not
-already on your PATH, add this to `~/.zshrc` and open a new terminal:
+`~/.local/bin/FieldAssist` and `~/.local/bin/field-assist` to the binary
+inside it. If `~/.local/bin` is not already on your PATH, add this to
+`~/.zshrc` and open a new terminal:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"

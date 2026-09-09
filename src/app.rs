@@ -2638,10 +2638,10 @@ impl AppView {
                                     .gap_1()
                                     .child(div().font_semibold().text_lg().child(crate::APP_NAME))
                                     .child(
-                                        div().text_sm().text_color(muted).child(format!(
-                                            "Version {}",
-                                            env!("CARGO_PKG_VERSION")
-                                        )),
+                                        div()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .child(crate::app_version_detail()),
                                     ),
                             ),
                     )

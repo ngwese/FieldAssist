@@ -11,6 +11,23 @@ use clap::Parser;
 
 pub const APP_NAME: &str = "FieldAssist";
 pub const APP_COPYRIGHT: &str = "Copyright © 2026 Greg Wuller";
+pub const APP_GIT_REVISION: &str = env!("GIT_REVISION");
+
+/// Whether the git tree had tracked changes when this binary was built.
+pub fn app_git_dirty() -> bool {
+    env!("GIT_DIRTY") == "true"
+}
+
+/// Version line for the About dialog, e.g. `Version 0.6.2 (a1b2c3d)` or
+/// `Version 0.6.2 (a1b2c3d · dirty)`.
+pub fn app_version_detail() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    if app_git_dirty() {
+        format!("Version {version} ({APP_GIT_REVISION} · dirty)")
+    } else {
+        format!("Version {version} ({APP_GIT_REVISION})")
+    }
+}
 
 mod app;
 mod assets;

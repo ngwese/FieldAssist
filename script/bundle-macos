@@ -14,7 +14,8 @@ Usage: script/bundle-macos [--install]
 Build a macOS application bundle at target/release/FieldAssist.app.
 
       --install   Copy the bundle to ~/Applications/FieldAssist.app and
-                  symlink ~/.local/bin/FieldAssist to the bundled binary
+                  symlink ~/.local/bin/FieldAssist and
+                  ~/.local/bin/field-assist to the bundled binary
   -h, --help      Show this help
 EOF
 }
@@ -97,15 +98,19 @@ fi
 
 app_dest="$HOME/Applications/FieldAssist.app"
 bin_dir="$HOME/.local/bin"
+cli_target="$app_dest/Contents/MacOS/FieldAssist"
 cli_link="$bin_dir/FieldAssist"
+cli_link_kebab="$bin_dir/field-assist"
 
 mkdir -p "$HOME/Applications" "$bin_dir"
 rm -rf "$app_dest"
 ditto "$app" "$app_dest"
-ln -sfn "$app_dest/Contents/MacOS/FieldAssist" "$cli_link"
+ln -sfn "$cli_target" "$cli_link"
+ln -sfn "$cli_target" "$cli_link_kebab"
 
 echo "Installed $app_dest"
-echo "Linked $cli_link -> $app_dest/Contents/MacOS/FieldAssist"
+echo "Linked $cli_link -> $cli_target"
+echo "Linked $cli_link_kebab -> $cli_target"
 
 case ":$PATH:" in
   *":$bin_dir:"*)
