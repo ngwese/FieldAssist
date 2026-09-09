@@ -177,11 +177,11 @@ impl IconNamed for MonitorSpeakerIcon {
     }
 }
 
-struct EarIcon;
+struct CirclePlayIcon;
 
-impl IconNamed for EarIcon {
+impl IconNamed for CirclePlayIcon {
     fn path(self) -> SharedString {
-        "icons/ear.svg".into()
+        "icons/circle-play.svg".into()
     }
 }
 
@@ -199,7 +199,7 @@ fn preview_button(
         .p_0()
         .text_color(color)
         .child(
-            Icon::new(EarIcon)
+            Icon::new(CirclePlayIcon)
                 .with_size(MONITOR_ICON_SIZE)
                 .text_color(color),
         )
