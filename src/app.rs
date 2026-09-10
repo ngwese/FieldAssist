@@ -3951,7 +3951,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         .collect();
     vec![
         Menu::new(crate::APP_NAME).items([
-            MenuItem::action("About FieldAssist...", About),
+            MenuItem::action("About...", About),
             MenuItem::separator(),
             MenuItem::action("Settings...", Settings).disabled(true),
             MenuItem::separator(),
