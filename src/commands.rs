@@ -19,6 +19,7 @@ actions!(
         Close,
         Render,
         About,
+        Settings,
         Quit,
         TransportHome,
         TransportPrevious,

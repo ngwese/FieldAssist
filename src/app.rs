@@ -32,7 +32,7 @@ use crate::commands::{
     EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim,
     EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
     Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
-    SetActiveMarkerType, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
+    SetActiveMarkerType, Settings, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
     TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
     TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
     ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewScript, ViewShowDetail,
@@ -3673,6 +3673,8 @@ fn quit(_: &Quit, cx: &mut App) {
     let _ = crate::commands::dispatch("file.quit", cx);
 }
 
+fn settings(_: &Settings, _cx: &mut App) {}
+
 fn open(_: &Open, cx: &mut App) {
     let _ = crate::commands::dispatch("file.open", cx);
 }
@@ -3948,8 +3950,16 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         .map(|name| snap_marker_type_menu_item(name, &state.snap_disabled))
         .collect();
     vec![
+        Menu::new(crate::APP_NAME).items([
+            MenuItem::action("About FieldAssist...", About),
+            MenuItem::separator(),
+            MenuItem::action("Settings...", Settings).disabled(true),
+            MenuItem::separator(),
+            MenuItem::action("Quit", Quit),
+        ]),
         Menu::new("File").items([
             MenuItem::action("Open...", Open),
+            MenuItem::separator(),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As...", SaveAs),
             MenuItem::action("Close", Close),
@@ -3958,8 +3968,6 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Save Session", SaveSession),
             MenuItem::action("Save Session As...", SaveSessionAs),
-            MenuItem::separator(),
-            MenuItem::action("Quit", Quit),
         ]),
         Menu::new("Edit").items([
             MenuItem::action("Undo", EditUndo),
@@ -3997,7 +4005,6 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("Reset View", ViewFitAll),
         ]),
         workflow_menu(state),
-        Menu::new("Help").items([MenuItem::action("About...", About)]),
     ]
 }
 
@@ -4050,6 +4057,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(close);
     cx.on_action(render_cmd);
     cx.on_action(quit);
+    cx.on_action(settings);
     cx.on_action(about);
     cx.on_action(transport_home);
     cx.on_action(transport_previous);
