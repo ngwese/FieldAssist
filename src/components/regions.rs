@@ -111,7 +111,7 @@ impl BasePanel for RegionsPanel {
 
 impl Panel for RegionsPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "Regions"
+        crate::components::dock_skin::DETAIL_TAB_REGIONS
     }
 
     fn inner_padding(&self, _: &App) -> bool {

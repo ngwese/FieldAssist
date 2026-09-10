@@ -95,7 +95,7 @@ impl BasePanel for EditsPanel {
 
 impl Panel for EditsPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "History"
+        crate::components::dock_skin::DETAIL_TAB_HISTORY
     }
 
     fn inner_padding(&self, _: &App) -> bool {

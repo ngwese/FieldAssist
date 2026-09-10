@@ -118,7 +118,7 @@ impl BasePanel for MonitorPanel {
 
 impl Panel for MonitorPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "Monitor"
+        crate::components::dock_skin::DETAIL_TAB_MONITOR
     }
 
     fn inner_padding(&self, _: &App) -> bool {

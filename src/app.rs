@@ -39,7 +39,9 @@ use crate::commands::{
     ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::app_menu::AppMenuBar;
-use crate::components::dock_skin::{CenterTabBarHandler, CompactDockSkin};
+use crate::components::dock_skin::{
+    detail_dock_min_size, explorer_dock_min_size, CenterTabBarHandler, CompactDockSkin,
+};
 use crate::components::edits::EditsPanel;
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
@@ -137,6 +139,8 @@ pub struct AppView {
     focus_handle: FocusHandle,
     last_progress: Option<ProgressState>,
     script_dock_size: Pixels,
+    detail_dock_min_size: Pixels,
+    explorer_dock_min_size: Pixels,
     last_waveform_over: bool,
     active_marker_type: String,
     add_marker_at_hover: bool,
@@ -273,6 +277,10 @@ impl AppView {
         let markers_handle = panel_handle(markers.clone());
         let regions_handle = panel_handle(regions.clone());
         let monitor_handle = panel_handle(monitor.clone());
+        let detail_dock_min_size = detail_dock_min_size(window, cx);
+        let detail_dock_size = detail_dock_min_size.max(px(260.));
+        let explorer_dock_min_size = explorer_dock_min_size(window, cx);
+        let explorer_dock_size = explorer_dock_min_size.max(px(220.));
         dock_area.update(cx, |area, cx| {
             area.set_center(DockLayout::tabs().panel_view(center_handle, cx), window, cx);
             area.set_dock(
@@ -281,7 +289,7 @@ impl AppView {
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Left, px(220.), window, cx);
+            area.set_dock_size(DockPlacement::Left, explorer_dock_size, window, cx);
             area.set_dock_collapsible(DockPlacement::Left, true, window, cx);
             area.toggle_dock(DockPlacement::Left, window, cx);
             area.set_dock(
@@ -294,17 +302,25 @@ impl AppView {
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Right, px(260.), window, cx);
+            area.set_dock_size(DockPlacement::Right, detail_dock_size, window, cx);
             area.set_dock_collapsible(DockPlacement::Right, true, window, cx);
             area.toggle_dock(DockPlacement::Right, window, cx);
         });
         skin.set_panel_style(PanelStyle::TabBar, cx);
         skin.set_toggle_button_visible(false, cx);
+        // Clamp live while the splitter is dragged. gpui-component only floors
+        // at PANEL_MIN_SIZE; without this the pane can shrink below our tab
+        // floor and snap back on mouse-up.
+        cx.observe_in(&dock_area, window, |this, _, window, cx| {
+            this.enforce_tool_dock_min_sizes(window, cx);
+        })
+        .detach();
         cx.subscribe_in(
             &dock_area,
             window,
             |this, _, event: &DockEvent, window, cx| {
                 if matches!(event, DockEvent::LayoutChanged) {
+                    this.enforce_tool_dock_min_sizes(window, cx);
                     this.sync_tabs_from_layout(window, cx);
                     this.sync_messages_visible(cx);
                 }
@@ -341,6 +357,8 @@ impl AppView {
             focus_handle: cx.focus_handle(),
             last_progress: None,
             script_dock_size: px(160.),
+            detail_dock_min_size,
+            explorer_dock_min_size,
             last_waveform_over: false,
             active_marker_type: default_marker_type().to_string(),
             add_marker_at_hover: true,
@@ -1001,6 +1019,31 @@ impl AppView {
     fn set_detail_dock(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.detail_dock_open(cx) != open {
             self.toggle_detail_dock(window, cx);
+        }
+    }
+
+    /// Keep tool docks at least as wide as their combined tabs.
+    /// gpui-component only floors at `PANEL_MIN_SIZE` (100px) during splitter
+    /// drags, so we re-clamp on every dock notify (and again on LayoutChanged).
+    fn enforce_tool_dock_min_sizes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.enforce_dock_min_size(DockPlacement::Left, self.explorer_dock_min_size, window, cx);
+        self.enforce_dock_min_size(DockPlacement::Right, self.detail_dock_min_size, window, cx);
+    }
+
+    fn enforce_dock_min_size(
+        &mut self,
+        placement: DockPlacement,
+        min: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(size) = self.dock_area.read(cx).dock_size(placement) else {
+            return;
+        };
+        if size < min {
+            self.dock_area.update(cx, |area, cx| {
+                area.set_dock_size(placement, min, window, cx);
+            });
         }
     }
 

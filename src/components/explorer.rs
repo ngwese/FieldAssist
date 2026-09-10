@@ -309,11 +309,11 @@ impl BasePanel for ExplorerPanel {
 
 impl Panel for ExplorerPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "Compositions"
+        crate::components::dock_skin::EXPLORER_TAB_COMPOSITIONS
     }
 
     fn tab_name(&self, _: &App) -> Option<SharedString> {
-        Some("Compositions".into())
+        Some(crate::components::dock_skin::EXPLORER_TAB_COMPOSITIONS.into())
     }
 
     fn inner_padding(&self, _: &App) -> bool {
