@@ -201,7 +201,6 @@ impl Render for AppMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_selected = self.is_selected(cx);
         let muted = cx.theme().muted_foreground;
-        let is_app_menu = self.name.as_ref() == crate::APP_NAME;
 
         div()
             .id(self.ix)
@@ -213,7 +212,6 @@ impl Render for AppMenu {
                     .compact()
                     .ghost()
                     .text_color(muted)
-                    .when(is_app_menu, |this| this.font_semibold())
                     .label(self.name.clone())
                     .selected(is_selected)
                     .on_mouse_down(

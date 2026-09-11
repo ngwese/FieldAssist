@@ -3949,63 +3949,81 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         .iter()
         .map(|name| snap_marker_type_menu_item(name, &state.snap_disabled))
         .collect();
-    vec![
-        Menu::new(crate::APP_NAME).items([
+
+    let mut file_items = vec![
+        MenuItem::action("Open...", Open),
+        MenuItem::separator(),
+        MenuItem::action("Save", Save),
+        MenuItem::action("Save As...", SaveAs),
+        MenuItem::action("Close", Close),
+        MenuItem::separator(),
+        MenuItem::action("Render...", RenderFile),
+        MenuItem::separator(),
+        MenuItem::action("Save Session", SaveSession),
+        MenuItem::action("Save Session As...", SaveSessionAs),
+    ];
+    if !cfg!(target_os = "macos") {
+        file_items.push(MenuItem::separator());
+        file_items.push(MenuItem::action("Quit", Quit));
+    }
+
+    let mut edit_items = vec![
+        MenuItem::action("Undo", EditUndo),
+        MenuItem::action("Redo", EditRedo),
+        MenuItem::separator(),
+        MenuItem::action("Cut", EditCut),
+        MenuItem::action("Copy", EditCopy),
+        MenuItem::action("Paste", EditPaste),
+        MenuItem::separator(),
+        MenuItem::action("Clear", EditClear),
+        MenuItem::action("Remove", EditRemove),
+        MenuItem::action("Duplicate", EditDuplicate),
+        MenuItem::action("Trim to Selection", EditTrim),
+    ];
+    if !cfg!(target_os = "macos") {
+        edit_items.push(MenuItem::separator());
+        edit_items.push(MenuItem::action("Settings...", Settings).disabled(true));
+    }
+
+    let mut menus = Vec::new();
+    if cfg!(target_os = "macos") {
+        menus.push(Menu::new(crate::APP_NAME).items([
             MenuItem::action("About...", About),
             MenuItem::separator(),
             MenuItem::action("Settings...", Settings).disabled(true),
             MenuItem::separator(),
             MenuItem::action("Quit", Quit),
-        ]),
-        Menu::new("File").items([
-            MenuItem::action("Open...", Open),
-            MenuItem::separator(),
-            MenuItem::action("Save", Save),
-            MenuItem::action("Save As...", SaveAs),
-            MenuItem::action("Close", Close),
-            MenuItem::separator(),
-            MenuItem::action("Render...", RenderFile),
-            MenuItem::separator(),
-            MenuItem::action("Save Session", SaveSession),
-            MenuItem::action("Save Session As...", SaveSessionAs),
-        ]),
-        Menu::new("Edit").items([
-            MenuItem::action("Undo", EditUndo),
-            MenuItem::action("Redo", EditRedo),
-            MenuItem::separator(),
-            MenuItem::action("Cut", EditCut),
-            MenuItem::action("Copy", EditCopy),
-            MenuItem::action("Paste", EditPaste),
-            MenuItem::separator(),
-            MenuItem::action("Clear", EditClear),
-            MenuItem::action("Remove", EditRemove),
-            MenuItem::action("Duplicate", EditDuplicate),
-            MenuItem::action("Trim to Selection", EditTrim),
-        ]),
-        Menu::new("Selection").items([
-            MenuItem::action("Select All", SelectAll),
-            MenuItem::action("Select None", SelectNone),
-            MenuItem::action("Invert", InvertSelection),
-            MenuItem::separator(),
-            MenuItem::action("Snap To Marker", SnapToMarker).checked(state.snap_to_marker),
-            MenuItem::submenu(Menu::new("Snap Marker Type").items(snap_type_items)),
-            MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Create Marker Type").items(create_type_items)),
-            MenuItem::action("Add at Hover", AddMarkerAtHover).checked(state.add_at_hover),
-            MenuItem::action("Add Marker", AddMarker),
-            MenuItem::action("Delete Marker", DeleteMarker),
-        ]),
-        Menu::new("View").items([
-            MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
-            MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
-            MenuItem::action("Show Script", ViewScript).checked(state.script),
-            MenuItem::separator(),
-            MenuItem::action("Zoom In", ViewZoomIn),
-            MenuItem::action("Zoom Out", ViewZoomOut),
-            MenuItem::action("Reset View", ViewFitAll),
-        ]),
-        workflow_menu(state),
-    ]
+        ]));
+    }
+    menus.push(Menu::new("File").items(file_items));
+    menus.push(Menu::new("Edit").items(edit_items));
+    menus.push(Menu::new("Selection").items([
+        MenuItem::action("Select All", SelectAll),
+        MenuItem::action("Select None", SelectNone),
+        MenuItem::action("Invert", InvertSelection),
+        MenuItem::separator(),
+        MenuItem::action("Snap To Marker", SnapToMarker).checked(state.snap_to_marker),
+        MenuItem::submenu(Menu::new("Snap Marker Type").items(snap_type_items)),
+        MenuItem::separator(),
+        MenuItem::submenu(Menu::new("Create Marker Type").items(create_type_items)),
+        MenuItem::action("Add at Hover", AddMarkerAtHover).checked(state.add_at_hover),
+        MenuItem::action("Add Marker", AddMarker),
+        MenuItem::action("Delete Marker", DeleteMarker),
+    ]));
+    menus.push(Menu::new("View").items([
+        MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
+        MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
+        MenuItem::action("Show Script", ViewScript).checked(state.script),
+        MenuItem::separator(),
+        MenuItem::action("Zoom In", ViewZoomIn),
+        MenuItem::action("Zoom Out", ViewZoomOut),
+        MenuItem::action("Reset View", ViewFitAll),
+    ]));
+    menus.push(workflow_menu(state));
+    if !cfg!(target_os = "macos") {
+        menus.push(Menu::new("Help").items([MenuItem::action("About...", About)]));
+    }
+    menus
 }
 
 fn workflow_menu(state: &AppMenuState) -> Menu {
