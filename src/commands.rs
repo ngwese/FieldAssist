@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gpui::{actions, App, KeyBinding, Keystroke};
+use gpui_kit::{actions, Action, App, KeyBinding, Keystroke};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -66,19 +66,19 @@ actions!(
     ]
 );
 
-#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
+#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = FieldAssist)]
 pub struct SetActiveMarkerType {
     pub name: String,
 }
 
-#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
+#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = FieldAssist)]
 pub struct ToggleSnapMarkerType {
     pub name: String,
 }
 
-#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, gpui::Action)]
+#[derive(Clone, PartialEq, Default, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = FieldAssist)]
 pub struct StartWorkflow {
     pub name: String,

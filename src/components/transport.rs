@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui::{
+use gpui_kit::{
     px, Action, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
     SharedString, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex, ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _,
 };
@@ -16,7 +16,7 @@ use crate::commands::{
 };
 use crate::playback::TransportState;
 
-const CONTROL_SIZE: gpui::Pixels = px(28.);
+const CONTROL_SIZE: gpui_kit::Pixels = px(28.);
 
 #[derive(Copy, Clone)]
 enum TransportIcon {

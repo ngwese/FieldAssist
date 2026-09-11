@@ -642,7 +642,7 @@ mod tests {
             .find(|meta| meta.name == "themed")
             .expect("themed");
         let expected = {
-            let rgba: gpui::Rgba = gpui_component::ThemeColor::default().green.into();
+            let rgba: gpui_kit::Rgba = gpui_kit::component::ThemeColor::default().green.into();
             [rgba.r, rgba.g, rgba.b, rgba.a]
         };
         assert_eq!(themed.color, expected);

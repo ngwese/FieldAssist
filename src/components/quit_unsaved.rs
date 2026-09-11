@@ -4,12 +4,12 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, px, App, ClickEvent, Context, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex, ActiveTheme as _, Disableable as _,
 };

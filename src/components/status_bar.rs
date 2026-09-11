@@ -3,11 +3,11 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, px, rems, App, Hsla, IntoElement, ParentElement as _,
     RenderOnce, SharedString, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     status_bar::StatusBar,
@@ -17,8 +17,8 @@ use gpui_component::{
 use crate::model::composition::Composition;
 use crate::model::Buffer;
 
-const HEIGHT: gpui::Pixels = px(24.);
-const MONITOR_ICON_SIZE: gpui::Pixels = px(20.);
+const HEIGHT: gpui_kit::Pixels = px(24.);
+const MONITOR_ICON_SIZE: gpui_kit::Pixels = px(20.);
 
 pub struct FileStatus {
     pub sample_rate: u32,
@@ -252,7 +252,7 @@ fn layout_dropdown(picker: LayoutPicker, muted: Hsla) -> impl IntoElement {
         .label(label)
         .tooltip(tooltip)
         .dropdown_menu(
-            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<PopupMenu>| {
                 for (name, _) in choices.clone() {
                     let checked = current.as_deref() == Some(name.as_str());
                     let on_choose = on_choose.clone();

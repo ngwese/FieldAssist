@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
 
-use gpui::{Context, Window};
+use gpui_kit::{Context, Window};
 
 use crate::app::AppView;
 

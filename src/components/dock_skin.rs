@@ -4,13 +4,13 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, rems, Anchor, AnyElement, AnyView, App, AppContext as _,
     AvailableSpace, Axis, ClickEvent, Div, Entity, Global, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, SharedString, Stateful, StatefulInteractiveElement as _,
     Styled as _, Window, px,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{
         BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, NodeId, PanelHandle,
@@ -219,7 +219,7 @@ impl CompactTabGroup {
     fn overflow_menu(
         group: TabGroupContext,
         entries: Vec<OverflowTab>,
-        muted: gpui::Hsla,
+        muted: gpui_kit::Hsla,
     ) -> impl IntoElement {
         Button::new("tab-overflow")
             .ghost()
@@ -228,7 +228,7 @@ impl CompactTabGroup {
             .tooltip("Tabs")
             .dropdown_menu_with_anchor(
                 Anchor::TopRight,
-                move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+                move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<PopupMenu>| {
                     menu = menu.scrollable(true);
                     menu = menu.item(
                         PopupMenuItem::element(move |_, _| div().text_xs().child("Close All"))
@@ -420,7 +420,7 @@ impl TabGroupRenderer for CompactTabGroup {
                                 close(panel_id, window, cx);
                             } else {
                                 group_for_close.close(
-                                    gpui_component::dock::PanelId::from_u64(panel_id),
+                                    gpui_kit::component::dock::PanelId::from_u64(panel_id),
                                     window,
                                     cx,
                                 );
@@ -449,7 +449,7 @@ impl TabGroupRenderer for CompactTabGroup {
 
     fn render_drop_indicator(
         &self,
-        indicator: gpui_component::dock::DropIndicator,
+        indicator: gpui_kit::component::dock::DropIndicator,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {

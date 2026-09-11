@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::{
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
     actions, canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context,
     DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
     Pixels, Render, Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     h_flex,
     menu::ContextMenuExt,
     plot::scale::{Scale as _, ScaleLinear},
@@ -56,12 +56,12 @@ const MIN_LANE_HEIGHT: f32 = 96.0;
 const MIN_THUMB: f32 = 24.0;
 const SCROLLBAR_HEIGHT: f32 = 14.0;
 const DRAG_MOVE_THRESHOLD_PX: f32 = 3.0;
-const POSITION_BAR_COLOR: gpui::Hsla = hsla(0.0, 0.72, 0.55, 1.0);
-const GHOST_BAR_COLOR: gpui::Hsla = hsla(0.0, 0.72, 0.55, 0.35);
+const POSITION_BAR_COLOR: gpui_kit::Hsla = hsla(0.0, 0.72, 0.55, 1.0);
+const GHOST_BAR_COLOR: gpui_kit::Hsla = hsla(0.0, 0.72, 0.55, 0.35);
 const MODIFIED_BAR_HEIGHT: f32 = 3.0;
 const MODIFIED_BAR_GAP: f32 = 1.0;
-const MODIFIED_BAR_COLOR: gpui::Hsla = hsla(0.08, 0.90, 0.55, 1.0);
-const MODIFIED_HOVER_FILL: gpui::Hsla = hsla(0.08, 0.90, 0.55, 0.18);
+const MODIFIED_BAR_COLOR: gpui_kit::Hsla = hsla(0.08, 0.90, 0.55, 1.0);
+const MODIFIED_HOVER_FILL: gpui_kit::Hsla = hsla(0.08, 0.90, 0.55, 0.18);
 const MARKER_BAR_OPACITY: f32 = 0.35;
 const MARKER_TRIANGLE_BASE: f32 = 5.0;
 const MARKER_TRIANGLE_HEIGHT: f32 = 5.0;
@@ -531,7 +531,7 @@ fn scrollbar_geom(frames: usize, start: f64, spp: f64, track: f32) -> (f32, f32)
     (thumb_w, thumb_x)
 }
 
-fn channel_color(theme: &gpui_component::Theme, index: usize) -> gpui::Hsla {
+fn channel_color(theme: &gpui_kit::component::Theme, index: usize) -> gpui_kit::Hsla {
     match index % 5 {
         0 => theme.chart_1,
         1 => theme.chart_2,
@@ -541,12 +541,12 @@ fn channel_color(theme: &gpui_component::Theme, index: usize) -> gpui::Hsla {
     }
 }
 
-fn rotate_hue(color: gpui::Hsla, degrees: f32) -> gpui::Hsla {
+fn rotate_hue(color: gpui_kit::Hsla, degrees: f32) -> gpui_kit::Hsla {
     let mut h = color.h + degrees / 360.0;
     if h >= 1.0 {
         h -= 1.0;
     }
-    gpui::Hsla { h, ..color }
+    gpui_kit::Hsla { h, ..color }
 }
 
 fn sample_to_x(sample: f64, start_sample: f64, samples_per_pixel: f64, origin_x: f32) -> f32 {
@@ -560,7 +560,7 @@ fn clamp_bar_x(x: f32, origin_x: f32, width: f32) -> f32 {
     x.clamp(origin_x, max_x)
 }
 
-fn region_tint(base_color: gpui::Hsla, alpha: f32) -> gpui::Hsla {
+fn region_tint(base_color: gpui_kit::Hsla, alpha: f32) -> gpui_kit::Hsla {
     rotate_hue(base_color, 10.0).alpha(alpha)
 }
 
@@ -571,7 +571,7 @@ fn paint_region_endpoint(
     channels: &crate::model::ChannelScope,
     start_sample: f64,
     samples_per_pixel: f64,
-    base_color: gpui::Hsla,
+    base_color: gpui_kit::Hsla,
     window: &mut Window,
 ) {
     if !channels.applies_to(channel) {
@@ -600,7 +600,7 @@ fn paint_region_overlay(
     channel: usize,
     start_sample: f64,
     samples_per_pixel: f64,
-    base_color: gpui::Hsla,
+    base_color: gpui_kit::Hsla,
     window: &mut Window,
 ) {
     if !region.channels.applies_to(channel) {
@@ -647,7 +647,7 @@ fn paint_region_overlay(
     );
 }
 
-fn marker_hsla(color: [f32; 4]) -> gpui::Hsla {
+fn marker_hsla(color: [f32; 4]) -> gpui_kit::Hsla {
     Rgba {
         r: color[0],
         g: color[1],
@@ -753,7 +753,7 @@ fn paint_vertical_bar(
     sample: usize,
     start_sample: f64,
     samples_per_pixel: f64,
-    color: gpui::Hsla,
+    color: gpui_kit::Hsla,
     window: &mut Window,
 ) {
     let origin_x = bounds.origin.x.as_f32();
@@ -793,7 +793,7 @@ fn paint_range_overlays(
     ranges: &[(u64, u64)],
     start_sample: f64,
     samples_per_pixel: f64,
-    color: gpui::Hsla,
+    color: gpui_kit::Hsla,
     window: &mut Window,
 ) {
     let origin_x = bounds.origin.x.as_f32();
@@ -863,8 +863,8 @@ fn paint_lane(
     channel: usize,
     start_sample: f64,
     samples_per_pixel: f64,
-    color: gpui::Hsla,
-    zero_color: gpui::Hsla,
+    color: gpui_kit::Hsla,
+    zero_color: gpui_kit::Hsla,
     hover_sample: Option<usize>,
     modified_ranges: &[(u64, u64)],
     hover_ranges: &[(u64, u64)],
@@ -1071,7 +1071,7 @@ fn paint_column(
     y_scale: &ScaleLinear<f64>,
     origin_y: f32,
     height: f32,
-    color: gpui::Hsla,
+    color: gpui_kit::Hsla,
     window: &mut Window,
 ) {
     let y_max = y_scale.tick(&(max as f64)).unwrap_or(origin_y);
@@ -1092,8 +1092,8 @@ fn paint_scrollbar(
     frames: usize,
     start_sample: f64,
     samples_per_pixel: f64,
-    track: gpui::Hsla,
-    thumb: gpui::Hsla,
+    track: gpui_kit::Hsla,
+    thumb: gpui_kit::Hsla,
     window: &mut Window,
 ) {
     window.paint_quad(fill(bounds, track));

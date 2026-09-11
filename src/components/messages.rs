@@ -1,20 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui::{
+use gpui_kit::{
     div, px, rems, uniform_list, App, Context, ElementId, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     UniformListScrollHandle, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex, ActiveTheme as _,
 };
 
 use crate::script::{LogEntry, LogLevel};
 
-const LEVEL_WIDTH: gpui::Rems = rems(4.);
-const TOPIC_WIDTH: gpui::Rems = rems(5.5);
+const LEVEL_WIDTH: gpui_kit::Rems = rems(4.);
+const TOPIC_WIDTH: gpui_kit::Rems = rems(5.5);
 
 pub struct MessagesPanel {
     entries: Vec<LogEntry>,
@@ -173,10 +173,10 @@ fn column_row(
     level: impl Into<SharedString>,
     topic: impl Into<SharedString>,
     message: impl Into<SharedString>,
-    level_color: gpui::Hsla,
-    topic_color: gpui::Hsla,
-    message_color: gpui::Hsla,
-) -> gpui::AnyElement {
+    level_color: gpui_kit::Hsla,
+    topic_color: gpui_kit::Hsla,
+    message_color: gpui_kit::Hsla,
+) -> gpui_kit::AnyElement {
     h_flex()
         .id(id)
         .w_full()

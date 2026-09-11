@@ -4,13 +4,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, px, rems, AppContext as _, Context, Entity, ExternalPaths,
     Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     PathPromptOptions, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
     WeakEntity, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -22,7 +22,7 @@ use gpui_component::{
 use crate::app::AppView;
 use crate::script::{PathBrowse, ToolbarAlign, ToolbarItem};
 
-const PATH_FIELD_WIDTH: gpui::Rems = rems(32.);
+const PATH_FIELD_WIDTH: gpui_kit::Rems = rems(32.);
 /// Approx. characters visible in the unfocused path preview at small size.
 const PATH_DISPLAY_CHARS: usize = 48;
 
@@ -266,7 +266,7 @@ impl WorkflowBar {
         drop_highlight: Hsla,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         match item {
             ToolbarItem::Button { command, label, .. } => {
                 let app = self.app.clone();

@@ -3,11 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{
+use gpui_kit::{
     div, rems, App, AppContext as _, Context, Entity, ExternalPaths, Hsla, InteractiveElement as _,
     IntoElement, ParentElement as _, PathPromptOptions, Render, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::Button,
     checkbox::Checkbox,
     h_flex,
@@ -21,8 +21,8 @@ use crate::render::{
     encoder, encoders, format_rate, snap_format, EncodeSpec, PcmFormat, RenderJob, RATE_PRESETS,
 };
 
-const LABEL_WIDTH: gpui::Rems = rems(7.);
-const VALUE_WIDTH: gpui::Rems = rems(11.);
+const LABEL_WIDTH: gpui_kit::Rems = rems(7.);
+const VALUE_WIDTH: gpui_kit::Rems = rems(11.);
 
 pub struct RenderSheet {
     encoder_id: String,
@@ -426,7 +426,7 @@ fn group(title: &'static str, child: impl IntoElement) -> impl IntoElement {
 fn form_row(
     label: &'static str,
     muted: Hsla,
-    value_width: Option<gpui::Rems>,
+    value_width: Option<gpui_kit::Rems>,
     control: impl IntoElement,
 ) -> impl IntoElement {
     let row = h_flex().gap_3().items_center().child(

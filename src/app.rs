@@ -8,14 +8,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use cpal::Device;
-use gpui::{
+use gpui_kit::{
     div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, App, AppContext as _,
     Bounds, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement,
     KeyContext, Menu, MenuItem, ParentElement as _, PathPromptOptions, Pixels, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity,
     Window, WindowBounds, WindowOptions,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     dock::{
@@ -4040,7 +4040,7 @@ fn workflow_menu(state: &AppMenuState) -> Menu {
     Menu::new("Workflow").items(items)
 }
 
-struct ContentForeground(gpui::Hsla);
+struct ContentForeground(gpui_kit::Hsla);
 
 impl Global for ContentForeground {}
 
@@ -4201,7 +4201,7 @@ pub fn run(
         .expect("failed to open audio playback device");
     let pending_opens = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
 
-    let app = gpui_platform::application().with_assets(AppAssets);
+    let app = gpui_kit::application().with_assets(AppAssets);
     app.on_open_urls({
         let pending_opens = pending_opens.clone();
         move |urls| {
@@ -4214,7 +4214,7 @@ pub fn run(
         }
     });
     app.run(move |cx| {
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         apply_muted_chrome(cx);
         install_app_menu(cx);
@@ -4232,7 +4232,7 @@ pub fn run(
                     size: size(px(1280.), px(760.)),
                 })),
                 #[cfg(target_os = "linux")]
-                window_decorations: Some(gpui::WindowDecorations::Client),
+                window_decorations: Some(gpui_kit::WindowDecorations::Client),
                 ..TitleBar::window_options()
             };
 

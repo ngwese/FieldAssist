@@ -3,12 +3,12 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     div, px, uniform_list, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex, ActiveTheme as _, StyledExt as _,
 };
@@ -197,12 +197,12 @@ enum RegionRow {
 }
 
 struct RowTheme {
-    accent: gpui::Hsla,
-    border: gpui::Hsla,
-    secondary: gpui::Hsla,
-    secondary_hover: gpui::Hsla,
-    foreground: gpui::Hsla,
-    muted_foreground: gpui::Hsla,
+    accent: gpui_kit::Hsla,
+    border: gpui_kit::Hsla,
+    secondary: gpui_kit::Hsla,
+    secondary_hover: gpui_kit::Hsla,
+    foreground: gpui_kit::Hsla,
+    muted_foreground: gpui_kit::Hsla,
 }
 
 fn push_collection_rows(

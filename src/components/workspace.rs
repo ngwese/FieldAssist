@@ -3,12 +3,12 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, App, Context, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     Styled as _, WeakEntity, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     v_flex,
 };
@@ -121,7 +121,7 @@ impl Panel for WorkspacePanel {
             .display_name()
     }
 
-    fn tab_name(&self, cx: &App) -> Option<gpui::SharedString> {
+    fn tab_name(&self, cx: &App) -> Option<gpui_kit::SharedString> {
         Some(
             self.document
                 .read(cx)

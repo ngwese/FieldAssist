@@ -4,13 +4,13 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, ClickEvent, Context,
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
@@ -276,7 +276,7 @@ fn drop_on_section(
     );
 }
 
-fn ghost_hover_bg(cx: &App) -> gpui::Hsla {
+fn ghost_hover_bg(cx: &App) -> gpui_kit::Hsla {
     let theme = cx.theme();
     if theme.mode.is_dark() {
         theme.secondary.lighten(0.1).opacity(0.8)

@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClickEvent, Context,
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
     Styled as _, Subscription, WeakEntity, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent},
@@ -147,9 +147,9 @@ impl Render for MonitorPanel {
 impl MonitorPanel {
     fn render_chain_scroll(
         &mut self,
-        muted: gpui::Hsla,
-        accent: gpui::Hsla,
-        secondary: gpui::Hsla,
+        muted: gpui_kit::Hsla,
+        accent: gpui_kit::Hsla,
+        secondary: gpui_kit::Hsla,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let Some(document) = self.document.clone() else {
@@ -280,15 +280,15 @@ impl MonitorPanel {
     }
 }
 
-fn section_label(text: &'static str, muted: gpui::Hsla) -> impl IntoElement {
+fn section_label(text: &'static str, muted: gpui_kit::Hsla) -> impl IntoElement {
     div().text_xs().text_color(muted).child(text)
 }
 
 fn output_section(
     selected: Option<String>,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
-    border: gpui::Hsla,
+    muted: gpui_kit::Hsla,
+    border: gpui_kit::Hsla,
 ) -> impl IntoElement {
     v_flex()
         .flex_none()
@@ -305,7 +305,7 @@ fn output_section(
 fn output_dropdown(
     selected: Option<String>,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
+    muted: gpui_kit::Hsla,
 ) -> impl IntoElement {
     let label = selected
         .clone()
@@ -316,7 +316,7 @@ fn output_dropdown(
         .w_full()
         .label(label)
         .dropdown_menu(
-            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<PopupMenu>| {
                 let app_default = app.clone();
                 let default_selected = selected.is_none();
                 menu = menu.item(
@@ -361,7 +361,7 @@ fn output_dropdown(
 struct PinIcon;
 
 impl IconNamed for PinIcon {
-    fn path(self) -> gpui::SharedString {
+    fn path(self) -> gpui_kit::SharedString {
         "icons/pin.svg".into()
     }
 }
@@ -369,7 +369,7 @@ impl IconNamed for PinIcon {
 fn chain_header(
     pinned: bool,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
+    muted: gpui_kit::Hsla,
     cx: &App,
 ) -> impl IntoElement {
     let color = if pinned { cx.theme().cyan } else { muted };
@@ -386,7 +386,7 @@ fn chain_header(
                 .text_color(color)
                 .child(
                     Icon::new(PinIcon)
-                        .with_size(gpui::px(14.))
+                        .with_size(gpui_kit::px(14.))
                         .text_color(color),
                 )
                 .tooltip(if pinned {
@@ -411,7 +411,7 @@ fn menu_dropdown(
     items: Vec<(String, f32)>,
     current: f32,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
+    muted: gpui_kit::Hsla,
 ) -> impl IntoElement {
     let selected = items
         .iter()
@@ -460,7 +460,7 @@ fn chain_dropdown(
     label: String,
     current: Option<String>,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
+    muted: gpui_kit::Hsla,
 ) -> impl IntoElement {
     Button::new("monitor-chain")
         .outline()
@@ -468,7 +468,7 @@ fn chain_dropdown(
         .w_full()
         .label(label)
         .dropdown_menu(
-            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui::Context<PopupMenu>| {
+            move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<PopupMenu>| {
                 let app_direct = app.clone();
                 menu = menu.item(
                     PopupMenuItem::element(move |_, _| {
@@ -627,9 +627,9 @@ fn render_schema(
     params: &HashMap<String, f32>,
     meters: &HashMap<String, f32>,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
-    accent: gpui::Hsla,
-    secondary: gpui::Hsla,
+    muted: gpui_kit::Hsla,
+    accent: gpui_kit::Hsla,
+    secondary: gpui_kit::Hsla,
     cx: &App,
 ) -> impl IntoElement {
     v_flex().gap_2().children(root.ui.iter().map(|node| {
@@ -656,12 +656,12 @@ fn render_node(
     params: &HashMap<String, f32>,
     meters: &HashMap<String, f32>,
     app: WeakEntity<AppView>,
-    muted: gpui::Hsla,
-    accent: gpui::Hsla,
-    secondary: gpui::Hsla,
+    muted: gpui_kit::Hsla,
+    accent: gpui_kit::Hsla,
+    secondary: gpui_kit::Hsla,
     skip_outer_label: bool,
     cx: &App,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     match node {
         FaustUiNode::VGroup { label, items }
         | FaustUiNode::HGroup { label, items }
@@ -870,7 +870,7 @@ fn reset_slider(
     }
 }
 
-fn click_on_thumb(position: gpui::Point<gpui::Pixels>, state: &SliderState) -> bool {
+fn click_on_thumb(position: gpui_kit::Point<gpui_kit::Pixels>, state: &SliderState) -> bool {
     let bounds = state.bounds();
     if bounds.size.width <= px(0.) {
         return false;
@@ -884,7 +884,7 @@ fn click_on_thumb(position: gpui::Point<gpui::Pixels>, state: &SliderState) -> b
 fn resettable_value(
     id: u64,
     text: String,
-    muted: gpui::Hsla,
+    muted: gpui_kit::Hsla,
     slider: Option<Entity<SliderState>>,
     address: String,
     default: Option<f32>,

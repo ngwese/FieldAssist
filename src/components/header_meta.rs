@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui::{
+use gpui_kit::{
     div, prelude::FluentBuilder as _, App, Context, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
     Window,
 };
-use gpui_component::{h_flex, ActiveTheme as _};
+use gpui_kit::component::{h_flex, ActiveTheme as _};
 
 use crate::components::waveform::WaveformDisplay;
 use crate::model::document::BufferDocument;

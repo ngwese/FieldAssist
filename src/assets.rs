@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Result, SharedString};
+use gpui_kit::{AssetSource, Result, SharedString};
 
 const EXTRA_ICONS: &[(&str, &[u8])] = &[
     (
@@ -50,7 +50,7 @@ const EXTRA_ICONS: &[(&str, &[u8])] = &[
     ),
 ];
 
-/// App icons first, then the Lucide subset shipped by gpui-component-assets.
+/// App icons first, then the Lucide subset shipped by gpui-kit-assets.
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
@@ -61,11 +61,11 @@ impl AssetSource for AppAssets {
         if let Some(bytes) = extra_icon(path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
-        gpui_component_assets::Assets.load(path)
+        gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut items = gpui_component_assets::Assets.list(path)?;
+        let mut items = gpui_kit::assets::Assets.list(path)?;
         for (icon_path, _) in EXTRA_ICONS {
             if icon_path.starts_with(path) {
                 let name: SharedString = (*icon_path).into();

@@ -3,12 +3,12 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     actions, div, px, uniform_list, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, Rgba,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex, ActiveTheme as _, StyledExt as _,
 };
@@ -225,12 +225,12 @@ struct MarkerRow {
 }
 
 struct RowTheme {
-    accent: gpui::Hsla,
-    border: gpui::Hsla,
-    secondary: gpui::Hsla,
-    secondary_hover: gpui::Hsla,
-    foreground: gpui::Hsla,
-    muted_foreground: gpui::Hsla,
+    accent: gpui_kit::Hsla,
+    border: gpui_kit::Hsla,
+    secondary: gpui_kit::Hsla,
+    secondary_hover: gpui_kit::Hsla,
+    foreground: gpui_kit::Hsla,
+    muted_foreground: gpui_kit::Hsla,
 }
 
 fn marker_row_element(
@@ -238,7 +238,7 @@ fn marker_row_element(
     row: &MarkerRow,
     theme: &RowTheme,
 ) -> impl IntoElement {
-    let swatch: gpui::Hsla = Rgba {
+    let swatch: gpui_kit::Hsla = Rgba {
         r: row.color[0],
         g: row.color[1],
         b: row.color[2],

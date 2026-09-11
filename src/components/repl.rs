@@ -3,12 +3,12 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::{
     div, AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
     Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
-use gpui_component::{
+use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
