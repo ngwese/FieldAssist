@@ -1,0 +1,16 @@
+[package]
+name = "field-audio-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Audio probe, decode, and encode for FieldAssist"
+
+[dependencies]
+anyhow = { workspace = true }
+field-audio-model = { path = "../field-audio-model" }
+field-audio-process = { path = "../field-audio-process" }
+flacenc = { workspace = true }
+hound = { workspace = true }
+ogg = { workspace = true }
+rusty_vorbis = { workspace = true }
+symphonia = { workspace = true }

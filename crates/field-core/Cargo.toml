@@ -1,0 +1,9 @@
+[package]
+name = "field-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared primitives for FieldAssist (file URLs, progress)"
+
+[dependencies]
+anyhow = { workspace = true }

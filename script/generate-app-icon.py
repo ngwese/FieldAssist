@@ -19,8 +19,9 @@ except ImportError:
     sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
-SVG_PATH = ROOT / "assets" / "logo" / "04-bands.svg"
-OUT_DIR = ROOT / "assets" / "app-icon"
+ASSETS = ROOT / "crates" / "field-assist" / "assets"
+SVG_PATH = ASSETS / "logo" / "04-bands.svg"
+OUT_DIR = ASSETS / "app-icon"
 
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 # ostype -> pixel size. PNG payloads, modern macOS.

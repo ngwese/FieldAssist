@@ -7,13 +7,14 @@
 
 ## Faust monitor chains
 
-Playback monitoring compiles Faust DSP in `dsp/` (`monitor_mono.dsp`,
-`monitor_stereo.dsp`, `monitor_ms.dsp`, `monitor_foa.dsp`) to Rust via
-`faust -lang rust -json` in `build.rs`. Generated `.inc.rs` and `.json` files
-are committed under `src/monitor/generated/` so `cargo build` does not require
-Faust. When `faust` is on `PATH` (or `FAUST` points at the binary), those
-artifacts are regenerated. Stereo and M/S chains share
-`dsp/headphone_crossfeed.lib`.
+Playback monitoring compiles Faust DSP in
+`crates/field-audio-monitor/dsp/` (`monitor_mono.dsp`, `monitor_stereo.dsp`,
+`monitor_ms.dsp`, `monitor_foa.dsp`) to Rust via `faust -lang rust -json` in
+that crate's `build.rs`. Generated `.inc.rs` and `.json` files are committed
+under `crates/field-audio-monitor/src/generated/` so `cargo build` does not
+require Faust. When `faust` is on `PATH` (or `FAUST` points at the binary),
+those artifacts are regenerated. Stereo and M/S chains share
+`crates/field-audio-monitor/dsp/headphone_crossfeed.lib`.
 
 ## Build
 
@@ -31,8 +32,9 @@ cargo run --release -- --dump-init
 ## App icon
 
 The in-app mark, Windows `.exe` icon, and macOS `.app` icon all come from
-[assets/logo/04-bands.svg](assets/logo/04-bands.svg) (logo study 4). Raster
-assets live in [assets/app-icon/](assets/app-icon/):
+[crates/field-assist/assets/logo/04-bands.svg](crates/field-assist/assets/logo/04-bands.svg)
+(logo study 4). Raster assets live in
+[crates/field-assist/assets/app-icon/](crates/field-assist/assets/app-icon/):
 
 | File | Used by |
 | --- | --- |

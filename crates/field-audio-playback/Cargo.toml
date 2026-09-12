@@ -1,0 +1,10 @@
+[package]
+name = "field-audio-playback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Audio playback engine and transport for FieldAssist"
+
+[dependencies]
+anyhow = { workspace = true }
+cpal = { workspace = true }

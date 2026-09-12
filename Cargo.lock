@@ -10,6 +10,15 @@ dependencies = [
  "clap",
  "cpal",
  "embed-resource",
+ "field-audio-io",
+ "field-audio-model",
+ "field-audio-monitor",
+ "field-audio-playback",
+ "field-audio-process",
+ "field-composition",
+ "field-core",
+ "field-session",
+ "field-ui-components",
  "flacenc",
  "gpui-kit",
  "hound",
@@ -1974,6 +1983,93 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "field-audio-io"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "field-audio-model",
+ "field-audio-process",
+ "flacenc",
+ "hound",
+ "ogg",
+ "rusty_vorbis",
+ "symphonia",
+]
+
+[[package]]
+name = "field-audio-model"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "field-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "field-audio-monitor"
+version = "0.6.3"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "field-audio-playback"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "cpal",
+]
+
+[[package]]
+name = "field-audio-process"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "field-audio-model",
+ "rubato",
+]
+
+[[package]]
+name = "field-composition"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "field-audio-io",
+ "field-audio-model",
+ "field-audio-process",
+ "field-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "field-core"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "field-session"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "field-core",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "field-ui-components"
+version = "0.6.3"
+dependencies = [
+ "gpui-kit",
 ]
 
 [[package]]

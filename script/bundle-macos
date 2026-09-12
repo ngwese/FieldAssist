@@ -75,7 +75,7 @@ printf 'APPL????' > "$contents/PkgInfo"
 cp "$binary" "$macos_dir/FieldAssist"
 chmod +x "$macos_dir/FieldAssist"
 
-icon="$root/assets/app-icon/AppIcon.icns"
+icon="$root/crates/field-assist/assets/app-icon/AppIcon.icns"
 if [[ ! -f "$icon" ]]; then
   echo "error: missing $icon; run python script/generate-app-icon.py" >&2
   exit 1

@@ -1,0 +1,15 @@
+[package]
+name = "field-composition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Composition, EDL, and .facomp I/O for FieldAssist"
+
+[dependencies]
+anyhow = { workspace = true }
+field-core = { path = "../field-core" }
+field-audio-model = { path = "../field-audio-model" }
+field-audio-io = { path = "../field-audio-io" }
+field-audio-process = { path = "../field-audio-process" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "field-audio-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Audio DSP helpers for FieldAssist (peaks, resample)"
+
+[dependencies]
+anyhow = { workspace = true }
+field-audio-model = { path = "../field-audio-model" }
+rubato = { workspace = true }

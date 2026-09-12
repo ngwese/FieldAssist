@@ -1,0 +1,13 @@
+[package]
+name = "field-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Session and .fasession I/O for FieldAssist"
+
+[dependencies]
+anyhow = { workspace = true }
+field-core = { path = "../field-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

@@ -1,11 +1,25 @@
-[package]
-name = "FieldAssist"
+[workspace]
+resolver = "2"
+members = [
+    "crates/field-assist",
+    "crates/field-core",
+    "crates/field-audio-model",
+    "crates/field-audio-io",
+    "crates/field-audio-process",
+    "crates/field-audio-monitor",
+    "crates/field-audio-playback",
+    "crates/field-composition",
+    "crates/field-session",
+    "crates/field-ui-components",
+]
+default-members = ["crates/field-assist"]
+
+[workspace.package]
 version = "0.6.3"
 edition = "2021"
-description = "Review, edit, and process audio coming in from the field"
 license = "MIT"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -21,12 +35,8 @@ rusty_vorbis = "0.1"
 ogg = "0.9"
 flacenc = "0.5"
 rubato = { version = "5", features = ["fft_resampler"] }
-
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
-
-[build-dependencies]
+dasp = { version = "0.11", features = ["std", "sample", "slice"] }
+thiserror = "2"
 embed-resource = "3"
 
 [profile.dev.package]
