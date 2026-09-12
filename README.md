@@ -1,5 +1,7 @@
 # FieldAssist
 
+![FieldAssist screenshot](docs/asset/screenshot.png)
+
 Review, edit, and process audio coming in from the field.
 
 - See [docs/BUILDING.md](docs/BUILDING.md) for build, packaging, and app-icon generation.
