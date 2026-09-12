@@ -1,8 +1,13 @@
 # FieldAssist
 
+Review, edit, and process audio coming in from the field.
+
 ![FieldAssist screenshot](docs/asset/screenshot.png)
 
-Review, edit, and process audio coming in from the field.
+> [!WARNING]
+> **FieldAssist** is currently in development. The APIs, feature set, and
+> packaging may change at any time. Development happens on `main` so the
+> latest version may not be stable.
 
 - See [docs/BUILDING.md](docs/BUILDING.md) for build, packaging, and app-icon generation.
 - See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the Cargo workspace crate
