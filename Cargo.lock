@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "FieldAssist"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-io"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "field-audio-model",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-model"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "field-core",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-monitor"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-playback"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-process"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "field-audio-model",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "field-composition"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "field-audio-io",
@@ -2049,14 +2049,14 @@ dependencies = [
 
 [[package]]
 name = "field-core"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "field-session"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "field-core",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "field-ui-components"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "gpui-kit",
 ]
