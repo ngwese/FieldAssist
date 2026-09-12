@@ -552,6 +552,7 @@ impl AppView {
                     self.display_title(doc.id, cx),
                     modified,
                     doc.group.clone(),
+                    doc.file_path().map(PathBuf::from),
                 )
             })
             .collect();
@@ -1182,8 +1183,8 @@ impl AppView {
                 self.apply_preview_if_enabled(cx);
             }
             ExplorerEvent::Close(id) => self.request_close_document(id, window, cx),
-            ExplorerEvent::SetGroup { id, group } => {
-                self.session.set_document_group(id, group);
+            ExplorerEvent::Place { id, group, index } => {
+                self.session.place_document(id, group, index);
                 self.refresh_explorer(cx);
             }
         }

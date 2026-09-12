@@ -97,6 +97,13 @@ impl UserData for LuaSession {
             let host = host_from_lua(lua)?;
             Ok(host.session_group_count(this.id, &group) as i64)
         });
+        methods.add_method(
+            "move",
+            |lua, this, (doc, index): (LuaComposition, i64)| {
+                let host = host_from_lua(lua)?;
+                host.move_session_document(this.id, doc.id, index)
+            },
+        );
         methods.add_method("open", |lua, this, path: String| {
             let host = host_from_lua(lua)?;
             if this.id.is_some() {

@@ -824,6 +824,71 @@ mod tests {
     }
 
     #[test]
+    fn session_move_reorders_documents() {
+        let (mut host, world) = test_host();
+        let samples = vec![vec![0.0; 100], vec![0.0; 100]];
+        let media = MediaRef::from_memory(MediaId(1), 44100, samples);
+        let composition = Composition::from_media(media).expect("composition");
+        let second = world
+            .borrow_mut()
+            .push(composition, Buffer::empty(), "second", None);
+        let first = {
+            let world = world.borrow();
+            world.session.documents()[0].id
+        };
+        assert_eq!(
+            world
+                .borrow()
+                .session
+                .documents()
+                .iter()
+                .map(|doc| doc.id)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+
+        let out = host.eval(
+            r#"
+            local s = app.session
+            s:move(s.documents[2], 1)
+            return s.documents[1].id, s.documents[2].id
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            out.result.as_deref(),
+            Some(format!("{second}\t{first}").as_str())
+        );
+        assert_eq!(
+            world
+                .borrow()
+                .session
+                .documents()
+                .iter()
+                .map(|doc| doc.id)
+                .collect::<Vec<_>>(),
+            vec![second, first]
+        );
+
+        let out = host.eval("app.session:move(app.documents[1], 0)");
+        assert!(
+            out.error
+                .as_deref()
+                .is_some_and(|err| err.contains("between 1 and")),
+            "{:?}",
+            out.error
+        );
+        let out = host.eval("app.session:move(app.documents[1], 3)");
+        assert!(
+            out.error
+                .as_deref()
+                .is_some_and(|err| err.contains("between 1 and")),
+            "{:?}",
+            out.error
+        );
+    }
+
+    #[test]
     fn session_properties_reject_non_strings() {
         let (mut host, _) = test_host();
         let out = host.eval(r#"app.session.properties = { batch = 1 }"#);

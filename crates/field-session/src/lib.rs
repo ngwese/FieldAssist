@@ -459,6 +459,66 @@ impl Session {
         true
     }
 
+    /// Move `id` to `index` in the full document list (0-based, clamped to
+    /// `0..=len` after removal). Does not change `group`. Returns false if
+    /// the document is missing. Marks dirty only when order changes.
+    pub fn move_document(&mut self, id: DocumentId, index: usize) -> bool {
+        let Some(from) = self.documents.iter().position(|doc| doc.id == id) else {
+            return false;
+        };
+        let doc = self.documents.remove(from);
+        let to = index.min(self.documents.len());
+        if to == from {
+            self.documents.insert(to, doc);
+            return true;
+        }
+        self.documents.insert(to, doc);
+        self.mark_dirty();
+        true
+    }
+
+    /// Set `group` and insert `id` so it becomes the `index_in_group`-th
+    /// member of that group (0-based; values past the end append). Empty
+    /// group names become ungrouped (`None`). Marks dirty when group or
+    /// order changes. Returns false if the document is missing.
+    pub fn place_document(
+        &mut self,
+        id: DocumentId,
+        group: Option<String>,
+        index_in_group: usize,
+    ) -> bool {
+        let group = group.filter(|name| !name.is_empty());
+        let Some(from) = self.documents.iter().position(|doc| doc.id == id) else {
+            return false;
+        };
+        let mut doc = self.documents.remove(from);
+        let group_changed = doc.group != group;
+        doc.group = group.clone();
+
+        let members: Vec<usize> = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.group == group)
+            .map(|(ix, _)| ix)
+            .collect();
+        let to = if index_in_group < members.len() {
+            members[index_in_group]
+        } else if let Some(&last) = members.last() {
+            last + 1
+        } else {
+            self.documents.len()
+        };
+
+        if !group_changed && to == from {
+            self.documents.insert(to, doc);
+            return true;
+        }
+        self.documents.insert(to, doc);
+        self.mark_dirty();
+        true
+    }
+
     /// `set_document_state`.
     pub fn set_document_state(&mut self, id: DocumentId, state: Option<String>) -> bool {
         let state = state.filter(|name| !name.is_empty());
@@ -1044,6 +1104,80 @@ mod tests {
         assert!(is_fasession_path(Path::new("batch.fasession")));
         assert!(is_fasession_path(Path::new("BATCH.FASESSION")));
         assert!(!is_fasession_path(Path::new("take.wav")));
+    }
+
+    fn ids(session: &Session) -> Vec<DocumentId> {
+        session.documents().iter().map(|doc| doc.id).collect()
+    }
+
+    #[test]
+    fn move_document_reorders_full_list() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        let c = session.push(Some(path("c.wav")));
+        session.mark_clean();
+        assert!(session.move_document(c, 0));
+        assert_eq!(ids(&session), vec![c, a, b]);
+        assert!(session.is_dirty());
+        session.mark_clean();
+        assert!(session.move_document(c, 0));
+        assert!(!session.is_dirty());
+        assert_eq!(ids(&session), vec![c, a, b]);
+    }
+
+    #[test]
+    fn move_document_clamps_and_rejects_missing() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        assert!(session.move_document(a, 99));
+        assert_eq!(ids(&session), vec![b, a]);
+        assert!(!session.move_document(DocumentId::from_u128(999), 0));
+    }
+
+    #[test]
+    fn place_document_moves_across_groups_without_scrambling() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        let c = session.push(Some(path("c.wav")));
+        let d = session.push(Some(path("d.wav")));
+        session.set_document_group(a, Some("todo".into()));
+        session.set_document_group(b, Some("todo".into()));
+        session.set_document_group(c, Some("drop".into()));
+        session.set_document_group(d, Some("drop".into()));
+        session.mark_clean();
+
+        assert!(session.place_document(d, Some("todo".into()), 1));
+        assert_eq!(ids(&session), vec![a, d, b, c]);
+        assert_eq!(session.get(d).unwrap().group.as_deref(), Some("todo"));
+        assert!(session.is_dirty());
+
+        session.mark_clean();
+        assert!(session.place_document(a, Some("drop".into()), 0));
+        assert_eq!(ids(&session), vec![d, b, a, c]);
+        assert_eq!(session.get(a).unwrap().group.as_deref(), Some("drop"));
+        assert_eq!(session.get(c).unwrap().group.as_deref(), Some("drop"));
+    }
+
+    #[test]
+    fn place_document_appends_and_prepends_in_group() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        let c = session.push(Some(path("c.wav")));
+        session.set_document_group(a, Some("todo".into()));
+        session.set_document_group(b, Some("todo".into()));
+
+        assert!(session.place_document(c, Some("todo".into()), 99));
+        assert_eq!(ids(&session), vec![a, b, c]);
+        assert!(session.place_document(c, Some("todo".into()), 0));
+        assert_eq!(ids(&session), vec![c, a, b]);
+        // Empty target group inserts at the end of the full list.
+        assert!(session.place_document(b, None, 0));
+        assert_eq!(ids(&session), vec![c, a, b]);
+        assert!(session.get(b).unwrap().group.is_none());
     }
 
     #[test]

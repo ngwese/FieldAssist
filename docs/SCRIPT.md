@@ -166,6 +166,7 @@ local all = s.documents        -- same composition objects as app.documents
 local c = s.active             -- or nil
 c = s:open(path)               -- audio/facomp → add; .fasession → replace
 print(s:group_count("todo"))   -- documents with c.group == "todo"
+s:move(s.documents[2], 1)      -- 1-based; reorder within s.documents
 s:save()
 s:save_as(path)
 
@@ -179,7 +180,9 @@ print(#app.sessions)           -- active session plus any loaded sessions
 
 `s.id` is the session UUID (read-only). `s.path` is the `.fasession` file, or
 `nil` until it is saved. `s:group_count(name)` is the number of documents whose
-`group` equals `name`. `app.active`, `app.documents`, and `app:open` remain
+`group` equals `name`. `s:move(doc, index)` places `doc` at 1-based
+`s.documents[index]` without changing `group`; the index must be in
+`1 .. #s.documents`. `app.active`, `app.documents`, and `app:open` remain
 aliases of `s.active`, `s.documents`, and `s:open`. `app:load_session` holds
 another session in memory for scripts (document `path` / `id` / `name` work;
 edits require the composition to be open in the UI). `open` / `save` /

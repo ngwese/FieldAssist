@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::{
-    actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, ClickEvent, Context,
-    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, Bounds, ClickEvent,
+    Context, DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, FileDragPaths, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
+    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
@@ -30,9 +31,12 @@ pub enum ExplorerEvent {
     Activate(DocumentId),
     OpenTab(DocumentId),
     Close(DocumentId),
-    SetGroup {
+    /// Place `id` in `group` at 0-based `index` among that group's members
+    /// (after removing the dragged row from the list).
+    Place {
         id: DocumentId,
         group: Option<String>,
+        index: usize,
     },
 }
 
@@ -42,6 +46,7 @@ struct ExplorerItem {
     name: SharedString,
     modified: bool,
     group: Option<String>,
+    path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -73,11 +78,13 @@ impl SectionKey {
     }
 }
 
-#[derive(Clone)]
-struct CompositionDrag {
-    id: DocumentId,
-    name: SharedString,
-    source: SectionKey,
+/// Drag payload for explorer compositions. Path is offered to path fields and
+/// as a native file drag when the pointer leaves the window.
+#[derive(Clone, Debug)]
+pub(crate) struct CompositionDrag {
+    pub(crate) id: DocumentId,
+    pub(crate) name: SharedString,
+    pub(crate) path: Option<PathBuf>,
 }
 
 impl Render for CompositionDrag {
@@ -130,6 +137,20 @@ fn group_sections(items: &[ExplorerItem]) -> Vec<ExplorerSection<'_>> {
     sections
 }
 
+/// True when the pointer is in the upper half of `bounds` (insert before).
+fn slot_before_from_y(y: Pixels, bounds: Bounds<Pixels>) -> bool {
+    y < bounds.center().y
+}
+
+/// Convert a visual "before index" in the current section (including the
+/// dragged row) into the `index_in_group` passed to `place_document`.
+fn index_in_group_after_remove(drop_before: usize, dragged_index: Option<usize>) -> usize {
+    match dragged_index {
+        Some(from) if drop_before > from => drop_before - 1,
+        _ => drop_before,
+    }
+}
+
 type EventHandler = Rc<dyn Fn(ExplorerEvent, &mut Window, &mut App)>;
 
 pub struct ExplorerPanel {
@@ -137,6 +158,8 @@ pub struct ExplorerPanel {
     active: Option<DocumentId>,
     selected: Option<DocumentId>,
     hovered_close: Option<DocumentId>,
+    /// Insertion gap while dragging: before index `0..=section.len`.
+    drop_slot: Option<(SectionKey, usize)>,
     collapsed: HashSet<SectionKey>,
     on_event: Option<EventHandler>,
     focus_handle: FocusHandle,
@@ -154,6 +177,7 @@ impl ExplorerPanel {
             active: None,
             selected: None,
             hovered_close: None,
+            drop_slot: None,
             collapsed: HashSet::new(),
             on_event: None,
             focus_handle: cx.focus_handle(),
@@ -170,17 +194,18 @@ impl ExplorerPanel {
 
     pub fn set_documents(
         &mut self,
-        docs: &[(DocumentId, SharedString, bool, Option<String>)],
+        docs: &[(DocumentId, SharedString, bool, Option<String>, Option<PathBuf>)],
         active: Option<DocumentId>,
         cx: &mut Context<Self>,
     ) {
         let items: Vec<ExplorerItem> = docs
             .iter()
-            .map(|(id, name, modified, group)| ExplorerItem {
+            .map(|(id, name, modified, group, path)| ExplorerItem {
                 id: *id,
                 name: name.clone(),
                 modified: *modified,
                 group: group.clone(),
+                path: path.clone(),
             })
             .collect();
         if items == self.items && active == self.active {
@@ -234,6 +259,13 @@ impl ExplorerPanel {
         }
         cx.notify();
     }
+
+    fn set_drop_slot(&mut self, slot: Option<(SectionKey, usize)>, cx: &mut Context<Self>) {
+        if self.drop_slot != slot {
+            self.drop_slot = slot;
+            cx.notify();
+        }
+    }
 }
 
 /// Call the host without holding an `ExplorerPanel` lease. `AppView`
@@ -250,30 +282,69 @@ fn dispatch(
     }
 }
 
-fn accepts_composition_drag(data: &dyn std::any::Any, target: &SectionKey) -> bool {
-    data.downcast_ref::<CompositionDrag>()
-        .is_some_and(|drag| drag.source != *target)
+fn accepts_composition_drag(data: &dyn std::any::Any) -> bool {
+    data.downcast_ref::<CompositionDrag>().is_some()
 }
 
 fn drop_on_section(
     explorer: &Entity<ExplorerPanel>,
     target: &SectionKey,
     drag: &CompositionDrag,
+    section_len: usize,
     window: &mut Window,
     cx: &mut App,
 ) {
-    if drag.source == *target {
-        return;
-    }
+    let drop_before = explorer
+        .read(cx)
+        .drop_slot
+        .as_ref()
+        .filter(|(key, _)| key == target)
+        .map(|(_, before)| *before)
+        .unwrap_or(section_len);
+    let section_ids: Vec<DocumentId> = explorer
+        .read(cx)
+        .items
+        .iter()
+        .filter(|item| section_key_for_group(item.group.as_deref()) == *target)
+        .map(|item| item.id)
+        .collect();
+    let dragged_in_section = section_ids.iter().position(|id| *id == drag.id);
+    let index = index_in_group_after_remove(drop_before, dragged_in_section);
+    explorer.update(cx, |this, cx| {
+        this.drop_slot = None;
+        cx.notify();
+    });
     dispatch(
         explorer,
-        ExplorerEvent::SetGroup {
+        ExplorerEvent::Place {
             id: drag.id,
             group: target.group_name(),
+            index,
         },
         window,
         cx,
     );
+}
+
+fn section_key_for_group(group: Option<&str>) -> SectionKey {
+    match group {
+        Some(name) => SectionKey::Named(name.to_string()),
+        None => SectionKey::Session,
+    }
+}
+
+/// Overlay line that does not consume layout height (avoids list shift while
+/// dragging, which would otherwise flicker the drop slot around midpoints).
+fn insertion_marker_overlay(color: gpui_kit::Hsla, at_bottom: bool) -> impl IntoElement {
+    div()
+        .absolute()
+        .left(px(6.))
+        .right(px(6.))
+        .h(px(2.))
+        .rounded_full()
+        .bg(color)
+        .when(at_bottom, |this| this.bottom(px(-1.)))
+        .when(!at_bottom, |this| this.top(px(-1.)))
 }
 
 fn ghost_hover_bg(cx: &App) -> gpui_kit::Hsla {
@@ -333,6 +404,11 @@ impl Render for ExplorerPanel {
         let cyan = cx.theme().cyan;
         let radius = cx.theme().radius;
         let sections = group_sections(&self.items);
+        let drop_slot = if cx.has_active_drag() {
+            self.drop_slot.clone()
+        } else {
+            None
+        };
 
         div()
             .id("compositions-list")
@@ -364,20 +440,31 @@ impl Render for ExplorerPanel {
                 let explorer = explorer.clone();
                 let header_key = section.key.clone();
                 let drop_key = section.key.clone();
+                let section_len = section.items.len();
+                let show_slot = drop_slot
+                    .as_ref()
+                    .filter(|(key, _)| key == &section.key)
+                    .map(|(_, before)| *before);
                 v_flex()
                     .id(section.key.element_id())
                     .w_full()
                     .flex_none()
-                    .can_drop({
-                        let target = drop_key.clone();
-                        move |data, _, _| accepts_composition_drag(data, &target)
-                    })
-                    .drag_over::<CompositionDrag>(move |style, _, _, _| style.bg(highlight_bg))
+                    .can_drop(|data, _, _| accepts_composition_drag(data))
+                    .on_drag_move(cx.listener({
+                        let key = drop_key.clone();
+                        let len = section_len;
+                        move |this, event: &DragMoveEvent<CompositionDrag>, _, cx| {
+                            if !event.bounds.contains(&event.event.position) {
+                                return;
+                            }
+                            this.set_drop_slot(Some((key.clone(), len)), cx);
+                        }
+                    }))
                     .on_drop({
                         let explorer = explorer.clone();
                         let target = drop_key.clone();
                         move |drag: &CompositionDrag, window, cx| {
-                            drop_on_section(&explorer, &target, drag, window, cx);
+                            drop_on_section(&explorer, &target, drag, section_len, window, cx);
                         }
                     })
                     .child({
@@ -394,6 +481,25 @@ impl Render for ExplorerPanel {
                             .px_1p5()
                             .py_0p5()
                             .cursor_pointer()
+                            .can_drop(|data, _, _| accepts_composition_drag(data))
+                            .on_drag_move(cx.listener({
+                                let key = drop_key.clone();
+                                move |this, event: &DragMoveEvent<CompositionDrag>, _, cx| {
+                                    if !event.bounds.contains(&event.event.position) {
+                                        return;
+                                    }
+                                    this.set_drop_slot(Some((key.clone(), 0)), cx);
+                                }
+                            }))
+                            .on_drop({
+                                let explorer = explorer.clone();
+                                let target = drop_key.clone();
+                                move |drag: &CompositionDrag, window, cx| {
+                                    drop_on_section(
+                                        &explorer, &target, drag, section_len, window, cx,
+                                    );
+                                }
+                            })
                             .child(
                                 Icon::new(if open {
                                     IconName::ChevronDown
@@ -412,164 +518,216 @@ impl Render for ExplorerPanel {
                     })
                     .children(open.then(|| {
                         let explorer = explorer.clone();
-                        v_flex()
-                            .w_full()
-                            .children(section.items.into_iter().map(move |item| {
+                        let drop_key = drop_key.clone();
+                        let items: Vec<ExplorerItem> =
+                            section.items.into_iter().cloned().collect();
+                        v_flex().w_full().children({
+                            let last = items.len().saturating_sub(1);
+                            let mut rows = Vec::with_capacity(items.len());
+                            for (index, item) in items.into_iter().enumerate() {
                                 let id = item.id;
                                 let name = item.name.clone();
+                                let path = item.path.clone();
                                 let is_modified = item.modified;
                                 let highlighted = selected == Some(id);
                                 let is_active = active == Some(id);
                                 let show_close = hovered_close == Some(id);
                                 let explorer = explorer.clone();
-                                let source = section.key.clone();
-                                let drop_target = source.clone();
-                                h_flex()
-                                    .id(SharedString::from(format!("composition-{id}")))
-                                    .w_full()
-                                    .flex_none()
-                                    .items_center()
-                                    .pl_5()
-                                    .pr_1p5()
-                                    .py_0p5()
-                                    .rounded(radius)
-                                    .text_xs()
-                                    .cursor_pointer()
-                                    .when(highlighted, |this| this.bg(highlight_bg))
-                                    .when(!highlighted, |this| {
-                                        this.hover(|this| this.bg(highlight_bg))
-                                    })
-                                    .on_drag(
-                                        CompositionDrag {
-                                            id,
-                                            name: name.clone(),
-                                            source,
-                                        },
-                                        |drag, _, _, cx| {
-                                            cx.stop_propagation();
-                                            cx.new(|_| drag.clone())
-                                        },
-                                    )
-                                    .can_drop({
-                                        let target = drop_target.clone();
-                                        move |data, _, _| accepts_composition_drag(data, &target)
-                                    })
-                                    .drag_over::<CompositionDrag>(move |style, _, _, _| {
-                                        style.bg(highlight_bg)
-                                    })
-                                    .on_drop({
-                                        let explorer = explorer.clone();
-                                        let target = drop_target;
-                                        move |drag: &CompositionDrag, window, cx| {
-                                            drop_on_section(&explorer, &target, drag, window, cx);
-                                        }
-                                    })
-                                    .on_click({
-                                        let explorer = explorer.clone();
-                                        move |event: &ClickEvent, window, cx| {
-                                            explorer.update(cx, |this, cx| {
-                                                this.selected = Some(id);
-                                                cx.notify();
-                                            });
-                                            let event = if event.click_count() >= 2 {
-                                                ExplorerEvent::OpenTab(id)
-                                            } else {
-                                                ExplorerEvent::Activate(id)
-                                            };
-                                            dispatch(&explorer, event, window, cx);
-                                        }
-                                    })
-                                    .context_menu({
-                                        let explorer = explorer.clone();
-                                        move |menu, _, _| {
-                                            menu.item(PopupMenuItem::new("Close").on_click({
-                                                let explorer = explorer.clone();
-                                                move |_, window, cx| {
-                                                    dispatch(
-                                                        &explorer,
-                                                        ExplorerEvent::Close(id),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }
-                                            }))
-                                        }
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_xs()
-                                            .when(is_active, |this| this.text_color(cyan))
-                                            .child(name),
-                                    )
-                                    .child({
-                                        let explorer = explorer.clone();
-                                        div()
-                                            .id(SharedString::from(format!("comp-eol-{id}")))
-                                            .w(px(18.))
-                                            .h(px(18.))
-                                            .flex()
-                                            .flex_none()
-                                            .items_center()
-                                            .justify_center()
-                                            .on_hover({
-                                                let explorer = explorer.clone();
-                                                move |hovered: &bool, _, cx| {
-                                                    explorer.update(cx, |this, cx| {
-                                                        this.hovered_close =
-                                                            if *hovered { Some(id) } else { None };
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            })
-                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                let drop_target = drop_key.clone();
+                                let marker_top = show_slot == Some(index);
+                                let marker_bottom =
+                                    index == last && show_slot == Some(section_len);
+                                rows.push(
+                                    h_flex()
+                                        .id(SharedString::from(format!("composition-{id}")))
+                                        .relative()
+                                        .w_full()
+                                        .flex_none()
+                                        .items_center()
+                                        .pl_5()
+                                        .pr_1p5()
+                                        .py_0p5()
+                                        .rounded(radius)
+                                        .text_xs()
+                                        .cursor_pointer()
+                                        .when(highlighted, |this| this.bg(highlight_bg))
+                                        .when(!highlighted, |this| {
+                                            this.hover(|this| this.bg(highlight_bg))
+                                        })
+                                        .when(marker_top, |this| {
+                                            this.child(insertion_marker_overlay(cyan, false))
+                                        })
+                                        .when(marker_bottom, |this| {
+                                            this.child(insertion_marker_overlay(cyan, true))
+                                        })
+                                        .on_drag(
+                                            CompositionDrag {
+                                                id,
+                                                name: name.clone(),
+                                                path: path.clone(),
+                                            },
+                                            |drag, _, _, cx| {
                                                 cx.stop_propagation();
+                                                cx.new(|_| drag.clone())
+                                            },
+                                        )
+                                        .external_drag_payload(|drag: &CompositionDrag, _, _| {
+                                            drag.path.as_ref().map(|path| {
+                                                ExternalDragPayload::Files(FileDragPaths::new([(
+                                                    path.clone(),
+                                                    false,
+                                                )]))
                                             })
-                                            .on_click({
-                                                let explorer = explorer.clone();
-                                                move |_, window, cx| {
-                                                    cx.stop_propagation();
-                                                    dispatch(
-                                                        &explorer,
-                                                        ExplorerEvent::Close(id),
-                                                        window,
-                                                        cx,
-                                                    );
+                                        })
+                                        .can_drop(|data, _, _| accepts_composition_drag(data))
+                                        .on_drag_move(cx.listener({
+                                            let key = drop_target.clone();
+                                            move |this,
+                                                  event: &DragMoveEvent<CompositionDrag>,
+                                                  _,
+                                                  cx| {
+                                                if !event.bounds.contains(&event.event.position) {
+                                                    return;
                                                 }
-                                            })
-                                            .when(show_close, |this| {
-                                                this.child(
-                                                    Button::new(SharedString::from(format!(
-                                                        "close-comp-{id}"
-                                                    )))
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .icon(IconName::Close)
-                                                    .tab_stop(false)
-                                                    .on_click({
-                                                        let explorer = explorer.clone();
-                                                        move |_, window, cx| {
-                                                            cx.stop_propagation();
-                                                            dispatch(
-                                                                &explorer,
-                                                                ExplorerEvent::Close(id),
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        }
-                                                    }),
-                                                )
-                                            })
-                                            .when(!show_close && is_modified, |this| {
-                                                this.child(
-                                                    div().size(px(6.)).rounded_full().bg(muted),
-                                                )
-                                            })
-                                    })
-                            }))
+                                                let before = slot_before_from_y(
+                                                    event.event.position.y,
+                                                    event.bounds,
+                                                );
+                                                let slot =
+                                                    if before { index } else { index + 1 };
+                                                this.set_drop_slot(Some((key.clone(), slot)), cx);
+                                            }
+                                        }))
+                                        .on_drop({
+                                            let explorer = explorer.clone();
+                                            let target = drop_target;
+                                            move |drag: &CompositionDrag, window, cx| {
+                                                drop_on_section(
+                                                    &explorer,
+                                                    &target,
+                                                    drag,
+                                                    section_len,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })
+                                        .on_click({
+                                            let explorer = explorer.clone();
+                                            move |event: &ClickEvent, window, cx| {
+                                                explorer.update(cx, |this, cx| {
+                                                    this.selected = Some(id);
+                                                    cx.notify();
+                                                });
+                                                let event = if event.click_count() >= 2 {
+                                                    ExplorerEvent::OpenTab(id)
+                                                } else {
+                                                    ExplorerEvent::Activate(id)
+                                                };
+                                                dispatch(&explorer, event, window, cx);
+                                            }
+                                        })
+                                        .context_menu({
+                                            let explorer = explorer.clone();
+                                            move |menu, _, _| {
+                                                menu.item(PopupMenuItem::new("Close").on_click({
+                                                    let explorer = explorer.clone();
+                                                    move |_, window, cx| {
+                                                        dispatch(
+                                                            &explorer,
+                                                            ExplorerEvent::Close(id),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                }))
+                                            }
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_xs()
+                                                .when(is_active, |this| this.text_color(cyan))
+                                                .child(name),
+                                        )
+                                        .child({
+                                            let explorer = explorer.clone();
+                                            div()
+                                                .id(SharedString::from(format!("comp-eol-{id}")))
+                                                .w(px(18.))
+                                                .h(px(18.))
+                                                .flex()
+                                                .flex_none()
+                                                .items_center()
+                                                .justify_center()
+                                                .on_hover({
+                                                    let explorer = explorer.clone();
+                                                    move |hovered: &bool, _, cx| {
+                                                        explorer.update(cx, |this, cx| {
+                                                            this.hovered_close = if *hovered {
+                                                                Some(id)
+                                                            } else {
+                                                                None
+                                                            };
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                })
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .on_click({
+                                                    let explorer = explorer.clone();
+                                                    move |_, window, cx| {
+                                                        cx.stop_propagation();
+                                                        dispatch(
+                                                            &explorer,
+                                                            ExplorerEvent::Close(id),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                })
+                                                .when(show_close, |this| {
+                                                    this.child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "close-comp-{id}"
+                                                        )))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .icon(IconName::Close)
+                                                        .tab_stop(false)
+                                                        .on_click({
+                                                            let explorer = explorer.clone();
+                                                            move |_, window, cx| {
+                                                                cx.stop_propagation();
+                                                                dispatch(
+                                                                    &explorer,
+                                                                    ExplorerEvent::Close(id),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        }),
+                                                    )
+                                                })
+                                                .when(!show_close && is_modified, |this| {
+                                                    this.child(
+                                                        div()
+                                                            .size(px(6.))
+                                                            .rounded_full()
+                                                            .bg(muted),
+                                                    )
+                                                })
+                                        })
+                                        .into_any_element(),
+                                );
+                            }
+                            rows
+                        })
                     }))
             }))
     }
@@ -585,6 +743,7 @@ mod tests {
             name: name.into(),
             modified: false,
             group: group.map(str::to_string),
+            path: None,
         }
     }
 
@@ -660,5 +819,23 @@ mod tests {
             SectionKey::Named("todo".into()).group_name().as_deref(),
             Some("todo")
         );
+    }
+
+    #[test]
+    fn slot_before_uses_row_midpoint() {
+        let bounds = Bounds {
+            origin: gpui_kit::point(px(0.), px(10.)),
+            size: gpui_kit::size(px(100.), px(20.)),
+        };
+        assert!(slot_before_from_y(px(15.), bounds));
+        assert!(!slot_before_from_y(px(25.), bounds));
+    }
+
+    #[test]
+    fn index_after_remove_shifts_when_dropping_below_source() {
+        assert_eq!(index_in_group_after_remove(0, Some(2)), 0);
+        assert_eq!(index_in_group_after_remove(2, Some(2)), 2);
+        assert_eq!(index_in_group_after_remove(3, Some(1)), 2);
+        assert_eq!(index_in_group_after_remove(1, None), 1);
     }
 }

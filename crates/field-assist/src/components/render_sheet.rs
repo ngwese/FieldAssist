@@ -16,6 +16,7 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
 };
 
+use crate::components::explorer::CompositionDrag;
 use crate::model::composition::Composition;
 use crate::render::{
     encoder, encoders, format_rate, snap_format, EncodeSpec, PcmFormat, RenderJob, RATE_PRESETS,
@@ -384,12 +385,28 @@ impl Render for RenderSheet {
                                 div()
                                     .flex_1()
                                     .min_w_0()
+                                    .can_drop(|data, _, _| {
+                                        data.downcast_ref::<ExternalPaths>().is_some()
+                                            || data
+                                                .downcast_ref::<CompositionDrag>()
+                                                .is_some_and(|drag| drag.path.is_some())
+                                    })
                                     .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                                        style.bg(drop_highlight)
+                                    })
+                                    .drag_over::<CompositionDrag>(move |style, _, _, _| {
                                         style.bg(drop_highlight)
                                     })
                                     .on_drop(cx.listener(
                                         |this, paths: &ExternalPaths, window, cx| {
                                             if let Some(path) = paths.paths().first() {
+                                                this.apply_dropped_path(path, window, cx);
+                                            }
+                                        },
+                                    ))
+                                    .on_drop(cx.listener(
+                                        |this, drag: &CompositionDrag, window, cx| {
+                                            if let Some(path) = drag.path.as_ref() {
                                                 this.apply_dropped_path(path, window, cx);
                                             }
                                         },

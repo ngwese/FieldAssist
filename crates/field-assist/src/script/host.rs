@@ -940,6 +940,31 @@ impl HostHandle {
             .unwrap_or(0)
     }
 
+    /// Move `id` to 1-based `index` within the chosen session's document list.
+    pub fn move_session_document(
+        &self,
+        which: Option<SessionId>,
+        id: DocumentId,
+        index: i64,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
+            let len = session.len() as i64;
+            if index < 1 || index > len {
+                return Err(mlua::Error::runtime(format!(
+                    "move index must be between 1 and {len}"
+                )));
+            }
+            if !session.move_document(id, (index - 1) as usize) {
+                return Err(mlua::Error::runtime("composition is not in this session"));
+            }
+            Ok(())
+        })?;
+        if which.is_none() {
+            self.refresh_explorer();
+        }
+        Ok(())
+    }
+
     pub fn sessions(&self) -> Vec<LuaSession> {
         let mut sessions = vec![LuaSession::active()];
         let mut detached: Vec<SessionId> = self

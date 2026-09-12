@@ -175,8 +175,9 @@ that overlay.
 
 Lists every session document. Ungrouped documents appear under **session**;
 named `group` values become sections. Documents can be activated, opened as a
-pinned tab, closed, or regrouped (including drag between sections). Modified
-compositions are marked.
+pinned tab, closed, regrouped, or reordered (including drag within or between
+sections, with a horizontal insertion marker). Modified compositions are
+marked.
 
 ### Header and status
 

@@ -20,6 +20,7 @@ use gpui_kit::component::{
 };
 
 use crate::app::AppView;
+use crate::components::explorer::CompositionDrag;
 use crate::script::{PathBrowse, ToolbarAlign, ToolbarItem};
 
 const PATH_FIELD_WIDTH: gpui_kit::Rems = rems(32.);
@@ -309,7 +310,16 @@ impl WorkflowBar {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .can_drop(|data, _, _| {
+                                data.downcast_ref::<ExternalPaths>().is_some()
+                                    || data
+                                        .downcast_ref::<CompositionDrag>()
+                                        .is_some_and(|drag| drag.path.is_some())
+                            })
                             .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                                style.bg(drop_highlight)
+                            })
+                            .drag_over::<CompositionDrag>(move |style, _, _, _| {
                                 style.bg(drop_highlight)
                             })
                             .on_drop({
@@ -324,6 +334,29 @@ impl WorkflowBar {
                                             app.update(cx, |this, cx| {
                                                 this.dispatch_toolbar_path(
                                                     &field_id, &paths, window, cx,
+                                                );
+                                            });
+                                        }
+                                    });
+                                }
+                            })
+                            .on_drop({
+                                let app = app.clone();
+                                let field_id = field_id.clone();
+                                move |drag: &CompositionDrag, window, cx| {
+                                    let Some(path) = drag.path.clone() else {
+                                        return;
+                                    };
+                                    let app = app.clone();
+                                    let field_id = field_id.clone();
+                                    window.defer(cx, move |window, cx| {
+                                        if let Some(app) = app.upgrade() {
+                                            app.update(cx, |this, cx| {
+                                                this.dispatch_toolbar_path(
+                                                    &field_id,
+                                                    &[path],
+                                                    window,
+                                                    cx,
                                                 );
                                             });
                                         }
