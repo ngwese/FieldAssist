@@ -13,7 +13,10 @@ use super::regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 use super::selection::SamplePosition;
 use super::snap::nearest_zero_crossing;
 use crate::progress::ProgressHandle;
-use crate::waveform_data::WaveformDataProvider;
+use field_ui_components::{
+    LaneScope, MarkerRow, MarkersData, PaintRegion, PeakStatus, RegionGroup, RegionRow, RegionsData,
+    WaveformDataProvider, WaveformEditor,
+};
 use crate::monitor::MonitorChain;
 
 const DRAG_THRESHOLD_SAMPLES: usize = 0;
@@ -770,6 +773,112 @@ impl BufferDocument {
     }
 }
 
+impl RegionsData for BufferDocument {
+    fn fingerprint(&self) -> u64 {
+        let named = self.composition.read().unwrap();
+        let selection_len = self.selection.regions.len() as u64;
+        let named_count: u64 = named
+            .collections()
+            .iter()
+            .map(|col| col.regions.len() as u64)
+            .sum();
+        let collections = named.collections().len() as u64;
+        selection_len ^ (named_count << 16) ^ (collections << 40)
+    }
+
+    fn snapshot(&self) -> Vec<RegionGroup> {
+        let sample_rate = self.sample_rate();
+        let mut groups = Vec::new();
+        groups.push(region_group(
+            SELECTION_COLLECTION,
+            &self.selection.regions,
+            sample_rate,
+        ));
+        for collection in self.composition.read().unwrap().collections() {
+            groups.push(region_group(
+                &collection.name,
+                &collection.regions,
+                sample_rate,
+            ));
+        }
+        groups
+    }
+}
+
+impl MarkersData for BufferDocument {
+    fn fingerprint(&self) -> u64 {
+        let caret = self.current_position.as_ref().map(|pos| pos.sample as u64);
+        let composition = self.composition.read().unwrap();
+        let markers = composition.markers();
+        let hit = caret
+            .and_then(|frame| markers.get_at(frame).map(|marker| marker.id.0))
+            .unwrap_or(u64::MAX);
+        markers.generation() ^ ((markers.len() as u64) << 32) ^ hit.rotate_left(8)
+    }
+
+    fn snapshot(&self) -> Vec<MarkerRow> {
+        let caret = self.current_position.as_ref().map(|pos| pos.sample as u64);
+        let sample_rate = self.sample_rate();
+        let composition = self.composition.read().unwrap();
+        composition
+            .markers()
+            .iter()
+            .map(|marker| MarkerRow {
+                id: marker.id.0,
+                frame: marker.frame,
+                kind: marker.marker_type.clone(),
+                note: marker.note.clone().unwrap_or_default(),
+                color: composition.resolved_marker_color(&marker.marker_type),
+                stamp: format_stamp(marker.frame, sample_rate),
+                caret_highlight: Some(marker.frame) == caret,
+            })
+            .collect()
+    }
+}
+
+fn region_group(
+    name: &str,
+    regions: &[crate::model::Region],
+    sample_rate: u32,
+) -> RegionGroup {
+    RegionGroup {
+        collection: name.to_string(),
+        regions: regions
+            .iter()
+            .map(|region| {
+                let mut label = region
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{}–{}", region.start, region.end));
+                match &region.channels {
+                    ChannelScope::AllChannels => {}
+                    ChannelScope::Channels(channels) => {
+                        label.push_str("  ch ");
+                        label.push_str(
+                            &channels
+                                .iter()
+                                .map(|ch| ch.to_string())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        );
+                    }
+                }
+                RegionRow {
+                    id: region.id.0,
+                    label,
+                    start: region.start,
+                    stamp: format_stamp(region.start as u64, sample_rate),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn format_stamp(frame: u64, sample_rate: u32) -> String {
+    let secs = frame as f64 / f64::from(sample_rate.max(1));
+    format!("{secs:.2}s · {frame} smp")
+}
+
 impl WaveformDataProvider for BufferDocument {
     fn sample_rate(&self) -> u32 {
         self.composition.read().unwrap().sample_rate()
@@ -819,6 +928,136 @@ impl WaveformDataProvider for BufferDocument {
     ) {
         let composition = self.composition.read().unwrap();
         composition.fill_minmax_columns(channel, start, samples_per_pixel, dest);
+    }
+
+    fn peak_block(&self) -> usize {
+        crate::audio::PEAK_BLOCK
+    }
+}
+
+fn lane_scope_from_channels(channels: &ChannelScope) -> LaneScope {
+    match channels {
+        ChannelScope::AllChannels => LaneScope::All,
+        ChannelScope::Channels(list) => LaneScope::Channels(list.clone()),
+    }
+}
+
+fn channels_from_lane_scope(lanes: LaneScope) -> ChannelScope {
+    match lanes {
+        LaneScope::All => ChannelScope::all(),
+        LaneScope::Channels(list) => ChannelScope::Channels(list),
+    }
+}
+
+fn paint_region_from_model(region: &super::buffer::Region) -> PaintRegion {
+    PaintRegion {
+        start: region.start,
+        end: region.end,
+        channels: lane_scope_from_channels(&region.channels),
+    }
+}
+
+impl WaveformEditor for BufferDocument {
+    fn selection_span(&self) -> Option<(usize, usize)> {
+        self.selection.bounding_span()
+    }
+
+    fn playhead(&self) -> Option<(usize, LaneScope)> {
+        self.current_position.as_ref().map(|pos| {
+            (
+                pos.sample,
+                lane_scope_from_channels(&pos.channels),
+            )
+        })
+    }
+
+    fn snap_zero_crossings(&self) -> bool {
+        self.snap_zero_crossings
+    }
+
+    fn toggle_zero_crossing_snap(&mut self) {
+        BufferDocument::toggle_zero_crossing_snap(self);
+    }
+
+    fn channel_lanes(&self, lane: usize, alt: bool) -> LaneScope {
+        lane_scope_from_channels(&self.channel_scope_for_lane(lane, alt))
+    }
+
+    fn begin_replace(&mut self, anchor: usize, lanes: LaneScope, radius: usize) {
+        self.begin_region_replace(anchor, channels_from_lane_scope(lanes), radius);
+    }
+
+    fn begin_extend(&mut self, sample: usize, lanes: LaneScope, radius: usize) {
+        self.begin_region_extend(sample, channels_from_lane_scope(lanes), radius);
+    }
+
+    fn begin_disjoint(&mut self, anchor: usize, lanes: LaneScope, radius: usize) {
+        self.begin_region_disjoint(anchor, channels_from_lane_scope(lanes), radius);
+    }
+
+    fn update_drag(&mut self, sample: usize, radius: usize) {
+        self.update_region_drag(sample, radius);
+    }
+
+    fn finish_drag(&mut self) {
+        self.finish_region_drag();
+    }
+
+    fn click_without_drag(&mut self, sample: usize, lanes: LaneScope, add: bool) {
+        BufferDocument::click_without_drag(self, sample, channels_from_lane_scope(lanes), add);
+    }
+
+    fn selection_regions(&self) -> Vec<PaintRegion> {
+        self.selection
+            .regions
+            .iter()
+            .map(paint_region_from_model)
+            .collect()
+    }
+
+    fn named_regions(&self) -> Vec<PaintRegion> {
+        let composition = self.composition.read().unwrap();
+        composition
+            .collections()
+            .iter()
+            .flat_map(|collection| collection.regions.iter().map(paint_region_from_model))
+            .collect()
+    }
+
+    fn markers_for_paint(&self) -> Vec<(u64, [f32; 4])> {
+        let composition = self.composition.read().unwrap();
+        composition
+            .markers()
+            .iter()
+            .map(|marker| {
+                (
+                    marker.frame,
+                    composition.resolved_marker_color(&marker.marker_type),
+                )
+            })
+            .collect()
+    }
+
+    fn modified_ranges(&self) -> Vec<(u64, u64)> {
+        self.composition.read().unwrap().modified_ranges()
+    }
+
+    fn ranges_for_edit(&self, id: u64) -> Vec<(u64, u64)> {
+        self.composition
+            .read()
+            .unwrap()
+            .ranges_for_edit(EditId(id))
+    }
+
+    fn peak_status(&self) -> Option<PeakStatus> {
+        self.progress.snapshot().map(|state| PeakStatus {
+            message: state.message(),
+            fraction: state.fraction,
+        })
+    }
+
+    fn selection_position_sample(&self) -> Option<usize> {
+        BufferDocument::selection_position_sample(self)
     }
 }
 

@@ -1,129 +1,163 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Markers list panel driven by a host [`MarkersData`] provider.
+
 use std::rc::Rc;
 
 use gpui_kit::{
     actions, div, px, uniform_list, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, Rgba,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex, ActiveTheme as _, StyledExt as _,
 };
 
-use crate::components::waveform::WaveformDisplay;
-use crate::model::buffer::ChannelScope;
-use crate::model::composition::MarkerId;
-use crate::model::document::BufferDocument;
-
-actions!(markers_panel, [DeleteSelectedMarker]);
+#[allow(missing_docs)]
+mod marker_actions {
+    use super::*;
+    actions!(markers_panel, [DeleteSelectedMarker]);
+}
+/// Deletes the selected or caret-highlighted marker.
+pub use marker_actions::DeleteSelectedMarker;
 
 const CONTEXT: &str = "Markers";
 
-pub struct MarkersPanel {
-    document: Option<Entity<BufferDocument>>,
-    waveform: Option<Entity<WaveformDisplay>>,
-    selected: Option<MarkerId>,
-    last_markers: Option<(u64, usize, Option<u64>)>,
+/// One marker row for the list panel.
+#[derive(Clone, Debug)]
+pub struct MarkerRow {
+    /// Stable marker id.
+    pub id: u64,
+    /// Sample frame.
+    pub frame: u64,
+    /// Marker kind / type label.
+    pub kind: String,
+    /// Optional note text.
+    pub note: String,
+    /// RGBA swatch color.
+    pub color: [f32; 4],
+    /// Formatted time / sample stamp.
+    pub stamp: String,
+    /// Whether the caret highlights this marker.
+    pub caret_highlight: bool,
+}
+
+/// Host-provided marker list data.
+pub trait MarkersData {
+    /// Cheap change detector for list refresh.
+    fn fingerprint(&self) -> u64;
+    /// Snapshot of marker rows for rendering.
+    fn snapshot(&self) -> Vec<MarkerRow>;
+}
+
+/// Invoked when the user selects a marker.
+pub type MarkerSelectHandler = Rc<dyn Fn(u64, u64, &mut Window, &mut App)>;
+
+/// Invoked when the user deletes a marker.
+pub type MarkerDeleteHandler = Rc<dyn Fn(u64, &mut Window, &mut App)>;
+
+/// Detail-dock panel listing markers.
+pub struct MarkersPanel<D: MarkersData + 'static> {
+    title: SharedString,
+    document: Option<Entity<D>>,
+    on_select: Option<MarkerSelectHandler>,
+    on_delete: Option<MarkerDeleteHandler>,
+    selected: Option<u64>,
+    last_fingerprint: Option<u64>,
     focus_handle: FocusHandle,
     _document_observe: Option<Subscription>,
 }
 
-impl MarkersPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+impl<D: MarkersData + 'static> MarkersPanel<D> {
+    /// Create a panel with the given dock tab title.
+    pub fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         cx.bind_keys([
             KeyBinding::new("delete", DeleteSelectedMarker, Some(CONTEXT)),
             KeyBinding::new("backspace", DeleteSelectedMarker, Some(CONTEXT)),
         ]);
         Self {
+            title: title.into(),
             document: None,
-            waveform: None,
+            on_select: None,
+            on_delete: None,
             selected: None,
-            last_markers: None,
+            last_fingerprint: None,
             focus_handle: cx.focus_handle(),
             _document_observe: None,
         }
     }
 
-    fn markers_fingerprint(&self, cx: &App) -> Option<(u64, usize, Option<u64>)> {
-        let document = self.document.as_ref()?;
-        let doc = document.read(cx);
-        let caret = doc.current_position.as_ref().map(|pos| pos.sample as u64);
-        let composition = doc.composition.read().unwrap();
-        let markers = composition.markers();
-        let hit = caret.and_then(|frame| markers.get_at(frame).map(|marker| marker.id.0));
-        Some((markers.generation(), markers.len(), hit))
-    }
-
+    /// Bind a data source and select/delete callbacks.
     pub fn set_target(
         &mut self,
-        document: Entity<BufferDocument>,
-        waveform: Entity<WaveformDisplay>,
+        document: Entity<D>,
+        on_select: MarkerSelectHandler,
+        on_delete: MarkerDeleteHandler,
         cx: &mut Context<Self>,
     ) {
         self.document = Some(document);
-        self.waveform = Some(waveform);
+        self.on_select = Some(on_select);
+        self.on_delete = Some(on_delete);
         self.selected = None;
-        self.last_markers = self.markers_fingerprint(cx);
+        self.last_fingerprint = self.document.as_ref().map(|doc| doc.read(cx).fingerprint());
         if let Some(document) = &self.document {
             self._document_observe = Some(cx.observe(document, |this, _, cx| {
-                let next = this.markers_fingerprint(cx);
-                if this.last_markers == next {
+                let next = this.document.as_ref().map(|doc| doc.read(cx).fingerprint());
+                if this.last_fingerprint == next {
                     return;
                 }
-                this.last_markers = next;
+                this.last_fingerprint = next;
                 cx.notify();
             }));
         }
         cx.notify();
     }
 
+    /// Clear the bound document and selection.
     pub fn clear_target(&mut self, cx: &mut Context<Self>) {
         self.document = None;
-        self.waveform = None;
+        self.on_select = None;
+        self.on_delete = None;
         self.selected = None;
-        self.last_markers = None;
+        self.last_fingerprint = None;
         self._document_observe = None;
         cx.notify();
     }
 
-    fn delete_selected(&mut self, cx: &mut Context<Self>) {
+    fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(document) = self.document.clone() else {
             return;
         };
         let id = self.selected.or_else(|| {
-            let doc = document.read(cx);
-            let sample = doc.current_position.as_ref().map(|pos| pos.sample as u64)?;
-            doc.composition
-                .read()
-                .unwrap()
-                .markers()
-                .get_at(sample)
-                .map(|marker| marker.id)
+            document
+                .read(cx)
+                .snapshot()
+                .into_iter()
+                .find(|row| row.caret_highlight)
+                .map(|row| row.id)
         });
         let Some(id) = id else {
             return;
         };
-        document.update(cx, |doc, cx| {
-            doc.remove_marker(id);
-            cx.notify();
-        });
+        if let Some(on_delete) = self.on_delete.clone() {
+            on_delete(id, window, cx);
+        }
         self.selected = None;
         cx.notify();
     }
 }
 
-impl EventEmitter<PanelEvent> for MarkersPanel {}
+impl<D: MarkersData + 'static> EventEmitter<PanelEvent> for MarkersPanel<D> {}
 
-impl Focusable for MarkersPanel {
+impl<D: MarkersData + 'static> Focusable for MarkersPanel<D> {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl BasePanel for MarkersPanel {
+impl<D: MarkersData + 'static> BasePanel for MarkersPanel<D> {
     fn panel_name(&self) -> &'static str {
         "MarkersPanel"
     }
@@ -137,9 +171,9 @@ impl BasePanel for MarkersPanel {
     }
 }
 
-impl Panel for MarkersPanel {
+impl<D: MarkersData + 'static> Panel for MarkersPanel<D> {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        crate::components::dock_skin::DETAIL_TAB_MARKER
+        self.title.clone()
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -147,7 +181,7 @@ impl Panel for MarkersPanel {
     }
 }
 
-impl Render for MarkersPanel {
+impl<D: MarkersData + 'static> Render for MarkersPanel<D> {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let Some(document) = self.document.clone() else {
@@ -158,23 +192,17 @@ impl Render for MarkersPanel {
                 .size_full()
                 .into_any_element();
         };
-        let doc = document.read(cx);
-        let caret = doc.current_position.as_ref().map(|pos| pos.sample as u64);
-        let sample_rate = doc.sample_rate();
         let selected = self.selected;
-        let composition = doc.composition.read().unwrap();
         let rows: Rc<Vec<MarkerRow>> = Rc::new(
-            composition
-                .markers()
-                .iter()
-                .map(|marker| MarkerRow {
-                    id: marker.id,
-                    frame: marker.frame,
-                    kind: marker.marker_type.clone(),
-                    color: composition.resolved_marker_color(&marker.marker_type),
-                    note: marker.note.clone().unwrap_or_default(),
-                    stamp: format_stamp(marker.frame, sample_rate),
-                    selected: selected == Some(marker.id) || Some(marker.frame) == caret,
+            document
+                .read(cx)
+                .snapshot()
+                .into_iter()
+                .map(|mut row| {
+                    if selected == Some(row.id) {
+                        row.caret_highlight = true;
+                    }
+                    row
                 })
                 .collect(),
         );
@@ -185,8 +213,8 @@ impl Render for MarkersPanel {
             .id("markers-list")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &DeleteSelectedMarker, _, cx| {
-                this.delete_selected(cx);
+            .on_action(cx.listener(|this, _: &DeleteSelectedMarker, window, cx| {
+                this.delete_selected(window, cx);
             }))
             .size_full()
             .child(
@@ -214,16 +242,6 @@ impl Render for MarkersPanel {
     }
 }
 
-struct MarkerRow {
-    id: MarkerId,
-    frame: u64,
-    kind: String,
-    color: [f32; 4],
-    note: String,
-    stamp: String,
-    selected: bool,
-}
-
 struct RowTheme {
     accent: gpui_kit::Hsla,
     border: gpui_kit::Hsla,
@@ -233,8 +251,8 @@ struct RowTheme {
     muted_foreground: gpui_kit::Hsla,
 }
 
-fn marker_row_element(
-    entity: &Entity<MarkersPanel>,
+fn marker_row_element<D: MarkersData + 'static>(
+    entity: &Entity<MarkersPanel<D>>,
     row: &MarkerRow,
     theme: &RowTheme,
 ) -> impl IntoElement {
@@ -254,7 +272,7 @@ fn marker_row_element(
         label.push_str(&row.note);
     }
     h_flex()
-        .id(("marker-row", id.0))
+        .id(("marker-row", id))
         .w_full()
         .flex_none()
         .items_center()
@@ -263,12 +281,12 @@ fn marker_row_element(
         .py_0p5()
         .rounded(px(4.))
         .border_1()
-        .border_color(if row.selected {
+        .border_color(if row.caret_highlight {
             theme.accent
         } else {
             theme.border
         })
-        .bg(if row.selected {
+        .bg(if row.caret_highlight {
             theme.accent.opacity(0.25)
         } else {
             theme.secondary
@@ -279,17 +297,8 @@ fn marker_row_element(
             entity.update(cx, |this, cx| {
                 this.selected = Some(id);
                 this.focus_handle.focus(window, cx);
-                let Some(document) = this.document.as_ref() else {
-                    return;
-                };
-                document.update(cx, |doc, cx| {
-                    doc.set_position(frame as usize, ChannelScope::all());
-                    cx.notify();
-                });
-                if let Some(waveform) = this.waveform.as_ref() {
-                    waveform.update(cx, |view, cx| {
-                        view.scroll_sample_into_view(frame as f64, cx);
-                    });
+                if let Some(on_select) = this.on_select.clone() {
+                    on_select(id, frame, window, cx);
                 }
                 cx.notify();
             });
@@ -315,9 +324,4 @@ fn marker_row_element(
                 .text_color(theme.muted_foreground)
                 .child(row.stamp.clone()),
         )
-}
-
-fn format_stamp(frame: u64, sample_rate: u32) -> String {
-    let secs = frame as f64 / f64::from(sample_rate.max(1));
-    format!("{secs:.2}s · {frame} smp")
 }

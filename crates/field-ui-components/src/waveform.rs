@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Multi-lane waveform view with selection, markers, and edit overlays.
+//!
+//! Hosts supply sample data via [`WaveformDataProvider`] and overlays /
+//! mutations via [`WaveformEditor`].
+
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    actions, canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context,
-    DispatchPhase, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
-    Pixels, Render, Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context, DispatchPhase,
+    Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder, Pixels, Render,
+    Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 use gpui_kit::component::{
     h_flex,
@@ -16,14 +20,16 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, StyledExt as _,
 };
 
-use crate::audio::PEAK_BLOCK;
-use crate::model::buffer::Region;
-use crate::model::composition::EditId;
-use crate::model::document::BufferDocument;
+use crate::waveform_data::WaveformDataProvider;
+use crate::waveform_editor::{LaneScope, PaintRegion, WaveformEditor};
 
-pub use crate::waveform_data::WaveformDataProvider;
-
-actions!(waveform, [ToggleZeroCrossing]);
+#[allow(missing_docs)]
+mod waveform_actions {
+    use gpui_kit::actions;
+    actions!(waveform, [ToggleZeroCrossing]);
+}
+/// Toggle zero-crossing snap for region / caret placement.
+pub use waveform_actions::ToggleZeroCrossing;
 
 const ZOOM_FACTOR: f64 = 1.25;
 const MIN_SAMPLES_PER_PIXEL: f64 = 1.0 / 50.0;
@@ -60,8 +66,12 @@ enum Drag {
     },
 }
 
-pub struct WaveformDisplay {
-    document: Entity<BufferDocument>,
+/// Multi-lane waveform display driven by host document traits.
+pub struct WaveformDisplay<D>
+where
+    D: WaveformDataProvider + WaveformEditor + 'static,
+{
+    document: Entity<D>,
     start_sample: f64,
     samples_per_pixel: f64,
     viewport_width: f32,
@@ -72,15 +82,19 @@ pub struct WaveformDisplay {
     scrollbar_width: f32,
     drag: Option<Drag>,
     hover_sample: Option<usize>,
-    hovered_edit: Option<EditId>,
+    hovered_edit: Option<u64>,
     pointer_over: bool,
     focus_handle: FocusHandle,
 }
 
-impl WaveformDisplay {
-    pub fn new(document: Entity<BufferDocument>, cx: &mut Context<Self>) -> Self {
+impl<D> WaveformDisplay<D>
+where
+    D: WaveformDataProvider + WaveformEditor + 'static,
+{
+    /// Observe `document` and fit an initial overview zoom.
+    pub fn new(document: Entity<D>, cx: &mut Context<Self>) -> Self {
         cx.observe(&document, |_, _, cx| cx.notify()).detach();
-        let frames = document.read(cx).frames();
+        let frames = WaveformDataProvider::frames(document.read(cx));
         let samples_per_pixel = if frames == 0 {
             1.0
         } else {
@@ -104,15 +118,18 @@ impl WaveformDisplay {
         }
     }
 
+    /// Sample under the pointer, if any.
     pub fn hover_sample(&self) -> Option<usize> {
         self.hover_sample
     }
 
+    /// Whether the pointer is over this view (for keymap scoping).
     pub fn pointer_over(&self) -> bool {
         self.pointer_over
     }
 
-    pub fn set_hovered_edit(&mut self, id: Option<EditId>, cx: &mut Context<Self>) {
+    /// Highlight ranges for the hovered edit history card (`None` clears).
+    pub fn set_hovered_edit(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
         if self.hovered_edit == id {
             return;
         }
@@ -120,14 +137,18 @@ impl WaveformDisplay {
         cx.notify();
     }
 
-    pub fn scroll_edit_into_view(&mut self, id: EditId, cx: &mut Context<Self>) {
+    /// Pan so edit `id` ranges are visible (id `0` with no ranges → frame 0).
+    pub fn scroll_edit_into_view(&mut self, id: u64, cx: &mut Context<Self>) {
         let (ranges, frames) = {
-            let composition = self.document.read(cx).composition.read().unwrap();
-            (composition.ranges_for_edit(id), composition.frames() as f64)
+            let doc = self.document.read(cx);
+            (
+                WaveformEditor::ranges_for_edit(doc, id),
+                WaveformDataProvider::frames(doc) as f64,
+            )
         };
         let before = self.start_sample;
         if ranges.is_empty() {
-            if id.0 == 0 {
+            if id == 0 {
                 apply_scroll_to_frame(
                     &mut self.start_sample,
                     self.samples_per_pixel,
@@ -150,6 +171,7 @@ impl WaveformDisplay {
         }
     }
 
+    /// Pan so `sample` stays inside the padded viewport.
     pub fn scroll_sample_into_view(&mut self, sample: f64, cx: &mut Context<Self>) {
         let frames = self.frames(cx) as f64;
         let before = self.start_sample;
@@ -165,33 +187,35 @@ impl WaveformDisplay {
         }
     }
 
+    /// Zoom in around the playhead (or viewport center).
     pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
         let anchor = self.anchor_sample(cx);
         self.zoom_at(1.0 / ZOOM_FACTOR, anchor, cx);
         cx.notify();
     }
 
+    /// Zoom out around the playhead (or viewport center).
     pub fn zoom_out(&mut self, cx: &mut Context<Self>) {
         let anchor = self.anchor_sample(cx);
         self.zoom_at(ZOOM_FACTOR, anchor, cx);
         cx.notify();
     }
 
+    /// Fit the full buffer into the viewport.
     pub fn fit(&mut self, cx: &mut Context<Self>) {
         self.start_sample = 0.0;
         self.samples_per_pixel = self.max_samples_per_pixel(cx);
         cx.notify();
     }
 
+    /// Frame the selection, or scroll to the playhead when none is set.
     pub fn frame(&mut self, cx: &mut Context<Self>) {
         let frames = self.frames(cx) as f64;
         let (region, position) = {
             let doc = self.document.read(cx);
-            let region = doc
-                .selection
-                .bounding_span()
+            let region = WaveformEditor::selection_span(doc)
                 .map(|(start, end)| (start as f64, end as f64 + 1.0));
-            let position = doc.current_position.as_ref().map(|p| p.sample as f64);
+            let position = WaveformEditor::playhead(doc).map(|(sample, _)| sample as f64);
             (region, position)
         };
         if let Some((start, end)) = region {
@@ -215,6 +239,7 @@ impl WaveformDisplay {
         cx.notify();
     }
 
+    /// Clear interaction state and reset overview zoom.
     pub fn reset_view(&mut self, cx: &mut Context<Self>) {
         self.drag = None;
         self.hover_sample = None;
@@ -234,20 +259,18 @@ impl WaveformDisplay {
     }
 
     fn frames(&self, cx: &App) -> usize {
-        self.document.read(cx).frames()
+        WaveformDataProvider::frames(self.document.read(cx))
     }
 
     fn anchor_sample(&self, cx: &App) -> f64 {
-        self.document
-            .read(cx)
-            .selection_position_sample()
+        WaveformEditor::selection_position_sample(self.document.read(cx))
             .map(|s| s as f64)
             .unwrap_or_else(|| self.start_sample + self.visible_samples() * 0.5)
     }
 
     fn max_samples_per_pixel(&self, cx: &App) -> f64 {
         let width = self.viewport_width.max(1.0) as f64;
-        let frames = self.document.read(cx).frames() as f64;
+        let frames = WaveformDataProvider::frames(self.document.read(cx)) as f64;
         (frames / width).max(MIN_SAMPLES_PER_PIXEL)
     }
 
@@ -402,7 +425,7 @@ impl WaveformDisplay {
                     let sample = self.sample_at_x(x).round() as usize;
                     let radius = self.marker_snap_radius();
                     self.document.update(cx, |doc, cx| {
-                        doc.update_region_drag(sample, radius);
+                        WaveformEditor::update_drag(doc, sample, radius);
                         cx.notify();
                     });
                     cx.notify();
@@ -445,14 +468,14 @@ impl WaveformDisplay {
                 let radius = self.marker_snap_radius();
                 let sample = self.sample_at_x(x).round() as usize;
                 self.document.update(cx, |doc, cx| {
-                    let scope = doc.channel_scope_for_lane(lane, alt);
+                    let scope = WaveformEditor::channel_lanes(doc, lane, alt);
                     if dragging || shift {
                         if dragging {
-                            doc.update_region_drag(sample, radius);
+                            WaveformEditor::update_drag(doc, sample, radius);
                         }
-                        doc.finish_region_drag();
+                        WaveformEditor::finish_drag(doc);
                     } else {
-                        doc.click_without_drag(anchor_sample, scope, ctrl);
+                        WaveformEditor::click_without_drag(doc, anchor_sample, scope, ctrl);
                     }
                     cx.notify();
                 });
@@ -463,7 +486,10 @@ impl WaveformDisplay {
     }
 }
 
-fn install_global_drag_listeners(entity: Entity<WaveformDisplay>, window: &mut Window) {
+fn install_global_drag_listeners<D>(entity: Entity<WaveformDisplay<D>>, window: &mut Window)
+where
+    D: WaveformDataProvider + WaveformEditor + 'static,
+{
     window.on_mouse_event({
         let entity = entity.clone();
         move |event: &MouseMoveEvent, phase, _, cx| {
@@ -544,7 +570,7 @@ fn paint_region_endpoint(
     bounds: Bounds<Pixels>,
     sample: usize,
     channel: usize,
-    channels: &crate::model::ChannelScope,
+    channels: &LaneScope,
     start_sample: f64,
     samples_per_pixel: f64,
     base_color: gpui_kit::Hsla,
@@ -572,7 +598,7 @@ fn paint_region_endpoint(
 
 fn paint_region_overlay(
     bounds: Bounds<Pixels>,
-    region: &Region,
+    region: &PaintRegion,
     channel: usize,
     start_sample: f64,
     samples_per_pixel: f64,
@@ -835,7 +861,7 @@ fn paint_modified_bars(
 
 fn paint_lane(
     bounds: Bounds<Pixels>,
-    provider: &BufferDocument,
+    provider: &(impl WaveformDataProvider + WaveformEditor),
     channel: usize,
     start_sample: f64,
     samples_per_pixel: f64,
@@ -853,25 +879,21 @@ fn paint_lane(
         return;
     }
 
-    let named = provider.composition.read().unwrap();
-    for collection in named.collections() {
-        for region in &collection.regions {
-            paint_region_overlay(
-                bounds,
-                region,
-                channel,
-                start_sample,
-                samples_per_pixel,
-                color.opacity(0.55),
-                window,
-            );
-        }
-    }
-    drop(named);
-    for region in &provider.selection.regions {
+    for region in WaveformEditor::named_regions(provider) {
         paint_region_overlay(
             bounds,
-            region,
+            &region,
+            channel,
+            start_sample,
+            samples_per_pixel,
+            color.opacity(0.55),
+            window,
+        );
+    }
+    for region in WaveformEditor::selection_regions(provider) {
+        paint_region_overlay(
+            bounds,
+            &region,
             channel,
             start_sample,
             samples_per_pixel,
@@ -895,6 +917,7 @@ fn paint_lane(
 
     let frames = WaveformDataProvider::frames(provider);
     let cols = width.ceil() as usize;
+    let peak_block = WaveformDataProvider::peak_block(provider);
 
     // Overview paint uses peak bins. Folding PCM while caches are still
     // building would decode on the UI thread and delay the progress UI.
@@ -930,7 +953,7 @@ fn paint_lane(
             let last =
                 ((start_sample + cols as f64 * samples_per_pixel).ceil() as usize).min(frames);
             let visible = last.saturating_sub(first);
-            let fold_from_samples = samples_per_pixel < PEAK_BLOCK as f64
+            let fold_from_samples = samples_per_pixel < peak_block as f64
                 && visible > 0
                 && visible <= cols.saturating_mul(64);
 
@@ -1011,11 +1034,11 @@ fn paint_lane(
         );
     }
 
-    if let Some(pos) = &provider.current_position {
-        if pos.channels.applies_to(channel) {
+    if let Some((sample, lanes)) = WaveformEditor::playhead(provider) {
+        if lanes.applies_to(channel) {
             paint_vertical_bar(
                 bounds,
-                pos.sample,
+                sample,
                 start_sample,
                 samples_per_pixel,
                 POSITION_BAR_COLOR,
@@ -1088,45 +1111,41 @@ fn paint_scrollbar(
     ));
 }
 
-impl Focusable for WaveformDisplay {
+impl<D> Focusable for WaveformDisplay<D>
+where
+    D: WaveformDataProvider + WaveformEditor + 'static,
+{
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for WaveformDisplay {
+impl<D> Render for WaveformDisplay<D>
+where
+    D: WaveformDataProvider + WaveformEditor + 'static,
+{
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.clamp_scroll(cx);
         let theme = cx.theme().clone();
         let document = self.document.clone();
-        let snap = self.document.read(cx).snap_zero_crossings;
+        let snap = WaveformEditor::snap_zero_crossings(self.document.read(cx));
         let start_sample = self.start_sample;
         let samples_per_pixel = self.samples_per_pixel;
         let hover_sample = self.hover_sample;
         let (modified_ranges, hover_ranges, markers) = {
             let doc = self.document.read(cx);
             let hovered = self.hovered_edit;
-            let composition = doc.composition.read().unwrap();
-            let modified = composition.modified_ranges();
+            let modified = WaveformEditor::modified_ranges(doc);
             let hover = hovered
-                .map(|id| composition.ranges_for_edit(id))
+                .map(|id| WaveformEditor::ranges_for_edit(doc, id))
                 .unwrap_or_default();
-            let markers: Vec<(u64, [f32; 4])> = composition
-                .markers()
-                .iter()
-                .map(|marker| {
-                    (
-                        marker.frame,
-                        composition.resolved_marker_color(&marker.marker_type),
-                    )
-                })
-                .collect();
+            let markers = WaveformEditor::markers_for_paint(doc);
             (modified, hover, markers)
         };
         let entity = cx.entity();
         let channel_count = WaveformDataProvider::channel_count(self.document.read(cx));
         let is_empty = WaveformDataProvider::frames(self.document.read(cx)) == 0;
-        let job_progress = self.document.read(cx).progress.snapshot();
+        let job_progress = WaveformEditor::peak_status(self.document.read(cx));
 
         v_flex()
             .id("waveform-root")
@@ -1152,11 +1171,11 @@ impl Render for WaveformDisplay {
                     .overflow_y_scroll()
                     .on_action(cx.listener(|this, _: &ToggleZeroCrossing, _, cx| {
                         this.document
-                            .update(cx, |doc, _| doc.toggle_zero_crossing_snap());
+                            .update(cx, |doc, _| WaveformEditor::toggle_zero_crossing_snap(doc));
                         cx.notify();
                     }))
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                        if this.document.read(cx).frames() == 0 {
+                        if WaveformDataProvider::frames(this.document.read(cx)) == 0 {
                             return;
                         }
                         let delta = event.delta.pixel_delta(px(16.));
@@ -1252,13 +1271,12 @@ impl Render for WaveformDisplay {
                                                                 });
                                                             let alt = event.modifiers.alt;
                                                             let radius = this.marker_snap_radius();
-                                                            let scope = this
-                                                                .document
-                                                                .read(cx)
-                                                                .channel_scope_for_lane(ch, alt);
                                                             this.document.update(cx, |doc, cx| {
-                                                                doc.begin_region_extend(
-                                                                    sample, scope, radius,
+                                                                let scope = WaveformEditor::channel_lanes(
+                                                                    doc, ch, alt,
+                                                                );
+                                                                WaveformEditor::begin_extend(
+                                                                    doc, sample, scope, radius,
                                                                 );
                                                                 cx.notify();
                                                             });
@@ -1266,18 +1284,17 @@ impl Render for WaveformDisplay {
                                                             let alt = event.modifiers.alt;
                                                             let ctrl = event.modifiers.control;
                                                             let radius = this.marker_snap_radius();
-                                                            let scope = this
-                                                                .document
-                                                                .read(cx)
-                                                                .channel_scope_for_lane(ch, alt);
                                                             this.document.update(cx, |doc, cx| {
+                                                                let scope = WaveformEditor::channel_lanes(
+                                                                    doc, ch, alt,
+                                                                );
                                                                 if ctrl {
-                                                                    doc.begin_region_disjoint(
-                                                                        sample, scope, radius,
+                                                                    WaveformEditor::begin_disjoint(
+                                                                        doc, sample, scope, radius,
                                                                     );
                                                                 } else {
-                                                                    doc.begin_region_replace(
-                                                                        sample, scope, radius,
+                                                                    WaveformEditor::begin_replace(
+                                                                        doc, sample, scope, radius,
                                                                     );
                                                                 }
                                                                 cx.notify();
@@ -1321,7 +1338,7 @@ impl Render for WaveformDisplay {
                                                             let provider = document.read(cx);
                                                             paint_lane(
                                                                 bounds,
-                                                                &provider,
+                                                                &*provider,
                                                                 ch,
                                                                 start_sample,
                                                                 samples_per_pixel,
@@ -1348,7 +1365,7 @@ impl Render for WaveformDisplay {
             )
             .when(!is_empty, |this| {
                 this.child({
-                    let frames = self.document.read(cx).frames();
+                    let frames = WaveformDataProvider::frames(self.document.read(cx));
                     let start = start_sample;
                     let spp = samples_per_pixel;
                     let track = theme.scrollbar;

@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Monitor / DSP parameter panel driven by host snapshots and callbacks.
+
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClickEvent, Context,
-    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window,
 };
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
@@ -19,73 +23,103 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, Icon, IconNamed, Sizable as _,
 };
 
-use crate::app::AppView;
-use crate::model::document::BufferDocument;
-use crate::monitor::{
-    menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode, FaustUiRoot, MonitorChain,
-};
+use crate::param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
 
+/// Host callbacks for monitor panel interactions.
+#[derive(Clone)]
+pub struct MonitorCallbacks {
+    /// Set the monitor chain (`None` = Direct).
+    pub set_chain: Rc<dyn Fn(Option<&str>, &mut Window, &mut App)>,
+    /// Write a parameter value.
+    pub set_param: Rc<dyn Fn(&str, f32, &mut App)>,
+    /// Toggle parameter pin.
+    pub toggle_pin: Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Enable or disable a playback channel index.
+    pub set_playback_channel: Rc<dyn Fn(usize, bool, &mut Window, &mut App)>,
+    /// Select an output device (`None` = system default).
+    pub select_output: Rc<dyn Fn(Option<&str>, &mut Window, &mut App)>,
+}
+
+/// Provides a [`MonitorSnapshot`] on each render.
+pub type MonitorSnapshotProvider = Rc<dyn Fn(&App) -> Option<MonitorSnapshot>>;
+
+struct PinIcon;
+
+impl IconNamed for PinIcon {
+    fn path(self) -> SharedString {
+        "icons/pin.svg".into()
+    }
+}
+
+/// Detail-dock monitor panel.
 pub struct MonitorPanel {
-    app: WeakEntity<AppView>,
-    document: Option<Entity<BufferDocument>>,
+    title: SharedString,
+    snapshot: Option<MonitorSnapshotProvider>,
+    callbacks: Option<MonitorCallbacks>,
     focus_handle: FocusHandle,
     sliders: HashMap<String, Entity<SliderState>>,
     slider_defaults: HashMap<String, f32>,
     slider_subs: Vec<Subscription>,
-    bound_json: Option<&'static str>,
-    _document_observe: Option<Subscription>,
+    bound_schema: Option<u64>,
 }
 
 impl MonitorPanel {
-    pub fn new(app: WeakEntity<AppView>, cx: &mut Context<Self>) -> Self {
+    /// Create a monitor panel with the given dock tab title.
+    pub fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
-            app,
-            document: None,
+            title: title.into(),
+            snapshot: None,
+            callbacks: None,
             focus_handle: cx.focus_handle(),
             sliders: HashMap::new(),
             slider_defaults: HashMap::new(),
             slider_subs: Vec::new(),
-            bound_json: None,
-            _document_observe: None,
+            bound_schema: None,
         }
     }
 
-    pub fn set_target(&mut self, document: Entity<BufferDocument>, cx: &mut Context<Self>) {
-        self.document = Some(document);
-        self.bound_json = None;
-        if let Some(document) = &self.document {
-            self._document_observe = Some(cx.observe(document, |_, _, cx| cx.notify()));
-        }
-        cx.notify();
-    }
-
-    pub fn clear_target(&mut self, cx: &mut Context<Self>) {
-        self.document = None;
-        self._document_observe = None;
+    /// Bind a snapshot provider and interaction callbacks.
+    pub fn set_host(
+        &mut self,
+        snapshot: MonitorSnapshotProvider,
+        callbacks: MonitorCallbacks,
+        cx: &mut Context<Self>,
+    ) {
+        self.snapshot = Some(snapshot);
+        self.callbacks = Some(callbacks);
+        self.bound_schema = None;
         self.sliders.clear();
         self.slider_defaults.clear();
         self.slider_subs.clear();
-        self.bound_json = None;
         cx.notify();
     }
 
-    fn ensure_sliders(&mut self, json: Option<&'static str>, cx: &mut Context<Self>) {
-        if self.bound_json == json {
-            return;
-        }
-        self.bound_json = json;
+    /// Clear the host binding.
+    pub fn clear_host(&mut self, cx: &mut Context<Self>) {
+        self.snapshot = None;
+        self.callbacks = None;
         self.sliders.clear();
         self.slider_defaults.clear();
         self.slider_subs.clear();
-        let Some(json) = json else {
+        self.bound_schema = None;
+        cx.notify();
+    }
+
+    fn ensure_sliders(&mut self, snap: &MonitorSnapshot, cx: &mut Context<Self>) {
+        if self.bound_schema == Some(snap.schema_id) {
             return;
-        };
-        let Ok(root) = parse_ui_json(json) else {
+        }
+        self.bound_schema = Some(snap.schema_id);
+        self.sliders.clear();
+        self.slider_defaults.clear();
+        self.slider_subs.clear();
+        let Some(callbacks) = self.callbacks.clone() else {
             return;
         };
         bind_sliders(
-            &root.ui,
-            &self.app,
+            &snap.params_ui,
+            &snap.live_params,
+            &callbacks,
             &mut self.sliders,
             &mut self.slider_defaults,
             &mut self.slider_subs,
@@ -118,7 +152,7 @@ impl BasePanel for MonitorPanel {
 
 impl Panel for MonitorPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        crate::components::dock_skin::DETAIL_TAB_MONITOR
+        self.title.clone()
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -130,29 +164,39 @@ impl Render for MonitorPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let app = self.app.clone();
-        let output_selected = app
-            .upgrade()
-            .and_then(|app| app.read(cx).output_device().map(str::to_string));
+        let snap = self.snapshot.as_ref().and_then(|provider| provider(cx));
+        let output_selected = snap.as_ref().and_then(|s| s.output_device.clone());
+        let output_devices = snap
+            .as_ref()
+            .map(|s| s.output_devices.clone())
+            .unwrap_or_default();
+        let callbacks = self.callbacks.clone();
 
         v_flex()
             .id("monitor-panel")
             .track_focus(&self.focus_handle)
             .size_full()
-            .child(self.render_chain_scroll(muted, theme.accent, theme.secondary, cx))
-            .child(output_section(output_selected, app, muted, theme.border))
+            .child(self.render_chain_scroll(snap, muted, theme.accent, theme.secondary, cx))
+            .child(output_section(
+                output_selected,
+                output_devices,
+                callbacks,
+                muted,
+                theme.border,
+            ))
     }
 }
 
 impl MonitorPanel {
     fn render_chain_scroll(
         &mut self,
+        snap: Option<MonitorSnapshot>,
         muted: gpui_kit::Hsla,
         accent: gpui_kit::Hsla,
         secondary: gpui_kit::Hsla,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let Some(document) = self.document.clone() else {
+        let Some(snap) = snap else {
             return v_flex()
                 .id("monitor-chain-scroll")
                 .flex_1()
@@ -160,57 +204,13 @@ impl MonitorPanel {
                 .overflow_y_scroll()
                 .into_any_element();
         };
-
-        let (chain_id, playback, channel_count, labels, params_pinned) = {
-            let doc = document.read(cx);
-            let composition = doc.composition.read().unwrap();
-            let n = composition.channel_count();
-            let labels: Vec<String> = (0..n).map(|ch| composition.channel_label(ch)).collect();
-            (
-                composition.monitor_chain().map(str::to_string),
-                composition.playback_channels().map(|ch| ch.to_vec()),
-                n,
-                labels,
-                doc.monitor_params_pinned,
-            )
-        };
-        let chain = chain_id.as_deref().and_then(MonitorChain::parse);
-        let ui_json = self
-            .app
-            .upgrade()
-            .and_then(|app| app.read(cx).monitor_ui_json());
-        self.ensure_sliders(ui_json, cx);
-        let meters = self
-            .app
-            .upgrade()
-            .map(|app| app.read(cx).monitor_meters())
-            .unwrap_or_default();
-        let params: HashMap<String, f32> = ui_json
-            .and_then(|json| parse_ui_json(json).ok())
-            .map(|root| {
-                collect_live_addresses(&root)
-                    .into_iter()
-                    .filter_map(|address| {
-                        let value = self
-                            .app
-                            .upgrade()
-                            .and_then(|app| app.read(cx).monitor_param(&address));
-                        value.map(|value| (address, value))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let selected_count = match playback.as_deref() {
+        self.ensure_sliders(&snap, cx);
+        let callbacks = self.callbacks.clone();
+        let selected_count = match snap.playback_channels.as_deref() {
             Some(channels) => channels.len(),
-            None => channel_count,
+            None => snap.channel_labels.len(),
         };
-        let expected = chain.map(MonitorChain::num_inputs);
-        let app = self.app.clone();
-        let chain_label = chain
-            .map(MonitorChain::label)
-            .unwrap_or("Direct")
-            .to_string();
+        let expected = snap.expected_inputs;
 
         v_flex()
             .id("monitor-chain-scroll")
@@ -220,11 +220,17 @@ impl MonitorPanel {
             .px_2()
             .py_2()
             .gap_3()
-            .child(chain_header(params_pinned, app.clone(), muted, cx))
+            .child(chain_header(
+                snap.params_pinned,
+                callbacks.clone(),
+                muted,
+                cx,
+            ))
             .child(chain_dropdown(
-                chain_label,
-                chain_id.clone(),
-                app.clone(),
+                snap.chain_label.clone(),
+                snap.chain_id.clone(),
+                snap.chain_choices.clone(),
+                callbacks.clone(),
                 muted,
             ))
             .child(section_label("Playback channels", muted))
@@ -240,42 +246,34 @@ impl MonitorPanel {
                 h_flex()
                     .gap_2()
                     .flex_wrap()
-                    .children(labels.iter().enumerate().map(|(i, label)| {
-                        let checked = match playback.as_deref() {
+                    .children(snap.channel_labels.iter().enumerate().map(|(i, label)| {
+                        let checked = match snap.playback_channels.as_deref() {
                             Some(channels) => channels.contains(&i),
                             None => true,
                         };
-                        let app = app.clone();
+                        let callbacks = callbacks.clone();
                         Checkbox::new(("monitor-ch", i as u64))
                             .label(label.clone())
                             .checked(checked)
                             .on_click(move |enabled: &bool, window, cx| {
-                                if let Some(app) = app.upgrade() {
-                                    app.update(cx, |this, cx| {
-                                        this.set_playback_channel(i, *enabled, window, cx);
-                                    });
+                                if let Some(cb) = &callbacks {
+                                    (cb.set_playback_channel)(i, *enabled, window, cx);
                                 }
                             })
                     })),
             )
-            .children(
-                ui_json
-                    .and_then(|json| parse_ui_json(json).ok())
-                    .map(|root| {
-                        render_schema(
-                            &root,
-                            &self.sliders,
-                            &self.slider_defaults,
-                            &params,
-                            &meters,
-                            app.clone(),
-                            muted,
-                            accent,
-                            secondary,
-                            cx,
-                        )
-                    }),
-            )
+            .child(render_schema(
+                &snap.params_ui,
+                &self.sliders,
+                &self.slider_defaults,
+                &snap.live_params,
+                &snap.meters,
+                callbacks,
+                muted,
+                accent,
+                secondary,
+                cx,
+            ))
             .into_any_element()
     }
 }
@@ -286,7 +284,8 @@ fn section_label(text: &'static str, muted: gpui_kit::Hsla) -> impl IntoElement 
 
 fn output_section(
     selected: Option<String>,
-    app: WeakEntity<AppView>,
+    devices: Vec<String>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
     border: gpui_kit::Hsla,
 ) -> impl IntoElement {
@@ -299,12 +298,13 @@ fn output_section(
         .py_2()
         .gap_1()
         .child(section_label("Output", muted))
-        .child(output_dropdown(selected, app, muted))
+        .child(output_dropdown(selected, devices, callbacks, muted))
 }
 
 fn output_dropdown(
     selected: Option<String>,
-    app: WeakEntity<AppView>,
+    devices: Vec<String>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
 ) -> impl IntoElement {
     let label = selected
@@ -317,7 +317,7 @@ fn output_dropdown(
         .label(label)
         .dropdown_menu(
             move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<PopupMenu>| {
-                let app_default = app.clone();
+                let callbacks_default = callbacks.clone();
                 let default_selected = selected.is_none();
                 menu = menu.item(
                     PopupMenuItem::element(move |_, _| {
@@ -325,50 +325,36 @@ fn output_dropdown(
                     })
                     .checked(default_selected)
                     .on_click(move |_, window, cx| {
-                        if let Some(app) = app_default.upgrade() {
-                            app.update(cx, |this, cx| {
-                                this.select_output_device(None, window, cx);
-                            });
+                        if let Some(cb) = &callbacks_default {
+                            (cb.select_output)(None, window, cx);
                         }
                     }),
                 );
-                if let Ok(devices) = crate::playback::list_output_devices() {
-                    for info in devices {
-                        let app = app.clone();
-                        let name = info.name.clone();
-                        let checked = selected.as_deref() == Some(name.as_str());
-                        let item_label = name.clone();
-                        menu = menu.item(
-                            PopupMenuItem::element(move |_, _| {
-                                div().text_xs().text_color(muted).child(item_label.clone())
-                            })
-                            .checked(checked)
-                            .on_click(move |_, window, cx| {
-                                if let Some(app) = app.upgrade() {
-                                    app.update(cx, |this, cx| {
-                                        this.select_output_device(Some(&name), window, cx);
-                                    });
-                                }
-                            }),
-                        );
-                    }
+                for name in &devices {
+                    let callbacks = callbacks.clone();
+                    let checked = selected.as_deref() == Some(name.as_str());
+                    let item_label = name.clone();
+                    let name = name.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            div().text_xs().text_color(muted).child(item_label.clone())
+                        })
+                        .checked(checked)
+                        .on_click(move |_, window, cx| {
+                            if let Some(cb) = &callbacks {
+                                (cb.select_output)(Some(&name), window, cx);
+                            }
+                        }),
+                    );
                 }
                 menu
             },
         )
 }
 
-struct PinIcon;
-
-impl IconNamed for PinIcon {
-    fn path(self) -> gpui_kit::SharedString {
-        "icons/pin.svg".into()
-    }
-}
-
 fn chain_header(
     pinned: bool,
-    app: WeakEntity<AppView>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
     cx: &App,
 ) -> impl IntoElement {
@@ -395,11 +381,9 @@ fn chain_header(
                     "Pin monitor parameters"
                 })
                 .toggled(pinned)
-                .on_click(move |_, _, cx| {
-                    if let Some(app) = app.upgrade() {
-                        app.update(cx, |this, cx| {
-                            this.toggle_monitor_params_pin(cx);
-                        });
+                .on_click(move |_, window, cx| {
+                    if let Some(cb) = &callbacks {
+                        (cb.toggle_pin)(window, cx);
                     }
                 }),
         )
@@ -410,7 +394,7 @@ fn menu_dropdown(
     address: String,
     items: Vec<(String, f32)>,
     current: f32,
-    app: WeakEntity<AppView>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
 ) -> impl IntoElement {
     let selected = items
@@ -432,7 +416,7 @@ fn menu_dropdown(
             .label(selected)
             .dropdown_menu(move |mut menu, _, _| {
                 for (name, value) in &items {
-                    let app = app.clone();
+                    let callbacks = callbacks.clone();
                     let address = address.clone();
                     let name_el = name.clone();
                     let checked = (current - value).abs() < 0.01;
@@ -443,10 +427,8 @@ fn menu_dropdown(
                         })
                         .checked(checked)
                         .on_click(move |_, _, cx| {
-                            if let Some(app) = app.upgrade() {
-                                app.update(cx, |this, _| {
-                                    this.set_monitor_param(&address, value);
-                                });
+                            if let Some(cb) = &callbacks {
+                                (cb.set_param)(&address, value, cx);
                             }
                         }),
                     );
@@ -459,7 +441,8 @@ fn menu_dropdown(
 fn chain_dropdown(
     label: String,
     current: Option<String>,
-    app: WeakEntity<AppView>,
+    choices: Vec<ChainChoice>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
 ) -> impl IntoElement {
     Button::new("monitor-chain")
@@ -469,35 +452,19 @@ fn chain_dropdown(
         .label(label)
         .dropdown_menu(
             move |mut menu: PopupMenu, _: &mut Window, _: &mut gpui_kit::Context<PopupMenu>| {
-                let app_direct = app.clone();
-                menu = menu.item(
-                    PopupMenuItem::element(move |_, _| {
-                        div().text_xs().text_color(muted).child("Direct")
-                    })
-                    .checked(current.is_none())
-                    .on_click(move |_, window, cx| {
-                        if let Some(app) = app_direct.upgrade() {
-                            app.update(cx, |this, cx| {
-                                this.set_monitor_chain(None, window, cx);
-                            });
-                        }
-                    }),
-                );
-                for chain in MonitorChain::ALL {
-                    let app = app.clone();
-                    let id = chain.id();
-                    let checked = current.as_deref() == Some(id);
-                    let item_label = chain.label().to_string();
+                for choice in &choices {
+                    let callbacks = callbacks.clone();
+                    let id = choice.id.clone();
+                    let checked = current == id;
+                    let item_label = choice.label.clone();
                     menu = menu.item(
                         PopupMenuItem::element(move |_, _| {
                             div().text_xs().text_color(muted).child(item_label.clone())
                         })
                         .checked(checked)
                         .on_click(move |_, window, cx| {
-                            if let Some(app) = app.upgrade() {
-                                app.update(cx, |this, cx| {
-                                    this.set_monitor_chain(Some(id), window, cx);
-                                });
+                            if let Some(cb) = &callbacks {
+                                (cb.set_chain)(id.as_deref(), window, cx);
                             }
                         }),
                     );
@@ -508,8 +475,9 @@ fn chain_dropdown(
 }
 
 fn bind_sliders(
-    nodes: &[FaustUiNode],
-    app: &WeakEntity<AppView>,
+    nodes: &[ParamUiNode],
+    live: &HashMap<String, f32>,
+    callbacks: &MonitorCallbacks,
     sliders: &mut HashMap<String, Entity<SliderState>>,
     defaults: &mut HashMap<String, f32>,
     subs: &mut Vec<Subscription>,
@@ -517,70 +485,38 @@ fn bind_sliders(
 ) {
     for node in nodes {
         match node {
-            FaustUiNode::VGroup { items, .. }
-            | FaustUiNode::HGroup { items, .. }
-            | FaustUiNode::TGroup { items, .. } => {
-                bind_sliders(items, app, sliders, defaults, subs, cx);
+            ParamUiNode::Group { items, .. } => {
+                bind_sliders(items, live, callbacks, sliders, defaults, subs, cx);
             }
-            FaustUiNode::NEntry {
-                address,
-                init,
-                meta,
-                ..
-            } if menu_items_from_meta(meta).is_some() => {
+            ParamUiNode::Menu { address, init, .. } => {
                 defaults.insert(address.clone(), *init);
             }
-            FaustUiNode::HSlider {
+            ParamUiNode::Slider {
                 address,
                 init,
                 min,
                 max,
                 step,
-                meta,
-                ..
-            }
-            | FaustUiNode::VSlider {
-                address,
-                init,
-                min,
-                max,
-                step,
-                meta,
-                ..
-            }
-            | FaustUiNode::NEntry {
-                address,
-                init,
-                min,
-                max,
-                step,
-                meta,
+                logarithmic,
                 ..
             } => {
-                let start = live_or_init(app, address, *init, cx);
+                let start = live.get(address).copied().unwrap_or(*init);
                 let mut state = SliderState::new()
                     .max(*max)
                     .min(*min)
                     .step((*step).abs().max(0.0001))
                     .default_value(start);
-                if *min > 0.0
-                    && meta_value(meta, "scale")
-                        .is_some_and(|scale| scale.eq_ignore_ascii_case("log"))
-                {
+                if *logarithmic {
                     state = state.scale(SliderScale::Logarithmic);
                 }
                 let entity = cx.new(|_| state);
                 let address_for_sub = address.clone();
-                let app = app.clone();
+                let set_param = callbacks.set_param.clone();
                 subs.push(cx.subscribe(&entity, move |_, _, event: &SliderEvent, cx| {
                     let value = match event {
                         SliderEvent::Change(value) | SliderEvent::Release(value) => value.start(),
                     };
-                    if let Some(app) = app.upgrade() {
-                        app.update(cx, |this, _| {
-                            this.set_monitor_param(&address_for_sub, value);
-                        });
-                    }
+                    set_param(&address_for_sub, value, cx);
                 }));
                 sliders.insert(address.clone(), entity);
                 defaults.insert(address.clone(), *init);
@@ -590,56 +526,26 @@ fn bind_sliders(
     }
 }
 
-fn live_or_init(app: &WeakEntity<AppView>, address: &str, init: f32, cx: &App) -> f32 {
-    app.upgrade()
-        .and_then(|app| app.read(cx).monitor_param(address))
-        .unwrap_or(init)
-}
-
-fn collect_live_addresses(root: &FaustUiRoot) -> Vec<String> {
-    let mut out = Vec::new();
-    collect_live_nodes(&root.ui, &mut out);
-    out
-}
-
-fn collect_live_nodes(nodes: &[FaustUiNode], out: &mut Vec<String>) {
-    for node in nodes {
-        match node {
-            FaustUiNode::VGroup { items, .. }
-            | FaustUiNode::HGroup { items, .. }
-            | FaustUiNode::TGroup { items, .. } => collect_live_nodes(items, out),
-            FaustUiNode::HSlider { address, .. }
-            | FaustUiNode::VSlider { address, .. }
-            | FaustUiNode::NEntry { address, .. }
-            | FaustUiNode::Checkbox { address, .. }
-            | FaustUiNode::Button { address, .. }
-            | FaustUiNode::HBargraph { address, .. }
-            | FaustUiNode::VBargraph { address, .. } => out.push(address.clone()),
-            FaustUiNode::Other => {}
-        }
-    }
-}
-
 fn render_schema(
-    root: &FaustUiRoot,
+    nodes: &[ParamUiNode],
     sliders: &HashMap<String, Entity<SliderState>>,
     defaults: &HashMap<String, f32>,
     params: &HashMap<String, f32>,
     meters: &HashMap<String, f32>,
-    app: WeakEntity<AppView>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
     accent: gpui_kit::Hsla,
     secondary: gpui_kit::Hsla,
     cx: &App,
 ) -> impl IntoElement {
-    v_flex().gap_2().children(root.ui.iter().map(|node| {
+    v_flex().gap_2().children(nodes.iter().map(|node| {
         render_node(
             node,
             sliders,
             defaults,
             params,
             meters,
-            app.clone(),
+            callbacks.clone(),
             muted,
             accent,
             secondary,
@@ -650,12 +556,12 @@ fn render_schema(
 }
 
 fn render_node(
-    node: &FaustUiNode,
+    node: &ParamUiNode,
     sliders: &HashMap<String, Entity<SliderState>>,
     defaults: &HashMap<String, f32>,
     params: &HashMap<String, f32>,
     meters: &HashMap<String, f32>,
-    app: WeakEntity<AppView>,
+    callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
     accent: gpui_kit::Hsla,
     secondary: gpui_kit::Hsla,
@@ -663,9 +569,7 @@ fn render_node(
     cx: &App,
 ) -> gpui_kit::AnyElement {
     match node {
-        FaustUiNode::VGroup { label, items }
-        | FaustUiNode::HGroup { label, items }
-        | FaustUiNode::TGroup { label, items } => {
+        ParamUiNode::Group { label, items } => {
             let body = v_flex().gap_2().children(items.iter().map(|child| {
                 render_node(
                     child,
@@ -673,7 +577,7 @@ fn render_node(
                     defaults,
                     params,
                     meters,
-                    app.clone(),
+                    callbacks.clone(),
                     muted,
                     accent,
                     secondary,
@@ -691,41 +595,27 @@ fn render_node(
                     .into_any_element()
             }
         }
-        FaustUiNode::NEntry {
+        ParamUiNode::Menu {
             label,
             address,
             init,
-            meta,
-            ..
-        } if menu_items_from_meta(meta).is_some() => {
-            let items = menu_items_from_meta(meta).unwrap_or_default();
+            items,
+        } => {
             let value = params.get(address).copied().unwrap_or(*init);
             menu_dropdown(
                 label.clone(),
                 address.clone(),
-                items,
+                items.clone(),
                 value,
-                app.clone(),
+                callbacks,
                 muted,
             )
             .into_any_element()
         }
-        FaustUiNode::HSlider {
+        ParamUiNode::Slider {
             label,
             address,
-            meta,
-            ..
-        }
-        | FaustUiNode::VSlider {
-            label,
-            address,
-            meta,
-            ..
-        }
-        | FaustUiNode::NEntry {
-            label,
-            address,
-            meta,
+            unit,
             ..
         } => {
             let slider = sliders.get(address).cloned();
@@ -743,12 +633,12 @@ fn render_node(
                         .child(div().text_xs().child(label.clone()))
                         .child(resettable_value(
                             id,
-                            format_param(value, meta_value(meta, "unit")),
+                            format_param(value, unit.as_deref()),
                             muted,
                             slider.clone(),
                             address.clone(),
                             default,
-                            app.clone(),
+                            callbacks.clone(),
                         )),
                 )
                 .when_some(slider, |this, state| {
@@ -757,16 +647,15 @@ fn render_node(
                         state,
                         address.clone(),
                         default,
-                        app.clone(),
+                        callbacks.clone(),
                     ))
                 })
                 .into_any_element()
         }
-        FaustUiNode::Checkbox {
+        ParamUiNode::Checkbox {
             label,
             address,
             init,
-            ..
         } => {
             let checked = params.get(address).copied().unwrap_or(*init) > 0.5;
             let address = address.clone();
@@ -775,29 +664,18 @@ fn render_node(
                 .label(label.clone())
                 .checked(checked)
                 .on_click(move |enabled: &bool, _, cx| {
-                    if let Some(app) = app.upgrade() {
-                        app.update(cx, |this, _| {
-                            this.set_monitor_param(&address, if *enabled { 1.0 } else { 0.0 });
-                        });
+                    if let Some(cb) = &callbacks {
+                        (cb.set_param)(&address, if *enabled { 1.0 } else { 0.0 }, cx);
                     }
                 })
                 .into_any_element()
         }
-        FaustUiNode::HBargraph {
+        ParamUiNode::Bargraph {
             label,
             address,
             min,
             max,
-            meta,
-            ..
-        }
-        | FaustUiNode::VBargraph {
-            label,
-            address,
-            min,
-            max,
-            meta,
-            ..
+            unit,
         } => {
             let value = meters.get(address).copied().unwrap_or(*min);
             let span = (*max - *min).abs().max(1e-6);
@@ -812,7 +690,7 @@ fn render_node(
                             div()
                                 .text_xs()
                                 .text_color(muted)
-                                .child(format_value_with_unit(value, 1, meta_value(meta, "unit"))),
+                                .child(format_value_with_unit(value, 1, unit.as_deref())),
                         ),
                 )
                 .child(
@@ -825,7 +703,7 @@ fn render_node(
                 )
                 .into_any_element()
         }
-        FaustUiNode::Button { .. } | FaustUiNode::Other => div().into_any_element(),
+        ParamUiNode::Other => div().into_any_element(),
     }
 }
 
@@ -846,7 +724,6 @@ fn format_value_with_unit(value: f32, precision: usize, unit: Option<&str>) -> S
 }
 
 fn address_id(address: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     address.hash(&mut hasher);
     hasher.finish()
@@ -856,17 +733,15 @@ fn reset_slider(
     state: &Entity<SliderState>,
     address: &str,
     default: f32,
-    app: &WeakEntity<AppView>,
+    callbacks: &Option<MonitorCallbacks>,
     window: &mut Window,
     cx: &mut App,
 ) {
     state.update(cx, |state, cx| {
         state.set_value(default, window, cx);
     });
-    if let Some(app) = app.upgrade() {
-        app.update(cx, |this, _| {
-            this.set_monitor_param(address, default);
-        });
+    if let Some(cb) = callbacks {
+        (cb.set_param)(address, default, cx);
     }
 }
 
@@ -888,7 +763,7 @@ fn resettable_value(
     slider: Option<Entity<SliderState>>,
     address: String,
     default: Option<f32>,
-    app: WeakEntity<AppView>,
+    callbacks: Option<MonitorCallbacks>,
 ) -> impl IntoElement {
     div()
         .id(("monitor-param-value", id))
@@ -902,7 +777,7 @@ fn resettable_value(
             let (Some(state), Some(default)) = (slider.as_ref(), default) else {
                 return;
             };
-            reset_slider(state, &address, default, &app, window, cx);
+            reset_slider(state, &address, default, &callbacks, window, cx);
         })
         .child(text)
 }
@@ -912,7 +787,7 @@ fn resettable_slider(
     state: Entity<SliderState>,
     address: String,
     default: Option<f32>,
-    app: WeakEntity<AppView>,
+    callbacks: Option<MonitorCallbacks>,
 ) -> impl IntoElement {
     let thumb_state = state.clone();
     div()
@@ -928,7 +803,7 @@ fn resettable_slider(
             if !click_on_thumb(event.position, thumb_state.read(cx)) {
                 return;
             }
-            reset_slider(&thumb_state, &address, default, &app, window, cx);
+            reset_slider(&thumb_state, &address, default, &callbacks, window, cx);
             cx.stop_propagation();
         })
         .child(Slider::new(&state).horizontal().w_full())
@@ -939,7 +814,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_units_from_faust_meta() {
+    fn formats_units_from_meta() {
         assert_eq!(format_value_with_unit(0.0, 2, Some("dB")), "0.00 dB");
         assert_eq!(format_value_with_unit(700.0, 2, Some("Hz")), "700.00 Hz");
         assert_eq!(format_value_with_unit(100.0, 2, Some("%")), "100.00%");

@@ -42,13 +42,14 @@ mod assets;
 mod audio;
 mod commands;
 mod components;
+mod dock_titles;
 mod model;
 mod monitor;
+mod monitor_schema;
 mod playback;
 mod progress;
 mod render;
 mod script;
-mod waveform_data;
 
 #[derive(Parser, Debug)]
 #[command(

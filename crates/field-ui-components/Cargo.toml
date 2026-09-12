@@ -3,7 +3,7 @@ name = "field-ui-components"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Reusable GPUI chrome and waveform provider trait for FieldAssist"
+description = "Reusable GPUI chrome, waveform display, and host data traits for FieldAssist"
 
 [dependencies]
 gpui-kit = { workspace = true }

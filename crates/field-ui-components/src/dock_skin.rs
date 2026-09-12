@@ -38,43 +38,11 @@ pub struct CenterTabBarHandler {
 
 impl Global for CenterTabBarHandler {}
 
-/// Fixed detail-dock tab labels (Markers / Regions / Edits / Monitor panels).
-/// Kept here so the startup min-width measurement stays in sync with the bar.
-pub const DETAIL_TAB_MARKER: &str = "Marker";
-/// DETAIL_TAB_REGIONS:.
-pub const DETAIL_TAB_REGIONS: &str = "Regions";
-/// DETAIL_TAB_HISTORY:.
-pub const DETAIL_TAB_HISTORY: &str = "History";
-/// DETAIL_TAB_MONITOR:.
-pub const DETAIL_TAB_MONITOR: &str = "Monitor";
-
-const DETAIL_DOCK_TAB_TITLES: &[&str] = &[
-    DETAIL_TAB_MARKER,
-    DETAIL_TAB_REGIONS,
-    DETAIL_TAB_HISTORY,
-    DETAIL_TAB_MONITOR,
-];
-
-/// Fixed explorer-dock tab label (Compositions panel).
-pub const EXPLORER_TAB_COMPOSITIONS: &str = "Compositions";
-
-const EXPLORER_DOCK_TAB_TITLES: &[&str] = &[EXPLORER_TAB_COMPOSITIONS];
-
-/// Minimum width of the right detail dock: combined side-tab bar width.
-/// Computed once at startup; tab names are not dynamic.
-pub fn detail_dock_min_size(window: &mut Window, cx: &mut App) -> Pixels {
-    tool_dock_min_size(DETAIL_DOCK_TAB_TITLES, window, cx)
-}
-
-/// Minimum width of the left explorer dock: combined side-tab bar width.
-/// Computed once at startup; tab names are not dynamic.
-pub fn explorer_dock_min_size(window: &mut Window, cx: &mut App) -> Pixels {
-    tool_dock_min_size(EXPLORER_DOCK_TAB_TITLES, window, cx)
-}
-
 /// Combined width of a tool-dock side tab bar, including per-tab padding,
 /// gaps, and the tool-dock frame inset.
-fn tool_dock_min_size(titles: &[&str], window: &mut Window, cx: &mut App) -> Pixels {
+///
+/// The host supplies the tab titles so dock chrome stays application-agnostic.
+pub fn tool_dock_min_size(titles: &[&str], window: &mut Window, cx: &mut App) -> Pixels {
     let muted = cx.theme().muted_foreground;
     let radius = cx.theme().radius;
     let tabs = titles.iter().map(|title| {

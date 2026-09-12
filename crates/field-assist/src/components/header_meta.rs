@@ -8,15 +8,15 @@ use gpui_kit::{
 };
 use gpui_kit::component::{h_flex, ActiveTheme as _};
 
-use crate::components::waveform::WaveformDisplay;
 use crate::model::document::BufferDocument;
 use crate::playback::TransportState;
+use field_ui_components::WaveformDisplay;
 
 /// Title-bar session readout. Lives in its own view so hover, playhead, and
 /// selection updates do not rebuild the window chrome or docks.
 pub struct HeaderMeta {
     document: Option<Entity<BufferDocument>>,
-    waveform: Option<Entity<WaveformDisplay>>,
+    waveform: Option<Entity<WaveformDisplay<BufferDocument>>>,
     transport: TransportState,
     last_hover: Option<usize>,
     focus_handle: FocusHandle,
@@ -40,7 +40,7 @@ impl HeaderMeta {
     pub fn set_target(
         &mut self,
         document: Option<Entity<BufferDocument>>,
-        waveform: Option<Entity<WaveformDisplay>>,
+        waveform: Option<Entity<WaveformDisplay<BufferDocument>>>,
         cx: &mut Context<Self>,
     ) {
         self.document = document;

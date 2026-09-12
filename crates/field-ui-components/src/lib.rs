@@ -5,13 +5,17 @@
 
 //! # field-ui-components
 //!
-//! Reusable GPUI chrome and the gpui-free [`WaveformDataProvider`] trait.
-//! Application-specific docks (explorer, monitor, render sheet, etc.) stay in
-//! the host app. Transport and status-bar widgets remain there for now because
-//! they still bind to app command and model types.
+//! Reusable GPUI chrome, waveform display, and host data traits.
+//! Application-specific docks (explorer, render sheet, etc.) stay in the host
+//! app. Dock tab titles are owned by the host; pass them to
+//! [`tool_dock_min_size`] when measuring side docks.
+//!
+//! Host apps import this crate directly (for example
+//! `use field_ui_components::AppMenuBar`); do not re-export types through the
+//! application crate.
 //!
 //! ```no_run
-//! use field_ui_components::WaveformDataProvider;
+//! use field_ui_components::{LaneScope, PaintRegion, WaveformDataProvider, WaveformEditor};
 //!
 //! struct EmptyWave;
 //! impl WaveformDataProvider for EmptyWave {
@@ -25,16 +29,58 @@
 //!         (0.0, 0.0)
 //!     }
 //! }
+//! impl WaveformEditor for EmptyWave {
+//!     fn selection_span(&self) -> Option<(usize, usize)> { None }
+//!     fn playhead(&self) -> Option<(usize, LaneScope)> { None }
+//!     fn snap_zero_crossings(&self) -> bool { false }
+//!     fn toggle_zero_crossing_snap(&mut self) {}
+//!     fn channel_lanes(&self, _lane: usize, _alt: bool) -> LaneScope { LaneScope::All }
+//!     fn begin_replace(&mut self, _: usize, _: LaneScope, _: usize) {}
+//!     fn begin_extend(&mut self, _: usize, _: LaneScope, _: usize) {}
+//!     fn begin_disjoint(&mut self, _: usize, _: LaneScope, _: usize) {}
+//!     fn update_drag(&mut self, _: usize, _: usize) {}
+//!     fn finish_drag(&mut self) {}
+//!     fn click_without_drag(&mut self, _: usize, _: LaneScope, _: bool) {}
+//!     fn selection_regions(&self) -> Vec<PaintRegion> { Vec::new() }
+//!     fn named_regions(&self) -> Vec<PaintRegion> { Vec::new() }
+//!     fn markers_for_paint(&self) -> Vec<(u64, [f32; 4])> { Vec::new() }
+//!     fn modified_ranges(&self) -> Vec<(u64, u64)> { Vec::new() }
+//!     fn ranges_for_edit(&self, _: u64) -> Vec<(u64, u64)> { Vec::new() }
+//!     fn selection_position_sample(&self) -> Option<usize> { None }
+//! }
 //! ```
 
 mod app_menu;
 mod dock_skin;
+mod edits;
+mod markers;
+mod messages;
+mod monitor;
+mod param_ui;
+mod regions;
+mod repl;
+mod status_bar;
+mod transport;
+mod waveform;
 mod waveform_data;
+mod waveform_editor;
 
 pub use app_menu::AppMenuBar;
-pub use dock_skin::{
-    detail_dock_min_size, explorer_dock_min_size, CenterTabBarHandler, CompactDockSkin,
-    DETAIL_TAB_HISTORY, DETAIL_TAB_MARKER, DETAIL_TAB_MONITOR, DETAIL_TAB_REGIONS,
-    EXPLORER_TAB_COMPOSITIONS,
+pub use dock_skin::{tool_dock_min_size, CenterTabBarHandler, CompactDockSkin};
+pub use edits::{
+    EditActivateHandler, EditCard, EditClickHandler, EditHoverHandler, EditsData, EditsPanel,
 };
+pub use markers::{
+    DeleteSelectedMarker, MarkerDeleteHandler, MarkerRow, MarkerSelectHandler, MarkersData,
+    MarkersPanel,
+};
+pub use messages::{LogLevel, LogLine, MessagesPanel};
+pub use monitor::{MonitorCallbacks, MonitorPanel, MonitorSnapshotProvider};
+pub use param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
+pub use regions::{RegionGroup, RegionRow, RegionSelectHandler, RegionsData, RegionsPanel};
+pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
+pub use status_bar::{FileStatus, FileStatusBar, LayoutPicker};
+pub use transport::{Transport, TransportAction};
+pub use waveform::{ToggleZeroCrossing, WaveformDisplay};
 pub use waveform_data::WaveformDataProvider;
+pub use waveform_editor::{LaneScope, PaintRegion, PeakStatus, WaveformEditor};

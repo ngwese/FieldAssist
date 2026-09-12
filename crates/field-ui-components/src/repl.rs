@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Script REPL panel with a gpui-free [`ReplOutput`] DTO.
+
 use std::rc::Rc;
 
 use gpui_kit::{
@@ -15,7 +17,16 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, Sizable as _,
 };
 
-use crate::script::EvalOutput;
+/// Evaluation result shown in the transcript.
+#[derive(Clone, Debug, Default)]
+pub struct ReplOutput {
+    /// Printed lines from the evaluation.
+    pub prints: Vec<String>,
+    /// Optional result string.
+    pub result: Option<String>,
+    /// Optional error string.
+    pub error: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LineKind {
@@ -30,19 +41,23 @@ struct TranscriptLine {
     text: SharedString,
 }
 
-type EvalHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
+/// Invoked when the user submits a line of code.
+pub type ReplEvalHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
+/// Bottom-dock script REPL panel.
 pub struct ReplPanel {
+    title: SharedString,
     input: Entity<InputState>,
     lines: Vec<TranscriptLine>,
     history: Vec<String>,
     history_index: Option<usize>,
-    on_eval: Option<EvalHandler>,
+    on_eval: Option<ReplEvalHandler>,
     scroll: ScrollHandle,
 }
 
 impl ReplPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Create a REPL panel with the given dock tab title.
+    pub fn new(title: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(
             &input,
@@ -77,6 +92,7 @@ impl ReplPanel {
         )
         .detach();
         Self {
+            title: title.into(),
             input,
             lines: Vec::new(),
             history: Vec::new(),
@@ -86,11 +102,13 @@ impl ReplPanel {
         }
     }
 
-    pub fn set_handler(&mut self, handler: EvalHandler) {
+    /// Set the evaluation handler.
+    pub fn set_handler(&mut self, handler: ReplEvalHandler) {
         self.on_eval = Some(handler);
     }
 
-    pub fn append_eval(&mut self, code: &str, output: &EvalOutput, cx: &mut Context<Self>) {
+    /// Append an input line and its evaluation output.
+    pub fn append_eval(&mut self, code: &str, output: &ReplOutput, cx: &mut Context<Self>) {
         self.lines.push(TranscriptLine {
             kind: LineKind::Input,
             text: code.to_string().into(),
@@ -100,12 +118,14 @@ impl ReplPanel {
         cx.notify();
     }
 
-    pub fn append_output(&mut self, output: &EvalOutput, cx: &mut Context<Self>) {
+    /// Append evaluation output without an input line.
+    pub fn append_output(&mut self, output: &ReplOutput, cx: &mut Context<Self>) {
         self.push_output(output);
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
+    /// Append a standalone error line.
     pub fn append_error(&mut self, error: &str, cx: &mut Context<Self>) {
         self.lines.push(TranscriptLine {
             kind: LineKind::Error,
@@ -115,7 +135,7 @@ impl ReplPanel {
         cx.notify();
     }
 
-    fn push_output(&mut self, output: &EvalOutput) {
+    fn push_output(&mut self, output: &ReplOutput) {
         for line in &output.prints {
             self.lines.push(TranscriptLine {
                 kind: LineKind::Output,
@@ -200,11 +220,11 @@ impl BasePanel for ReplPanel {
 
 impl Panel for ReplPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "Script"
+        self.title.clone()
     }
 
     fn tab_name(&self, _: &App) -> Option<SharedString> {
-        Some("Script".into())
+        Some(self.title.clone())
     }
 
     fn inner_padding(&self, _: &App) -> bool {

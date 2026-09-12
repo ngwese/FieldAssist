@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Log / messages panel with a gpui-free [`LogLine`] DTO.
+
 use gpui_kit::{
     div, px, rems, uniform_list, App, Context, ElementId, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
@@ -11,19 +13,52 @@ use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme as _,
 };
 
-use crate::script::{LogEntry, LogLevel};
-
 const LEVEL_WIDTH: gpui_kit::Rems = rems(4.);
 const TOPIC_WIDTH: gpui_kit::Rems = rems(5.5);
 
+/// Severity of a log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    /// Informational message.
+    Info,
+    /// Warning.
+    Warn,
+    /// Error.
+    Error,
+}
+
+impl LogLevel {
+    /// Short label for the level column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// One log line shown in the messages panel.
+#[derive(Clone, Debug)]
+pub struct LogLine {
+    /// Severity.
+    pub level: LogLevel,
+    /// Topic / subsystem label.
+    pub topic: String,
+    /// Message body.
+    pub text: String,
+}
+
+/// Bottom-dock messages panel with an unseen-alert badge.
 pub struct MessagesPanel {
-    entries: Vec<LogEntry>,
+    entries: Vec<LogLine>,
     unseen_alerts: usize,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
 }
 
 impl MessagesPanel {
+    /// Create an empty messages panel.
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             entries: Vec::new(),
@@ -33,7 +68,8 @@ impl MessagesPanel {
         }
     }
 
-    pub fn append(&mut self, entries: Vec<LogEntry>, visible: bool, cx: &mut Context<Self>) {
+    /// Append log lines; unseen warn/error counts rise when not visible.
+    pub fn append(&mut self, entries: Vec<LogLine>, visible: bool, cx: &mut Context<Self>) {
         if entries.is_empty() {
             return;
         }
@@ -49,6 +85,7 @@ impl MessagesPanel {
         cx.notify();
     }
 
+    /// Clear the unseen badge when the tab becomes visible.
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if visible && self.unseen_alerts > 0 {
             self.unseen_alerts = 0;
@@ -152,7 +189,7 @@ impl Render for MessagesPanel {
                                     ("messages-row", ix as u64),
                                     entry.level.as_str(),
                                     &entry.topic,
-                                    &entry.message,
+                                    &entry.text,
                                     level_color,
                                     muted,
                                     foreground,

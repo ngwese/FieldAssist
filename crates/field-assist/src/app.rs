@@ -38,47 +38,77 @@ use crate::commands::{
     ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewScript, ViewShowDetail,
     ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
 };
-use crate::components::app_menu::AppMenuBar;
-use crate::components::dock_skin::{
-    detail_dock_min_size, explorer_dock_min_size, CenterTabBarHandler, CompactDockSkin,
-};
-use crate::components::edits::EditsPanel;
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
 use crate::components::header_meta::HeaderMeta;
-use crate::components::markers::MarkersPanel;
-use crate::components::messages::MessagesPanel;
-use crate::components::monitor::MonitorPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
-use crate::components::regions::RegionsPanel;
 use crate::components::render_sheet::RenderSheet;
-use crate::components::repl::ReplPanel;
-use crate::components::status_bar::{FileStatus, FileStatusBar, LayoutPicker};
-use crate::components::waveform::{ToggleZeroCrossing, WaveformDisplay};
+use crate::components::status_bar::file_status_from_composition;
 use crate::components::workflow_bar::WorkflowBar;
 use crate::components::workspace::WorkspacePanel;
+use crate::dock_titles::{
+    DETAIL_DOCK_TAB_TITLES, DETAIL_TAB_HISTORY, DETAIL_TAB_MARKER, DETAIL_TAB_MONITOR,
+    DETAIL_TAB_REGIONS, EXPLORER_DOCK_TAB_TITLES,
+};
 use crate::model::composition::{
-    default_marker_type, Composition, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
-    MARKER_TYPE_YELLOW,
+    default_marker_type, Composition, EditId, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
+    MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 use crate::model::{
-    is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, Session,
-    SessionDocksUi, SessionUi, SessionWindowUi,
+    is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, MarkerId,
+    Session, SessionDocksUi, SessionUi, SessionWindowUi,
 };
-use crate::playback::{output_device_name, resolve_output_device, PlaybackSession, TransportState};
+use crate::monitor::MonitorChain;
+use crate::monitor_schema::{collect_param_addresses, param_ui_from_json};
+use crate::playback::{
+    list_output_devices, output_device_name, resolve_output_device, PlaybackSession, TransportState,
+};
 use crate::progress::ProgressState;
-use crate::script::{DropLayout, EvalOutput, LogLevel, ResumeWorkflow, ScriptHost, ToolbarItem};
+use crate::script::{
+    DropLayout, EvalOutput, LogEntry, LogLevel as ScriptLogLevel, ResumeWorkflow, ScriptHost,
+    ToolbarItem,
+};
+use field_ui_components::{
+    tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice, CompactDockSkin, EditsPanel,
+    FileStatusBar, LayoutPicker, LogLevel, LogLine, MarkersPanel, MessagesPanel, MonitorCallbacks,
+    MonitorPanel, MonitorSnapshot, RegionsPanel, ReplOutput, ReplPanel, ToggleZeroCrossing,
+    WaveformDisplay,
+};
 
 struct OpenTarget(Entity<AppView>);
 
 impl Global for OpenTarget {}
+
+fn to_repl_output(output: &EvalOutput) -> ReplOutput {
+    ReplOutput {
+        prints: output.prints.clone(),
+        result: output.result.clone(),
+        error: output.error.clone(),
+    }
+}
+
+fn to_log_lines(entries: Vec<LogEntry>) -> Vec<LogLine> {
+    entries
+        .into_iter()
+        .map(|entry| LogLine {
+            level: match entry.level {
+                ScriptLogLevel::Info => LogLevel::Info,
+                ScriptLogLevel::Warn => LogLevel::Warn,
+                ScriptLogLevel::Error => LogLevel::Error,
+            },
+            topic: entry.topic,
+            text: entry.message,
+        })
+        .collect()
+}
+
 
 #[derive(Clone)]
 struct DocumentViews {
     composition: Arc<RwLock<Composition>>,
     buffer: Arc<RwLock<Buffer>>,
     document: Entity<BufferDocument>,
-    waveform: Entity<WaveformDisplay>,
+    waveform: Entity<WaveformDisplay<BufferDocument>>,
     workspace: Entity<WorkspacePanel>,
 }
 
@@ -107,9 +137,9 @@ pub struct AppView {
     views: HashMap<DocumentId, DocumentViews>,
     dock_area: Entity<DockArea>,
     explorer: Entity<ExplorerPanel>,
-    edits: Entity<EditsPanel>,
-    markers: Entity<MarkersPanel>,
-    regions: Entity<RegionsPanel>,
+    edits: Entity<EditsPanel<BufferDocument>>,
+    markers: Entity<MarkersPanel<BufferDocument>>,
+    regions: Entity<RegionsPanel<BufferDocument>>,
     monitor: Entity<MonitorPanel>,
     header_meta: Entity<HeaderMeta>,
     empty_editors: Entity<EmptyPane>,
@@ -235,29 +265,82 @@ impl AppView {
         });
         let initial_target = session.active().and_then(|id| views.get(&id).cloned());
         let header_meta = cx.new(|cx| HeaderMeta::new(cx));
-        let edits = cx.new(|cx| EditsPanel::new(cx));
-        let markers = cx.new(|cx| MarkersPanel::new(cx));
-        let regions = cx.new(|cx| RegionsPanel::new(cx));
-        let monitor = cx.new(|cx| MonitorPanel::new(app.clone(), cx));
-        if let Some(views) = initial_target {
-            edits.update(cx, |edits, cx| {
-                edits.set_target(views.document.clone(), views.waveform.clone(), cx);
-            });
-            markers.update(cx, |markers, cx| {
-                markers.set_target(views.document.clone(), views.waveform.clone(), cx);
-            });
-            regions.update(cx, |regions, cx| {
-                regions.set_target(views.document.clone(), views.waveform.clone(), cx);
-            });
+        let edits = cx.new(|cx| EditsPanel::new(DETAIL_TAB_HISTORY, cx));
+        let markers = cx.new(|cx| MarkersPanel::new(DETAIL_TAB_MARKER, cx));
+        let regions = cx.new(|cx| RegionsPanel::new(DETAIL_TAB_REGIONS, cx));
+        let monitor = cx.new(|cx| MonitorPanel::new(DETAIL_TAB_MONITOR, cx));
+        {
+            let app_for_snap = app.clone();
+            let app_for_cb = app.clone();
             monitor.update(cx, |monitor, cx| {
-                monitor.set_target(views.document.clone(), cx);
+                let snapshot = Rc::new(move |cx: &App| {
+                    app_for_snap
+                        .upgrade()
+                        .and_then(|app| app.read(cx).monitor_snapshot(cx))
+                });
+                let callbacks = MonitorCallbacks {
+                    set_chain: Rc::new({
+                        let app = app_for_cb.clone();
+                        move |chain, window, cx| {
+                            if let Some(app) = app.upgrade() {
+                                app.update(cx, |this, cx| {
+                                    this.set_monitor_chain(chain, window, cx);
+                                });
+                            }
+                        }
+                    }),
+                    set_param: Rc::new({
+                        let app = app_for_cb.clone();
+                        move |address, value, cx| {
+                            if let Some(app) = app.upgrade() {
+                                app.update(cx, |this, _| {
+                                    this.set_monitor_param(address, value);
+                                });
+                            }
+                        }
+                    }),
+                    toggle_pin: Rc::new({
+                        let app = app_for_cb.clone();
+                        move |_window, cx| {
+                            if let Some(app) = app.upgrade() {
+                                app.update(cx, |this, cx| {
+                                    this.toggle_monitor_params_pin(cx);
+                                });
+                            }
+                        }
+                    }),
+                    set_playback_channel: Rc::new({
+                        let app = app_for_cb.clone();
+                        move |index, enabled, window, cx| {
+                            if let Some(app) = app.upgrade() {
+                                app.update(cx, |this, cx| {
+                                    this.set_playback_channel(index, enabled, window, cx);
+                                });
+                            }
+                        }
+                    }),
+                    select_output: Rc::new({
+                        let app = app_for_cb.clone();
+                        move |spec, window, cx| {
+                            if let Some(app) = app.upgrade() {
+                                app.update(cx, |this, cx| {
+                                    this.select_output_device(spec, window, cx);
+                                });
+                            }
+                        }
+                    }),
+                };
+                monitor.set_host(snapshot, callbacks, cx);
             });
+        }
+        if let Some(views) = initial_target {
+            Self::bind_list_panels(&edits, &markers, &regions, &views, cx);
             header_meta.update(cx, |meta, cx| {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
             });
         }
         let script = ScriptHost::new().expect("lua runtime");
-        let repl = cx.new(|cx| ReplPanel::new(window, cx));
+        let repl = cx.new(|cx| ReplPanel::new("Script", window, cx));
         let messages = cx.new(|cx| MessagesPanel::new(cx));
         let render_sheet = cx.new(|cx| RenderSheet::new(window, cx));
         cx.observe(&render_sheet, |_, _, cx| cx.notify()).detach();
@@ -277,9 +360,9 @@ impl AppView {
         let markers_handle = panel_handle(markers.clone());
         let regions_handle = panel_handle(regions.clone());
         let monitor_handle = panel_handle(monitor.clone());
-        let detail_dock_min_size = detail_dock_min_size(window, cx);
+        let detail_dock_min_size = tool_dock_min_size(DETAIL_DOCK_TAB_TITLES, window, cx);
         let detail_dock_size = detail_dock_min_size.max(px(260.));
-        let explorer_dock_min_size = explorer_dock_min_size(window, cx);
+        let explorer_dock_min_size = tool_dock_min_size(EXPLORER_DOCK_TAB_TITLES, window, cx);
         let explorer_dock_size = explorer_dock_min_size.max(px(220.));
         dock_area.update(cx, |area, cx| {
             area.set_center(DockLayout::tabs().panel_view(center_handle, cx), window, cx);
@@ -541,22 +624,12 @@ impl AppView {
 
     fn apply_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(views) = self.active_views() {
-            self.playback.bind_composition(views.composition);
+            self.playback.bind_composition(views.composition.clone());
             self.playback.sync_from_document(views.document.read(cx));
             self.playback
                 .load_monitor_for_document(views.document.read(cx));
-            self.edits.update(cx, |edits, cx| {
-                edits.set_target(views.document.clone(), views.waveform.clone(), cx);
-            });
-            self.markers.update(cx, |markers, cx| {
-                markers.set_target(views.document.clone(), views.waveform.clone(), cx);
-            });
-            self.regions.update(cx, |regions, cx| {
-                regions.set_target(views.document.clone(), views.waveform.clone(), cx);
-            });
-            self.monitor.update(cx, |monitor, cx| {
-                monitor.set_target(views.document.clone(), cx);
-            });
+            Self::bind_list_panels(&self.edits, &self.markers, &self.regions, &views, cx);
+            self.monitor.update(cx, |_, cx| cx.notify());
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(Some(views.document), Some(views.waveform), cx);
             });
@@ -570,8 +643,7 @@ impl AppView {
                 .update(cx, |markers, cx| markers.clear_target(cx));
             self.regions
                 .update(cx, |regions, cx| regions.clear_target(cx));
-            self.monitor
-                .update(cx, |monitor, cx| monitor.clear_target(cx));
+            self.monitor.update(cx, |_, cx| cx.notify());
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(None, None, cx);
             });
@@ -580,6 +652,151 @@ impl AppView {
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
         cx.notify();
+    }
+
+    fn bind_list_panels(
+        edits: &Entity<EditsPanel<BufferDocument>>,
+        markers: &Entity<MarkersPanel<BufferDocument>>,
+        regions: &Entity<RegionsPanel<BufferDocument>>,
+        views: &DocumentViews,
+        cx: &mut App,
+    ) {
+        let document = views.document.clone();
+        let waveform = views.waveform.clone();
+        edits.update(cx, |edits, cx| {
+            let document = document.clone();
+            let waveform_hover = waveform.clone();
+            let waveform_click = waveform.clone();
+            edits.set_target(
+                document.clone(),
+                Rc::new(move |id, _window, cx| {
+                    waveform_hover.update(cx, |view, cx| {
+                        view.set_hovered_edit(id, cx);
+                    });
+                }),
+                Rc::new(move |id, _window, cx| {
+                    waveform_click.update(cx, |view, cx| {
+                        view.scroll_edit_into_view(id, cx);
+                    });
+                }),
+                Rc::new(move |id, _window, cx| {
+                    document.update(cx, |doc, cx| {
+                        doc.jump_to_edit(EditId(id));
+                        cx.notify();
+                    });
+                }),
+                cx,
+            );
+        });
+        let document = views.document.clone();
+        let waveform = views.waveform.clone();
+        markers.update(cx, |markers, cx| {
+            let document_select = document.clone();
+            let document_delete = document.clone();
+            let waveform = waveform.clone();
+            markers.set_target(
+                document.clone(),
+                Rc::new(move |_id, frame, _window, cx| {
+                    document_select.update(cx, |doc, cx| {
+                        doc.set_position(frame as usize, ChannelScope::all());
+                        cx.notify();
+                    });
+                    waveform.update(cx, |view, cx| {
+                        view.scroll_sample_into_view(frame as f64, cx);
+                    });
+                }),
+                Rc::new(move |id, _window, cx| {
+                    document_delete.update(cx, |doc, cx| {
+                        doc.remove_marker(MarkerId(id));
+                        cx.notify();
+                    });
+                }),
+                cx,
+            );
+        });
+        let document = views.document.clone();
+        let waveform = views.waveform.clone();
+        regions.update(cx, |regions, cx| {
+            let document = document.clone();
+            let waveform = waveform.clone();
+            regions.set_target(
+                document.clone(),
+                Rc::new(move |_collection, _id, start, _window, cx| {
+                    document.update(cx, |doc, cx| {
+                        doc.set_position(start, ChannelScope::all());
+                        cx.notify();
+                    });
+                    waveform.update(cx, |view, cx| {
+                        view.scroll_sample_into_view(start as f64, cx);
+                    });
+                }),
+                cx,
+            );
+        });
+    }
+
+    fn monitor_snapshot(&self, cx: &App) -> Option<MonitorSnapshot> {
+        let views = self.active_views()?;
+        let doc = views.document.read(cx);
+        let composition = doc.composition.read().unwrap();
+        let channel_count = composition.channel_count();
+        let channel_labels: Vec<String> = (0..channel_count)
+            .map(|ch| composition.channel_label(ch))
+            .collect();
+        let chain_id = composition.monitor_chain().map(str::to_string);
+        let playback_channels = composition.playback_channels().map(|ch| ch.to_vec());
+        let params_pinned = doc.monitor_params_pinned;
+        drop(composition);
+
+        let chain = chain_id.as_deref().and_then(MonitorChain::parse);
+        let mut chain_choices = vec![ChainChoice {
+            id: None,
+            label: "Direct".into(),
+        }];
+        for chain in MonitorChain::ALL {
+            chain_choices.push(ChainChoice {
+                id: Some(chain.id().to_string()),
+                label: chain.label().to_string(),
+            });
+        }
+        let chain_label = chain
+            .map(MonitorChain::label)
+            .unwrap_or("Direct")
+            .to_string();
+        let expected_inputs = chain.map(MonitorChain::num_inputs);
+
+        let ui_json = self.monitor_ui_json();
+        let schema_id = ui_json.map(|json| json.as_ptr() as u64).unwrap_or(0);
+        let params_ui = ui_json
+            .and_then(param_ui_from_json)
+            .unwrap_or_default();
+        let live_params: HashMap<String, f32> = collect_param_addresses(&params_ui)
+            .into_iter()
+            .filter_map(|address| {
+                self.monitor_param(&address)
+                    .map(|value| (address, value))
+            })
+            .collect();
+        let meters = self.monitor_meters();
+        let output_devices = list_output_devices()
+            .map(|devices| devices.into_iter().map(|info| info.name).collect())
+            .unwrap_or_default();
+
+        Some(MonitorSnapshot {
+            chain_label,
+            chain_id,
+            chain_choices,
+            params_pinned,
+            channel_labels,
+            playback_channels,
+            expected_inputs,
+            schema_id,
+            params_ui,
+            live_params,
+            meters,
+            output_device: self.output_device.clone(),
+            output_devices,
+        })
     }
 
     fn stop_playback_into_active(&mut self, cx: &mut Context<Self>) {
@@ -1187,7 +1404,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1197,7 +1414,7 @@ impl AppView {
         let _guard = crate::script::enter(self, window, cx);
         let output = self.script.eval(code);
         self.repl.update(cx, |repl, cx| {
-            repl.append_eval(code, &output, cx);
+            repl.append_eval(code, &to_repl_output(&output), cx);
         });
         self.flush_script_logs(cx);
     }
@@ -1220,7 +1437,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1248,7 +1465,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1259,7 +1476,7 @@ impl AppView {
         if !logs.is_empty() {
             let visible = self.messages_tab_visible(cx);
             self.messages.update(cx, |panel, cx| {
-                panel.append(logs, visible, cx);
+                panel.append(to_log_lines(logs), visible, cx);
             });
             self.dock_area.update(cx, |_, cx| cx.notify());
         }
@@ -1362,7 +1579,7 @@ impl AppView {
     ) {
         if let Err(err) = self.set_output_device(spec, window, cx) {
             self.script
-                .log(LogLevel::Error, "output".into(), err.clone());
+                .log(ScriptLogLevel::Error, "output".into(), err.clone());
             self.flush_script_logs(cx);
         }
     }
@@ -1656,7 +1873,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1683,7 +1900,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1710,7 +1927,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1741,7 +1958,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1768,7 +1985,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -1796,7 +2013,7 @@ impl AppView {
         if !logs.is_empty() {
             let visible = self.messages_tab_visible(cx);
             self.messages.update(cx, |panel, cx| {
-                panel.append(logs, visible, cx);
+                panel.append(to_log_lines(logs), visible, cx);
             });
             self.dock_area.update(cx, |_, cx| cx.notify());
         }
@@ -3194,7 +3411,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -3211,7 +3428,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -3228,7 +3445,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -3267,7 +3484,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -3284,7 +3501,7 @@ impl AppView {
                 error: None,
             };
             self.repl.update(cx, |repl, cx| {
-                repl.append_output(&output, cx);
+                repl.append_output(&to_repl_output(&output), cx);
             });
         }
         self.flush_script_logs(cx);
@@ -3390,7 +3607,7 @@ impl Render for AppView {
         let views = self.active_views();
         let file_status = views
             .as_ref()
-            .and_then(|views| FileStatus::from_composition(&views.composition.read().unwrap()));
+            .and_then(|views| file_status_from_composition(&views.composition.read().unwrap()));
         let layout_picker = file_status.as_ref().map(|_| {
             let current = views.as_ref().and_then(|views| {
                 views

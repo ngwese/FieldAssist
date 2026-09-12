@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Regions list panel driven by a host [`RegionsData`] provider.
+
 use std::rc::Rc;
 
 use gpui_kit::{
@@ -13,25 +15,59 @@ use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme as _, StyledExt as _,
 };
 
-use crate::components::waveform::WaveformDisplay;
-use crate::model::buffer::{ChannelScope, RegionId};
-use crate::model::document::BufferDocument;
-use crate::model::regions::SELECTION_COLLECTION;
+/// One region row inside a [`RegionGroup`].
+#[derive(Clone, Debug)]
+pub struct RegionRow {
+    /// Stable region id.
+    pub id: u64,
+    /// Display label (may include channel hints).
+    pub label: String,
+    /// Start sample frame.
+    pub start: usize,
+    /// Formatted time / sample stamp.
+    pub stamp: String,
+}
 
-pub struct RegionsPanel {
-    document: Option<Entity<BufferDocument>>,
-    waveform: Option<Entity<WaveformDisplay>>,
-    selected: Option<(String, RegionId)>,
-    last_fingerprint: Option<(usize, u64, usize)>,
+/// Named collection of regions for the list panel.
+#[derive(Clone, Debug)]
+pub struct RegionGroup {
+    /// Collection name (for example `"selection"`).
+    pub collection: String,
+    /// Regions in display order.
+    pub regions: Vec<RegionRow>,
+}
+
+/// Host-provided region list data.
+pub trait RegionsData {
+    /// Cheap change detector for list refresh.
+    fn fingerprint(&self) -> u64;
+    /// Snapshot of groups and rows for rendering.
+    fn snapshot(&self) -> Vec<RegionGroup>;
+}
+
+/// Invoked when the user selects a region row.
+///
+/// Arguments: `(collection, id, start, window, app)`.
+pub type RegionSelectHandler = Rc<dyn Fn(String, u64, usize, &mut Window, &mut App)>;
+
+/// Detail-dock panel listing region collections.
+pub struct RegionsPanel<D: RegionsData + 'static> {
+    title: SharedString,
+    document: Option<Entity<D>>,
+    on_select: Option<RegionSelectHandler>,
+    selected: Option<(String, u64)>,
+    last_fingerprint: Option<u64>,
     focus_handle: FocusHandle,
     _document_observe: Option<Subscription>,
 }
 
-impl RegionsPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+impl<D: RegionsData + 'static> RegionsPanel<D> {
+    /// Create a panel with the given dock tab title.
+    pub fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
+            title: title.into(),
             document: None,
-            waveform: None,
+            on_select: None,
             selected: None,
             last_fingerprint: None,
             focus_handle: cx.focus_handle(),
@@ -39,34 +75,20 @@ impl RegionsPanel {
         }
     }
 
-    fn fingerprint(&self, cx: &App) -> Option<(usize, u64, usize)> {
-        let document = self.document.as_ref()?;
-        let doc = document.read(cx);
-        let named = doc.composition.read().unwrap();
-        Some((
-            doc.selection.regions.len(),
-            named
-                .collections()
-                .iter()
-                .map(|col| col.regions.len() as u64)
-                .sum(),
-            named.collections().len(),
-        ))
-    }
-
+    /// Bind a data source and selection callback.
     pub fn set_target(
         &mut self,
-        document: Entity<BufferDocument>,
-        waveform: Entity<WaveformDisplay>,
+        document: Entity<D>,
+        on_select: RegionSelectHandler,
         cx: &mut Context<Self>,
     ) {
         self.document = Some(document);
-        self.waveform = Some(waveform);
+        self.on_select = Some(on_select);
         self.selected = None;
-        self.last_fingerprint = self.fingerprint(cx);
+        self.last_fingerprint = self.document.as_ref().map(|doc| doc.read(cx).fingerprint());
         if let Some(document) = &self.document {
             self._document_observe = Some(cx.observe(document, |this, _, cx| {
-                let next = this.fingerprint(cx);
+                let next = this.document.as_ref().map(|doc| doc.read(cx).fingerprint());
                 if this.last_fingerprint == next {
                     return;
                 }
@@ -77,9 +99,10 @@ impl RegionsPanel {
         cx.notify();
     }
 
+    /// Clear the bound document and selection.
     pub fn clear_target(&mut self, cx: &mut Context<Self>) {
         self.document = None;
-        self.waveform = None;
+        self.on_select = None;
         self.selected = None;
         self.last_fingerprint = None;
         self._document_observe = None;
@@ -87,15 +110,15 @@ impl RegionsPanel {
     }
 }
 
-impl EventEmitter<PanelEvent> for RegionsPanel {}
+impl<D: RegionsData + 'static> EventEmitter<PanelEvent> for RegionsPanel<D> {}
 
-impl Focusable for RegionsPanel {
+impl<D: RegionsData + 'static> Focusable for RegionsPanel<D> {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl BasePanel for RegionsPanel {
+impl<D: RegionsData + 'static> BasePanel for RegionsPanel<D> {
     fn panel_name(&self) -> &'static str {
         "RegionsPanel"
     }
@@ -109,9 +132,9 @@ impl BasePanel for RegionsPanel {
     }
 }
 
-impl Panel for RegionsPanel {
+impl<D: RegionsData + 'static> Panel for RegionsPanel<D> {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        crate::components::dock_skin::DETAIL_TAB_REGIONS
+        self.title.clone()
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -119,7 +142,7 @@ impl Panel for RegionsPanel {
     }
 }
 
-impl Render for RegionsPanel {
+impl<D: RegionsData + 'static> Render for RegionsPanel<D> {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let Some(document) = self.document.clone() else {
@@ -129,25 +152,25 @@ impl Render for RegionsPanel {
                 .size_full()
                 .into_any_element();
         };
-        let doc = document.read(cx);
-        let sample_rate = doc.sample_rate();
         let selected = self.selected.clone();
         let mut rows = Vec::new();
-        push_collection_rows(
-            &mut rows,
-            SELECTION_COLLECTION,
-            &doc.selection.regions,
-            sample_rate,
-            selected.as_ref(),
-        );
-        for collection in doc.composition.read().unwrap().collections() {
-            push_collection_rows(
-                &mut rows,
-                &collection.name,
-                &collection.regions,
-                sample_rate,
-                selected.as_ref(),
-            );
+        for group in document.read(cx).snapshot() {
+            rows.push(ListRow::Header {
+                name: group.collection.clone(),
+            });
+            for region in group.regions {
+                let selected = selected
+                    .as_ref()
+                    .is_some_and(|(col, id)| col == &group.collection && *id == region.id);
+                rows.push(ListRow::Region {
+                    collection: group.collection.clone(),
+                    id: region.id,
+                    label: region.label,
+                    stamp: region.stamp,
+                    start: region.start,
+                    selected,
+                });
+            }
         }
         let rows = Rc::new(rows);
         let count = rows.len();
@@ -182,13 +205,13 @@ impl Render for RegionsPanel {
     }
 }
 
-enum RegionRow {
+enum ListRow {
     Header {
         name: String,
     },
     Region {
         collection: String,
-        id: RegionId,
+        id: u64,
         label: String,
         stamp: String,
         start: usize,
@@ -205,52 +228,13 @@ struct RowTheme {
     muted_foreground: gpui_kit::Hsla,
 }
 
-fn push_collection_rows(
-    rows: &mut Vec<RegionRow>,
-    name: &str,
-    regions: &[crate::model::Region],
-    sample_rate: u32,
-    selected: Option<&(String, RegionId)>,
-) {
-    rows.push(RegionRow::Header {
-        name: name.to_string(),
-    });
-    for region in regions {
-        let mut label = region
-            .label
-            .clone()
-            .unwrap_or_else(|| format!("{}–{}", region.start, region.end));
-        match &region.channels {
-            ChannelScope::AllChannels => {}
-            ChannelScope::Channels(channels) => {
-                label.push_str("  ch ");
-                label.push_str(
-                    &channels
-                        .iter()
-                        .map(|ch| ch.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
-            }
-        }
-        rows.push(RegionRow::Region {
-            collection: name.to_string(),
-            id: region.id,
-            label,
-            stamp: format_stamp(region.start as u64, sample_rate),
-            start: region.start,
-            selected: selected.is_some_and(|(col, id)| col == name && *id == region.id),
-        });
-    }
-}
-
-fn region_row_element(
-    entity: &Entity<RegionsPanel>,
-    row: &RegionRow,
+fn region_row_element<D: RegionsData + 'static>(
+    entity: &Entity<RegionsPanel<D>>,
+    row: &ListRow,
     theme: &RowTheme,
 ) -> impl IntoElement {
     match row {
-        RegionRow::Header { name } => div()
+        ListRow::Header { name } => div()
             .id(SharedString::from(format!("region-header-{name}")))
             .w_full()
             .px_1p5()
@@ -260,7 +244,7 @@ fn region_row_element(
             .text_color(theme.muted_foreground)
             .child(name.clone())
             .into_any_element(),
-        RegionRow::Region {
+        ListRow::Region {
             collection,
             id,
             label,
@@ -273,7 +257,7 @@ fn region_row_element(
             let start = *start;
             let entity = entity.clone();
             h_flex()
-                .id(("region-row", id.0))
+                .id(("region-row", id))
                 .w_full()
                 .flex_none()
                 .items_center()
@@ -298,17 +282,8 @@ fn region_row_element(
                     entity.update(cx, |this, cx| {
                         this.selected = Some((collection.clone(), id));
                         this.focus_handle.focus(window, cx);
-                        let Some(document) = this.document.as_ref() else {
-                            return;
-                        };
-                        document.update(cx, |doc, cx| {
-                            doc.set_position(start, ChannelScope::all());
-                            cx.notify();
-                        });
-                        if let Some(waveform) = this.waveform.as_ref() {
-                            waveform.update(cx, |view, cx| {
-                                view.scroll_sample_into_view(start as f64, cx);
-                            });
+                        if let Some(on_select) = this.on_select.clone() {
+                            on_select(collection.clone(), id, start, window, cx);
                         }
                         cx.notify();
                     });
@@ -329,9 +304,4 @@ fn region_row_element(
                 .into_any_element()
         }
     }
-}
-
-fn format_stamp(frame: u64, sample_rate: u32) -> String {
-    let secs = frame as f64 / f64::from(sample_rate.max(1));
-    format!("{secs:.2}s · {frame} smp")
 }

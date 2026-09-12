@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! Transport control strip for audio editors.
+
+use std::rc::Rc;
+
 use gpui_kit::{
     px, Action, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
     SharedString, Styled as _, Window,
@@ -9,12 +13,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex, ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _,
 };
-
-use crate::commands::{
-    TransportEnd, TransportHome, TransportLoop, TransportNext, TransportPlayPause,
-    TransportPrevious,
-};
-use crate::playback::TransportState;
 
 const CONTROL_SIZE: gpui_kit::Pixels = px(28.);
 
@@ -40,28 +38,59 @@ impl IconNamed for TransportIcon {
     }
 }
 
+/// Callback that returns a boxed GPUI action for dispatch and tooltips.
+pub type TransportAction = Rc<dyn Fn() -> Box<dyn Action>>;
+
+/// Transport control strip.
+///
+/// The host supplies play/loop state and six actions (home, previous,
+/// play/pause, next, end, loop) so this widget stays free of app command types.
 #[derive(IntoElement)]
 pub struct Transport {
-    state: TransportState,
+    playing: bool,
     looping: bool,
+    home: TransportAction,
+    previous: TransportAction,
+    play_pause: TransportAction,
+    next: TransportAction,
+    end: TransportAction,
+    toggle_loop: TransportAction,
 }
 
 impl Transport {
-    pub fn new(state: TransportState, looping: bool) -> Self {
-        Self { state, looping }
+    /// Build a transport bar from host play state and action factories.
+    pub fn new(
+        playing: bool,
+        looping: bool,
+        home: TransportAction,
+        previous: TransportAction,
+        play_pause: TransportAction,
+        next: TransportAction,
+        end: TransportAction,
+        toggle_loop: TransportAction,
+    ) -> Self {
+        Self {
+            playing,
+            looping,
+            home,
+            previous,
+            play_pause,
+            next,
+            end,
+            toggle_loop,
+        }
     }
 }
 
 impl RenderOnce for Transport {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let playing = self.state == TransportState::Playing;
-        let play_pause_icon = if playing {
+        let play_pause_icon = if self.playing {
             IconName::Pause
         } else {
             IconName::Play
         };
-        let play_pause_label = if playing { "Pause" } else { "Play" };
+        let play_pause_label = if self.playing { "Pause" } else { "Play" };
         let loop_label = if self.looping { "Loop On" } else { "Loop Off" };
         let muted = theme.muted_foreground;
 
@@ -85,35 +114,35 @@ impl RenderOnce for Transport {
                         "transport-home",
                         TransportIcon::ChevronsLeft,
                         "Home",
-                        TransportHome,
+                        self.home,
                         muted,
                     ))
                     .child(transport_button(
                         "transport-prev",
                         TransportIcon::SkipBack,
                         "Previous",
-                        TransportPrevious,
+                        self.previous,
                         muted,
                     ))
                     .child(transport_button(
                         "transport-play-pause",
                         play_pause_icon,
                         play_pause_label,
-                        TransportPlayPause,
+                        self.play_pause,
                         muted,
                     ))
                     .child(transport_button(
                         "transport-next",
                         TransportIcon::SkipForward,
                         "Next",
-                        TransportNext,
+                        self.next,
                         muted,
                     ))
                     .child(transport_button(
                         "transport-end",
                         TransportIcon::ChevronsRight,
                         "End",
-                        TransportEnd,
+                        self.end,
                         muted,
                     ))
                     .child({
@@ -122,7 +151,7 @@ impl RenderOnce for Transport {
                             "transport-loop",
                             TransportIcon::Repeat,
                             loop_label,
-                            TransportLoop,
+                            self.toggle_loop,
                             loop_color,
                         )
                         .toggled(self.looping)
@@ -135,17 +164,18 @@ fn transport_button(
     id: &'static str,
     icon: impl Into<Icon>,
     label: &'static str,
-    action: impl Action + Clone,
+    action: TransportAction,
     color: Hsla,
 ) -> Button {
+    let action_for_tooltip = (action)();
     Button::new(id)
         .ghost()
         .with_size(CONTROL_SIZE)
         .text_color(color)
         .icon(Icon::new(icon).text_color(color))
-        .tooltip_with_action(label, &action, None)
+        .tooltip_with_action(label, action_for_tooltip.as_ref(), None)
         .accessibility_label(label)
         .on_click(move |_, window, cx| {
-            window.dispatch_action(Box::new(action.clone()), cx);
+            window.dispatch_action((action)(), cx);
         })
 }

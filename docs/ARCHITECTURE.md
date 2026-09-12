@@ -21,7 +21,7 @@ field-core
 
 field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
 field-audio-playback    (cpal engine; PlaybackDataProvider + MonitorProcess)
-field-ui-components     (gpui widgets + WaveformDataProvider)
+field-ui-components     (gpui widgets + host traits / DTOs)
 
 field-assist (package name FieldAssist)
     depends on all of the above
@@ -35,7 +35,7 @@ field-assist (package name FieldAssist)
 | `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops |
 | `field-audio-monitor` | mid | Monitor chain Faust DSP, UI schema, lock-free params |
 | `field-audio-playback` | mid | Realtime device I/O, transport, playhead |
-| `field-ui-components` | mid | Reusable GPUI chrome and waveform data trait |
+| `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
 | `field-composition` | high | `.facomp` I/O, EDL, clip tree |
 | `field-session` | high | `.fasession` I/O and membership |
 | `FieldAssist` | app | Document editor, Lua, docks, `PlaybackSession`, adapters |
@@ -45,8 +45,30 @@ field-assist (package name FieldAssist)
 - **`BlockSource`** (`field-audio-model`): pager asks for file ranges; `field-audio-io::SymphoniaBlockSource` implements it; composition wires the two.
 - **`PlaybackDataProvider`** (`field-audio-playback`): engine pulls interleaved PCM; the app implements it for `Composition` / buffers.
 - **`MonitorProcess`** (`field-audio-playback`): engine runs listen DSP without depending on Faust; `field-assist` adapts `MonitorHost` → `MonitorProcess`.
-- **`WaveformDataProvider`** (`field-ui-components`): waveform paint reads samples/peaks; `BufferDocument` in the app implements it.
+- **`WaveformDataProvider`** + **`WaveformEditor`** (`field-ui-components`):
+  paint/read and selection/drag overlays; `BufferDocument` implements both.
+  UI types use `LaneScope` / `PaintRegion` / `u64` edit ids; the app maps
+  `ChannelScope` / `Region` / `EditId` at the trait boundary.
+- **List-panel data traits** (`RegionsData`, `MarkersData`, `EditsData`):
+  snapshot + fingerprint for observe-and-skip; selection/navigation via
+  callbacks so panels never name `WaveformDisplay` or model id newtypes.
+- **Monitor host surface** (`MonitorSnapshot` / `ParamUiNode` + callbacks):
+  Faust JSON and `MonitorChain` stay in the app (`monitor_schema` adapter);
+  the UI panel is Faust-free.
 - **`FormatEncoder`** (`field-audio-io`): encode planar PCM; render orchestration stays above I/O.
+
+## field-ui-components host contract
+
+FieldAssist imports `field_ui_components` at call sites. Do not re-export UI
+crate types through the application.
+
+- **Tab titles** are host-owned (`dock_titles` in FieldAssist). Pass title
+  slices to `tool_dock_min_size` and into panel constructors.
+- **Transport** and **FileStatusBar** take play state / `FileStatus` DTOs and
+  host-supplied actions or callbacks.
+- Widgets that remain app-shaped (explorer, workspace shell, render sheet,
+  workflow bar, Faust→`ParamUiNode` and `EditOp`→card mappers) stay in
+  FieldAssist.
 
 ## Sample layout (dasp)
 

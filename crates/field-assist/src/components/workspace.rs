@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, App, Context, Entity, EventEmitter, ExternalPaths,
+    div, prelude::FluentBuilder as _, Action, App, Context, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     Styled as _, WeakEntity, Window,
 };
@@ -12,21 +12,25 @@ use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     v_flex,
 };
+use field_ui_components::Transport;
 
 use crate::app::AppView;
+use crate::commands::{
+    TransportEnd, TransportHome, TransportLoop, TransportNext, TransportPlayPause,
+    TransportPrevious,
+};
 use crate::components::drop_overlay::file_drop_overlay;
-use crate::components::transport::Transport;
-use crate::components::waveform::WaveformDisplay;
 use crate::model::document::BufferDocument;
 use crate::model::DocumentId;
 use crate::playback::TransportState;
+use field_ui_components::WaveformDisplay;
 
 type ActivatedFn = Rc<dyn Fn(DocumentId, &mut Window, &mut App)>;
 
 pub struct WorkspacePanel {
     document_id: DocumentId,
     document: Entity<BufferDocument>,
-    waveform: Entity<WaveformDisplay>,
+    waveform: Entity<WaveformDisplay<BufferDocument>>,
     transport_state: TransportState,
     looping: bool,
     on_activated: Option<ActivatedFn>,
@@ -38,7 +42,7 @@ impl WorkspacePanel {
     pub fn new(
         document_id: DocumentId,
         document: Entity<BufferDocument>,
-        waveform: Entity<WaveformDisplay>,
+        waveform: Entity<WaveformDisplay<BufferDocument>>,
         app: WeakEntity<AppView>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -165,6 +169,22 @@ impl Render for WorkspacePanel {
                         this.child(file_drop_overlay(layout, self.app.clone()))
                     }),
             )
-            .child(Transport::new(self.transport_state, self.looping))
+            .child({
+                let playing = self.transport_state == TransportState::Playing;
+                let looping = self.looping;
+                fn action_factory<A: Action + Clone + 'static>(action: A) -> field_ui_components::TransportAction {
+                    Rc::new(move || Box::new(action.clone()) as Box<dyn Action>)
+                }
+                Transport::new(
+                    playing,
+                    looping,
+                    action_factory(TransportHome),
+                    action_factory(TransportPrevious),
+                    action_factory(TransportPlayPause),
+                    action_factory(TransportNext),
+                    action_factory(TransportEnd),
+                    action_factory(TransportLoop),
+                )
+            })
     }
 }

@@ -39,4 +39,10 @@ pub trait WaveformDataProvider: Send + Sync {
             *slot = self.min_max_in_range(channel, a, a + samples_per_pixel);
         }
     }
+    /// Samples folded into each overview peak bin (default `256`).
+    ///
+    /// Waveform paint uses this instead of importing audio-process constants.
+    fn peak_block(&self) -> usize {
+        256
+    }
 }
