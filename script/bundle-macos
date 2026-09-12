@@ -70,7 +70,8 @@ resources="$contents/Resources"
 rm -rf "$app"
 mkdir -p "$macos_dir" "$resources"
 
-sed "s/__VERSION__/${version}/g" "$root/macos/Info.plist" > "$contents/Info.plist"
+sed "s/__VERSION__/${version}/g" \
+  "$root/crates/field-assist/assets/macos/Info.plist" > "$contents/Info.plist"
 printf 'APPL????' > "$contents/PkgInfo"
 cp "$binary" "$macos_dir/FieldAssist"
 chmod +x "$macos_dir/FieldAssist"

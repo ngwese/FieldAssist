@@ -4,14 +4,14 @@ Review, edit, and process audio coming in from the field.
 
 ![FieldAssist screenshot](docs/asset/screenshot.png)
 
-> [!WARNING]
-> **FieldAssist** is currently in development. The APIs, feature set, and
-> packaging may change at any time. Development happens on `main` so the
-> latest version may not be stable.
+> [!WARNING] **FieldAssist** is currently in development and incomplete. The
+> APIs, feature set, and packaging may change at any time. Development happens
+> on `main` so the latest version may not be stable.
 
 - See [docs/BUILDING.md](docs/BUILDING.md) for build, packaging, and app-icon generation.
 - See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the Cargo workspace crate
 map and composition patterns.
+- See [docs/SCRIPT.md](docs/SCRIPT.md) for details on the evolving Lua scripting layer.  
 
 Supported formats include WAV, FLAC, MP3, OGG, and M4A (via Symphonia).
 Supported platforms include Linux, macOS, and Windows.
