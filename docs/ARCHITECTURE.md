@@ -23,8 +23,9 @@ field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
 field-audio-playback    (cpal engine; PlaybackDataProvider + MonitorProcess)
 field-ui-components     (gpui widgets + host traits / DTOs)
 
+field-play              (example CLI: .facomp → default device + monitor)
 field-assist (package name FieldAssist)
-    depends on all of the above
+    depends on all of the above (except field-play)
 ```
 
 | Crate | Level | Responsibility |
@@ -38,6 +39,7 @@ field-assist (package name FieldAssist)
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
 | `field-composition` | high | `.facomp` I/O, EDL, clip tree |
 | `field-session` | high | `.fasession` I/O and membership |
+| `field-play` | example | Headless `.facomp` playback on the default output |
 | `FieldAssist` | app | Document editor, Lua, docks, `PlaybackSession`, adapters |
 
 ## Trait-at-leaf composition
@@ -79,12 +81,40 @@ Shared sample type is `f32` (`dasp::sample::Sample`).
 
 Do not force pull-based `dasp::signal::Signal` through random-access DAW paths.
 
+`dasp::ring_buffer::{Fixed, Bounded}` are useful for **single-owner** DSP
+(delays, etc.). They are **not** used for the playback prefetch↔callback
+boundary: push/pop need `&mut self`, so sharing them across threads would
+require a mutex. `field-audio-playback` uses an atomic SPSC
+[`PrefetchRing`](../crates/field-audio-playback/src/prefetch.rs) instead.
+
+## Realtime playback path
+
+The CPAL output callback must stay realtime-safe. Quality gates (also in
+[`crates/field-audio-playback/AGENTS.md`](../crates/field-audio-playback/AGENTS.md)):
+
+1. **Zero heap allocation** on the callback
+2. **Zero blocking lock contention** on the callback
+3. **No decode / filesystem I/O** on the callback
+
+`PlaybackEngine` runs a dedicated `fa-prefetch` thread that may allocate, lock
+the composition pager, and decode FLAC/etc. It pushes device-rate interleaved
+frames into the SPSC ring; the callback only pops (or outputs silence on
+underrun). Composition `read_interleaved` uses planar pager fills (one lock per
+request) on that prefetch thread.
+
 ## Future binaries
 
 A CLI or mobile tool can depend on a subset, for example:
 
 - probe/peaks CLI: `field-audio-io` + `field-audio-process`
 - session batch tool: `field-session` + `field-composition` + I/O (no GPUI, no Faust)
+- **`field-play`**: `field-composition` + `field-audio-playback` +
+  `field-audio-monitor` — plays a `.facomp` on the system default device,
+  using the composition's monitoring chain when set, otherwise Direct
+
+```bash
+cargo run -p field-play -- path/to/project.facomp
+```
 
 The desktop app remains `crates/field-assist` (Cargo package `FieldAssist`).
 

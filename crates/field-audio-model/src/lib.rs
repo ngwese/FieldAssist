@@ -33,7 +33,9 @@ pub use markers::{
     DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 pub use media::{MediaId, MediaPool, MediaRef};
-pub use pager::{BlockPager, BlockSource, NullBlockSource, BLOCK_FRAMES, RAM_CACHE_BYTES};
+pub use pager::{
+    BlockPager, BlockSource, NullBlockSource, PagerStats, BLOCK_FRAMES, RAM_CACHE_BYTES,
+};
 pub use pcm::{DecodedAudio, PcmBuffer};
 pub use regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 pub use selection::SamplePosition;

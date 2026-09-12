@@ -5,6 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 
@@ -32,6 +33,21 @@ pub const BLOCK_FRAMES: u64 = 65_536;
 /// overview paints without keeping a whole file in RAM.
 pub const RAM_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
+/// Cumulative pager cache / decode counters (resettable).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PagerStats {
+    /// Blocks served from the RAM LRU.
+    pub ram_hits: u64,
+    /// Blocks reloaded from disk spill.
+    pub spill_hits: u64,
+    /// Blocks decoded via [`BlockSource`].
+    pub decodes: u64,
+    /// Wall time spent in [`BlockSource::decode_range`].
+    pub decode_ns: u64,
+    /// Blocks written to spill when evicted from RAM.
+    pub spill_writes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BlockKey {
     media_id: u64,
@@ -46,6 +62,7 @@ pub struct BlockPager {
     ram_limit: usize,
     spill_dir: PathBuf,
     source: Arc<dyn BlockSource>,
+    stats: PagerStats,
 }
 
 impl BlockPager {
@@ -69,6 +86,7 @@ impl BlockPager {
             ram_limit: ram_limit.max(1),
             spill_dir,
             source,
+            stats: PagerStats::default(),
         })
     }
 
@@ -81,7 +99,18 @@ impl BlockPager {
             ram_limit: RAM_CACHE_BYTES,
             spill_dir: PathBuf::new(),
             source: Arc::new(NullBlockSource),
+            stats: PagerStats::default(),
         }
+    }
+
+    /// Snapshot of cache / decode counters.
+    pub fn stats(&self) -> PagerStats {
+        self.stats
+    }
+
+    /// Clear counters without flushing the cache.
+    pub fn reset_stats(&mut self) {
+        self.stats = PagerStats::default();
     }
 
     /// Fill planar destination channels from media starting at `src_offset`.
@@ -172,9 +201,11 @@ impl BlockPager {
         };
         if let Some(block) = self.ram.get(&key).cloned() {
             self.touch(key);
+            self.stats.ram_hits = self.stats.ram_hits.saturating_add(1);
             return Ok(block);
         }
         if let Some(block) = self.load_spill(&key, media.channel_count)? {
+            self.stats.spill_hits = self.stats.spill_hits.saturating_add(1);
             self.insert_ram(key, block.clone())?;
             return Ok(block);
         }
@@ -185,7 +216,13 @@ impl BlockPager {
             return Ok(empty);
         }
         let count = BLOCK_FRAMES.min(media.frame_count - start);
+        let started = Instant::now();
         let decoded = decode_block(media, start, count, self.source.as_ref())?;
+        self.stats.decode_ns = self
+            .stats
+            .decode_ns
+            .saturating_add(started.elapsed().as_nanos() as u64);
+        self.stats.decodes = self.stats.decodes.saturating_add(1);
         let block = Arc::new(decoded);
         self.insert_ram(key, block.clone())?;
         Ok(block)
@@ -223,11 +260,13 @@ impl BlockPager {
             .join(format!("m{}_b{}.blk", key.media_id, key.block_index))
     }
 
-    fn spill(&self, key: &BlockKey, block: &Arc<Vec<Vec<f32>>>) -> Result<()> {
+    fn spill(&mut self, key: &BlockKey, block: &Arc<Vec<Vec<f32>>>) -> Result<()> {
         if self.spill_dir.as_os_str().is_empty() {
             return Ok(());
         }
-        write_block(&self.spill_path(key), block)
+        write_block(&self.spill_path(key), block)?;
+        self.stats.spill_writes = self.stats.spill_writes.saturating_add(1);
+        Ok(())
     }
 
     fn load_spill(

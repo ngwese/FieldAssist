@@ -12,6 +12,17 @@
 //! Applications supply a `MonitorProcess` adapter (for example wrapping
 //! `field_audio_monitor::MonitorHost`) and providers for their buffers.
 //!
+//! ## Realtime path
+//!
+//! [`PlaybackEngine`] starts a dedicated **prefetch** thread that may allocate,
+//! lock the composition pager, and decode media. The CPAL callback only drains
+//! a lock-free [`PrefetchRing`] — see the crate `AGENTS.md` for the quality
+//! gates (zero heap allocation, zero blocking lock contention on the callback).
+//!
+//! `dasp::ring_buffer` is intentionally **not** used for this boundary: its
+//! `Fixed`/`Bounded` types require `&mut self` for push/pop and cannot be shared
+//! across threads without a mutex.
+//!
 //! ```
 //! use field_audio_playback::{PlaybackDataProvider, TransportState};
 //!
@@ -33,6 +44,7 @@ mod device;
 mod engine;
 mod monitor;
 mod playhead;
+mod prefetch;
 mod provider;
 mod transport;
 
@@ -40,8 +52,9 @@ pub use device::{
     list_output_devices, output_device_name, print_output_devices, resolve_output_device,
     OutputDeviceInfo,
 };
-pub use engine::{PlaybackEngine, PlaybackShared, PLAYBACK_READ_FRAMES};
+pub use engine::{PlaybackEngine, PlaybackShared, PlaybackStats, PLAYBACK_READ_FRAMES};
 pub use monitor::{map_direct, MonitorProcess};
 pub use playhead::{Playhead, PlayheadEvent};
+pub use prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 pub use provider::PlaybackDataProvider;
 pub use transport::{Transport, TransportState};

@@ -615,6 +615,21 @@ impl Composition {
         self.tree.at(frame)
     }
 
+    /// Number of clips in the timeline tree.
+    pub fn clip_count(&self) -> usize {
+        self.tree.clip_count()
+    }
+
+    /// Snapshot of block-pager cache / decode counters.
+    pub fn pager_stats(&self) -> field_audio_model::PagerStats {
+        self.pager.lock().unwrap().stats()
+    }
+
+    /// Clear pager counters without flushing the cache.
+    pub fn reset_pager_stats(&self) {
+        self.pager.lock().unwrap().reset_stats();
+    }
+
     fn alloc_clip_id(&mut self) -> ClipId {
         let id = ClipId(self.next_clip_id);
         self.next_clip_id += 1;
@@ -1102,6 +1117,10 @@ impl Composition {
     }
 
     /// `read_interleaved`.
+    ///
+    /// Fills destination using planar pager reads (one pager lock for the whole
+    /// request), then interleaves. Scratch planes are thread-local so
+    /// steady-state calls do not allocate.
     pub fn read_interleaved(&self, start: u64, count: u64, dest: &mut [f32]) -> Result<()> {
         let ch = self.channel_count.max(1);
         let frames = count as usize;
@@ -1113,14 +1132,71 @@ impl Composition {
         if count == 0 || self.channel_count == 0 {
             return Ok(());
         }
-        let mut plane = vec![0.0; frames];
-        for c in 0..self.channel_count {
-            self.read_channel(c, start, &mut plane)?;
-            for frame in 0..frames {
-                dest[frame * ch + c] = plane[frame];
-            }
+
+        thread_local! {
+            static PLANAR: std::cell::RefCell<Vec<f32>> =
+                const { std::cell::RefCell::new(Vec::new()) };
         }
-        Ok(())
+
+        PLANAR.with(|cell| -> Result<()> {
+            let mut scratch = cell.borrow_mut();
+            if scratch.len() < need {
+                scratch.resize(need, 0.0);
+            }
+            scratch[..need].fill(0.0);
+
+            let mut remaining = count;
+            let mut pos = start.min(self.frames());
+            let mut dest_off = 0usize;
+            {
+                let mut pager = self.pager.lock().unwrap();
+                while remaining > 0 {
+                    let Some(span) = self.tree.at(pos) else {
+                        break;
+                    };
+                    let local = pos - span.start;
+                    let take = remaining.min(span.clip.len - local) as usize;
+                    if take == 0 {
+                        break;
+                    }
+                    if let Some(source) = &span.clip.source {
+                        for c in 0..ch {
+                            let plane_start = c * frames + dest_off;
+                            let plane = &mut scratch[plane_start..plane_start + take];
+                            pager.fill_channel(
+                                &self.pool,
+                                source.media_id,
+                                source.offset + local,
+                                take as u64,
+                                c,
+                                plane,
+                            )?;
+                        }
+                    }
+                    if span.clip.fade_in != 0 || span.clip.fade_out != 0 {
+                        for frame in 0..take {
+                            let gain = span.clip.gain_at(local + frame as u64);
+                            if (gain - 1.0).abs() < f32::EPSILON {
+                                continue;
+                            }
+                            for c in 0..ch {
+                                scratch[c * frames + dest_off + frame] *= gain;
+                            }
+                        }
+                    }
+                    remaining -= take as u64;
+                    pos += take as u64;
+                    dest_off += take;
+                }
+            }
+
+            for frame in 0..frames {
+                for c in 0..ch {
+                    dest[frame * ch + c] = scratch[c * frames + frame];
+                }
+            }
+            Ok(())
+        })
     }
 
     /// `fill_minmax_columns`.

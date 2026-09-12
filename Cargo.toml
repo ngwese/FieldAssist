@@ -11,6 +11,7 @@ members = [
     "crates/field-composition",
     "crates/field-session",
     "crates/field-ui-components",
+    "crates/field-play",
 ]
 default-members = ["crates/field-assist"]
 
@@ -29,6 +30,7 @@ schemars = "1.0"
 gpui-kit = "0.6.1"
 symphonia = { version = "0.6", features = ["all"] }
 cpal = "0.18"
+arc-swap = "1"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 hound = "3"
 rusty_vorbis = "0.1"

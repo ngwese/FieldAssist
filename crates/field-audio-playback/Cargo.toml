@@ -7,4 +7,5 @@ description = "Audio playback engine and transport for FieldAssist"
 
 [dependencies]
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 cpal = { workspace = true }

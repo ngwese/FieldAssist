@@ -24,7 +24,17 @@ window. Press Space to play or pause.
 | `field-ui-components` | Reusable GPUI widgets and traits |
 | `field-composition` | `.facomp` / EDL |
 | `field-session` | `.fasession` |
+| `field-play` | Example CLI: play `.facomp` on the default device |
 | `FieldAssist` | Desktop application |
+
+### Example: play a composition from the CLI
+
+```bash
+cargo run -p field-play -- path/to/project.facomp
+```
+
+`field-play` opens the `.facomp`, uses its monitoring chain when set, and
+otherwise sends audio Direct to the system default output device.
 
 ## License
 

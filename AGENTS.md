@@ -17,3 +17,10 @@ characters or fewer. Do not leave the body as a single unwrapped paragraph.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the crate DAG. Prefer
 depending on leaf crates and implementing their traits in the application
 rather than introducing sibling-crate edges.
+
+## Realtime audio
+
+Code on the CPAL output callback must not allocate or take blocking locks.
+See [crates/field-audio-playback/AGENTS.md](crates/field-audio-playback/AGENTS.md)
+for the quality gates and where prefetch vs callback work belongs. Do not use
+`dasp::ring_buffer` across that boundary (it requires `&mut self`).
