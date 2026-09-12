@@ -5,6 +5,15 @@
 - [Rust](https://www.rust-lang.org/tools/install) (2021 edition)
 - [Faust](https://faust.grame.fr/) (optional) to regenerate monitor DSP sources
 
+### On Linux (Ubuntu)
+
+Install these packages before building:
+
+```bash
+sudo apt install libfontconfig-dev libxcb1-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev
+```
+
 ## Faust monitor chains
 
 Playback monitoring compiles Faust DSP in
