@@ -19,7 +19,7 @@ Related:
 - [SPEC-processing.md](SPEC-processing.md) — future processing chains, preview,
   and batch export. Additive to monitor DSP; not a replacement.
 - [SCRIPT.md](../SCRIPT.md) — Lua API reference
-- [BUILDING.md](../../BUILDING.md) — build and packaging
+- [BUILDING.md](../BUILDING.md) — build and packaging
 
 ## Purpose
 

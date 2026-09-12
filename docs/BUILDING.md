@@ -32,9 +32,9 @@ cargo run --release -- --dump-init
 ## App icon
 
 The in-app mark, Windows `.exe` icon, and macOS `.app` icon all come from
-[crates/field-assist/assets/logo/04-bands.svg](crates/field-assist/assets/logo/04-bands.svg)
+[crates/field-assist/assets/logo/04-bands.svg](../crates/field-assist/assets/logo/04-bands.svg)
 (logo study 4). Raster assets live in
-[crates/field-assist/assets/app-icon/](crates/field-assist/assets/app-icon/):
+[crates/field-assist/assets/app-icon/](../crates/field-assist/assets/app-icon/):
 
 | File | Used by |
 | --- | --- |

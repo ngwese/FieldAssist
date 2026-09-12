@@ -2,7 +2,7 @@
 
 Review, edit, and process audio coming in from the field.
 
-See [BUILDING.md](BUILDING.md) for build, packaging, and app-icon generation.
+See [BUILDING.md](docs/BUILDING.md) for build, packaging, and app-icon generation.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the Cargo workspace crate
 map and composition patterns.
 
