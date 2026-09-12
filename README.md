@@ -14,6 +14,7 @@ Review, edit, and process audio coming in from the field.
 map and composition patterns.
 
 Supported formats include WAV, FLAC, MP3, OGG, and M4A (via Symphonia).
+Supported platforms include Linux, macOS, and Windows.
 
 Open a file from the app with **File → Open…**, or drag and drop onto the
 window. Press Space to play or pause.
