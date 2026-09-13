@@ -543,6 +543,29 @@ mod tests {
     }
 
     #[test]
+    fn play_pause_space_is_bound_to_waveform_hover() {
+        // Hover-without-click relies on WaveformHover; if that context drops
+        // after the first Space (GPUI default hover modality), toggle breaks
+        // until the mouse moves (issue #15).
+        let bindings = bindings_for("transport.play_pause", "space");
+        assert_eq!(bindings.len(), 2);
+        let contexts: Vec<String> = bindings
+            .iter()
+            .filter_map(|binding| binding.predicate().map(|p| p.to_string()))
+            .collect();
+        assert!(
+            contexts
+                .iter()
+                .any(|c| c.contains(WAVEFORM_HOVER_KEY_CONTEXT)),
+            "expected WaveformHover binding, got {contexts:?}"
+        );
+        assert!(
+            contexts.iter().any(|c| c.contains(WAVEFORM_KEY_CONTEXT)),
+            "expected Waveform binding, got {contexts:?}"
+        );
+    }
+
+    #[test]
     fn dispatch_rejects_unknown_command_ids() {
         assert_eq!(KNOWN_COMMANDS.len(), known_commands().len());
         for id in known_commands() {

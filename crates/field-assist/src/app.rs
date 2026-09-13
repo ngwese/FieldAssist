@@ -3714,10 +3714,38 @@ impl AppView {
         let over_waveform = self
             .active_views()
             .is_some_and(|views| views.waveform.read(cx).pointer_over());
-        if over_waveform && !typing {
+        if waveform_hover_key_context_active(over_waveform, typing) {
             context.add("WaveformHover");
         }
         context
+    }
+}
+
+/// Whether App should include `WaveformHover` so Space (and a/f/m/d) work
+/// without waveform focus — requires pointer_over to survive keypresses.
+fn waveform_hover_key_context_active(pointer_over: bool, typing: bool) -> bool {
+    pointer_over && !typing
+}
+
+#[cfg(test)]
+mod waveform_hover_key_context_tests {
+    use super::waveform_hover_key_context_active;
+
+    #[test]
+    fn space_play_pause_needs_persistent_waveform_hover() {
+        // Hover path: first Space must not drop WaveformHover (issue #15).
+        assert!(
+            waveform_hover_key_context_active(true, false),
+            "hovered waveform enables WaveformHover for Space"
+        );
+        assert!(
+            !waveform_hover_key_context_active(false, false),
+            "if hover clears after a keypress, Space stops matching"
+        );
+        assert!(
+            !waveform_hover_key_context_active(true, true),
+            "focused text input must not steal Space via WaveformHover"
+        );
     }
 }
 

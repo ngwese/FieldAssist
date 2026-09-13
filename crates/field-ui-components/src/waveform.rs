@@ -15,9 +15,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context, DispatchPhase,
-    Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder, Pixels, Render,
-    Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    Entity, FocusHandle, Focusable, HoverListenerMode, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
+    Pixels, Render, Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window,
 };
 
 use crate::waveform_data::WaveformDataProvider;
@@ -30,6 +31,15 @@ mod waveform_actions {
 }
 /// Toggle zero-crossing snap for region / caret placement.
 pub use waveform_actions::ToggleZeroCrossing;
+
+/// Hover mode for the waveform root so `WaveformHover` keybindings stay active
+/// across keypresses while the pointer remains over the view (issue #15).
+///
+/// GPUI's default [`HoverListenerMode::InputModalityAware`] clears hover after
+/// keyboard input until the next mouse move, which dropped Space play/pause.
+fn waveform_pointer_hover_mode() -> HoverListenerMode {
+    HoverListenerMode::InputModalityIndependent
+}
 
 const ZOOM_FACTOR: f64 = 1.25;
 const MIN_SAMPLES_PER_PIXEL: f64 = 1.0 / 50.0;
@@ -1174,6 +1184,7 @@ where
                     this.focus_handle.focus(window, cx);
                 }),
             )
+            .hover_listener_mode(waveform_pointer_hover_mode())
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.set_pointer_over(*hovered, cx);
             }))
@@ -1701,5 +1712,16 @@ mod tests {
         let slots = marker_paint_slots(&markers, 1000.0, 10.0, 0.0, 100.0);
         assert_eq!(slots.len(), 1);
         assert!((slots[0].0 - 40.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn waveform_hover_survives_keyboard_modality() {
+        // Space play/pause is scoped to WaveformHover while pointer_over; the
+        // default InputModalityAware mode would clear hover after the first
+        // Space and ignore the second until the mouse moves (issue #15).
+        assert_eq!(
+            waveform_pointer_hover_mode(),
+            HoverListenerMode::InputModalityIndependent
+        );
     }
 }
