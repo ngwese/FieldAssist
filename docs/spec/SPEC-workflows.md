@@ -7,6 +7,7 @@
 | Revision | Date | Notes |
 | --- | --- | --- |
 | 1 | 2026-09-11 | Initial as-built specification |
+| 2 | 2026-09-12 | Prototype/instance pattern; `app:run_workflow` |
 
 This document specifies the Lua host, workflow system, and how they support
 incremental review. The Lua surface is defined in [SCRIPT.md](../SCRIPT.md);
@@ -65,8 +66,10 @@ exist for user scripts.
 
 ## Session and documents from Lua
 
-`app.session` is always the UI-active session. `app.active` / `app.documents`
-/ `app:open` alias `session.active` / `session.documents` / `session:open`.
+`app.session` is always the UI-active session. `app.composition` /
+`app.compositions` / `app:open` alias `session.composition` / `session.compositions` /
+`session:open`. `app.workflow` is the running stateful workflow instance, or
+`nil`.
 
 - Audio and `.facomp` **add** a document
 - `session:open` of a `.fasession` **replaces** the active session (same as
@@ -81,25 +84,31 @@ They are not written to `.facomp`. Built-in Review uses **`group` only**
 `session.properties` is a string→string map (`nil` values rejected). Review
 stores its output directory as `properties.output` on suspend.
 
-`session.workflow` is the bound stateful workflow name, persisted in the
-`.fasession`. The host writes it after a successful `:start` on a stateful
-prototype. Scripts should end a run with `app:finish_workflow()` /
-`app:cancel_workflow()`, not by assigning the field. Assigning the name
+`session.workflow_name` is the bound stateful workflow name, persisted in the
+`.fasession`. The host writes `instance:name()` after a successful `:start`
+on a stateful instance. The running instance is exposed as `app.workflow`.
+Scripts should end a run with `app:finish_workflow()` /
+`app:cancel_workflow()`, not by assigning the name field. Assigning the name
 alone does not show a toolbar; that requires `:start` or `:resume`.
 
 ## Workflows
 
-A workflow is a named prototype with optional drop layout, menu presence,
-lifecycle methods, and a toolbar.
+A workflow is a named prototype. Each run is a new Lua instance (metatable =
+prototype). Optional drop layout, menu presence, lifecycle methods, and a
+toolbar live on that instance.
 
 | Kind | Rule |
 | --- | --- |
-| **One-shot** | No `:suspend` or `:resume`. `:start` runs and returns. Does not bind `session.workflow`. No toolbar |
-| **Stateful** | Defines `:suspend` and/or `:resume`. After `:start`, the host binds `session.workflow` and may show a toolbar |
+| **One-shot** | No `:suspend` or `:resume`. `:start` runs and returns. Does not bind `session.workflow_name` or `app.workflow`. No toolbar |
+| **Stateful** | Defines `:suspend` and/or `:resume`. After `:start`, the host keeps the instance as `app.workflow`, binds `session.workflow_name` to `instance:name()`, and may show a toolbar |
 
-`app:create_workflow(props)` builds a prototype. `app:declare_workflow`
-registers it. `app:declare_workflow(props, func)` is shorthand for a
-one-shot whose `:start` is `func(payload)` (no `self`).
+`app:create_workflow(props)` builds a prototype with `__base_properties`
+userdata and base methods (`:name()`, `:on`, `:set_toolbar`, …).
+`app:declare_workflow` registers it. `app:declare_workflow(props, func)` is
+shorthand for a one-shot whose `:start` is `func(payload)` (no `self`).
+`app:run_workflow(name)` / `app:run_workflow(name, payload)` look up the
+prototype, construct an instance (`:init` if defined), and call `:start`.
+A bare name uses `{ scope = "run" }`.
 
 **Scopes:** `"drag-drop"` and/or `"menu"`.
 
@@ -107,17 +116,18 @@ one-shot whose `:start` is `func(payload)` (no `self`).
 
 - Drop overlay: `{ scope = "drag-drop", paths = { ... } }`
 - Workflow menu: `{ scope = "menu" }` (no `paths`)
+- `app:run_workflow(name)`: `{ scope = "run" }`
 
 **Concurrency:** one stateful workflow per active session. Starting a
 *different* stateful workflow while one is bound alerts and does not start.
-Dropping the *same* running workflow calls `:start` again. One-shot Add and
-Replace may run while Review is bound.
+Dropping the *same* running workflow creates a new instance and calls
+`:start` again. One-shot Add and Replace may run while Review is bound.
 
 **Session replace:** cancel the outgoing workflow, install the new session,
-fire `session_loaded`, then `:resume` if the incoming `session.workflow`
-names a declared stateful prototype. Unknown or one-shot names: log, no
-toolbar, Keep (leave the name) or Clear (unbind only; no `:cancel` /
-`:finish`; other properties stay).
+fire `session_loaded`, then construct a new instance and call `:resume` if
+the incoming `session.workflow_name` names a declared stateful prototype.
+Unknown or one-shot names: log, no toolbar, Keep (leave the name) or Clear
+(unbind only; no `:cancel` / `:finish`; other properties stay).
 
 **Suspend** runs before Save Session / Save Session As, and during quit or
 open-session after compositions are clean (before the unsaved-session

@@ -41,11 +41,11 @@ impl UserData for LuaSession {
             let host = host_from_lua(lua)?;
             Ok(host.session_path(this.id))
         });
-        fields.add_field_method_get("workflow", |lua, this| {
+        fields.add_field_method_get("workflow_name", |lua, this| {
             let host = host_from_lua(lua)?;
             Ok(host.session_workflow(this.id))
         });
-        fields.add_field_method_set("workflow", |lua, this, value: Value| {
+        fields.add_field_method_set("workflow_name", |lua, this, value: Value| {
             let host = host_from_lua(lua)?;
             host.set_session_workflow(this.id, optional_lua_string(value)?)
         });
@@ -65,23 +65,23 @@ impl UserData for LuaSession {
             let host = host_from_lua(lua)?;
             host.set_session_properties(this.id, string_map_from_lua(value)?)
         });
-        fields.add_field_method_get("active", |lua, this| {
+        fields.add_field_method_get("composition", |lua, this| {
             let host = host_from_lua(lua)?;
             Ok(host
                 .session_active_document(this.id)
                 .map(|id| LuaComposition { id }))
         });
-        fields.add_field_method_set("active", |lua, this, value: Value| {
+        fields.add_field_method_set("composition", |lua, this, value: Value| {
             let host = host_from_lua(lua)?;
             if this.id.is_some() {
                 return Err(mlua::Error::runtime(
-                    "active can only be set on the UI session",
+                    "composition can only be set on the UI session",
                 ));
             }
             let doc = LuaComposition::from_lua(value, lua)?;
             host.set_active(doc.id)
         });
-        fields.add_field_method_get("documents", |lua, this| {
+        fields.add_field_method_get("compositions", |lua, this| {
             let host = host_from_lua(lua)?;
             let docs: Vec<LuaComposition> = host
                 .session_documents(this.id)
@@ -97,13 +97,10 @@ impl UserData for LuaSession {
             let host = host_from_lua(lua)?;
             Ok(host.session_group_count(this.id, &group) as i64)
         });
-        methods.add_method(
-            "move",
-            |lua, this, (doc, index): (LuaComposition, i64)| {
-                let host = host_from_lua(lua)?;
-                host.move_session_document(this.id, doc.id, index)
-            },
-        );
+        methods.add_method("move", |lua, this, (doc, index): (LuaComposition, i64)| {
+            let host = host_from_lua(lua)?;
+            host.move_session_document(this.id, doc.id, index)
+        });
         methods.add_method("open", |lua, this, path: String| {
             let host = host_from_lua(lua)?;
             if this.id.is_some() {

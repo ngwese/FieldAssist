@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui_kit::{Hsla, Rgba};
 use gpui_kit::component::{ActiveTheme as _, ThemeColor};
+use gpui_kit::{Hsla, Rgba};
 use mlua::{Lua, Table, UserData, UserDataFields};
 
 use super::access;

@@ -13,7 +13,9 @@ use super::host::{host_from_lua, stringify_value, LogLevel};
 use super::layout::layout_from_lua;
 use super::session::LuaSession;
 use super::theme::LuaTheme;
-use super::workflow::{create_prototype, workflow_from_lua, workflow_from_prototype};
+use super::workflow::{
+    workflow_create_prototype, workflow_from_lua, workflow_from_prototype, workflow_run,
+};
 
 pub struct LuaApp;
 
@@ -24,16 +26,20 @@ impl UserData for LuaApp {
             let host = host_from_lua(lua)?;
             Ok(host.sessions())
         });
-        fields.add_field_method_get("active", |lua, _| {
+        fields.add_field_method_get("composition", |lua, _| {
             let host = host_from_lua(lua)?;
             Ok(host.active().map(|id| LuaComposition { id }))
         });
-        fields.add_field_method_set("active", |lua, _, value: Value| {
+        fields.add_field_method_set("composition", |lua, _, value: Value| {
             let host = host_from_lua(lua)?;
             let doc = LuaComposition::from_lua(value, lua)?;
             host.set_active(doc.id)
         });
-        fields.add_field_method_get("documents", |lua, _| {
+        fields.add_field_method_get("workflow", |lua, _| {
+            let host = host_from_lua(lua)?;
+            Ok(host.active_workflow())
+        });
+        fields.add_field_method_get("compositions", |lua, _| {
             let host = host_from_lua(lua)?;
             let docs: Vec<LuaComposition> = host
                 .documents()
@@ -108,7 +114,10 @@ impl UserData for LuaApp {
             Ok(())
         });
         methods.add_method("create_workflow", |lua, _, properties: Table| {
-            create_prototype(lua, properties)
+            workflow_create_prototype(lua, properties)
+        });
+        methods.add_method("run_workflow", |lua, _, args: MultiValue| {
+            run_workflow_from_lua(lua, args)
         });
         methods.add_method("declare_workflow", |lua, _, args: MultiValue| {
             let mut args = args.into_iter();
@@ -194,6 +203,35 @@ impl UserData for LuaApp {
             Ok(())
         });
     }
+}
+
+fn run_workflow_from_lua(lua: &mlua::Lua, args: MultiValue) -> mlua::Result<Option<Table>> {
+    let mut args = args.into_iter();
+    let name = match args.next() {
+        Some(Value::String(name)) => name.to_str()?.to_owned(),
+        Some(other) => {
+            return Err(mlua::Error::runtime(format!(
+                "run_workflow expects a name, got {}",
+                other.type_name()
+            )))
+        }
+        None => return Err(mlua::Error::runtime("run_workflow expects a name")),
+    };
+    let payload = match args.next() {
+        None | Some(Value::Nil) => {
+            let table = lua.create_table()?;
+            table.set("scope", "run")?;
+            table
+        }
+        Some(Value::Table(table)) => table,
+        Some(other) => {
+            return Err(mlua::Error::runtime(format!(
+                "run_workflow payload must be a table, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    workflow_run(lua, &name, payload)
 }
 
 fn find_files_from_lua(lua: &mlua::Lua, args: MultiValue) -> mlua::Result<Table> {

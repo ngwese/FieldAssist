@@ -8,18 +8,22 @@ mod files;
 mod host;
 mod layout;
 mod marker;
+mod prototype;
 mod region;
 mod selection;
 mod session;
 mod theme;
 mod workflow;
+mod workflow_app;
+mod workflow_toolbar;
 
 pub use access::{enter, try_invoke_command};
 pub use host::{
     host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ResumeWorkflow, ScriptHost,
     TestWorld, EMBEDDED_INIT,
 };
-pub use workflow::{DropLayout, PathBrowse, ToolbarAlign, ToolbarItem};
+pub use workflow_app::DropLayout;
+pub use workflow_toolbar::{PathBrowse, ToolbarAlign, ToolbarItem};
 
 #[cfg(test)]
 mod tests {
@@ -102,7 +106,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.active
+            local c = app.composition
             c:select(0, 100)
             local region = c:add_region({
               start = 10,
@@ -129,7 +133,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.active
+            local c = app.composition
             c:clear_selection()
             c:add_region({ start = 5, stop = 15, label = "sel" })
             local silent = c:collection("silent")
@@ -161,7 +165,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.active
+            local c = app.composition
             local a = c:add_marker({ frame = 40, type = "Blue", note = "cue" })
             local b = c:add_marker(40, "Yellow")
             local dup = c:add_marker(40, "Blue")
@@ -187,7 +191,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.active
+            local c = app.composition
             local m = c:add_marker({ frame = 10, type = "Red", color = {1, 0, 0, 1} })
             return m.type, m.color[1], m.color[2], m.color[3], #c.marker_types
             "#,
@@ -333,8 +337,8 @@ mod tests {
               description = "Mid / Side",
               channels = { [0] = "M", [1] = "S" },
             })
-            app.active.channel_layout = "MS"
-            return app.active.channel_layout
+            app.composition.channel_layout = "MS"
+            return app.composition.channel_layout
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -363,7 +367,7 @@ mod tests {
               channels = { [0] = "M", [1] = "S" },
               monitor = { chain = "ms" },
             })
-            local c = app.active
+            local c = app.composition
             c.channel_layout = "MS"
             assert(c.monitor_chain == "ms")
             c.monitor_chain = "stereo"
@@ -386,8 +390,8 @@ mod tests {
         assert_eq!(channels.as_deref(), Some(&[1][..]));
         let out = host.eval(
             r#"
-            app.active.playback_channels = "all"
-            app.active.monitor_chain = nil
+            app.composition.playback_channels = "all"
+            app.composition.monitor_chain = nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -408,7 +412,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local c = app.active
+            local c = app.composition
             return c.codec, c.bit_depth, c.basename, c.dirname, c.channels, c.sample_rate
             "#,
         );
@@ -755,15 +759,15 @@ mod tests {
         let out = host.eval(
             r#"
             local s = app.session
-            s.workflow = "review"
+            s.workflow_name = "review"
             s.capture_ui = false
             s.properties = { batch = "2026-09" }
-            local c = app.active
+            local c = app.composition
             c.group = "day1"
             c.state = "reviewed"
             c.properties = { reviewer = "greg" }
-            return s.id ~= nil, s.workflow, s.capture_ui, s.properties.batch,
-                   c.id, c.group, c.state, c.properties.reviewer, #app.documents, #s.documents
+            return s.id ~= nil, s.workflow_name, s.capture_ui, s.properties.batch,
+                   c.id, c.group, c.state, c.properties.reviewer, #app.compositions, #s.compositions
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -798,12 +802,12 @@ mod tests {
 
         let out = host.eval(
             r#"
-            app.session.workflow = nil
-            app.active.group = nil
-            app.active.state = nil
-            app.active.properties = {}
-            return app.session.workflow == nil, app.active.group == nil,
-                   app.active.state == nil, app.active.properties.reviewer == nil
+            app.session.workflow_name = nil
+            app.composition.group = nil
+            app.composition.state = nil
+            app.composition.properties = {}
+            return app.session.workflow_name == nil, app.composition.group == nil,
+                   app.composition.state == nil, app.composition.properties.reviewer == nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -815,7 +819,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app.active.group = "todo"
+            app.composition.group = "todo"
             return app.session:group_count("todo"), app.session:group_count("other")
             "#,
         );
@@ -850,8 +854,8 @@ mod tests {
         let out = host.eval(
             r#"
             local s = app.session
-            s:move(s.documents[2], 1)
-            return s.documents[1].id, s.documents[2].id
+            s:move(s.compositions[2], 1)
+            return s.compositions[1].id, s.compositions[2].id
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -870,7 +874,7 @@ mod tests {
             vec![second, first]
         );
 
-        let out = host.eval("app.session:move(app.documents[1], 0)");
+        let out = host.eval("app.session:move(app.compositions[1], 0)");
         assert!(
             out.error
                 .as_deref()
@@ -878,7 +882,7 @@ mod tests {
             "{:?}",
             out.error
         );
-        let out = host.eval("app.session:move(app.documents[1], 3)");
+        let out = host.eval("app.session:move(app.compositions[1], 3)");
         assert!(
             out.error
                 .as_deref()
@@ -904,7 +908,7 @@ mod tests {
     #[test]
     fn composition_close_removes_from_session() {
         let (mut host, world) = test_host();
-        let out = host.eval("app.active:close(); return app.active == nil, #app.documents");
+        let out = host.eval("app.composition:close(); return app.composition == nil, #app.compositions");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\t0"));
         assert!(world.borrow().session.is_empty());
@@ -926,7 +930,7 @@ mod tests {
         let path_lua = path.to_string_lossy().replace('\\', "/");
         let out = host.eval(&format!(
             r#"
-            app.session.workflow = "review"
+            app.session.workflow_name = "review"
             app.session:save_as("{path_lua}")
             return app.session.path ~= nil
             "#
@@ -1339,7 +1343,7 @@ mod tests {
     fn review_resume_shows_explorer() {
         let (mut host, world) = test_host();
         host.load_init_from(None).expect("embedded init");
-        let out = host.eval(r#"app.session.workflow = "review""#);
+        let out = host.eval(r#"app.session.workflow_name = "review""#);
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(
             host.resume_workflow().expect("resume"),
@@ -1361,15 +1365,15 @@ mod tests {
               scopes = { "drag-drop" },
             })
             function W:start(_payload)
-              W:set_toolbar({
+              self:set_toolbar({
                 { command = "go", label = "Go" },
                 { kind = "message", id = "m", text = "a" },
               })
             end
             function W:suspend(_session) return true end
-            W:on("command", function(command)
+            W:on("command", function(self, command)
               if command == "go" then
-                W:set_item("m", { text = "b" })
+                self:set_item("m", { text = "b" })
               end
             end)
             app:declare_workflow(W)
@@ -1509,10 +1513,10 @@ mod tests {
             function W:suspend(_session) return true end
             function W:resume(session)
               app:info("stateful", session.properties.note or "")
-              W:set_toolbar({ { command = "go", label = "Go" } })
+              self:set_toolbar({ { command = "go", label = "Go" } })
             end
             app:declare_workflow(W)
-            app.session.workflow = "stateful"
+            app.session.workflow_name = "stateful"
             app.session.properties = { note = "hello" }
             "#,
         );
@@ -1533,7 +1537,7 @@ mod tests {
     #[test]
     fn unknown_resume_logs_error_and_does_not_clear() {
         let (mut host, world) = test_host();
-        let out = host.eval(r#"app.session.workflow = "ghost""#);
+        let out = host.eval(r#"app.session.workflow_name = "ghost""#);
         assert!(out.error.is_none(), "{:?}", out.error);
         let result = host.resume_workflow().expect("resume");
         assert_eq!(
@@ -1551,6 +1555,141 @@ mod tests {
                 .any(|entry| { entry.level == LogLevel::Error && entry.message.contains("ghost") }),
             "{logs:?}"
         );
+    }
+
+    #[test]
+    fn create_workflow_exposes_base_properties_and_readers() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "probe",
+              display_name = "Probe",
+              description = "A probe",
+              scopes = { "menu" },
+            })
+            return W:name(), W:display_name(), W:description(), W:scopes()[1],
+                   W.__base_properties.name
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            out.result.as_deref(),
+            Some("probe\tProbe\tA probe\tmenu\tprobe")
+        );
+    }
+
+    #[test]
+    fn workflow_init_runs_on_new_instance() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "inited",
+              scopes = { "drag-drop" },
+            })
+            function W:init()
+              self.flag = "yes"
+            end
+            function W:start(payload)
+              app:info("inited", self.flag .. ":" .. (payload.scope or ""))
+            end
+            function W:suspend(_session) return true end
+            app:declare_workflow(W)
+            app:run_workflow("inited")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let logs = host.take_logs();
+        assert!(
+            logs.iter().any(|entry| entry.message == "yes:run"),
+            "{logs:?}"
+        );
+        assert_eq!(host.active_workflow_name().as_deref(), Some("inited"));
+    }
+
+    #[test]
+    fn run_workflow_accepts_payload() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            app:declare_workflow({
+              name = "probe",
+              scopes = { "drag-drop" },
+            }, function(payload)
+              app:info("probe", payload.scope)
+              app:info("probe", tostring(payload.paths and payload.paths[1]))
+            end)
+            app:run_workflow("probe", { scope = "drag-drop", paths = { "take.wav" } })
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let messages: Vec<_> = host
+            .take_logs()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert_eq!(messages, ["drag-drop", "take.wav"]);
+    }
+
+    #[test]
+    fn start_again_replaces_instance() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "stateful",
+              scopes = { "drag-drop" },
+            })
+            function W:init()
+              self.n = 0
+            end
+            function W:start(_payload)
+              self.n = self.n + 1
+              app:info("stateful", tostring(self.n))
+            end
+            function W:suspend(_session) return true end
+            app:declare_workflow(W)
+            app:run_workflow("stateful")
+            app:run_workflow("stateful")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let messages: Vec<_> = host
+            .take_logs()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert_eq!(messages, ["1", "1"]);
+    }
+
+    #[test]
+    fn app_workflow_exposes_running_instance() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local W = app:create_workflow({
+              name = "stateful",
+              scopes = { "drag-drop" },
+            })
+            function W:start(_payload) end
+            function W:suspend(_session) return true end
+            app:declare_workflow(W)
+            assert(app.workflow == nil)
+            app:run_workflow("stateful")
+            return app.workflow ~= nil, app.workflow:name(), app.session.workflow_name,
+                   app.session.composition ~= nil
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            out.result.as_deref(),
+            Some("true\tstateful\tstateful\ttrue")
+        );
+        host.finish_workflow().expect("finish");
+        let out = host.eval("return app.workflow == nil, app.session.workflow_name == nil");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true\ttrue"));
     }
 
     #[test]

@@ -24,7 +24,7 @@ app:declare_workflow({
     app.session:open(path)
     return
   end
-  local active = app.active
+  local active = app.composition
   if active then
     active:replace(path)
   else
