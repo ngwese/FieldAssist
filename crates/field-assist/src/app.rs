@@ -8,13 +8,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use cpal::Device;
-use gpui_kit::{
-    div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, App, AppContext as _,
-    Bounds, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement,
-    KeyContext, Menu, MenuItem, ParentElement as _, PathPromptOptions, Pixels, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowOptions,
-};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
@@ -24,6 +17,13 @@ use gpui_kit::component::{
     },
     h_flex, v_flex, ActiveTheme as _, Disableable as _, GlobalState, IconName, Root,
     Selectable as _, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+};
+use gpui_kit::{
+    div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, App, AppContext as _,
+    Bounds, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement,
+    KeyContext, Menu, MenuItem, ParentElement as _, PathPromptOptions, Pixels, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity,
+    Window, WindowBounds, WindowOptions,
 };
 
 use crate::assets::AppAssets;
@@ -69,10 +69,10 @@ use crate::script::{
     ToolbarItem,
 };
 use field_ui_components::{
-    tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice, CompactDockSkin, EditsPanel,
-    FileStatusBar, LayoutPicker, LogLevel, LogLine, MarkersPanel, MessagesPanel, MonitorCallbacks,
-    MonitorPanel, MonitorSnapshot, RegionsPanel, ReplOutput, ReplPanel, ToggleZeroCrossing,
-    WaveformDisplay,
+    content_foreground, tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice,
+    CompactDockSkin, ContentForeground, EditsPanel, FileStatusBar, LayoutPicker, LogLevel, LogLine,
+    MarkersPanel, MessagesPanel, MonitorCallbacks, MonitorPanel, MonitorSnapshot, RegionsPanel,
+    ReplOutput, ReplPanel, ToggleZeroCrossing, WaveformDisplay,
 };
 
 struct OpenTarget(Entity<AppView>);
@@ -101,7 +101,6 @@ fn to_log_lines(entries: Vec<LogEntry>) -> Vec<LogLine> {
         })
         .collect()
 }
-
 
 #[derive(Clone)]
 struct DocumentViews {
@@ -768,15 +767,10 @@ impl AppView {
 
         let ui_json = self.monitor_ui_json();
         let schema_id = ui_json.map(|json| json.as_ptr() as u64).unwrap_or(0);
-        let params_ui = ui_json
-            .and_then(param_ui_from_json)
-            .unwrap_or_default();
+        let params_ui = ui_json.and_then(param_ui_from_json).unwrap_or_default();
         let live_params: HashMap<String, f32> = collect_param_addresses(&params_ui)
             .into_iter()
-            .filter_map(|address| {
-                self.monitor_param(&address)
-                    .map(|value| (address, value))
-            })
+            .filter_map(|address| self.monitor_param(&address).map(|value| (address, value)))
             .collect();
         let meters = self.monitor_meters();
         let output_devices = list_output_devices()
@@ -3695,10 +3689,7 @@ impl Render for AppView {
             "Show Detail"
         };
 
-        let content_foreground = cx
-            .try_global::<ContentForeground>()
-            .map(|color| color.0)
-            .unwrap_or(theme.foreground);
+        let content_fg = content_foreground(cx);
         div()
             .id("app-view")
             .key_context(self.app_key_context(window, cx))
@@ -3717,7 +3708,7 @@ impl Render for AppView {
                 v_flex()
                     .size_full()
                     .bg(theme.background)
-                    .text_color(content_foreground)
+                    .text_color(content_fg)
                     .child(
                         TitleBar::new().child(
                             h_flex()
@@ -4257,10 +4248,6 @@ fn workflow_menu(state: &AppMenuState) -> Menu {
     }
     Menu::new("Workflow").items(items)
 }
-
-struct ContentForeground(gpui_kit::Hsla);
-
-impl Global for ContentForeground {}
 
 fn apply_muted_chrome(cx: &mut App) {
     let muted = Theme::global(cx).muted_foreground;

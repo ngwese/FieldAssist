@@ -5,16 +5,18 @@
 
 use std::rc::Rc;
 
-use gpui_kit::{
-    div, AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-};
+use crate::theme::content_foreground;
 use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
     v_flex, ActiveTheme as _, Sizable as _,
+};
+use gpui_kit::{
+    div, rems, AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window,
 };
 
 /// Evaluation result shown in the transcript.
@@ -57,7 +59,11 @@ pub struct ReplPanel {
 
 impl ReplPanel {
     /// Create a REPL panel with the given dock tab title.
-    pub fn new(title: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        title: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(
             &input,
@@ -236,7 +242,7 @@ impl Render for ReplPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
-        let foreground = cx.theme().foreground;
+        let content = content_foreground(cx);
         let lines = self.lines.clone();
         v_flex()
             .id("repl-panel")
@@ -245,6 +251,7 @@ impl Render for ReplPanel {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .text_sm()
+            .line_height(rems(1.25))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.focus_input(window, cx);
             }))
@@ -266,8 +273,8 @@ impl Render for ReplPanel {
             }))
             .children(lines.into_iter().enumerate().map(|(ix, line)| {
                 let color = match line.kind {
-                    LineKind::Input => muted,
-                    LineKind::Output => foreground,
+                    LineKind::Input => content,
+                    LineKind::Output => muted,
                     LineKind::Error => danger,
                 };
                 if line.kind == LineKind::Input {
@@ -285,13 +292,15 @@ impl Render for ReplPanel {
             .child(prompt_row(
                 "repl-prompt",
                 muted,
-                foreground,
+                content,
                 Input::new(&self.input)
                     .appearance(false)
                     .bordered(false)
                     .cleanable(false)
-                    .xsmall()
+                    .small()
                     .px_0()
+                    .py_0()
+                    .h_auto()
                     .w_full(),
             ))
     }
