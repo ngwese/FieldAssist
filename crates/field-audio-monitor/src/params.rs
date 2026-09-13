@@ -4,9 +4,9 @@
 //! Lock-free live parameter and meter store.
 //!
 //! UI threads write/read control values via [`AtomicU32`] bit-casts of `f32`.
-//! The audio thread snapshots controls at the start of each block and writes
-//! meter values after DSP compute. Slot registration may take a short
-//! [`RwLock`]; value get/set never waits on the DSP graph mutex.
+//! The audio thread applies pre-bound control slots and writes meter slots after
+//! DSP compute. Slot registration may take a short [`RwLock`]; once bound,
+//! value get/set never allocates.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -75,6 +75,24 @@ impl ParamStore {
             .collect()
     }
 
+    /// Bind live control slots for realtime application (no alloc on hot path).
+    pub fn bind_controls(&self) -> Vec<(String, Arc<AtomicU32>)> {
+        let guard = self.controls.read().expect("param store poisoned");
+        guard
+            .iter()
+            .map(|(address, slot)| (address.clone(), Arc::clone(slot)))
+            .collect()
+    }
+
+    /// Bind meter slots for realtime publish (no alloc on hot path).
+    pub fn bind_meters(&self) -> Vec<(String, Arc<AtomicU32>)> {
+        let guard = self.meters.read().expect("param store poisoned");
+        guard
+            .iter()
+            .map(|(address, slot)| (address.clone(), Arc::clone(slot)))
+            .collect()
+    }
+
     /// Replace control slots with the given map (used when loading working params).
     pub fn replace_controls(&self, values: &HashMap<String, f32>) {
         let mut guard = self.controls.write().expect("param store poisoned");
@@ -89,10 +107,25 @@ impl ParamStore {
         self.controls.write().expect("param store poisoned").clear();
     }
 
-    /// Write a meter value from the audio thread.
+    /// Write a meter value from the audio thread (may register a slot).
     pub fn set_meter(&self, address: &str, value: f32) {
         let slot = Self::ensure_slot(&self.meters, address, value);
         slot.store(f32_bits(value), Ordering::Release);
+    }
+
+    /// Write through a pre-bound meter slot (realtime-safe).
+    pub fn store_meter_slot(slot: &AtomicU32, value: f32) {
+        slot.store(f32_bits(value), Ordering::Release);
+    }
+
+    /// Read a pre-bound meter slot (realtime-safe).
+    pub fn load_meter_slot(slot: &AtomicU32) -> f32 {
+        bits_f32(slot.load(Ordering::Acquire))
+    }
+
+    /// Read a pre-bound control slot (realtime-safe).
+    pub fn load_control_slot(slot: &AtomicU32) -> f32 {
+        bits_f32(slot.load(Ordering::Acquire))
     }
 
     /// Read a meter value from the UI thread.

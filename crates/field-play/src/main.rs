@@ -166,8 +166,14 @@ fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, posit
     } else {
         pager.decode_ns as f64 / pager.decodes as f64 / 1e6
     };
+    let headroom_pct = if play.last_budget_ns == 0 {
+        0.0
+    } else {
+        100.0 * play.last_headroom_ns as f64 / play.last_budget_ns as f64
+    };
     eprintln!(
         "pos={:.2}s  cb={} slow={} underrun={} err={}  max_cb={:.2}ms avg_cb={:.2}ms  \
+         budget={:.2}ms last_cb={:.2}ms headroom={:.2}ms ({:.0}%) min_head={:.2}ms frames={}  \
          reads={} max_read={:.2}ms avg_read={:.2}ms  out_frames≤{}  depth={}/{}  \
          pager ram={} spill={} decode={} (max_at={:.2}s avg_dec={:.2}ms total_dec={:.1}ms spill_w={})",
         position as f64 / f64::from(sample_rate.max(1)),
@@ -177,6 +183,12 @@ fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, posit
         play.stream_errors,
         play.max_callback_ns as f64 / 1e6,
         avg_cb,
+        play.last_budget_ns as f64 / 1e6,
+        play.last_callback_ns as f64 / 1e6,
+        play.last_headroom_ns as f64 / 1e6,
+        headroom_pct,
+        play.min_headroom_ns as f64 / 1e6,
+        play.last_out_frames,
         play.provider_reads,
         play.max_provider_read_ns as f64 / 1e6,
         avg_read,

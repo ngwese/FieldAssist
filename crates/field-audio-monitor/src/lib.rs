@@ -46,6 +46,6 @@ mod schema;
 pub use chain::MonitorChain;
 #[allow(unused_imports)]
 pub use dsp::{create_dsp, IdentityDsp, MonitorDsp};
-pub use host::{map_direct, MonitorHost};
+pub use host::{map_direct, MonitorHost, MAX_CALLBACK_FRAMES};
 pub use params::ParamStore;
 pub use schema::{menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode, FaustUiRoot};

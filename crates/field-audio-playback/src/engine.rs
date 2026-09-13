@@ -8,12 +8,13 @@
 //! [`PlaybackShared::fill_output`] runs on the device callback thread and must:
 //!
 //! - allocate **no** heap memory
-//! - take **no** blocking locks (no `Mutex`, no waiting `RwLock`)
+//! - take **no** blocking locks (no waiting `Mutex` / `RwLock`)
 //! - perform **no** file I/O or decode
 //!
-//! Heavy work (provider reads, sample-rate conversion, monitor DSP) runs on the
-//! dedicated prefetch thread and pushes interleaved device frames into a
-//! lock-free [`PrefetchRing`]. See the crate-level `AGENTS.md`.
+//! Provider reads and sample-rate conversion run on the dedicated prefetch
+//! thread, which pushes **pre-monitor** device-rate interleaved source frames
+//! into a lock-free [`PrefetchRing`]. The callback pops those frames, runs
+//! monitor DSP, and writes the device buffer. See the crate-level `AGENTS.md`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -33,13 +34,8 @@ use super::transport::TransportState;
 
 /// Faust `Meter/Input*` bargraphs floor at −90 dB; treat near-floor as quiet.
 const INPUT_METER_QUIET_DB: f32 = -89.0;
-
-fn input_meters_need_flush(monitor: &dyn MonitorProcess) -> bool {
-    monitor
-        .meters()
-        .iter()
-        .any(|(address, value)| address.contains("Meter_Input") && *value > INPUT_METER_QUIET_DB)
-}
+/// Max frames covered by the callback gather scratch (matches typical Default).
+const CALLBACK_MAX_FRAMES: usize = 8192;
 
 const IN_OUT_NONE: usize = usize::MAX;
 
@@ -78,6 +74,16 @@ pub struct PlaybackStats {
     pub prefetch_depth_frames: u64,
     /// High-water prefetch depth in device frames.
     pub max_prefetch_depth_frames: u64,
+    /// Most recent callback's device-buffer budget (`out_frames / rate`).
+    pub last_budget_ns: u64,
+    /// Most recent callback wall time.
+    pub last_callback_ns: u64,
+    /// Most recent spare time before an xrun (`budget − callback`).
+    pub last_headroom_ns: u64,
+    /// Worst (smallest) headroom observed since [`PlaybackShared::reset_stats`].
+    pub min_headroom_ns: u64,
+    /// Frame count of the most recent callback.
+    pub last_out_frames: u64,
 }
 
 /// Shared state between the UI thread, prefetch worker, and audio callback.
@@ -99,6 +105,8 @@ pub struct PlaybackShared {
     output_channels: AtomicUsize,
     monitor: ArcSwapOption<MonitorHandle>,
     ring: ArcSwap<PrefetchRing>,
+    /// Preallocated gather buffer for the callback (`src_ch × CALLBACK_MAX_FRAMES`).
+    callback_scratch: ArcSwap<Box<[f32]>>,
     timeline_ended: AtomicBool,
     /// Prefetch-only scratch (never touched by the audio callback).
     prefetch_scratch: Mutex<PrefetchScratch>,
@@ -115,12 +123,16 @@ pub struct PlaybackShared {
     slowest_at_sample: AtomicUsize,
     prefetch_depth_frames: AtomicU64,
     max_prefetch_depth_frames: AtomicU64,
+    last_budget_ns: AtomicU64,
+    last_callback_ns: AtomicU64,
+    last_headroom_ns: AtomicU64,
+    min_headroom_ns: AtomicU64,
+    last_out_frames: AtomicU64,
 }
 
 struct PrefetchScratch {
     read_buf: Vec<f32>,
     gathered: Vec<f32>,
-    device_chunk: Vec<f32>,
     fill_pos_f: f64,
     local_epoch: usize,
 }
@@ -130,7 +142,6 @@ impl PrefetchScratch {
         Self {
             read_buf: Vec::new(),
             gathered: Vec::new(),
-            device_chunk: Vec::new(),
             fill_pos_f: 0.0,
             // Force the first chunk to sync from the public playhead.
             local_epoch: usize::MAX,
@@ -152,6 +163,7 @@ impl PlaybackShared {
         output_channels: usize,
     ) -> Self {
         let output_channels = output_channels.max(1);
+        let src_ch = provider.channel_count().max(1);
         Self {
             output_rate: AtomicU32::new(output_rate.max(1)),
             output_channels: AtomicUsize::new(output_channels),
@@ -163,10 +175,10 @@ impl PlaybackShared {
             out_point: AtomicUsize::new(IN_OUT_NONE),
             epoch: AtomicUsize::new(0),
             monitor: ArcSwapOption::from(None::<Arc<MonitorHandle>>),
-            ring: ArcSwap::from_pointee(PrefetchRing::new(
-                PREFETCH_CAPACITY_FRAMES,
-                output_channels,
-            )),
+            ring: ArcSwap::from_pointee(PrefetchRing::new(PREFETCH_CAPACITY_FRAMES, src_ch)),
+            callback_scratch: ArcSwap::from_pointee(
+                vec![0.0f32; CALLBACK_MAX_FRAMES.saturating_mul(src_ch)].into_boxed_slice(),
+            ),
             timeline_ended: AtomicBool::new(false),
             prefetch_scratch: Mutex::new(PrefetchScratch::new()),
             callbacks: AtomicU64::new(0),
@@ -182,11 +194,17 @@ impl PlaybackShared {
             slowest_at_sample: AtomicUsize::new(0),
             prefetch_depth_frames: AtomicU64::new(0),
             max_prefetch_depth_frames: AtomicU64::new(0),
+            last_budget_ns: AtomicU64::new(0),
+            last_callback_ns: AtomicU64::new(0),
+            last_headroom_ns: AtomicU64::new(0),
+            min_headroom_ns: AtomicU64::new(u64::MAX),
+            last_out_frames: AtomicU64::new(0),
         }
     }
 
     /// Snapshot realtime / prefetch performance counters.
     pub fn stats(&self) -> PlaybackStats {
+        let min_headroom = self.min_headroom_ns.load(Ordering::Relaxed);
         PlaybackStats {
             callbacks: self.callbacks.load(Ordering::Relaxed),
             slow_callbacks: self.slow_callbacks.load(Ordering::Relaxed),
@@ -201,6 +219,15 @@ impl PlaybackShared {
             slowest_at_sample: self.slowest_at_sample.load(Ordering::Relaxed) as u64,
             prefetch_depth_frames: self.prefetch_depth_frames.load(Ordering::Relaxed),
             max_prefetch_depth_frames: self.max_prefetch_depth_frames.load(Ordering::Relaxed),
+            last_budget_ns: self.last_budget_ns.load(Ordering::Relaxed),
+            last_callback_ns: self.last_callback_ns.load(Ordering::Relaxed),
+            last_headroom_ns: self.last_headroom_ns.load(Ordering::Relaxed),
+            min_headroom_ns: if min_headroom == u64::MAX {
+                0
+            } else {
+                min_headroom
+            },
+            last_out_frames: self.last_out_frames.load(Ordering::Relaxed),
         }
     }
 
@@ -219,6 +246,31 @@ impl PlaybackShared {
         self.slowest_at_sample.store(0, Ordering::Relaxed);
         self.prefetch_depth_frames.store(0, Ordering::Relaxed);
         self.max_prefetch_depth_frames.store(0, Ordering::Relaxed);
+        self.last_budget_ns.store(0, Ordering::Relaxed);
+        self.last_callback_ns.store(0, Ordering::Relaxed);
+        self.last_headroom_ns.store(0, Ordering::Relaxed);
+        self.min_headroom_ns.store(u64::MAX, Ordering::Relaxed);
+        self.last_out_frames.store(0, Ordering::Relaxed);
+    }
+
+    fn record_callback_timing(&self, out_frames: usize, out_rate: u32, callback_ns: u64) {
+        self.callbacks.fetch_add(1, Ordering::Relaxed);
+        self.total_callback_ns
+            .fetch_add(callback_ns, Ordering::Relaxed);
+        self.last_callback_ns.store(callback_ns, Ordering::Relaxed);
+        self.last_out_frames
+            .store(out_frames as u64, Ordering::Relaxed);
+        let budget_ns = (out_frames as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_div(u64::from(out_rate.max(1)));
+        let headroom_ns = budget_ns.saturating_sub(callback_ns);
+        self.last_budget_ns.store(budget_ns, Ordering::Relaxed);
+        self.last_headroom_ns.store(headroom_ns, Ordering::Relaxed);
+        self.min_headroom_ns
+            .fetch_min(headroom_ns, Ordering::Relaxed);
+        if budget_ns > 0 && callback_ns > budget_ns {
+            self.slow_callbacks.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Record a CPAL stream error (xrun / device fault).
@@ -226,7 +278,7 @@ impl PlaybackShared {
         self.stream_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Install or clear the monitor process used by the prefetch thread.
+    /// Install or clear the monitor process used by the **realtime callback**.
     pub fn set_monitor_process(&self, monitor: Option<Arc<dyn MonitorProcess>>) {
         self.monitor
             .store(monitor.map(|m| Arc::new(MonitorHandle(m))));
@@ -235,6 +287,24 @@ impl PlaybackShared {
     /// Currently installed monitor, if any.
     pub fn monitor_process(&self) -> Option<Arc<dyn MonitorProcess>> {
         self.monitor.load_full().map(|h| h.0.clone())
+    }
+
+    fn ensure_ring_and_scratch_for_source(&self, src_ch: usize) {
+        let src_ch = src_ch.max(1);
+        let ring = self.ring.load_full();
+        if ring.channels() != src_ch {
+            self.ring.store(Arc::new(PrefetchRing::new(
+                PREFETCH_CAPACITY_FRAMES,
+                src_ch,
+            )));
+            self.bump_epoch();
+        }
+        let need = CALLBACK_MAX_FRAMES.saturating_mul(src_ch);
+        let scratch = self.callback_scratch.load_full();
+        if scratch.len() < need {
+            self.callback_scratch
+                .store(Arc::new(vec![0.0f32; need].into_boxed_slice()));
+        }
     }
 
     /// Invalidate in-flight audio / prefetch work (e.g. after seek).
@@ -290,14 +360,8 @@ impl PlaybackShared {
         let channels = channels.max(1);
         self.output_rate.store(sample_rate, Ordering::SeqCst);
         self.output_channels.store(channels, Ordering::SeqCst);
-        let ring = self.ring.load_full();
-        if ring.channels() != channels {
-            self.ring.store(Arc::new(PrefetchRing::new(
-                PREFETCH_CAPACITY_FRAMES,
-                channels,
-            )));
-            self.bump_epoch();
-        }
+        // Ring carries pre-monitor source channels, not device channels.
+        self.ensure_ring_and_scratch_for_source(self.provider.channel_count());
         if let Some(monitor) = self.monitor_process() {
             monitor.set_output_sample_rate(sample_rate);
         }
@@ -357,7 +421,7 @@ impl PlaybackShared {
 
     /// Produce up to one prefetch chunk into the ring (prefetch thread / tests).
     ///
-    /// Returns `true` when any device frames were pushed.
+    /// Returns `true` when any **pre-monitor** source frames were pushed.
     pub fn prefetch_chunk(&self) -> bool {
         let mut scratch = self
             .prefetch_scratch
@@ -382,17 +446,17 @@ impl PlaybackShared {
             return false;
         }
 
+        let src_ch = self.provider.channel_count();
+        if src_ch == 0 {
+            return false;
+        }
+        self.ensure_ring_and_scratch_for_source(src_ch);
+
         let ring = self.ring.load_full();
-        let out_ch = self.output_channels.load(Ordering::SeqCst).max(1);
-        if ring.channels() != out_ch {
+        if ring.channels() != src_ch {
             return false;
         }
         if ring.frames_free() < PREFETCH_CHUNK_FRAMES {
-            return false;
-        }
-
-        let src_ch = self.provider.channel_count();
-        if src_ch == 0 {
             return false;
         }
 
@@ -406,10 +470,6 @@ impl PlaybackShared {
         let need_gather = PREFETCH_CHUNK_FRAMES * src_ch;
         if scratch.gathered.len() < need_gather {
             scratch.gathered.resize(need_gather, 0.0);
-        }
-        let need_device = PREFETCH_CHUNK_FRAMES * out_ch;
-        if scratch.device_chunk.len() < need_device {
-            scratch.device_chunk.resize(need_device, 0.0);
         }
 
         let mut buf_origin = 0usize;
@@ -475,26 +535,7 @@ impl PlaybackShared {
         }
 
         let gather_len = produced * src_ch;
-        scratch.device_chunk[..produced * out_ch].fill(0.0);
-        if let Some(handle) = self.monitor.load_full() {
-            handle.0.process_gathered(
-                &scratch.gathered[..gather_len],
-                src_ch,
-                produced,
-                &mut scratch.device_chunk[..produced * out_ch],
-                out_ch,
-            );
-        } else {
-            map_direct(
-                &scratch.gathered[..gather_len],
-                src_ch,
-                produced,
-                &mut scratch.device_chunk[..produced * out_ch],
-                out_ch,
-            );
-        }
-
-        let pushed = ring.push_interleaved(&scratch.device_chunk[..produced * out_ch]);
+        let pushed = ring.push_interleaved(&scratch.gathered[..gather_len]);
         let depth = ring.frames_available() as u64;
         self.prefetch_depth_frames.store(depth, Ordering::Relaxed);
         self.max_prefetch_depth_frames
@@ -506,43 +547,7 @@ impl PlaybackShared {
         pushed > 0
     }
 
-    /// Run silence through the monitor so input-meter envelopes can fall to the
-    /// floor after transport leaves [`TransportState::Playing`].
-    ///
-    /// Returns `true` when another flush chunk is still needed. Does not push
-    /// into the prefetch ring (the output callback ignores audio while stopped).
-    fn flush_monitor_silence_locked(&self, scratch: &mut PrefetchScratch) -> bool {
-        let Some(handle) = self.monitor.load_full() else {
-            return false;
-        };
-        if !input_meters_need_flush(handle.0.as_ref()) {
-            return false;
-        }
-
-        let src_ch = self.provider.channel_count().max(1);
-        let out_ch = self.output_channels.load(Ordering::SeqCst).max(1);
-        let frames = PREFETCH_CHUNK_FRAMES;
-        let gather_len = frames * src_ch;
-        let device_len = frames * out_ch;
-        if scratch.gathered.len() < gather_len {
-            scratch.gathered.resize(gather_len, 0.0);
-        }
-        if scratch.device_chunk.len() < device_len {
-            scratch.device_chunk.resize(device_len, 0.0);
-        }
-        scratch.gathered[..gather_len].fill(0.0);
-        scratch.device_chunk[..device_len].fill(0.0);
-        handle.0.process_gathered(
-            &scratch.gathered[..gather_len],
-            src_ch,
-            frames,
-            &mut scratch.device_chunk[..device_len],
-            out_ch,
-        );
-        input_meters_need_flush(handle.0.as_ref())
-    }
-
-    /// Drain the prefetch ring into a device buffer (audio callback entry).
+    /// Drain the prefetch ring, run monitor DSP, and fill a device buffer.
     ///
     /// # Realtime contract
     ///
@@ -550,27 +555,61 @@ impl PlaybackShared {
     pub fn fill_output(&self, output: &mut [f32]) {
         let started = Instant::now();
         output.fill(0.0);
-        if self.transport() != TransportState::Playing {
-            return;
-        }
 
         let out_ch = self.output_channels.load(Ordering::SeqCst).max(1);
         let out_frames = output.len() / out_ch;
+        let out_rate = self.output_rate().max(1);
         if out_frames == 0 {
             return;
         }
         self.max_out_frames
             .fetch_max(out_frames as u64, Ordering::Relaxed);
 
+        let transport = self.transport();
+        if transport != TransportState::Playing {
+            if matches!(transport, TransportState::Stopped | TransportState::Paused) {
+                self.flush_monitor_silence_callback(output, out_frames, out_ch);
+            }
+            let callback_ns = started.elapsed().as_nanos() as u64;
+            self.record_callback_timing(out_frames, out_rate, callback_ns);
+            return;
+        }
+
         let epoch = self.epoch.load(Ordering::SeqCst);
         let origin = self.position.load(Ordering::SeqCst);
         let src_rate = self.provider.sample_rate().max(1);
-        let out_rate = self.output_rate().max(1);
         let step = src_rate as f64 / f64::from(out_rate);
+        let src_ch = self.provider.channel_count().max(1);
 
-        let ring = self.ring.load_full();
-        let got = if ring.channels() == out_ch {
-            ring.pop_interleaved(output)
+        let scratch = self.callback_scratch.load_full();
+        let need = out_frames.saturating_mul(src_ch);
+        let got = if scratch.len() >= need {
+            let ring = self.ring.load_full();
+            let gathered = unsafe {
+                // Exclusive callback consumer of this scratch slab.
+                let ptr = scratch.as_ptr() as *mut f32;
+                std::slice::from_raw_parts_mut(ptr, need)
+            };
+            gathered.fill(0.0);
+            let frames = if ring.channels() == src_ch {
+                ring.pop_interleaved(gathered)
+            } else {
+                0
+            };
+            if frames > 0 {
+                if let Some(handle) = self.monitor.load_full() {
+                    handle.0.process_gathered(
+                        &gathered[..frames * src_ch],
+                        src_ch,
+                        frames,
+                        output,
+                        out_ch,
+                    );
+                } else {
+                    map_direct(&gathered[..frames * src_ch], src_ch, frames, output, out_ch);
+                }
+            }
+            frames
         } else {
             0
         };
@@ -578,6 +617,7 @@ impl PlaybackShared {
             self.underruns.fetch_add(1, Ordering::Relaxed);
         }
 
+        let ring = self.ring.load_full();
         let end = self.playback_end();
         let looping = self.looping.load(Ordering::SeqCst);
         let pos_f = origin as f64 + got as f64 * step;
@@ -586,6 +626,13 @@ impl PlaybackShared {
             && ring.frames_available() == 0;
 
         if self.epoch.load(Ordering::SeqCst) != epoch {
+            let callback_ns = started.elapsed().as_nanos() as u64;
+            let prev_max = self.max_callback_ns.load(Ordering::Relaxed);
+            if callback_ns > prev_max {
+                self.max_callback_ns.store(callback_ns, Ordering::Relaxed);
+                self.slowest_at_sample.store(origin, Ordering::Relaxed);
+            }
+            self.record_callback_timing(out_frames, out_rate, callback_ns);
             return;
         }
 
@@ -605,20 +652,44 @@ impl PlaybackShared {
         }
 
         let callback_ns = started.elapsed().as_nanos() as u64;
-        self.callbacks.fetch_add(1, Ordering::Relaxed);
-        self.total_callback_ns
-            .fetch_add(callback_ns, Ordering::Relaxed);
         let prev_max = self.max_callback_ns.load(Ordering::Relaxed);
         if callback_ns > prev_max {
             self.max_callback_ns.store(callback_ns, Ordering::Relaxed);
             self.slowest_at_sample.store(origin, Ordering::Relaxed);
         }
-        let budget_ns = (out_frames as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_div(u64::from(out_rate));
-        if budget_ns > 0 && callback_ns > budget_ns {
-            self.slow_callbacks.fetch_add(1, Ordering::Relaxed);
+        self.record_callback_timing(out_frames, out_rate, callback_ns);
+    }
+
+    /// Run silence through the monitor so input-meter envelopes can fall after
+    /// transport leaves [`TransportState::Playing`]. Realtime-safe.
+    fn flush_monitor_silence_callback(&self, output: &mut [f32], frames: usize, out_ch: usize) {
+        let Some(handle) = self.monitor.load_full() else {
+            return;
+        };
+        if !handle.0.input_meters_above(INPUT_METER_QUIET_DB) {
+            return;
         }
+        let src_ch = self.provider.channel_count().max(1);
+        let frames = frames.min(CALLBACK_MAX_FRAMES);
+        let scratch = self.callback_scratch.load_full();
+        let need = frames.saturating_mul(src_ch);
+        if scratch.len() < need || frames == 0 || output.len() < frames * out_ch {
+            return;
+        }
+        let gathered = unsafe {
+            let ptr = scratch.as_ptr() as *mut f32;
+            std::slice::from_raw_parts_mut(ptr, need)
+        };
+        gathered.fill(0.0);
+        handle.0.process_gathered(
+            gathered,
+            src_ch,
+            frames,
+            &mut output[..frames * out_ch],
+            out_ch,
+        );
+        // Keep the device silent while stopped/paused; meters already updated.
+        output.fill(0.0);
     }
 }
 
@@ -635,11 +706,7 @@ fn prefetch_loop(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) {
                 }
             }
             TransportState::Stopped | TransportState::Paused => {
-                // Keep feeding silence so Faust input-meter envelopes decay to
-                // the floor after audible playback ends.
-                if shared.flush_monitor_silence_locked(&mut scratch) {
-                    continue;
-                }
+                // Meter decay runs on the realtime callback (`fill_output`).
                 thread::sleep(Duration::from_millis(2));
             }
         }
@@ -1041,5 +1108,20 @@ mod tests {
         assert_eq!(out[1], 100.0);
         assert_eq!(out[2], 1.0);
         assert_eq!(out[3], 101.0);
+    }
+
+    #[test]
+    fn fill_output_records_callback_budget_headroom() {
+        let shared = shared(200);
+        shared.reset_stats();
+        let mut out = vec![0.0; 128];
+        play(&shared, &mut out);
+        let stats = shared.stats();
+        assert!(stats.callbacks >= 1);
+        assert!(stats.last_budget_ns > 0);
+        assert!(stats.last_out_frames > 0);
+        assert!(stats.min_headroom_ns > 0);
+        assert!(stats.last_headroom_ns <= stats.last_budget_ns);
+        assert_eq!(stats.slow_callbacks, 0);
     }
 }

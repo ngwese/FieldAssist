@@ -29,5 +29,7 @@ rather than introducing sibling-crate edges.
 
 Code on the CPAL output callback must not allocate or take blocking locks.
 See [crates/field-audio-playback/AGENTS.md](crates/field-audio-playback/AGENTS.md)
-for the quality gates and where prefetch vs callback work belongs. Do not use
-`dasp::ring_buffer` across that boundary (it requires `&mut self`).
+for the quality gates and where prefetch vs callback work belongs. Prefetch owns
+provider reads and SRC; the callback owns monitor DSP so live parameters track
+the audible playhead. Do not use `dasp::ring_buffer` across that boundary (it
+requires `&mut self`).

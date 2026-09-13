@@ -52,6 +52,10 @@ impl MonitorProcess for MonitorHostProcess {
         self.host.meters()
     }
 
+    fn input_meters_above(&self, quiet_db: f32) -> bool {
+        self.host.input_meters_above(quiet_db)
+    }
+
     fn ui_json(&self) -> Option<&'static str> {
         self.host.ui_json()
     }

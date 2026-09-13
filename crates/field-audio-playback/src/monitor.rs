@@ -7,14 +7,18 @@ use std::collections::HashMap;
 
 /// Audio-thread monitor insert used by [`crate::PlaybackShared`].
 ///
+/// [`Self::process_gathered`] runs on the **CPAL callback** and must meet the
+/// realtime quality gates (no heap allocation, no blocking locks, no I/O).
 /// Implementations should keep [`Self::set_param`] / [`Self::get_param`] /
-/// [`Self::meter`] lock-free (or otherwise non-blocking w.r.t. the DSP graph).
-/// Graph swaps may use a short mutex inside `process_gathered`.
+/// [`Self::meter`] lock-free. Graph swaps may allocate off the callback and
+/// publish a new process slot via `ArcSwap` (or equivalent).
 ///
 /// Defined here so `field-audio-playback` does not depend on Faust or
 /// `field-audio-monitor`. The application crate adapts `MonitorHost`.
 pub trait MonitorProcess: Send + Sync {
     /// Process interleaved source frames into device interleaved output.
+    ///
+    /// Called from the realtime callback; must not allocate or block.
     fn process_gathered(
         &self,
         gathered: &[f32],
@@ -33,8 +37,14 @@ pub trait MonitorProcess: Send + Sync {
     /// Read a meter value.
     fn meter(&self, address: &str) -> Option<f32>;
 
-    /// Snapshot all meters.
+    /// Snapshot all meters (may allocate; UI thread only).
     fn meters(&self) -> HashMap<String, f32>;
+
+    /// Whether any input meter is above `quiet_db` (realtime-safe).
+    fn input_meters_above(&self, quiet_db: f32) -> bool {
+        let _ = quiet_db;
+        false
+    }
 
     /// Faust (or other) UI JSON for the active chain, if any.
     fn ui_json(&self) -> Option<&'static str>;

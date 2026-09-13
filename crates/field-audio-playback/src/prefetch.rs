@@ -16,13 +16,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Device frames held in the prefetch ring (power of two).
+/// Source frames held in the prefetch ring (power of two).
 pub const PREFETCH_CAPACITY_FRAMES: usize = 8192;
-/// Device frames written per prefetch iteration.
+/// Source frames written per prefetch iteration.
 pub const PREFETCH_CHUNK_FRAMES: usize = 256;
 
 /// Interleaved `f32` ring shared by one producer (prefetch) and one consumer
-/// (audio callback).
+/// (audio callback). Holds **pre-monitor** device-rate source frames.
 pub struct PrefetchRing {
     samples: Box<[f32]>,
     capacity_frames: usize,

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Monitor DSP chains and Faust host for FieldAssist"
 
 [dependencies]
+arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

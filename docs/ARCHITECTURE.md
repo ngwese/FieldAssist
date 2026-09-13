@@ -97,10 +97,12 @@ The CPAL output callback must stay realtime-safe. Quality gates (also in
 3. **No decode / filesystem I/O** on the callback
 
 `PlaybackEngine` runs a dedicated `fa-prefetch` thread that may allocate, lock
-the composition pager, and decode FLAC/etc. It pushes device-rate interleaved
-frames into the SPSC ring; the callback only pops (or outputs silence on
-underrun). Composition `read_interleaved` uses planar pager fills (one lock per
-request) on that prefetch thread.
+the composition pager, and decode FLAC/etc. It pushes **pre-monitor**
+device-rate interleaved source frames into the SPSC ring. The CPAL callback
+pops those frames, runs monitor DSP (Faust), and writes the device buffer so
+live parameters track the audible playhead (not ring depth). Composition
+`read_interleaved` uses planar pager fills (one lock per request) on that
+prefetch thread.
 
 ## Future binaries
 
