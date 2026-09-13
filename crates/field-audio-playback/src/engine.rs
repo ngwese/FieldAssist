@@ -547,7 +547,14 @@ impl PlaybackShared {
             self.set_transport(TransportState::Stopped);
             self.position.store(end, Ordering::SeqCst);
         } else {
-            let final_pos = pos_f.min(end as f64) as usize;
+            let start = self.playback_start();
+            let final_pos = if looping && end > start && pos_f >= end as f64 {
+                // Match Playhead::advance / prefetch wrap so the UI playhead
+                // returns to loop start while audio continues looping.
+                start
+            } else {
+                pos_f.min(end as f64) as usize
+            };
             self.position.store(final_pos, Ordering::SeqCst);
         }
 
@@ -882,6 +889,33 @@ mod tests {
         play(&shared, &mut out);
         assert_eq!(shared.transport(), TransportState::Stopped);
         assert_eq!(shared.position(), 99);
+    }
+
+    #[test]
+    fn looping_past_end_wraps_published_position_to_start() {
+        let shared = shared(100);
+        shared.set_looping(true);
+        shared.set_in_out(Some(10), Some(50));
+        shared.set_position(48);
+        let mut out = vec![0.0; 16];
+        play(&shared, &mut out);
+        assert_eq!(shared.transport(), TransportState::Playing);
+        assert_eq!(
+            shared.position(),
+            10,
+            "published playhead must wrap to loop in-point, not stick at out-point"
+        );
+    }
+
+    #[test]
+    fn looping_whole_buffer_wraps_published_position_to_zero() {
+        let shared = shared(100);
+        shared.set_looping(true);
+        shared.set_position(98);
+        let mut out = vec![0.0; 16];
+        play(&shared, &mut out);
+        assert_eq!(shared.transport(), TransportState::Playing);
+        assert_eq!(shared.position(), 0);
     }
 
     #[test]

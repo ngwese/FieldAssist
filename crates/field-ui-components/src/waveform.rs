@@ -55,7 +55,8 @@ enum Drag {
     SelectRegion {
         lane: usize,
         alt: bool,
-        ctrl: bool,
+        /// Secondary modifier (Cmd on macOS, Ctrl elsewhere) for disjoint add.
+        disjoint: bool,
         shift: bool,
         anchor_sample: usize,
         origin_x: f32,
@@ -424,7 +425,7 @@ where
             Some(Drag::SelectRegion {
                 lane,
                 alt,
-                ctrl,
+                disjoint,
                 shift,
                 anchor_sample,
                 origin_x,
@@ -445,7 +446,7 @@ where
                 Some(Drag::SelectRegion {
                     lane,
                     alt,
-                    ctrl,
+                    disjoint,
                     shift,
                     anchor_sample,
                     origin_x,
@@ -471,7 +472,7 @@ where
             Drag::SelectRegion {
                 lane,
                 alt,
-                ctrl,
+                disjoint,
                 shift,
                 anchor_sample,
                 dragging,
@@ -487,7 +488,7 @@ where
                         }
                         WaveformEditor::finish_drag(doc);
                     } else {
-                        WaveformEditor::click_without_drag(doc, anchor_sample, scope, ctrl);
+                        WaveformEditor::click_without_drag(doc, anchor_sample, scope, disjoint);
                     }
                     cx.notify();
                 });
@@ -1276,7 +1277,9 @@ where
                                                                 Some(Drag::SelectRegion {
                                                                     lane: ch,
                                                                     alt: event.modifiers.alt,
-                                                                    ctrl: event.modifiers.control,
+                                                                    disjoint: event
+                                                                        .modifiers
+                                                                        .secondary(),
                                                                     shift: true,
                                                                     anchor_sample: sample,
                                                                     origin_x: x,
@@ -1295,13 +1298,14 @@ where
                                                             });
                                                         } else {
                                                             let alt = event.modifiers.alt;
-                                                            let ctrl = event.modifiers.control;
+                                                            let disjoint =
+                                                                event.modifiers.secondary();
                                                             let radius = this.marker_snap_radius();
                                                             this.document.update(cx, |doc, cx| {
                                                                 let scope = WaveformEditor::channel_lanes(
                                                                     doc, ch, alt,
                                                                 );
-                                                                if ctrl {
+                                                                if disjoint {
                                                                     WaveformEditor::begin_disjoint(
                                                                         doc, sample, scope, radius,
                                                                     );
@@ -1315,7 +1319,7 @@ where
                                                             this.drag = Some(Drag::SelectRegion {
                                                                 lane: ch,
                                                                 alt,
-                                                                ctrl,
+                                                                disjoint,
                                                                 shift: false,
                                                                 anchor_sample: sample,
                                                                 origin_x: x,

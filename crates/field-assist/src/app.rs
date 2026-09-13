@@ -1234,10 +1234,13 @@ impl AppView {
         views.waveform.update(cx, |view, cx| view.reset_view(cx));
         views.workspace.update(cx, |_, cx| cx.notify());
         if self.session.active() == Some(id) {
+            self.playback.bind_composition(views.composition.clone());
             let snapshot = views.buffer.read().unwrap();
             self.playback.reload(&snapshot);
             drop(snapshot);
             self.playback.sync_from_document(views.document.read(cx));
+            self.playback
+                .load_monitor_for_document(views.document.read(cx));
             self.update_window_title(window, cx);
         }
         self.refresh_explorer(cx);
@@ -3375,6 +3378,9 @@ impl AppView {
                 self.ensure_tab(id, window, cx);
             }
         }
+        // ensure_tab → focus_document is a no-op when the first doc is already
+        // session.active, so bind playback explicitly after restore.
+        self.apply_active(window, cx);
         self.apply_session_ui(ui.as_ref(), window, cx);
         self.session.mark_clean();
         self.refresh_explorer(cx);

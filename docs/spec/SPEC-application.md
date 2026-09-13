@@ -207,10 +207,11 @@ Shift+wheel.
 
 ### Selection
 
-Click-drag replaces the session **selection** collection. Ctrl-drag adds a
-disjoint region. Shift-drag or shift-click extends the nearest endpoint. Alt
-scopes the gesture to the lane’s channel. Click without drag sets the caret;
-Ctrl-click keeps the current selection.
+Click-drag replaces the session **selection** collection. Secondary-modifier
+drag (Cmd on macOS, Ctrl elsewhere) adds a disjoint region. Shift-drag or
+shift-click extends the nearest endpoint. Alt scopes the gesture to the
+lane’s channel. Click without drag sets the caret; secondary-modifier click
+keeps the current selection.
 
 The selection collection is session state and is not saved in `.facomp`. Named
 collections persist on the composition; the Regions panel can adopt a named
