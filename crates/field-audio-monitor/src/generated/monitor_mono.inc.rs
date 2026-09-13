@@ -8,12 +8,12 @@ Compilation options: -lang rust -fpga-mem-th 4 -ct 1 -cn MonitorMono -es 1 -mcd 
 
 #[repr(C)]
 pub struct MonitorMono {
+	fHbargraph0: FaustFloat,
 	fSampleRate: i32,
 	fConst0: F32,
-	fConst1: F32,
 	fHslider0: FaustFloat,
+	fConst1: F32,
 	fRec0: [F32;2],
-	fHbargraph0: FaustFloat,
 }
 
 
@@ -26,12 +26,12 @@ impl MonitorMono {
 		
 	pub fn new() -> MonitorMono { 
 		MonitorMono {
+			fHbargraph0: 0.0,
 			fSampleRate: 0,
 			fConst0: 0.0,
-			fConst1: 0.0,
 			fHslider0: 0.0,
+			fConst1: 0.0,
 			fRec0: [0.0;2],
-			fHbargraph0: 0.0,
 		}
 	}
 	pub fn metadata(&self, m: &mut dyn Meta) { 
@@ -128,9 +128,9 @@ impl MonitorMono {
 		let mut fSlow0: F32 = self.fConst0 * F32::powf(1e+01, 0.05 * (self.fHslider0) as F32);
 		let zipped_iterators = inputs0.zip(outputs0).zip(outputs1);
 		for ((input0, output0), output1) in zipped_iterators {
-			self.fRec0[0] = fSlow0 + self.fConst1 * self.fRec0[1];
 			let mut fTemp0: F32 = (*input0) as F32;
 			self.fHbargraph0 = (2e+01 * F32::log10(F32::max(1.1754944e-38, F32::max(1e-12, F32::abs(fTemp0))))) as FaustFloat;
+			self.fRec0[0] = fSlow0 + self.fConst1 * self.fRec0[1];
 			let mut fTemp1: F32 = fTemp0 * self.fRec0[0];
 			*output0 = (fTemp1) as FaustFloat;
 			*output1 = (fTemp1) as FaustFloat;

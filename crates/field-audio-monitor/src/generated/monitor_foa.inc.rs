@@ -10,8 +10,8 @@ Compilation options: -lang rust -fpga-mem-th 4 -ct 1 -cn MonitorFoa -es 1 -mcd 1
 pub struct MonitorFoa {
 	fSampleRate: i32,
 	fConst0: F32,
-	fConst1: F32,
 	fHslider0: FaustFloat,
+	fConst1: F32,
 	fRec0: [F32;2],
 	fEntry0: FaustFloat,
 	fHslider1: FaustFloat,
@@ -30,8 +30,8 @@ impl MonitorFoa {
 		MonitorFoa {
 			fSampleRate: 0,
 			fConst0: 0.0,
-			fConst1: 0.0,
 			fHslider0: 0.0,
+			fConst1: 0.0,
 			fRec0: [0.0;2],
 			fEntry0: 0.0,
 			fHslider1: 0.0,
@@ -110,8 +110,8 @@ impl MonitorFoa {
 	pub fn get_param(&self, param: ParamIndex) -> Option<FaustFloat> {
 		match param.0 {
 			0 => Some(self.fEntry0),
-			1 => Some(self.fHslider0),
-			2 => Some(self.fHslider1),
+			2 => Some(self.fHslider0),
+			1 => Some(self.fHslider1),
 			_ => None,
 		}
 	}
@@ -119,8 +119,8 @@ impl MonitorFoa {
 	pub fn set_param(&mut self, param: ParamIndex, value: FaustFloat) {
 		match param.0 {
 			0 => { self.fEntry0 = value }
-			1 => { self.fHslider0 = value }
-			2 => { self.fHslider1 = value }
+			2 => { self.fHslider0 = value }
+			1 => { self.fHslider1 = value }
 			_ => {}
 		}
 	}
@@ -141,26 +141,26 @@ impl MonitorFoa {
 		let [outputs0, outputs1, .. ] = outputs.as_mut() else { panic!("wrong number of output buffers"); };
 		let outputs0 = outputs0.as_mut()[..count].iter_mut();
 		let outputs1 = outputs1.as_mut()[..count].iter_mut();
-		let mut fSlow0: F32 = self.fConst0 * (self.fHslider0) as F32;
+		let mut fSlow0: F32 = self.fConst0 * F32::powf(1e+01, 0.05 * (self.fHslider0) as F32);
 		let mut fSlow1: F32 = (self.fEntry0) as F32;
 		let mut iSlow2: i32 = (fSlow1 == 0.0) as i32;
 		let mut iSlow3: i32 = (fSlow1 == 1.0) as i32;
-		let mut fSlow4: F32 = self.fConst0 * F32::powf(1e+01, 0.05 * (self.fHslider1) as F32);
+		let mut fSlow4: F32 = self.fConst0 * (self.fHslider1) as F32;
 		let zipped_iterators = inputs0.zip(inputs1).zip(inputs2).zip(inputs3).zip(outputs0).zip(outputs1);
 		for (((((input0, input1), input2), input3), output0), output1) in zipped_iterators {
 			self.fRec0[0] = fSlow0 + self.fConst1 * self.fRec0[1];
-			let mut fTemp0: F32 = 0.017453292 * self.fRec0[0];
-			let mut fTemp1: F32 = F32::sin(fTemp0);
-			let mut fTemp2: F32 = (*input3) as F32;
-			let mut fTemp3: F32 = (if iSlow2 != 0 {fTemp2} else {(if iSlow3 != 0 {fTemp2} else {-((*input2) as F32)})});
+			let mut fTemp0: F32 = (*input3) as F32;
+			let mut fTemp1: F32 = (if iSlow2 != 0 {fTemp0} else {(if iSlow3 != 0 {fTemp0} else {-((*input2) as F32)})});
+			self.fRec1[0] = fSlow4 + self.fConst1 * self.fRec1[1];
+			let mut fTemp2: F32 = 0.017453292 * self.fRec1[0];
+			let mut fTemp3: F32 = F32::cos(fTemp2);
 			let mut fTemp4: F32 = (*input1) as F32;
 			let mut fTemp5: F32 = (if iSlow2 != 0 {fTemp4} else {(if iSlow3 != 0 {-fTemp4} else {fTemp4})});
-			let mut fTemp6: F32 = F32::cos(fTemp0);
-			let mut fTemp7: F32 = 0.5 * (fTemp6 * fTemp5 - fTemp3 * fTemp1);
-			let mut fTemp8: F32 = 0.70710677 * (*input0) as F32 + 0.8660254 * (fTemp3 * fTemp6 + fTemp5 * fTemp1);
-			self.fRec1[0] = fSlow4 + self.fConst1 * self.fRec1[1];
-			*output0 = (self.fRec1[0] * (fTemp8 + fTemp7)) as FaustFloat;
-			*output1 = (self.fRec1[0] * (fTemp8 - fTemp7)) as FaustFloat;
+			let mut fTemp6: F32 = F32::sin(fTemp2);
+			let mut fTemp7: F32 = 0.70710677 * (*input0) as F32 + 0.8660254 * (fTemp1 * fTemp3 + fTemp5 * fTemp6);
+			let mut fTemp8: F32 = 0.5 * (fTemp3 * fTemp5 - fTemp1 * fTemp6);
+			*output0 = (self.fRec0[0] * (fTemp7 + fTemp8)) as FaustFloat;
+			*output1 = (self.fRec0[0] * (fTemp7 - fTemp8)) as FaustFloat;
 			self.fRec0[1] = self.fRec0[0];
 			self.fRec1[1] = self.fRec1[0];
 		}

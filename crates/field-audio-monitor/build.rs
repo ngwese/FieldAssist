@@ -14,13 +14,17 @@ const CHAINS: &[(&str, &str)] = &[
     ("monitor_foa_fuma", "MonitorFoaFuma"),
 ];
 
+const DSP_LIBS: &[&str] = &["headphone_crossfeed.lib", "bformat.lib"];
+
 fn main() {
-    println!("cargo:rerun-if-changed=dsp");
     for (stem, _) in CHAINS {
         println!("cargo:rerun-if-changed=dsp/{stem}.dsp");
     }
-    println!("cargo:rerun-if-changed=dsp/headphone_crossfeed.lib");
-    println!("cargo:rerun-if-changed=dsp/bformat.lib");
+    for lib in DSP_LIBS {
+        println!("cargo:rerun-if-changed=dsp/{lib}");
+    }
+    println!("cargo:rerun-if-env-changed=FAUST");
+    println!("cargo:rerun-if-env-changed=FAUST_REGENERATE");
 
     compile_faust_chains();
 }
@@ -30,35 +34,54 @@ fn compile_faust_chains() {
     let dsp_dir = manifest.join("dsp");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let committed = manifest.join("src").join("generated");
-    let faust = faust_command();
 
-    if let Some(faust) = faust.as_ref() {
+    if regenerate_requested() {
+        let faust = faust_command().unwrap_or_else(|| {
+            panic!(
+                "FAUST_REGENERATE is set but the Faust compiler was not found; \
+                 install Faust or set FAUST to the binary path"
+            );
+        });
+        let work_dir = prepare_faust_workdir(&dsp_dir, &out_dir);
         for (stem, class_name) in CHAINS {
-            compile_one(faust, &dsp_dir, &out_dir, stem, class_name);
+            compile_one(&faust, &work_dir, &out_dir, stem, class_name);
         }
         publish_generated(&out_dir, &committed);
     } else {
-        for (stem, _) in CHAINS {
-            let src_rs = committed.join(format!("{stem}.inc.rs"));
-            let src_json = committed.join(format!("{stem}.json"));
-            if !src_rs.is_file() || !src_json.is_file() {
-                panic!(
-                    "Faust compiler not found and missing {}; install Faust or restore generated files",
-                    src_rs.display()
-                );
-            }
-            fs::copy(&src_rs, out_dir.join(format!("{stem}.inc.rs")))
-                .expect("copy committed Faust rust");
-            let json = fs::read_to_string(&src_json).expect("read committed Faust json");
-            fs::write(
-                out_dir.join(format!("{stem}.json")),
-                sanitize_faust_json(&json),
-            )
-            .expect("write Faust json");
-        }
+        copy_committed(&committed, &out_dir);
     }
 
     write_wrapper(&out_dir);
+}
+
+fn regenerate_requested() -> bool {
+    matches!(
+        env::var("FAUST_REGENERATE").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+fn copy_committed(committed: &Path, out_dir: &Path) {
+    for (stem, _) in CHAINS {
+        let src_rs = committed.join(format!("{stem}.inc.rs"));
+        let src_json = committed.join(format!("{stem}.json"));
+        if !src_rs.is_file() || !src_json.is_file() {
+            panic!(
+                "missing {}; install Faust and run FAUST_REGENERATE=1 cargo build \
+                 -p field-audio-monitor, or restore generated files",
+                src_rs.display()
+            );
+        }
+        write_if_changed(
+            &out_dir.join(format!("{stem}.inc.rs")),
+            &fs::read(&src_rs).unwrap(),
+        );
+        let json = fs::read_to_string(&src_json).expect("read committed Faust json");
+        write_if_changed(
+            &out_dir.join(format!("{stem}.json")),
+            sanitize_faust_json(&json).as_bytes(),
+        );
+    }
 }
 
 fn faust_command() -> Option<PathBuf> {
@@ -76,12 +99,33 @@ fn faust_command() -> Option<PathBuf> {
         .map(|_| PathBuf::from("faust"))
 }
 
-fn compile_one(faust: &Path, dsp_dir: &Path, out_dir: &Path, stem: &str, class_name: &str) {
-    let dsp = dsp_dir.join(format!("{stem}.dsp"));
+/// Copy DSP inputs under OUT_DIR so Faust's `-json` sidecar never touches
+/// the watched source tree.
+fn prepare_faust_workdir(dsp_dir: &Path, out_dir: &Path) -> PathBuf {
+    let work_dir = out_dir.join("faust_dsp");
+    let _ = fs::remove_dir_all(&work_dir);
+    fs::create_dir_all(&work_dir).expect("create Faust workdir");
+
+    for (stem, _) in CHAINS {
+        let name = format!("{stem}.dsp");
+        fs::copy(dsp_dir.join(&name), work_dir.join(&name)).unwrap_or_else(|err| {
+            panic!("copy {}: {err}", dsp_dir.join(&name).display());
+        });
+    }
+    for lib in DSP_LIBS {
+        fs::copy(dsp_dir.join(lib), work_dir.join(lib)).unwrap_or_else(|err| {
+            panic!("copy {}: {err}", dsp_dir.join(lib).display());
+        });
+    }
+    work_dir
+}
+
+fn compile_one(faust: &Path, work_dir: &Path, out_dir: &Path, stem: &str, class_name: &str) {
+    let dsp = work_dir.join(format!("{stem}.dsp"));
     let rs_out = out_dir.join(format!("{stem}.raw.rs"));
     let status = Command::new(faust)
         .arg("-I")
-        .arg(dsp_dir)
+        .arg(work_dir)
         .args(["-lang", "rust", "-json", "-cn", class_name])
         .arg("-o")
         .arg(&rs_out)
@@ -93,20 +137,18 @@ fn compile_one(faust: &Path, dsp_dir: &Path, out_dir: &Path, stem: &str, class_n
     }
 
     let raw = fs::read_to_string(&rs_out).expect("read generated rust");
-    fs::write(
-        out_dir.join(format!("{stem}.inc.rs")),
-        strip_generated_helpers(&raw),
-    )
-    .expect("write stripped rust");
+    write_if_changed(
+        &out_dir.join(format!("{stem}.inc.rs")),
+        strip_generated_helpers(&raw).as_bytes(),
+    );
 
-    let json_src = dsp_dir.join(format!("{stem}.dsp.json"));
+    let json_src = work_dir.join(format!("{stem}.dsp.json"));
     if json_src.is_file() {
         let json = fs::read_to_string(&json_src).expect("read Faust json");
-        fs::write(
-            out_dir.join(format!("{stem}.json")),
-            sanitize_faust_json(&json),
-        )
-        .expect("write Faust json");
+        write_if_changed(
+            &out_dir.join(format!("{stem}.json")),
+            sanitize_faust_json(&json).as_bytes(),
+        );
         let _ = fs::remove_file(&json_src);
     } else {
         panic!("faust -json did not write {}", json_src.display());
@@ -116,7 +158,65 @@ fn compile_one(faust: &Path, dsp_dir: &Path, out_dir: &Path, stem: &str, class_n
 fn sanitize_faust_json(raw: &str) -> String {
     // Faust embeds absolute include paths. On Windows those use backslashes,
     // which are not valid JSON escapes (`\P`, `\U`, …).
-    raw.replace('\\', "/")
+    let normalized = raw.replace('\\', "/");
+
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&normalized) else {
+        return normalized;
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return normalized;
+    };
+
+    if let Some(list) = obj.get_mut("library_list").and_then(|v| v.as_array_mut()) {
+        for entry in list {
+            if let Some(path) = entry.as_str() {
+                *entry = serde_json::Value::String(stabilize_library_path(path));
+            }
+        }
+    }
+    if let Some(list) = obj
+        .get_mut("include_pathnames")
+        .and_then(|v| v.as_array_mut())
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stable = Vec::new();
+        for entry in list.iter() {
+            let Some(path) = entry.as_str() else {
+                continue;
+            };
+            let name = stabilize_include_pathname(path);
+            if seen.insert(name.clone()) {
+                stable.push(serde_json::Value::String(name));
+            }
+        }
+        *list = stable;
+    }
+
+    // Compact, deterministic JSON (no host-specific formatting drift).
+    serde_json::to_string(&value).unwrap_or(normalized)
+}
+
+fn stabilize_library_path(path: &str) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    // Crate-local libs stay distinguishable from Faust stdlibs.
+    if matches!(name, "headphone_crossfeed.lib" | "bformat.lib") {
+        format!("dsp/{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+fn stabilize_include_pathname(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    // Source tree is `dsp/`; Faust workdir under OUT_DIR is `faust_dsp/`.
+    if name == "dsp" || name == "faust_dsp" || trimmed.ends_with("/dsp") {
+        "dsp".to_string()
+    } else if name == "faust" || trimmed.ends_with("/share/faust") {
+        "faust".to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 fn strip_generated_helpers(src: &str) -> String {
@@ -138,17 +238,22 @@ fn publish_generated(out_dir: &Path, committed: &Path) {
     for (stem, _) in CHAINS {
         for ext in ["inc.rs", "json"] {
             let src = out_dir.join(format!("{stem}.{ext}"));
-            let dst = committed.join(format!("{stem}.{ext}"));
             let Ok(bytes) = fs::read(&src) else {
                 continue;
             };
-            let same = fs::read(&dst)
-                .ok()
-                .is_some_and(|existing| existing == bytes);
-            if !same {
-                fs::write(&dst, bytes).expect("write committed Faust artifact");
-            }
+            write_if_changed(&committed.join(format!("{stem}.{ext}")), &bytes);
         }
+    }
+}
+
+fn write_if_changed(path: &Path, bytes: &[u8]) {
+    let same = fs::read(path)
+        .ok()
+        .is_some_and(|existing| existing == bytes);
+    if !same {
+        fs::write(path, bytes).unwrap_or_else(|err| {
+            panic!("write {}: {err}", path.display());
+        });
     }
 }
 
@@ -223,5 +328,5 @@ fn rintf(val: f32) -> f32 {
         ));
     }
 
-    fs::write(out_dir.join("monitor_dsp.rs"), wrapper).expect("write Faust wrapper");
+    write_if_changed(out_dir.join("monitor_dsp.rs").as_path(), wrapper.as_bytes());
 }

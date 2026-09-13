@@ -12,20 +12,20 @@ pub struct MonitorMs {
 	fSampleRate: i32,
 	fConst0: F32,
 	fConst1: F32,
-	fConst2: F32,
 	fHslider0: FaustFloat,
-	fRec1: [F32;2],
-	fConst3: F32,
+	fConst2: F32,
+	fRec0: [F32;2],
 	fHslider1: FaustFloat,
-	fRec2: [F32;2],
+	fRec1: [F32;2],
 	fCheckbox1: FaustFloat,
 	fHslider2: FaustFloat,
-	fRec3: [F32;2],
+	fRec2: [F32;2],
 	fVec0: [F32;2],
-	fRec0: [F32;2],
+	fConst3: F32,
 	fHslider3: FaustFloat,
 	fRec4: [F32;2],
 	fVec1: [F32;2],
+	fRec3: [F32;2],
 	fRec5: [F32;2],
 }
 
@@ -43,20 +43,20 @@ impl MonitorMs {
 			fSampleRate: 0,
 			fConst0: 0.0,
 			fConst1: 0.0,
-			fConst2: 0.0,
 			fHslider0: 0.0,
-			fRec1: [0.0;2],
-			fConst3: 0.0,
+			fConst2: 0.0,
+			fRec0: [0.0;2],
 			fHslider1: 0.0,
-			fRec2: [0.0;2],
+			fRec1: [0.0;2],
 			fCheckbox1: 0.0,
 			fHslider2: 0.0,
-			fRec3: [0.0;2],
+			fRec2: [0.0;2],
 			fVec0: [0.0;2],
-			fRec0: [0.0;2],
+			fConst3: 0.0,
 			fHslider3: 0.0,
 			fRec4: [0.0;2],
 			fVec1: [0.0;2],
+			fRec3: [0.0;2],
 			fRec5: [0.0;2],
 		}
 	}
@@ -102,33 +102,33 @@ impl MonitorMs {
 	}
 	pub fn instance_reset_params(&mut self) {
 		self.fCheckbox0 = (0.0) as FaustFloat;
-		self.fHslider0 = (7e+02) as FaustFloat;
+		self.fHslider0 = (0.35) as FaustFloat;
 		self.fHslider1 = (0.0) as FaustFloat;
 		self.fCheckbox1 = (0.0) as FaustFloat;
 		self.fHslider2 = (0.0) as FaustFloat;
-		self.fHslider3 = (0.35) as FaustFloat;
+		self.fHslider3 = (7e+02) as FaustFloat;
 	}
 	pub fn instance_clear(&mut self) {
 		for l0 in 0..2 {
-			self.fRec1[l0 as usize] = 0.0;
+			self.fRec0[l0 as usize] = 0.0;
 		}
 		for l1 in 0..2 {
-			self.fRec2[l1 as usize] = 0.0;
+			self.fRec1[l1 as usize] = 0.0;
 		}
 		for l2 in 0..2 {
-			self.fRec3[l2 as usize] = 0.0;
+			self.fRec2[l2 as usize] = 0.0;
 		}
 		for l3 in 0..2 {
 			self.fVec0[l3 as usize] = 0.0;
 		}
 		for l4 in 0..2 {
-			self.fRec0[l4 as usize] = 0.0;
+			self.fRec4[l4 as usize] = 0.0;
 		}
 		for l5 in 0..2 {
-			self.fRec4[l5 as usize] = 0.0;
+			self.fVec1[l5 as usize] = 0.0;
 		}
 		for l6 in 0..2 {
-			self.fVec1[l6 as usize] = 0.0;
+			self.fRec3[l6 as usize] = 0.0;
 		}
 		for l7 in 0..2 {
 			self.fRec5[l7 as usize] = 0.0;
@@ -175,10 +175,10 @@ impl MonitorMs {
 		match param.0 {
 			1 => Some(self.fCheckbox0),
 			3 => Some(self.fCheckbox1),
-			2 => Some(self.fHslider0),
-			5 => Some(self.fHslider1),
-			4 => Some(self.fHslider2),
-			0 => Some(self.fHslider3),
+			0 => Some(self.fHslider0),
+			4 => Some(self.fHslider1),
+			5 => Some(self.fHslider2),
+			2 => Some(self.fHslider3),
 			_ => None,
 		}
 	}
@@ -187,10 +187,10 @@ impl MonitorMs {
 		match param.0 {
 			1 => { self.fCheckbox0 = value }
 			3 => { self.fCheckbox1 = value }
-			2 => { self.fHslider0 = value }
-			5 => { self.fHslider1 = value }
-			4 => { self.fHslider2 = value }
-			0 => { self.fHslider3 = value }
+			0 => { self.fHslider0 = value }
+			4 => { self.fHslider1 = value }
+			5 => { self.fHslider2 = value }
+			2 => { self.fHslider3 = value }
 			_ => {}
 		}
 	}
@@ -217,33 +217,33 @@ impl MonitorMs {
 		let mut fSlow5: F32 = self.fConst1 * (self.fHslider3) as F32;
 		let zipped_iterators = inputs0.zip(inputs1).zip(outputs0).zip(outputs1);
 		for (((input0, input1), output0), output1) in zipped_iterators {
-			self.fRec1[0] = fSlow1 + self.fConst2 * self.fRec1[1];
-			let mut fTemp0: F32 = 1.0 / F32::tan(self.fConst3 * self.fRec1[0]);
-			let mut fTemp1: F32 = fTemp0 + 1.0;
-			self.fRec2[0] = fSlow2 + self.fConst2 * self.fRec2[1];
+			self.fRec0[0] = fSlow1 + self.fConst2 * self.fRec0[1];
+			let mut fTemp0: F32 = 1.0 - 0.5 * self.fRec0[0];
+			self.fRec1[0] = fSlow2 + self.fConst2 * self.fRec1[1];
+			let mut fTemp1: F32 = (*input0) as F32 * self.fRec1[0];
+			self.fRec2[0] = fSlow4 + self.fConst2 * self.fRec2[1];
 			let mut fTemp2: F32 = fSlow3 * (*input1) as F32 * self.fRec2[0];
-			self.fRec3[0] = fSlow4 + self.fConst2 * self.fRec3[1];
-			let mut fTemp3: F32 = (*input0) as F32 * self.fRec3[0];
-			let mut fTemp4: F32 = fTemp3 - fTemp2;
-			let mut fTemp5: F32 = (if iSlow0 != 0 {0.0} else {fTemp4});
-			self.fVec0[0] = fTemp5;
-			let mut fTemp6: F32 = 1.0 - fTemp0;
-			self.fRec0[0] = -((self.fRec0[1] * fTemp6 - (fTemp5 + self.fVec0[1])) / fTemp1);
+			let mut fTemp3: F32 = fTemp1 + fTemp2;
+			let mut fTemp4: F32 = (if iSlow0 != 0 {0.0} else {fTemp3});
+			self.fVec0[0] = fTemp4;
 			self.fRec4[0] = fSlow5 + self.fConst2 * self.fRec4[1];
-			let mut fTemp7: F32 = fTemp3 + fTemp2;
+			let mut fTemp5: F32 = 1.0 / F32::tan(self.fConst3 * self.fRec4[0]);
+			let mut fTemp6: F32 = 1.0 - fTemp5;
+			let mut fTemp7: F32 = fTemp1 - fTemp2;
 			let mut fTemp8: F32 = (if iSlow0 != 0 {0.0} else {fTemp7});
 			self.fVec1[0] = fTemp8;
-			let mut fTemp9: F32 = 1.0 - 0.5 * self.fRec4[0];
-			*output0 = ((if iSlow0 != 0 {fTemp7} else {fTemp9 * fTemp8 + self.fRec4[0] * self.fRec0[0]})) as FaustFloat;
-			self.fRec5[0] = -((fTemp6 * self.fRec5[1] - (fTemp8 + self.fVec1[1])) / fTemp1);
-			*output1 = ((if iSlow0 != 0 {fTemp4} else {fTemp9 * fTemp5 + self.fRec4[0] * self.fRec5[0]})) as FaustFloat;
+			let mut fTemp9: F32 = fTemp5 + 1.0;
+			self.fRec3[0] = -((self.fRec3[1] * fTemp6 - (fTemp8 + self.fVec1[1])) / fTemp9);
+			*output0 = ((if iSlow0 != 0 {fTemp3} else {fTemp0 * fTemp4 + self.fRec0[0] * self.fRec3[0]})) as FaustFloat;
+			self.fRec5[0] = -((fTemp6 * self.fRec5[1] - (fTemp4 + self.fVec0[1])) / fTemp9);
+			*output1 = ((if iSlow0 != 0 {fTemp7} else {fTemp0 * fTemp8 + self.fRec0[0] * self.fRec5[0]})) as FaustFloat;
+			self.fRec0[1] = self.fRec0[0];
 			self.fRec1[1] = self.fRec1[0];
 			self.fRec2[1] = self.fRec2[0];
-			self.fRec3[1] = self.fRec3[0];
 			self.fVec0[1] = self.fVec0[0];
-			self.fRec0[1] = self.fRec0[0];
 			self.fRec4[1] = self.fRec4[0];
 			self.fVec1[1] = self.fVec1[0];
+			self.fRec3[1] = self.fRec3[0];
 			self.fRec5[1] = self.fRec5[0];
 		}
 		

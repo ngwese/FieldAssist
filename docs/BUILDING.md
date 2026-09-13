@@ -3,7 +3,8 @@
 ## Requirements
 
 - [Rust](https://www.rust-lang.org/tools/install) (2021 edition)
-- [Faust](https://faust.grame.fr/) (optional) to regenerate monitor DSP sources
+- [Faust](https://faust.grame.fr/) **2.85.9** (optional) only when regenerating
+  monitor DSP sources
 
 ### On Linux (Ubuntu)
 
@@ -16,14 +17,43 @@ sudo apt install libfontconfig-dev libxcb1-dev libxkbcommon-dev \
 
 ## Faust monitor chains
 
-Playback monitoring compiles Faust DSP in
+Playback monitoring uses Faust DSP in
 `crates/field-audio-monitor/dsp/` (`monitor_mono.dsp`, `monitor_stereo.dsp`,
-`monitor_ms.dsp`, `monitor_foa.dsp`) to Rust via `faust -lang rust -json` in
-that crate's `build.rs`. Generated `.inc.rs` and `.json` files are committed
-under `crates/field-audio-monitor/src/generated/` so `cargo build` does not
-require Faust. When `faust` is on `PATH` (or `FAUST` points at the binary),
-those artifacts are regenerated. Stereo and M/S chains share
-`crates/field-audio-monitor/dsp/headphone_crossfeed.lib`.
+`monitor_ms.dsp`, `monitor_foa.dsp`, `monitor_foa_fuma.dsp`). Generated
+`.inc.rs` and `.json` files are committed under
+`crates/field-audio-monitor/src/generated/` so ordinary `cargo build` does
+**not** require Faust and does **not** rewrite those files when Faust happens
+to be installed locally.
+
+Stereo and M/S chains share
+`crates/field-audio-monitor/dsp/headphone_crossfeed.lib`; FOA chains share
+`crates/field-audio-monitor/dsp/bformat.lib`.
+
+### Regenerating with `FAUST_REGENERATE`
+
+By default, `field-audio-monitor`'s `build.rs` only copies the committed
+artifacts into `OUT_DIR`. Faust is never invoked unless you opt in.
+
+After changing a `.dsp` or `.lib` file:
+
+1. Install Faust **2.85.9** (or point `FAUST` at that version's binary).
+2. Regenerate and publish into `src/generated/`:
+
+```bash
+FAUST_REGENERATE=1 cargo build -p field-audio-monitor
+```
+
+3. Commit the resulting `crates/field-audio-monitor/src/generated/` changes
+   together with the DSP edit.
+
+| Variable | Purpose |
+| --- | --- |
+| `FAUST_REGENERATE=1` | Opt in to run Faust and update committed artifacts |
+| `FAUST` | Optional path to the Faust binary when it is not on `PATH` |
+
+If `FAUST_REGENERATE` is set but Faust cannot be found, the build fails with
+an error. Leaving the variable unset keeps builds fast and keeps
+`git status` clean even on machines that have Faust installed.
 
 ## Build
 
