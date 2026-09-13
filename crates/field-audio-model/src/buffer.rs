@@ -120,7 +120,10 @@ pub struct Region {
     /// Channels this region covers.
     pub channels: ChannelScope,
     /// Optional display label.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub label: Option<String>,
 }
 

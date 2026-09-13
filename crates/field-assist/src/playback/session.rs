@@ -100,8 +100,7 @@ impl PlaybackSession {
             .playback_channels()
             .map(|ch| ch.to_vec());
         let rate = self.engine.shared.output_rate();
-        self.monitor
-            .replace_working(chain, channels, rate, working);
+        self.monitor.replace_working(chain, channels, rate, working);
     }
 
     pub fn load_session_monitor(&self, composition: &Composition) {
@@ -109,8 +108,7 @@ impl PlaybackSession {
         let channels = composition.playback_channels().map(|ch| ch.to_vec());
         let working = self.monitor.session_params();
         let rate = self.engine.shared.output_rate();
-        self.monitor
-            .replace_working(chain, channels, rate, working);
+        self.monitor.replace_working(chain, channels, rate, working);
     }
 
     pub fn set_monitor_param(&self, address: &str, value: f32) {

@@ -5,13 +5,13 @@
 
 use std::rc::Rc;
 
-use gpui_kit::{
-    px, Action, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
-    SharedString, Styled as _, Window,
-};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex, ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _,
+};
+use gpui_kit::{
+    px, Action, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    SharedString, Styled as _, Window,
 };
 
 const CONTROL_SIZE: gpui_kit::Pixels = px(28.);

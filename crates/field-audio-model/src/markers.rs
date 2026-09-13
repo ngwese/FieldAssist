@@ -113,7 +113,10 @@ pub struct Marker {
     #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub marker_type: String,
     /// Optional note text.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub note: Option<String>,
 }
 
@@ -150,7 +153,10 @@ pub struct StoredMarker {
     #[cfg_attr(feature = "serde", serde(default, skip_serializing))]
     pub color: Option<[f32; 4]>,
     /// Optional note text.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub note: Option<String>,
 }
 

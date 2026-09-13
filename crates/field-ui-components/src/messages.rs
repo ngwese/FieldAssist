@@ -3,14 +3,14 @@
 
 //! Log / messages panel with a gpui-free [`LogLine`] DTO.
 
+use gpui_kit::component::{
+    dock::{BasePanel, Panel, PanelEvent},
+    h_flex, v_flex, ActiveTheme as _,
+};
 use gpui_kit::{
     div, px, rems, uniform_list, App, Context, ElementId, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     UniformListScrollHandle, Window,
-};
-use gpui_kit::component::{
-    dock::{BasePanel, Panel, PanelEvent},
-    h_flex, v_flex, ActiveTheme as _,
 };
 
 const LEVEL_WIDTH: gpui_kit::Rems = rems(4.);

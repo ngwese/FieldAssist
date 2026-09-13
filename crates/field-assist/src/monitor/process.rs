@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use field_audio_playback::MonitorProcess;
 
-use super::{MonitorHost};
+use super::MonitorHost;
 
 /// Wraps [`MonitorHost`] so the playback engine can process without depending
 /// on Faust or this monitor crate.

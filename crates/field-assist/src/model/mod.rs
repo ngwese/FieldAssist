@@ -3,20 +3,20 @@
 
 pub mod document;
 
+pub use document::BufferDocument;
 #[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_audio_model::{
     nearest_zero_crossing, nearest_zero_crossing_default, Buffer, BufferSource, ChannelScope,
     DecodedAudio, PcmBuffer, Region, RegionCollection, RegionEndpoint, RegionId, SamplePosition,
     SELECTION_COLLECTION,
 };
+pub use field_composition as composition;
 #[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_composition::{
     default_marker_type, is_facomp_path, marker_type_color, Clipboard, Composition, EditId, EditOp,
     Marker, MarkerId, MarkerType, MediaRef, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
     MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
-pub use field_composition as composition;
-pub use document::BufferDocument;
 pub use field_session as session;
 pub use field_session::{
     is_fasession_path, DocumentId, Session, SessionDocksUi, SessionDocument, SessionId, SessionUi,

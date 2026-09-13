@@ -5,15 +5,15 @@
 
 use std::rc::Rc;
 
-use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, rems, App, Hsla, IntoElement, ParentElement as _,
-    RenderOnce, SharedString, Styled as _, Window,
-};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     status_bar::StatusBar,
     ActiveTheme as _, Icon, IconNamed, Selectable as _, Sizable as _,
+};
+use gpui_kit::{
+    div, prelude::FluentBuilder as _, px, rems, App, Hsla, IntoElement, ParentElement as _,
+    RenderOnce, SharedString, Styled as _, Window,
 };
 
 const HEIGHT: gpui_kit::Pixels = px(24.);

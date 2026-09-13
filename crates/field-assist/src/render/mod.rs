@@ -5,7 +5,9 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use field_audio_io::{encoder as encoder_by_id, encoders as registry, planar_frames, select_channels};
+use field_audio_io::{
+    encoder as encoder_by_id, encoders as registry, planar_frames, select_channels,
+};
 use field_audio_process::resample_planar;
 
 use crate::model::composition::Composition;

@@ -93,11 +93,7 @@ mod tests {
             channels[4][i] = 0.4;
             channels[5][i] = -0.6;
         }
-        let shared = with_monitor(
-            channels.clone(),
-            MonitorChain::Foa,
-            Some(vec![0, 1, 2, 3]),
-        );
+        let shared = with_monitor(channels.clone(), MonitorChain::Foa, Some(vec![0, 1, 2, 3]));
         shared.set_transport(TransportState::Playing);
         let mut out = vec![0.0; 20];
         shared.fill_output(&mut out);

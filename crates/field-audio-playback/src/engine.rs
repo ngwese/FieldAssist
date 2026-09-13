@@ -628,10 +628,7 @@ impl Drop for PlaybackEngine {
     }
 }
 
-fn spawn_prefetch(
-    shared: Arc<PlaybackShared>,
-    stop: Arc<AtomicBool>,
-) -> Result<JoinHandle<()>> {
+fn spawn_prefetch(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
     thread::Builder::new()
         .name("fa-prefetch".into())
         .spawn(move || prefetch_loop(shared, stop))

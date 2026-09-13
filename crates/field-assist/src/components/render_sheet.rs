@@ -3,10 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::{
-    div, rems, App, AppContext as _, Context, Entity, ExternalPaths, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, Styled as _, Window,
-};
 use gpui_kit::component::{
     button::Button,
     checkbox::Checkbox,
@@ -14,6 +10,10 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     v_flex, ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+};
+use gpui_kit::{
+    div, rems, App, AppContext as _, Context, Entity, ExternalPaths, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, Styled as _, Window,
 };
 
 use crate::components::explorer::CompositionDrag;

@@ -40,6 +40,6 @@ pub use edl::{
 pub use field_audio_model::{
     default_marker_type, marker_type_color, BlockPager, BlockSource, Marker, MarkerId, MarkerList,
     MarkerType, MediaId, MediaPool, MediaRef, NullBlockSource, PagerStats, StoredMarker,
-    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW, BLOCK_FRAMES,
+    BLOCK_FRAMES, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 pub use tree::ClipTree;

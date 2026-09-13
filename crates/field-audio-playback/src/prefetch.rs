@@ -65,8 +65,7 @@ impl PrefetchRing {
 
     /// Free frame slots for the producer.
     pub fn frames_free(&self) -> usize {
-        self.capacity_frames
-            .saturating_sub(self.frames_available())
+        self.capacity_frames.saturating_sub(self.frames_available())
     }
 
     /// Producer: discard unread audio after a seek/epoch change.

@@ -7,12 +7,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClickEvent, Context,
-    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window,
-};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
@@ -21,6 +15,12 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     slider::{Slider, SliderEvent, SliderScale, SliderState},
     v_flex, ActiveTheme as _, Icon, IconNamed, Sizable as _,
+};
+use gpui_kit::{
+    div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClickEvent, Context,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
 use crate::param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
@@ -242,26 +242,23 @@ impl MonitorPanel {
                     if mismatch { " (pad / truncate)" } else { "" }
                 )))
             })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .children(snap.channel_labels.iter().enumerate().map(|(i, label)| {
-                        let checked = match snap.playback_channels.as_deref() {
-                            Some(channels) => channels.contains(&i),
-                            None => true,
-                        };
-                        let callbacks = callbacks.clone();
-                        Checkbox::new(("monitor-ch", i as u64))
-                            .label(label.clone())
-                            .checked(checked)
-                            .on_click(move |enabled: &bool, window, cx| {
-                                if let Some(cb) = &callbacks {
-                                    (cb.set_playback_channel)(i, *enabled, window, cx);
-                                }
-                            })
-                    })),
-            )
+            .child(h_flex().gap_2().flex_wrap().children(
+                snap.channel_labels.iter().enumerate().map(|(i, label)| {
+                    let checked = match snap.playback_channels.as_deref() {
+                        Some(channels) => channels.contains(&i),
+                        None => true,
+                    };
+                    let callbacks = callbacks.clone();
+                    Checkbox::new(("monitor-ch", i as u64))
+                        .label(label.clone())
+                        .checked(checked)
+                        .on_click(move |enabled: &bool, window, cx| {
+                            if let Some(cb) = &callbacks {
+                                (cb.set_playback_channel)(i, *enabled, window, cx);
+                            }
+                        })
+                }),
+            ))
             .child(render_schema(
                 &snap.params_ui,
                 &self.sliders,

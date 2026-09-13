@@ -305,11 +305,11 @@ pub fn modified_ranges(edits: &[Edit], cursor: usize) -> Vec<FrameRange> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::clip::{Clip, ClipId};
     use super::super::edl::{Edit, EditId};
-    use field_audio_model::MediaId;
     use super::super::tree::ClipTree;
+    use super::*;
+    use field_audio_model::MediaId;
 
     fn media_tree(len: u64) -> ClipTree {
         ClipTree::from_clip(Clip::from_media(ClipId(1), MediaId(0), 0, len))

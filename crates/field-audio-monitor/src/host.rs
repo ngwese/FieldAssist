@@ -75,7 +75,10 @@ impl MonitorHost {
 
     /// Current sample rate.
     pub fn sample_rate(&self) -> u32 {
-        self.inner.lock().expect("monitor host poisoned").sample_rate
+        self.inner
+            .lock()
+            .expect("monitor host poisoned")
+            .sample_rate
     }
 
     /// Active monitor chain, if any.

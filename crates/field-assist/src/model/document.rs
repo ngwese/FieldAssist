@@ -12,12 +12,12 @@ use super::composition::{
 use super::regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 use super::selection::SamplePosition;
 use super::snap::nearest_zero_crossing;
+use crate::monitor::MonitorChain;
 use crate::progress::ProgressHandle;
 use field_ui_components::{
-    LaneScope, MarkerRow, MarkersData, PaintRegion, PeakStatus, RegionGroup, RegionRow, RegionsData,
-    WaveformDataProvider, WaveformEditor,
+    LaneScope, MarkerRow, MarkersData, PaintRegion, PeakStatus, RegionGroup, RegionRow,
+    RegionsData, WaveformDataProvider, WaveformEditor,
 };
-use crate::monitor::MonitorChain;
 
 const DRAG_THRESHOLD_SAMPLES: usize = 0;
 
@@ -836,11 +836,7 @@ impl MarkersData for BufferDocument {
     }
 }
 
-fn region_group(
-    name: &str,
-    regions: &[crate::model::Region],
-    sample_rate: u32,
-) -> RegionGroup {
+fn region_group(name: &str, regions: &[crate::model::Region], sample_rate: u32) -> RegionGroup {
     RegionGroup {
         collection: name.to_string(),
         regions: regions
@@ -963,12 +959,9 @@ impl WaveformEditor for BufferDocument {
     }
 
     fn playhead(&self) -> Option<(usize, LaneScope)> {
-        self.current_position.as_ref().map(|pos| {
-            (
-                pos.sample,
-                lane_scope_from_channels(&pos.channels),
-            )
-        })
+        self.current_position
+            .as_ref()
+            .map(|pos| (pos.sample, lane_scope_from_channels(&pos.channels)))
     }
 
     fn snap_zero_crossings(&self) -> bool {
@@ -1043,10 +1036,7 @@ impl WaveformEditor for BufferDocument {
     }
 
     fn ranges_for_edit(&self, id: u64) -> Vec<(u64, u64)> {
-        self.composition
-            .read()
-            .unwrap()
-            .ranges_for_edit(EditId(id))
+        self.composition.read().unwrap().ranges_for_edit(EditId(id))
     }
 
     fn peak_status(&self) -> Option<PeakStatus> {

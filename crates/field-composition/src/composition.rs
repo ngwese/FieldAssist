@@ -18,8 +18,8 @@ use field_core::{encode_file_url, ProgressHandle};
 use super::clip::{Clip, ClipId, ClipSpan};
 use super::edit_ranges::{map_inclusive_through_inverse, map_inclusive_through_op};
 use super::edl::{EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
-use super::{map_point_if_kept, map_point_if_kept_inverse};
 use super::tree::ClipTree;
+use super::{map_point_if_kept, map_point_if_kept_inverse};
 
 #[derive(Debug, Clone, Default)]
 /// Clipboard.
@@ -303,8 +303,7 @@ impl Composition {
 
     /// `with_spill_dir`.
     pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
-        let source: Arc<dyn BlockSource> =
-            Arc::new(SymphoniaBlockSource);
+        let source: Arc<dyn BlockSource> = Arc::new(SymphoniaBlockSource);
         self.pager = Mutex::new(BlockPager::new(dir.as_ref().to_path_buf(), source)?);
         Ok(self)
     }
@@ -1880,8 +1879,8 @@ impl Iterator for FramesIter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::MARKER_TYPE_BLUE;
     use super::*;
+    use crate::MARKER_TYPE_BLUE;
 
     fn sine_media(frames: usize, channels: usize, rate: u32) -> MediaRef {
         let samples = (0..channels)
@@ -2106,10 +2105,7 @@ mod tests {
             .add_named_region("silent", 2, 5, ChannelScope::all(), Some("gap".into()))
             .expect("region");
         assert!(comp.is_modified());
-        assert!(comp
-            .collection_mut("silent")
-            .expect("silent")
-            .remove(id));
+        assert!(comp.collection_mut("silent").expect("silent").remove(id));
         assert!(!comp.is_modified());
     }
 

@@ -4,11 +4,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use gpui_kit::component::{h_flex, v_flex, StyledExt as _};
 use gpui_kit::{
     div, hsla, px, ExternalPaths, InteractiveElement as _, IntoElement, ParentElement as _, Rgba,
     Styled as _, WeakEntity,
 };
-use gpui_kit::component::{h_flex, v_flex, StyledExt as _};
 
 use crate::app::AppView;
 use crate::script::DropLayout;

@@ -5,14 +5,14 @@
 
 use std::rc::Rc;
 
+use gpui_kit::component::{
+    dock::{BasePanel, Panel, PanelEvent},
+    h_flex, v_flex, ActiveTheme as _, StyledExt as _,
+};
 use gpui_kit::{
     actions, div, px, uniform_list, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, Rgba,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
-};
-use gpui_kit::component::{
-    dock::{BasePanel, Panel, PanelEvent},
-    h_flex, v_flex, ActiveTheme as _, StyledExt as _,
 };
 
 #[allow(missing_docs)]

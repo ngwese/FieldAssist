@@ -25,12 +25,7 @@ use symphonia::core::{
 pub struct SymphoniaBlockSource;
 
 impl BlockSource for SymphoniaBlockSource {
-    fn decode_range(
-        &self,
-        path: &Path,
-        start: u64,
-        count: u64,
-    ) -> anyhow::Result<Vec<Vec<f32>>> {
+    fn decode_range(&self, path: &Path, start: u64, count: u64) -> anyhow::Result<Vec<Vec<f32>>> {
         decode_range(path, start, count)
     }
 }

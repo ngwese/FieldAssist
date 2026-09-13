@@ -5,9 +5,7 @@
 
 use field_ui_components::ParamUiNode;
 
-use crate::monitor::{
-    menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode, FaustUiRoot,
-};
+use crate::monitor::{menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode, FaustUiRoot};
 
 /// Parse Faust UI JSON into a [`ParamUiNode`] tree.
 pub fn param_ui_from_json(json: &str) -> Option<Vec<ParamUiNode>> {
@@ -74,8 +72,7 @@ fn map_node(node: &FaustUiNode) -> ParamUiNode {
             step: *step,
             unit: meta_value(meta, "unit").map(str::to_string),
             logarithmic: *min > 0.0
-                && meta_value(meta, "scale")
-                    .is_some_and(|scale| scale.eq_ignore_ascii_case("log")),
+                && meta_value(meta, "scale").is_some_and(|scale| scale.eq_ignore_ascii_case("log")),
         },
         FaustUiNode::Checkbox {
             label,

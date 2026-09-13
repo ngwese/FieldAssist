@@ -6,18 +6,18 @@
 //! Hosts supply sample data via [`WaveformDataProvider`] and overlays /
 //! mutations via [`WaveformEditor`].
 
+use gpui_kit::component::{
+    h_flex,
+    menu::ContextMenuExt,
+    plot::scale::{Scale as _, ScaleLinear},
+    v_flex, ActiveTheme as _, StyledExt as _,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context, DispatchPhase,
     Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder, Pixels, Render,
     Rgba, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-};
-use gpui_kit::component::{
-    h_flex,
-    menu::ContextMenuExt,
-    plot::scale::{Scale as _, ScaleLinear},
-    v_flex, ActiveTheme as _, StyledExt as _,
 };
 
 use crate::waveform_data::WaveformDataProvider;

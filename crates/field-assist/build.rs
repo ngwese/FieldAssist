@@ -35,8 +35,11 @@ fn emit_git_revision() {
 
     let revision = git_output(&git_root, &["rev-parse", "--short=7", "HEAD"])
         .unwrap_or_else(|| "unknown".into());
-    let dirty = git_output(&git_root, &["status", "--porcelain", "--untracked-files=no"])
-        .is_some_and(|out| !out.is_empty());
+    let dirty = git_output(
+        &git_root,
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .is_some_and(|out| !out.is_empty());
     println!("cargo:rustc-env=GIT_REVISION={revision}");
     println!(
         "cargo:rustc-env=GIT_DIRTY={}",

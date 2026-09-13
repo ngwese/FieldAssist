@@ -4,12 +4,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, rems, AppContext as _, Context, Entity, ExternalPaths,
-    Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
-    WeakEntity, Window,
-};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
@@ -17,6 +11,12 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _, Size, StyleSized as _,
     StyledExt as _,
+};
+use gpui_kit::{
+    div, prelude::FluentBuilder as _, px, rems, AppContext as _, Context, Entity, ExternalPaths,
+    Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+    PathPromptOptions, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
+    WeakEntity, Window,
 };
 
 use crate::app::AppView;
@@ -133,9 +133,7 @@ impl WorkflowBar {
                 // snapshot into the Input.
                 for item in &mut this.items {
                     if let ToolbarItem::Path {
-                        id,
-                        value: stored,
-                        ..
+                        id, value: stored, ..
                     } = item
                     {
                         if id == &item_id {
@@ -159,10 +157,8 @@ impl WorkflowBar {
         )
         .detach();
         let focus = input.read(cx).focus_handle(cx);
-        cx.on_focus(&focus, window, |_, _, cx| cx.notify())
-            .detach();
-        cx.on_blur(&focus, window, |_, _, cx| cx.notify())
-            .detach();
+        cx.on_focus(&focus, window, |_, _, cx| cx.notify()).detach();
+        cx.on_blur(&focus, window, |_, _, cx| cx.notify()).detach();
         self.inputs.insert(id.to_string(), input.clone());
         input
     }
@@ -371,8 +367,7 @@ impl WorkflowBar {
                                         this.child(Input::new(&input).small().w_full().h_full())
                                     } else {
                                         let focus = input.read(cx).focus_handle(cx);
-                                        let preview =
-                                            middle_ellipsis(&full, PATH_DISPLAY_CHARS);
+                                        let preview = middle_ellipsis(&full, PATH_DISPLAY_CHARS);
                                         this.child(
                                             div()
                                                 .id(("workflow-path-preview", ix))
@@ -393,8 +388,7 @@ impl WorkflowBar {
                                                 .tooltip({
                                                     let full = full.clone();
                                                     move |window, cx| {
-                                                        Tooltip::new(full.clone())
-                                                            .build(window, cx)
+                                                        Tooltip::new(full.clone()).build(window, cx)
                                                     }
                                                 })
                                                 .child(preview)

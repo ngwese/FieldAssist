@@ -3,16 +3,16 @@
 
 use std::rc::Rc;
 
+use field_ui_components::Transport;
+use gpui_kit::component::{
+    dock::{BasePanel, Panel, PanelEvent},
+    v_flex,
+};
 use gpui_kit::{
     div, prelude::FluentBuilder as _, Action, App, Context, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     Styled as _, WeakEntity, Window,
 };
-use gpui_kit::component::{
-    dock::{BasePanel, Panel, PanelEvent},
-    v_flex,
-};
-use field_ui_components::Transport;
 
 use crate::app::AppView;
 use crate::commands::{
@@ -172,7 +172,9 @@ impl Render for WorkspacePanel {
             .child({
                 let playing = self.transport_state == TransportState::Playing;
                 let looping = self.looping;
-                fn action_factory<A: Action + Clone + 'static>(action: A) -> field_ui_components::TransportAction {
+                fn action_factory<A: Action + Clone + 'static>(
+                    action: A,
+                ) -> field_ui_components::TransportAction {
                     Rc::new(move || Box::new(action.clone()) as Box<dyn Action>)
                 }
                 Transport::new(

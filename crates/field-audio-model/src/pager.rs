@@ -412,8 +412,8 @@ mod tests {
         let frames = BLOCK_FRAMES as usize * 2;
         let samples = vec![(0..frames).map(|i| i as f32).collect::<Vec<_>>()];
         let id = pool.insert(MediaRef::from_memory(MediaId(0), 44100, samples));
-        let mut pager = BlockPager::with_cache_bytes(dir.clone(), 1024, Arc::new(NullBlockSource))
-            .unwrap();
+        let mut pager =
+            BlockPager::with_cache_bytes(dir.clone(), 1024, Arc::new(NullBlockSource)).unwrap();
         let mut buf = [0.0; 1];
         pager
             .fill_planar(&pool, id, 0, 1, &mut [&mut buf[..]], 0)
@@ -430,8 +430,8 @@ mod tests {
             spilled.display()
         );
         drop(pager);
-        let mut pager = BlockPager::with_cache_bytes(dir.clone(), 1024, Arc::new(NullBlockSource))
-            .unwrap();
+        let mut pager =
+            BlockPager::with_cache_bytes(dir.clone(), 1024, Arc::new(NullBlockSource)).unwrap();
         pager
             .fill_planar(&pool, id, 0, 1, &mut [&mut buf[..]], 0)
             .unwrap();

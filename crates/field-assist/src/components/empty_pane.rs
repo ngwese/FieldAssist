@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+use gpui_kit::component::{
+    dock::{BasePanel, Panel, PanelEvent},
+    ActiveTheme as _,
+};
 use gpui_kit::{
     div, prelude::FluentBuilder as _, App, Context, EventEmitter, ExternalPaths, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, WeakEntity, Window,
-};
-use gpui_kit::component::{
-    dock::{BasePanel, Panel, PanelEvent},
-    ActiveTheme as _,
 };
 
 use crate::app::AppView;

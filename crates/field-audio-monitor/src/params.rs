@@ -71,12 +71,7 @@ impl ParamStore {
         let guard = self.controls.read().expect("param store poisoned");
         guard
             .iter()
-            .map(|(address, slot)| {
-                (
-                    address.clone(),
-                    bits_f32(slot.load(Ordering::Acquire)),
-                )
-            })
+            .map(|(address, slot)| (address.clone(), bits_f32(slot.load(Ordering::Acquire))))
             .collect()
     }
 
@@ -85,19 +80,13 @@ impl ParamStore {
         let mut guard = self.controls.write().expect("param store poisoned");
         guard.clear();
         for (address, value) in values {
-            guard.insert(
-                address.clone(),
-                Arc::new(AtomicU32::new(f32_bits(*value))),
-            );
+            guard.insert(address.clone(), Arc::new(AtomicU32::new(f32_bits(*value))));
         }
     }
 
     /// Clear all live control slots.
     pub fn clear_controls(&self) {
-        self.controls
-            .write()
-            .expect("param store poisoned")
-            .clear();
+        self.controls.write().expect("param store poisoned").clear();
     }
 
     /// Write a meter value from the audio thread.
@@ -119,12 +108,7 @@ impl ParamStore {
         let guard = self.meters.read().expect("param store poisoned");
         guard
             .iter()
-            .map(|(address, slot)| {
-                (
-                    address.clone(),
-                    bits_f32(slot.load(Ordering::Acquire)),
-                )
-            })
+            .map(|(address, slot)| (address.clone(), bits_f32(slot.load(Ordering::Acquire))))
             .collect()
     }
 
