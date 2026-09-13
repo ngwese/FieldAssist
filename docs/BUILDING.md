@@ -27,7 +27,8 @@ to be installed locally.
 
 Stereo and M/S chains share
 `crates/field-audio-monitor/dsp/headphone_crossfeed.lib`; FOA chains share
-`crates/field-audio-monitor/dsp/bformat.lib`.
+`crates/field-audio-monitor/dsp/bformat.lib`. All chains share
+`crates/field-audio-monitor/dsp/meters.lib` (`Output/Gain` and RMS meters).
 
 ### Regenerating with `FAUST_REGENERATE`
 

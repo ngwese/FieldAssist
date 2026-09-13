@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: 2026 Greg Wuller
+// SPDX-License-Identifier: MIT
+//
+// Shared Output/Gain and RMS meter helpers for monitor chains.
+
+import("stdfaust.lib");
+
+outputGain = hslider("Output/Gain [unit:dB][style:knob]",
+                     0, -90, 12, 0.1) : ba.db2linear : si.smoo;
+
+// ~50 ms absolute-value envelope displayed as dB (RMS-style level meter).
+meterEnv = abs : si.smooth(ba.tau2pole(0.05)) : max(1e-12) : ba.linear2db;
+
+meterInput = _ <: attach(_, meterEnv : hbargraph("Meter/Input [unit:dB]", -90, 6));
+meterInputL = _ <: attach(_, meterEnv : hbargraph("Meter/Input L [unit:dB]", -90, 6));
+meterInputR = _ <: attach(_, meterEnv : hbargraph("Meter/Input R [unit:dB]", -90, 6));
+meterInputM = _ <: attach(_, meterEnv : hbargraph("Meter/Input M [unit:dB]", -90, 6));
+meterInputS = _ <: attach(_, meterEnv : hbargraph("Meter/Input S [unit:dB]", -90, 6));
+meterInputW = _ <: attach(_, meterEnv : hbargraph("Meter/Input W [unit:dB]", -90, 6));
+meterInputX = _ <: attach(_, meterEnv : hbargraph("Meter/Input X [unit:dB]", -90, 6));
+meterInputY = _ <: attach(_, meterEnv : hbargraph("Meter/Input Y [unit:dB]", -90, 6));
+meterInputZ = _ <: attach(_, meterEnv : hbargraph("Meter/Input Z [unit:dB]", -90, 6));
+
+meterOutputL = _ <: attach(_, meterEnv : hbargraph("Meter/Output L [unit:dB]", -90, 6));
+meterOutputR = _ <: attach(_, meterEnv : hbargraph("Meter/Output R [unit:dB]", -90, 6));

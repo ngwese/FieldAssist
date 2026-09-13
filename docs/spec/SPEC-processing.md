@@ -54,7 +54,8 @@ Source media  →  composition EDL (clip tree, markers, regions)
 Rules:
 
 - Source media files remain read-only. Processing never writes over them.
-- Monitor parameters (gain, width, FOA yaw, …) stay listen-path controls.
+- Monitor parameters (`Output/Gain`, crossfeed, FOA yaw, …) stay listen-path
+  controls.
   They are not processing-chain operations and are not burned into exports
   unless a future UI explicitly offers “render what I hear.”
 - File → Render of the active composition stays valid without a chain.
@@ -161,7 +162,7 @@ the many-item path that uses processing chains.
 - Third-party plugins (VST, AU, CLAP, …)
 - SQLite or a workspace directory with staged copies
 - Replacing or folding monitor DSP into the processing chain
-- Treating Faust monitor parameters as the chain’s gain/width/normalize
+- Treating Faust monitor parameters as the chain’s gain/normalize
   operations
 
 Monitor stays the listen path. Processing is the work-and-export path.

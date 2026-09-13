@@ -5,7 +5,10 @@ declare name "MonitorFoa";
 declare version "1.0";
 declare license "MIT";
 
+import("meters.lib");
 import("bformat.lib");
 
 // Ambix first-order: ACN + SN3D, channel order W Y Z X.
-process = foa_stereo;
+process = meterInputW, meterInputY, meterInputZ, meterInputX
+        : foa_stereo
+        : meterOutputL, meterOutputR;

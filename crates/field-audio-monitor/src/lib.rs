@@ -18,8 +18,8 @@
 //!
 //! let host = MonitorHost::new(48_000);
 //! host.set_config(Some(MonitorChain::Stereo), None, 48_000);
-//! host.set_param("/MonitorStereo/Monitor_Gain", -6.0);
-//! assert!(host.get_param("/MonitorStereo/Monitor_Gain").is_some());
+//! host.set_param("/MonitorStereo/Output_Gain", -6.0);
+//! assert!(host.get_param("/MonitorStereo/Output_Gain").is_some());
 //! ```
 //!
 //! This crate does **not** depend on `field-audio-playback`. Wire

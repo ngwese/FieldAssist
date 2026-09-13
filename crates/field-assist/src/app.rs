@@ -59,7 +59,7 @@ use crate::model::{
     RegionId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
 };
 use crate::monitor::MonitorChain;
-use crate::monitor_schema::{collect_param_addresses, param_ui_from_json};
+use crate::monitor_schema::{collect_param_addresses, param_ui_layout_from_json};
 use crate::playback::{
     list_output_devices, output_device_name, resolve_output_device, PlaybackSession, TransportState,
 };
@@ -797,8 +797,12 @@ impl AppView {
 
         let ui_json = self.monitor_ui_json();
         let schema_id = ui_json.map(|json| json.as_ptr() as u64).unwrap_or(0);
-        let params_ui = ui_json.and_then(param_ui_from_json).unwrap_or_default();
-        let live_params: HashMap<String, f32> = collect_param_addresses(&params_ui)
+        let layout = ui_json
+            .and_then(param_ui_layout_from_json)
+            .unwrap_or_default();
+        let mut addresses = collect_param_addresses(&layout.sections);
+        addresses.extend(collect_param_addresses(&layout.output_params));
+        let live_params: HashMap<String, f32> = addresses
             .into_iter()
             .filter_map(|address| self.monitor_param(&address).map(|value| (address, value)))
             .collect();
@@ -816,7 +820,10 @@ impl AppView {
             playback_channels,
             expected_inputs,
             schema_id,
-            params_ui,
+            params_ui: layout.sections,
+            input_meters: layout.input_meters,
+            output_meters: layout.output_meters,
+            output_params: layout.output_params,
             live_params,
             meters,
             output_device: self.output_device.clone(),

@@ -289,11 +289,12 @@ Chains are fixed Faust graphs compiled into the binary:
 | `foa` | B-Format (AmbiX) | 4 → 2 |
 | `foa_fuma` | B-Format (FuMa) | 4 → 2 |
 
-No chain means 1:1 mapping onto the output device. Parameters (gain, width,
+No chain means 1:1 mapping onto the output device. Parameters (`Output/Gain`,
 crossfeed, M/S trims, FOA yaw/orientation, and so on) live in the Monitor
-detail tab. A composition may **pin** its parameter snapshot; otherwise
-working parameters are session defaults. Switching chain crossfades on the
-order of 20 ms.
+detail tab, grouped by Faust label prefix. Input and output RMS meters appear
+as VU strips above the Output section. A composition may **pin** its parameter
+snapshot; otherwise working parameters are session defaults. Switching chain
+crossfades on the order of 20 ms.
 
 Default chain for a layout is assigned from Lua `define_layout` / `detect_layout`.
 Detecting a layout fills `monitor_chain` only when it is still unset. An

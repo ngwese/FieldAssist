@@ -9,7 +9,7 @@
 pub enum MonitorChain {
     /// Single-channel monitor.
     Mono,
-    /// Stereo with width / crossfeed.
+    /// Stereo with gain / crossfeed.
     Stereo,
     /// Mid/Side decode.
     Ms,

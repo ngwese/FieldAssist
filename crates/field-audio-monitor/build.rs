@@ -14,7 +14,7 @@ const CHAINS: &[(&str, &str)] = &[
     ("monitor_foa_fuma", "MonitorFoaFuma"),
 ];
 
-const DSP_LIBS: &[&str] = &["headphone_crossfeed.lib", "bformat.lib"];
+const DSP_LIBS: &[&str] = &["headphone_crossfeed.lib", "bformat.lib", "meters.lib"];
 
 fn main() {
     for (stem, _) in CHAINS {

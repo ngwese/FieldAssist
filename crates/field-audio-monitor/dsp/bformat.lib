@@ -16,19 +16,17 @@
 //   Endfire — boom toward source: X' = -Z, Z' = X, Y unchanged (90° about Y)
 
 import("stdfaust.lib");
+import("meters.lib");
 
 fuma_to_acn_sn3d(w, x, y, z) = w * sqrt(2.0), (0 - y), z, x;
 
 orient = nentry("Ambisonics/Orientation[style:menu{'Up':0;'Down':1;'Endfire':2}]",
                 0, 0, 2, 1);
 
-gainDb = hslider("Monitor/Gain [unit:dB][style:knob]",
-                 0, -90, 12, 0.1) : ba.db2linear : si.smoo;
-
 yawDeg = hslider("Ambisonics/Yaw [unit:deg]", 0, -180, 180, 0.1) : si.smoo;
 
 // Horizontal stereo speakers at ±30°. Z is unused in the decode.
-foa_decode(w, y, z, x) = l * gainDb, r * gainDb
+foa_decode(w, y, z, x) = l * outputGain, r * outputGain
 with {
     a = yawDeg * ma.PI / 180.0;
     c = cos(a);

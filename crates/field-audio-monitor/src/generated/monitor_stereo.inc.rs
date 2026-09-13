@@ -8,56 +8,70 @@ Compilation options: -lang rust -fpga-mem-th 4 -ct 1 -cn MonitorStereo -es 1 -mc
 
 #[repr(C)]
 pub struct MonitorStereo {
-	fCheckbox0: FaustFloat,
 	fSampleRate: i32,
 	fConst0: F32,
 	fConst1: F32,
-	fHslider0: FaustFloat,
 	fConst2: F32,
-	fRec0: [F32;2],
-	fHslider1: FaustFloat,
-	fRec1: [F32;2],
 	fConst3: F32,
-	fHslider2: FaustFloat,
-	fRec2: [F32;2],
-	fVec0: [F32;2],
+	fHslider0: FaustFloat,
 	fConst4: F32,
-	fHslider3: FaustFloat,
-	fRec4: [F32;2],
-	fVec1: [F32;2],
+	fRec1: [F32;2],
+	fCheckbox0: FaustFloat,
+	fRec2: [F32;2],
+	fHbargraph0: FaustFloat,
+	fVec0: [F32;2],
+	fHslider1: FaustFloat,
 	fRec3: [F32;2],
+	fConst5: F32,
+	fHslider2: FaustFloat,
 	fRec5: [F32;2],
+	fRec6: [F32;2],
+	fHbargraph1: FaustFloat,
+	fVec1: [F32;2],
+	fRec4: [F32;2],
+	fRec0: [F32;2],
+	fHbargraph2: FaustFloat,
+	fRec8: [F32;2],
+	fRec7: [F32;2],
+	fHbargraph3: FaustFloat,
 }
 
 
 pub const FAUST_INPUTS: usize = 2;
 pub const FAUST_OUTPUTS: usize = 2;
-pub const FAUST_ACTIVES: usize = 5;
-pub const FAUST_PASSIVES: usize = 0;
+pub const FAUST_ACTIVES: usize = 4;
+pub const FAUST_PASSIVES: usize = 4;
 
 impl MonitorStereo {
 		
 	pub fn new() -> MonitorStereo { 
 		MonitorStereo {
-			fCheckbox0: 0.0,
 			fSampleRate: 0,
 			fConst0: 0.0,
 			fConst1: 0.0,
-			fHslider0: 0.0,
 			fConst2: 0.0,
-			fRec0: [0.0;2],
-			fHslider1: 0.0,
-			fRec1: [0.0;2],
 			fConst3: 0.0,
-			fHslider2: 0.0,
-			fRec2: [0.0;2],
-			fVec0: [0.0;2],
+			fHslider0: 0.0,
 			fConst4: 0.0,
-			fHslider3: 0.0,
-			fRec4: [0.0;2],
-			fVec1: [0.0;2],
+			fRec1: [0.0;2],
+			fCheckbox0: 0.0,
+			fRec2: [0.0;2],
+			fHbargraph0: 0.0,
+			fVec0: [0.0;2],
+			fHslider1: 0.0,
 			fRec3: [0.0;2],
+			fConst5: 0.0,
+			fHslider2: 0.0,
 			fRec5: [0.0;2],
+			fRec6: [0.0;2],
+			fHbargraph1: 0.0,
+			fVec1: [0.0;2],
+			fRec4: [0.0;2],
+			fRec0: [0.0;2],
+			fHbargraph2: 0.0,
+			fRec8: [0.0;2],
+			fRec7: [0.0;2],
+			fHbargraph3: 0.0,
 		}
 	}
 	pub fn metadata(&self, m: &mut dyn Meta) { 
@@ -101,46 +115,55 @@ impl MonitorStereo {
 		// Obtaining locks on 0 static var(s)
 	}
 	pub fn instance_reset_params(&mut self) {
+		self.fHslider0 = (0.0) as FaustFloat;
 		self.fCheckbox0 = (0.0) as FaustFloat;
-		self.fHslider0 = (0.35) as FaustFloat;
-		self.fHslider1 = (0.0) as FaustFloat;
-		self.fHslider2 = (1e+02) as FaustFloat;
-		self.fHslider3 = (7e+02) as FaustFloat;
+		self.fHslider1 = (0.35) as FaustFloat;
+		self.fHslider2 = (7e+02) as FaustFloat;
 	}
 	pub fn instance_clear(&mut self) {
 		for l0 in 0..2 {
-			self.fRec0[l0 as usize] = 0.0;
+			self.fRec1[l0 as usize] = 0.0;
 		}
 		for l1 in 0..2 {
-			self.fRec1[l1 as usize] = 0.0;
+			self.fRec2[l1 as usize] = 0.0;
 		}
 		for l2 in 0..2 {
-			self.fRec2[l2 as usize] = 0.0;
+			self.fVec0[l2 as usize] = 0.0;
 		}
 		for l3 in 0..2 {
-			self.fVec0[l3 as usize] = 0.0;
+			self.fRec3[l3 as usize] = 0.0;
 		}
 		for l4 in 0..2 {
-			self.fRec4[l4 as usize] = 0.0;
+			self.fRec5[l4 as usize] = 0.0;
 		}
 		for l5 in 0..2 {
-			self.fVec1[l5 as usize] = 0.0;
+			self.fRec6[l5 as usize] = 0.0;
 		}
 		for l6 in 0..2 {
-			self.fRec3[l6 as usize] = 0.0;
+			self.fVec1[l6 as usize] = 0.0;
 		}
 		for l7 in 0..2 {
-			self.fRec5[l7 as usize] = 0.0;
+			self.fRec4[l7 as usize] = 0.0;
+		}
+		for l8 in 0..2 {
+			self.fRec0[l8 as usize] = 0.0;
+		}
+		for l9 in 0..2 {
+			self.fRec8[l9 as usize] = 0.0;
+		}
+		for l10 in 0..2 {
+			self.fRec7[l10 as usize] = 0.0;
 		}
 	}
 	pub fn instance_constants(&mut self, sample_rate: i32) {
 		// Obtaining locks on 0 static var(s)
 		self.fSampleRate = sample_rate;
 		self.fConst0 = F32::min(1.92e+05, F32::max(1.0, (self.fSampleRate) as F32));
-		self.fConst1 = 44.1 / self.fConst0;
+		self.fConst1 = F32::exp(-(2e+01 / self.fConst0));
 		self.fConst2 = 1.0 - self.fConst1;
-		self.fConst3 = 0.441 / self.fConst0;
-		self.fConst4 = 3.1415927 / self.fConst0;
+		self.fConst3 = 44.1 / self.fConst0;
+		self.fConst4 = 1.0 - self.fConst3;
+		self.fConst5 = 3.1415927 / self.fConst0;
 	}
 	pub fn instance_init(&mut self, sample_rate: i32) {
 		self.instance_constants(sample_rate);
@@ -163,21 +186,30 @@ impl MonitorStereo {
 		ui_interface.declare(Some(ParamIndex(2)), "scale", "log");
 		ui_interface.declare(Some(ParamIndex(2)), "unit", "Hz");
 		ui_interface.add_horizontal_slider("Headphones/Crossover", ParamIndex(2), 7e+02, 3e+02, 2e+03, 1.0);
-		ui_interface.declare(Some(ParamIndex(3)), "style", "knob");
 		ui_interface.declare(Some(ParamIndex(3)), "unit", "dB");
-		ui_interface.add_horizontal_slider("Monitor/Gain", ParamIndex(3), 0.0, -9e+01, 12.0, 0.1);
-		ui_interface.declare(Some(ParamIndex(4)), "unit", "%");
-		ui_interface.add_horizontal_slider("Stereo/Width", ParamIndex(4), 1e+02, 0.0, 2e+02, 1.0);
+		ui_interface.add_horizontal_bargraph("Meter/Input L", ParamIndex(3), -9e+01, 6.0);
+		ui_interface.declare(Some(ParamIndex(4)), "unit", "dB");
+		ui_interface.add_horizontal_bargraph("Meter/Input R", ParamIndex(4), -9e+01, 6.0);
+		ui_interface.declare(Some(ParamIndex(5)), "unit", "dB");
+		ui_interface.add_horizontal_bargraph("Meter/Output L", ParamIndex(5), -9e+01, 6.0);
+		ui_interface.declare(Some(ParamIndex(6)), "unit", "dB");
+		ui_interface.add_horizontal_bargraph("Meter/Output R", ParamIndex(6), -9e+01, 6.0);
+		ui_interface.declare(Some(ParamIndex(7)), "style", "knob");
+		ui_interface.declare(Some(ParamIndex(7)), "unit", "dB");
+		ui_interface.add_horizontal_slider("Output/Gain", ParamIndex(7), 0.0, -9e+01, 12.0, 0.1);
 		ui_interface.close_box();
 	}
 	
 	pub fn get_param(&self, param: ParamIndex) -> Option<FaustFloat> {
 		match param.0 {
 			1 => Some(self.fCheckbox0),
-			0 => Some(self.fHslider0),
-			3 => Some(self.fHslider1),
-			4 => Some(self.fHslider2),
-			2 => Some(self.fHslider3),
+			3 => Some(self.fHbargraph0),
+			4 => Some(self.fHbargraph1),
+			5 => Some(self.fHbargraph2),
+			6 => Some(self.fHbargraph3),
+			7 => Some(self.fHslider0),
+			0 => Some(self.fHslider1),
+			2 => Some(self.fHslider2),
 			_ => None,
 		}
 	}
@@ -185,10 +217,13 @@ impl MonitorStereo {
 	pub fn set_param(&mut self, param: ParamIndex, value: FaustFloat) {
 		match param.0 {
 			1 => { self.fCheckbox0 = value }
-			0 => { self.fHslider0 = value }
-			3 => { self.fHslider1 = value }
-			4 => { self.fHslider2 = value }
-			2 => { self.fHslider3 = value }
+			3 => { self.fHbargraph0 = value }
+			4 => { self.fHbargraph1 = value }
+			5 => { self.fHbargraph2 = value }
+			6 => { self.fHbargraph3 = value }
+			7 => { self.fHslider0 = value }
+			0 => { self.fHslider1 = value }
+			2 => { self.fHslider2 = value }
 			_ => {}
 		}
 	}
@@ -207,43 +242,52 @@ impl MonitorStereo {
 		let [outputs0, outputs1, .. ] = outputs.as_mut() else { panic!("wrong number of output buffers"); };
 		let outputs0 = outputs0.as_mut()[..count].iter_mut();
 		let outputs1 = outputs1.as_mut()[..count].iter_mut();
-		let mut iSlow0: i32 = (1.0 - (self.fCheckbox0) as F32) as i32;
-		let mut fSlow1: F32 = self.fConst1 * (self.fHslider0) as F32;
-		let mut fSlow2: F32 = self.fConst1 * F32::powf(1e+01, 0.05 * (self.fHslider1) as F32);
+		let mut fSlow0: F32 = self.fConst3 * F32::powf(1e+01, 0.05 * (self.fHslider0) as F32);
+		let mut iSlow1: i32 = (1.0 - (self.fCheckbox0) as F32) as i32;
+		let mut fSlow2: F32 = self.fConst3 * (self.fHslider1) as F32;
 		let mut fSlow3: F32 = self.fConst3 * (self.fHslider2) as F32;
-		let mut fSlow4: F32 = self.fConst1 * (self.fHslider3) as F32;
 		let zipped_iterators = inputs0.zip(inputs1).zip(outputs0).zip(outputs1);
 		for (((input0, input1), output0), output1) in zipped_iterators {
-			self.fRec0[0] = fSlow1 + self.fConst2 * self.fRec0[1];
-			let mut fTemp0: F32 = 1.0 - 0.5 * self.fRec0[0];
-			let mut fTemp1: F32 = (*input0) as F32;
-			let mut fTemp2: F32 = (*input1) as F32;
-			self.fRec1[0] = fSlow2 + self.fConst2 * self.fRec1[1];
-			let mut fTemp3: F32 = (fTemp1 + fTemp2) * self.fRec1[0];
-			self.fRec2[0] = fSlow3 + self.fConst2 * self.fRec2[1];
-			let mut fTemp4: F32 = (fTemp1 - fTemp2) * self.fRec2[0];
-			let mut fTemp5: F32 = 0.5 * (fTemp3 + fTemp4);
-			let mut fTemp6: F32 = (if iSlow0 != 0 {0.0} else {fTemp5});
-			self.fVec0[0] = fTemp6;
-			self.fRec4[0] = fSlow4 + self.fConst2 * self.fRec4[1];
-			let mut fTemp7: F32 = 1.0 / F32::tan(self.fConst4 * self.fRec4[0]);
-			let mut fTemp8: F32 = 1.0 - fTemp7;
-			let mut fTemp9: F32 = 0.5 * (fTemp3 - fTemp4);
-			let mut fTemp10: F32 = (if iSlow0 != 0 {0.0} else {fTemp9});
-			self.fVec1[0] = fTemp10;
-			let mut fTemp11: F32 = fTemp7 + 1.0;
-			self.fRec3[0] = -((self.fRec3[1] * fTemp8 - (fTemp10 + self.fVec1[1])) / fTemp11);
-			*output0 = ((if iSlow0 != 0 {fTemp5} else {fTemp0 * fTemp6 + self.fRec0[0] * self.fRec3[0]})) as FaustFloat;
-			self.fRec5[0] = -((fTemp8 * self.fRec5[1] - (fTemp6 + self.fVec0[1])) / fTemp11);
-			*output1 = ((if iSlow0 != 0 {fTemp9} else {fTemp0 * fTemp10 + self.fRec0[0] * self.fRec5[0]})) as FaustFloat;
-			self.fRec0[1] = self.fRec0[0];
+			self.fRec1[0] = fSlow0 + self.fConst4 * self.fRec1[1];
+			let mut fTemp0: F32 = (*input0) as F32;
+			self.fRec2[0] = self.fConst2 * F32::abs(fTemp0) + self.fConst1 * self.fRec2[1];
+			self.fHbargraph0 = (2e+01 * F32::log10(F32::max(1.1754944e-38, F32::max(1e-12, self.fRec2[0])))) as FaustFloat;
+			let mut fTemp1: F32 = fTemp0;
+			let mut fTemp2: F32 = (if iSlow1 != 0 {0.0} else {fTemp1});
+			self.fVec0[0] = fTemp2;
+			self.fRec3[0] = fSlow2 + self.fConst4 * self.fRec3[1];
+			let mut fTemp3: F32 = 1.0 - 0.5 * self.fRec3[0];
+			self.fRec5[0] = fSlow3 + self.fConst4 * self.fRec5[1];
+			let mut fTemp4: F32 = 1.0 / F32::tan(self.fConst5 * self.fRec5[0]);
+			let mut fTemp5: F32 = 1.0 - fTemp4;
+			let mut fTemp6: F32 = (*input1) as F32;
+			self.fRec6[0] = self.fConst2 * F32::abs(fTemp6) + self.fConst1 * self.fRec6[1];
+			self.fHbargraph1 = (2e+01 * F32::log10(F32::max(1.1754944e-38, F32::max(1e-12, self.fRec6[0])))) as FaustFloat;
+			let mut fTemp7: F32 = fTemp6;
+			let mut fTemp8: F32 = (if iSlow1 != 0 {0.0} else {fTemp7});
+			self.fVec1[0] = fTemp8;
+			let mut fTemp9: F32 = fTemp4 + 1.0;
+			self.fRec4[0] = -((self.fRec4[1] * fTemp5 - (fTemp8 + self.fVec1[1])) / fTemp9);
+			let mut fTemp10: F32 = self.fRec1[0] * (if iSlow1 != 0 {fTemp1} else {fTemp2 * fTemp3 + self.fRec3[0] * self.fRec4[0]});
+			self.fRec0[0] = self.fConst2 * F32::abs(fTemp10) + self.fConst1 * self.fRec0[1];
+			self.fHbargraph2 = (2e+01 * F32::log10(F32::max(1.1754944e-38, F32::max(1e-12, self.fRec0[0])))) as FaustFloat;
+			*output0 = (fTemp10) as FaustFloat;
+			self.fRec8[0] = -((fTemp5 * self.fRec8[1] - (fTemp2 + self.fVec0[1])) / fTemp9);
+			let mut fTemp11: F32 = self.fRec1[0] * (if iSlow1 != 0 {fTemp7} else {fTemp3 * fTemp8 + self.fRec3[0] * self.fRec8[0]});
+			self.fRec7[0] = self.fConst2 * F32::abs(fTemp11) + self.fConst1 * self.fRec7[1];
+			self.fHbargraph3 = (2e+01 * F32::log10(F32::max(1.1754944e-38, F32::max(1e-12, self.fRec7[0])))) as FaustFloat;
+			*output1 = (fTemp11) as FaustFloat;
 			self.fRec1[1] = self.fRec1[0];
 			self.fRec2[1] = self.fRec2[0];
 			self.fVec0[1] = self.fVec0[0];
-			self.fRec4[1] = self.fRec4[0];
-			self.fVec1[1] = self.fVec1[0];
 			self.fRec3[1] = self.fRec3[0];
 			self.fRec5[1] = self.fRec5[0];
+			self.fRec6[1] = self.fRec6[0];
+			self.fVec1[1] = self.fVec1[0];
+			self.fRec4[1] = self.fRec4[0];
+			self.fRec0[1] = self.fRec0[0];
+			self.fRec8[1] = self.fRec8[0];
+			self.fRec7[1] = self.fRec7[0];
 		}
 		
 	}

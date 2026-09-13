@@ -115,8 +115,14 @@ pub struct MonitorSnapshot {
     pub expected_inputs: Option<usize>,
     /// Identity key for the parameter schema (rebuild sliders when it changes).
     pub schema_id: u64,
-    /// Parameter UI tree.
+    /// Parameter UI tree (slash-prefix sections; excludes meters and Output/*).
     pub params_ui: Vec<ParamUiNode>,
+    /// `Meter/Input*` bargraphs for the Inputs VU strip.
+    pub input_meters: Vec<ParamUiNode>,
+    /// `Meter/Output*` bargraphs for the Outputs VU strip.
+    pub output_meters: Vec<ParamUiNode>,
+    /// `Output/*` controls rendered in the Output footer (e.g. Gain).
+    pub output_params: Vec<ParamUiNode>,
     /// Live parameter values by address.
     pub live_params: HashMap<String, f32>,
     /// Live meter values by address.

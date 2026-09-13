@@ -26,6 +26,7 @@ Use [`PrefetchRing`](src/prefetch.rs) (atomic SPSC) instead.
 | --- | --- |
 | `PlaybackDataProvider::read_interleaved` | prefetch |
 | Monitor `process_gathered` / SRC gather | prefetch |
+| Monitor silence flush (meter decay after stop) | prefetch |
 | Ring `push_interleaved` | prefetch |
 | Ring `pop_interleaved` + silence underruns | **callback** |
 | Transport / position atomics | either (atomics only) |

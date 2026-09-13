@@ -598,12 +598,12 @@ mod tests {
     fn chain_params_survive_switching_chains() {
         let host = MonitorHost::new(44100);
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
-        host.set_param("/MonitorStereo/Monitor_Gain", -6.0);
+        host.set_param("/MonitorStereo/Output_Gain", -6.0);
         host.set_config(Some(MonitorChain::Foa), None, 44100);
-        assert!(host.get_param("/MonitorStereo/Monitor_Gain").is_none());
+        assert!(host.get_param("/MonitorStereo/Output_Gain").is_none());
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
         let gain = host
-            .get_param("/MonitorStereo/Monitor_Gain")
+            .get_param("/MonitorStereo/Output_Gain")
             .expect("stereo gain restored");
         assert!((gain + 6.0).abs() < 1e-5, "{gain}");
     }
@@ -612,33 +612,33 @@ mod tests {
     fn chain_params_survive_sample_rate_change() {
         let host = MonitorHost::new(44100);
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
-        host.set_param("/MonitorStereo/Stereo_Width", 40.0);
+        host.set_param("/MonitorStereo/Output_Gain", -6.0);
         host.set_config(Some(MonitorChain::Stereo), None, 48000);
-        let width = host
-            .get_param("/MonitorStereo/Stereo_Width")
-            .expect("width restored");
-        assert!((width - 40.0).abs() < 1e-5, "{width}");
+        let gain = host
+            .get_param("/MonitorStereo/Output_Gain")
+            .expect("gain restored");
+        assert!((gain + 6.0).abs() < 1e-5, "{gain}");
     }
 
     #[test]
     fn live_edits_do_not_change_session_until_commit() {
         let host = MonitorHost::new(44100);
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
-        host.set_param("/MonitorStereo/Monitor_Gain", 0.0);
+        host.set_param("/MonitorStereo/Output_Gain", 0.0);
         let initial = host.flush_working();
         host.merge_into_session(&initial);
 
-        host.set_param("/MonitorStereo/Monitor_Gain", -6.0);
+        host.set_param("/MonitorStereo/Output_Gain", -6.0);
         let session_gain = host
             .session_params()
             .get(&MonitorChain::Stereo)
-            .and_then(|params| params.get("/MonitorStereo/Monitor_Gain"))
+            .and_then(|params| params.get("/MonitorStereo/Output_Gain"))
             .copied()
             .unwrap_or(0.0);
         assert!(session_gain.abs() < 1e-5, "{session_gain}");
 
         let live = host
-            .get_param("/MonitorStereo/Monitor_Gain")
+            .get_param("/MonitorStereo/Output_Gain")
             .expect("live gain");
         assert!((live + 6.0).abs() < 1e-5, "{live}");
     }
@@ -647,7 +647,7 @@ mod tests {
     fn leaving_unpinned_promotes_working_to_session() {
         let host = MonitorHost::new(44100);
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
-        host.set_param("/MonitorStereo/Monitor_Gain", -3.0);
+        host.set_param("/MonitorStereo/Output_Gain", -3.0);
         let snapshot = host.flush_working();
         host.merge_into_session(&snapshot);
         host.replace_working(Some(MonitorChain::Stereo), None, 44100, HashMap::new());
@@ -658,7 +658,7 @@ mod tests {
             host.session_params(),
         );
         let restored = host
-            .get_param("/MonitorStereo/Monitor_Gain")
+            .get_param("/MonitorStereo/Output_Gain")
             .expect("session gain");
         assert!((restored + 3.0).abs() < 1e-5, "{restored}");
     }
@@ -667,11 +667,11 @@ mod tests {
     fn leaving_pinned_does_not_promote_to_session() {
         let host = MonitorHost::new(44100);
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
-        host.set_param("/MonitorStereo/Monitor_Gain", 0.0);
+        host.set_param("/MonitorStereo/Output_Gain", 0.0);
         let session = host.flush_working();
         host.merge_into_session(&session);
 
-        host.set_param("/MonitorStereo/Monitor_Gain", -12.0);
+        host.set_param("/MonitorStereo/Output_Gain", -12.0);
         let pinned = host.flush_working();
 
         host.replace_working(
@@ -681,13 +681,13 @@ mod tests {
             host.session_params(),
         );
         let session_live = host
-            .get_param("/MonitorStereo/Monitor_Gain")
+            .get_param("/MonitorStereo/Output_Gain")
             .expect("session after leaving pinned");
         assert!(session_live.abs() < 1e-5, "{session_live}");
 
         host.replace_working(Some(MonitorChain::Stereo), None, 44100, pinned);
         let pinned_live = host
-            .get_param("/MonitorStereo/Monitor_Gain")
+            .get_param("/MonitorStereo/Output_Gain")
             .expect("pinned restore");
         assert!((pinned_live + 12.0).abs() < 1e-5, "{pinned_live}");
     }
@@ -696,8 +696,8 @@ mod tests {
     fn set_param_is_visible_without_process_lock_contention() {
         let host = MonitorHost::new(44100);
         host.set_config(Some(MonitorChain::Stereo), None, 44100);
-        host.set_param("/MonitorStereo/Monitor_Gain", -9.0);
-        assert!((host.get_param("/MonitorStereo/Monitor_Gain").unwrap() + 9.0).abs() < 1e-5);
-        assert!((host.params().get("/MonitorStereo/Monitor_Gain").unwrap() + 9.0).abs() < 1e-5);
+        host.set_param("/MonitorStereo/Output_Gain", -9.0);
+        assert!((host.get_param("/MonitorStereo/Output_Gain").unwrap() + 9.0).abs() < 1e-5);
+        assert!((host.params().get("/MonitorStereo/Output_Gain").unwrap() + 9.0).abs() < 1e-5);
     }
 }

@@ -31,6 +31,16 @@ use super::prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRA
 use super::provider::PlaybackDataProvider;
 use super::transport::TransportState;
 
+/// Faust `Meter/Input*` bargraphs floor at −90 dB; treat near-floor as quiet.
+const INPUT_METER_QUIET_DB: f32 = -89.0;
+
+fn input_meters_need_flush(monitor: &dyn MonitorProcess) -> bool {
+    monitor
+        .meters()
+        .iter()
+        .any(|(address, value)| address.contains("Meter_Input") && *value > INPUT_METER_QUIET_DB)
+}
+
 const IN_OUT_NONE: usize = usize::MAX;
 
 /// Source frames fetched per provider call on the prefetch thread.
@@ -496,6 +506,42 @@ impl PlaybackShared {
         pushed > 0
     }
 
+    /// Run silence through the monitor so input-meter envelopes can fall to the
+    /// floor after transport leaves [`TransportState::Playing`].
+    ///
+    /// Returns `true` when another flush chunk is still needed. Does not push
+    /// into the prefetch ring (the output callback ignores audio while stopped).
+    fn flush_monitor_silence_locked(&self, scratch: &mut PrefetchScratch) -> bool {
+        let Some(handle) = self.monitor.load_full() else {
+            return false;
+        };
+        if !input_meters_need_flush(handle.0.as_ref()) {
+            return false;
+        }
+
+        let src_ch = self.provider.channel_count().max(1);
+        let out_ch = self.output_channels.load(Ordering::SeqCst).max(1);
+        let frames = PREFETCH_CHUNK_FRAMES;
+        let gather_len = frames * src_ch;
+        let device_len = frames * out_ch;
+        if scratch.gathered.len() < gather_len {
+            scratch.gathered.resize(gather_len, 0.0);
+        }
+        if scratch.device_chunk.len() < device_len {
+            scratch.device_chunk.resize(device_len, 0.0);
+        }
+        scratch.gathered[..gather_len].fill(0.0);
+        scratch.device_chunk[..device_len].fill(0.0);
+        handle.0.process_gathered(
+            &scratch.gathered[..gather_len],
+            src_ch,
+            frames,
+            &mut scratch.device_chunk[..device_len],
+            out_ch,
+        );
+        input_meters_need_flush(handle.0.as_ref())
+    }
+
     /// Drain the prefetch ring into a device buffer (audio callback entry).
     ///
     /// # Realtime contract
@@ -581,13 +627,21 @@ fn prefetch_loop(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) {
     scratch.local_epoch = shared.epoch.load(Ordering::SeqCst);
     scratch.fill_pos_f = shared.position.load(Ordering::SeqCst) as f64;
     while !stop.load(Ordering::Relaxed) {
-        if shared.transport() != TransportState::Playing {
-            thread::sleep(Duration::from_millis(2));
-            continue;
-        }
-        let produced = shared.prefetch_chunk_locked(&mut scratch);
-        if !produced {
-            thread::sleep(Duration::from_millis(1));
+        match shared.transport() {
+            TransportState::Playing => {
+                let produced = shared.prefetch_chunk_locked(&mut scratch);
+                if !produced {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            TransportState::Stopped | TransportState::Paused => {
+                // Keep feeding silence so Faust input-meter envelopes decay to
+                // the floor after audible playback ends.
+                if shared.flush_monitor_silence_locked(&mut scratch) {
+                    continue;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
         }
     }
 }

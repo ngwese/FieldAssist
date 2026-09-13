@@ -17,10 +17,10 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, Icon, IconNamed, Sizable as _,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, relative, App, AppContext as _, ClickEvent, Context,
-    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative, App,
+    AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
 use crate::param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
@@ -125,6 +125,15 @@ impl MonitorPanel {
             &mut self.slider_subs,
             cx,
         );
+        bind_sliders(
+            &snap.output_params,
+            &snap.live_params,
+            &callbacks,
+            &mut self.sliders,
+            &mut self.slider_defaults,
+            &mut self.slider_subs,
+            cx,
+        );
     }
 }
 
@@ -170,6 +179,23 @@ impl Render for MonitorPanel {
             .as_ref()
             .map(|s| s.output_devices.clone())
             .unwrap_or_default();
+        let input_meters = snap
+            .as_ref()
+            .map(|s| s.input_meters.clone())
+            .unwrap_or_default();
+        let output_meters = snap
+            .as_ref()
+            .map(|s| s.output_meters.clone())
+            .unwrap_or_default();
+        let output_params = snap
+            .as_ref()
+            .map(|s| s.output_params.clone())
+            .unwrap_or_default();
+        let meters = snap.as_ref().map(|s| s.meters.clone()).unwrap_or_default();
+        let live_params = snap
+            .as_ref()
+            .map(|s| s.live_params.clone())
+            .unwrap_or_default();
         let callbacks = self.callbacks.clone();
 
         v_flex()
@@ -177,12 +203,33 @@ impl Render for MonitorPanel {
             .track_focus(&self.focus_handle)
             .size_full()
             .child(self.render_chain_scroll(snap, muted, theme.accent, theme.secondary, cx))
+            .child(meter_strip_section(
+                "Inputs",
+                &input_meters,
+                &meters,
+                muted,
+                theme.cyan_light,
+                theme.border,
+            ))
+            .child(meter_strip_section(
+                "Outputs",
+                &output_meters,
+                &meters,
+                muted,
+                theme.cyan_light,
+                theme.border,
+            ))
             .child(output_section(
+                &output_params,
+                &self.sliders,
+                &self.slider_defaults,
+                &live_params,
                 output_selected,
                 output_devices,
                 callbacks,
                 muted,
                 theme.border,
+                cx,
             ))
     }
 }
@@ -250,6 +297,7 @@ impl MonitorPanel {
                     };
                     let callbacks = callbacks.clone();
                     Checkbox::new(("monitor-ch", i as u64))
+                        .xsmall()
                         .label(label.clone())
                         .checked(checked)
                         .on_click(move |enabled: &bool, window, cx| {
@@ -280,11 +328,16 @@ fn section_label(text: &'static str, muted: gpui_kit::Hsla) -> impl IntoElement 
 }
 
 fn output_section(
+    output_params: &[ParamUiNode],
+    sliders: &HashMap<String, Entity<SliderState>>,
+    defaults: &HashMap<String, f32>,
+    params: &HashMap<String, f32>,
     selected: Option<String>,
     devices: Vec<String>,
     callbacks: Option<MonitorCallbacks>,
     muted: gpui_kit::Hsla,
     border: gpui_kit::Hsla,
+    cx: &App,
 ) -> impl IntoElement {
     v_flex()
         .flex_none()
@@ -295,7 +348,127 @@ fn output_section(
         .py_2()
         .gap_1()
         .child(section_label("Output", muted))
+        .children(output_params.iter().map(|node| {
+            render_node(
+                node,
+                sliders,
+                defaults,
+                params,
+                &HashMap::new(),
+                callbacks.clone(),
+                muted,
+                muted,
+                muted,
+                false,
+                cx,
+            )
+        }))
         .child(output_dropdown(selected, devices, callbacks, muted))
+}
+
+/// Fixed width for VU channel tags (`L`, `R`, `W`, …).
+const VU_LABEL_WIDTH: f32 = 16.;
+
+fn meter_strip_section(
+    title: &'static str,
+    meters_ui: &[ParamUiNode],
+    meters: &HashMap<String, f32>,
+    muted: Hsla,
+    fill_start: Hsla,
+    border: Hsla,
+) -> impl IntoElement {
+    v_flex()
+        .flex_none()
+        .w_full()
+        .when(!meters_ui.is_empty(), |this| {
+            this.border_t_1()
+                .border_color(border)
+                .px_2()
+                .py_2()
+                .gap_1()
+                .child(section_label(title, muted))
+                .child(
+                    v_flex()
+                        .gap_0()
+                        .children(meters_ui.iter().filter_map(|node| match node {
+                            ParamUiNode::Bargraph {
+                                label,
+                                address,
+                                min,
+                                max,
+                                ..
+                            } => Some(vu_meter_row(
+                                meter_channel_label(label),
+                                *min,
+                                *max,
+                                meters.get(address).copied(),
+                                muted,
+                                fill_start,
+                            )),
+                            _ => None,
+                        })),
+                )
+        })
+}
+
+/// Channel tag from Faust meter labels (`Meter/Input L` → `L`, bare `Meter/Input` → `1`).
+fn meter_channel_label(label: &str) -> String {
+    let rest = label
+        .strip_prefix("Meter/Input")
+        .or_else(|| label.strip_prefix("Meter/Output"))
+        .unwrap_or(label)
+        .trim();
+    if rest.is_empty() {
+        "1".into()
+    } else {
+        rest.to_string()
+    }
+}
+
+/// Channel label + horizontal VU (gradient clipped to level; no track chrome).
+fn vu_meter_row(
+    channel: String,
+    min: f32,
+    max: f32,
+    value: Option<f32>,
+    muted: Hsla,
+    fill_start: Hsla,
+) -> impl IntoElement {
+    let value = value.unwrap_or(min);
+    let span = (max - min).abs().max(1e-6);
+    let t = ((value - min) / span).clamp(0.0, 1.0);
+    // Expand the gradient child so stops map across the full track, then clip.
+    let expand = if t > 1e-4 { 1.0 / t } else { 0.0 };
+    let white = hsla(0.0, 0.0, 1.0, 1.0);
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap_1()
+        .child(
+            div()
+                .w(px(VU_LABEL_WIDTH))
+                .flex_none()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_xs()
+                .text_color(muted)
+                .child(channel),
+        )
+        .child(
+            div().flex_1().min_w_0().h(px(8.)).overflow_hidden().child(
+                div()
+                    .h_full()
+                    .w(relative(t))
+                    .overflow_hidden()
+                    .when(t > 1e-4, |this| {
+                        this.child(div().h_full().w(relative(expand)).bg(linear_gradient(
+                            90.,
+                            linear_color_stop(fill_start, 0.),
+                            linear_color_stop(white, 1.),
+                        )))
+                    }),
+            ),
+        )
 }
 
 fn output_dropdown(
@@ -546,7 +719,7 @@ fn render_schema(
             muted,
             accent,
             secondary,
-            true,
+            false,
             cx,
         )
     }))
@@ -582,7 +755,7 @@ fn render_node(
                     cx,
                 )
             }));
-            if skip_outer_label {
+            if skip_outer_label || label.is_empty() {
                 body.into_any_element()
             } else {
                 v_flex()
@@ -657,14 +830,23 @@ fn render_node(
             let checked = params.get(address).copied().unwrap_or(*init) > 0.5;
             let address = address.clone();
             let id = address_id(&address);
-            Checkbox::new(("monitor-param", id))
-                .label(label.clone())
-                .checked(checked)
-                .on_click(move |enabled: &bool, _, cx| {
-                    if let Some(cb) = &callbacks {
-                        (cb.set_param)(&address, if *enabled { 1.0 } else { 0.0 }, cx);
-                    }
-                })
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().text_xs().child(label.clone()))
+                .child(
+                    Checkbox::new(("monitor-param", id))
+                        .xsmall()
+                        .accessibility_label(label.clone())
+                        .checked(checked)
+                        .on_click(move |enabled: &bool, _, cx| {
+                            if let Some(cb) = &callbacks {
+                                (cb.set_param)(&address, if *enabled { 1.0 } else { 0.0 }, cx);
+                            }
+                        }),
+                )
                 .into_any_element()
         }
         ParamUiNode::Bargraph {

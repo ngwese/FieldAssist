@@ -353,25 +353,52 @@ mod tests {
     }
 
     #[test]
-    fn stereo_width_full_is_dry_and_zero_is_mid() {
+    fn stereo_unity_gain_is_dry() {
         let mut dsp = create_dsp(MonitorChain::Stereo, 48000);
         set_named(dsp.as_mut(), "Crossfeed", 0.0);
         set_named(dsp.as_mut(), "Gain", 0.0);
-        set_named(dsp.as_mut(), "Width", 100.0);
         settle(dsp.as_mut());
-        let left_in = vec![0.5f32, -0.25];
-        let right_in = vec![-0.1f32, 0.8];
-        let (left, right) = process_block(dsp.as_mut(), &[&left_in, &right_in]);
-        assert!((left[0] - 0.5).abs() < 0.03, "{}", left[0]);
-        assert!((right[0] + 0.1).abs() < 0.03, "{}", right[0]);
 
-        set_named(dsp.as_mut(), "Width", 0.0);
-        settle(dsp.as_mut());
         let left_in = vec![1.0f32];
-        let right_in = vec![-1.0f32];
+        let right_in = vec![0.0f32];
         let (left, right) = process_block(dsp.as_mut(), &[&left_in, &right_in]);
-        assert!(left[0].abs() < 0.05, "{}", left[0]);
-        assert!(right[0].abs() < 0.05, "{}", right[0]);
+        assert!((left[0] - 1.0).abs() < 0.03, "{}", left[0]);
+        assert!(right[0].abs() < 0.03, "{}", right[0]);
+
+        let left_in = vec![0.4f32];
+        let right_in = vec![0.4f32];
+        let (left, right) = process_block(dsp.as_mut(), &[&left_in, &right_in]);
+        assert!((left[0] - 0.4).abs() < 0.03, "{}", left[0]);
+        assert!(
+            (right[0] - left[0]).abs() < 0.02,
+            "{} vs {}",
+            left[0],
+            right[0]
+        );
+    }
+
+    #[test]
+    fn stereo_min_gain_is_near_silence() {
+        let mut dsp = create_dsp(MonitorChain::Stereo, 48000);
+        set_named(dsp.as_mut(), "Crossfeed", 0.0);
+        set_named(dsp.as_mut(), "Gain", -90.0);
+        // Large dB jumps need extra smooth-time; one 4096-frame settle is not enough.
+        for _ in 0..8 {
+            settle(dsp.as_mut());
+        }
+        let left_in = vec![1.0f32];
+        let right_in = vec![0.0f32];
+        let (left, right) = process_block(dsp.as_mut(), &[&left_in, &right_in]);
+        assert!(
+            left[0].abs() < 0.001,
+            "min gain must mute hard-panned L, got {}",
+            left[0]
+        );
+        assert!(
+            right[0].abs() < 0.001,
+            "min gain must mute hard-panned R, got {}",
+            right[0]
+        );
     }
 
     #[test]
@@ -379,7 +406,6 @@ mod tests {
         let mut dsp = create_dsp(MonitorChain::Stereo, 48000);
         set_named(dsp.as_mut(), "Crossfeed", 0.0);
         set_named(dsp.as_mut(), "Gain", 0.0);
-        set_named(dsp.as_mut(), "Width", 100.0);
         settle(dsp.as_mut());
         let left_in = vec![0.8f32, 0.8, 0.8, 0.8];
         let right_in = vec![0.0f32; 4];
@@ -533,9 +559,18 @@ mod tests {
             );
             assert!(addresses.iter().any(|a| a.contains("Amount")));
             assert!(addresses.iter().any(|a| a.contains("Crossover")));
+            assert!(
+                addresses.iter().any(|a| a.contains("Output_Gain")),
+                "{chain:?} {addresses:?}"
+            );
         }
         let mono = addresses_of(MonitorChain::Mono);
         assert!(!mono.iter().any(|a| a.contains("Headphones")));
+        assert!(mono.iter().any(|a| a.contains("Meter_Input")));
+        assert!(mono.iter().any(|a| a.contains("Meter_Output_L")));
+        assert!(mono.iter().any(|a| a.contains("Meter_Output_R")));
+        assert!(mono.iter().any(|a| a.contains("Output_Gain")));
+        assert!(!mono.iter().any(|a| a.contains("Meters_Input_peak")));
         for chain in [MonitorChain::Foa, MonitorChain::FoaFuma] {
             let addresses = addresses_of(chain);
             assert!(!addresses.iter().any(|a| a.contains("Headphones")));
@@ -544,6 +579,18 @@ mod tests {
                 "{chain:?} {addresses:?}"
             );
             assert!(addresses.iter().any(|a| a.contains("Yaw")));
+            assert!(
+                addresses.iter().any(|a| a.contains("Output_Gain")),
+                "{chain:?} {addresses:?}"
+            );
+            assert!(
+                addresses.iter().any(|a| a.contains("Meter_Input_W")),
+                "{chain:?} {addresses:?}"
+            );
+            assert!(
+                addresses.iter().any(|a| a.contains("Meter_Output_L")),
+                "{chain:?} {addresses:?}"
+            );
         }
     }
 }
