@@ -164,7 +164,7 @@ impl PlaybackSession {
             .filter(|(start, end)| end > start)
     }
 
-    pub fn sync_from_document(&mut self, doc: &BufferDocument) {
+    pub fn sync_from_document(&mut self, doc: &mut BufferDocument) {
         self.refresh_anchors_from_doc(doc);
 
         if doc.is_region_drag_active() {
@@ -191,12 +191,20 @@ impl PlaybackSession {
             .as_ref()
             .map(|pos| pos.sample)
             .unwrap_or(0);
+        let engine_pos = self.engine.shared.position();
+        let mut seek_while_playing = false;
 
         if let Some((start, end)) = new_region {
             self.playhead.set_in_out(start, end);
             if self.transport.is_playing() {
-                if region_changed {
-                    self.playhead.set_position(start);
+                // On region create/change during play, always seek to the in-point
+                // (finish_region_drag leaves the caret at the out-point).
+                if let Some(target) =
+                    seek_target_after_region_change(true, region_changed, Some((start, end)))
+                {
+                    self.playhead.set_position(target);
+                    seek_while_playing = true;
+                    doc.set_position_from_playback(target, ChannelScope::all());
                 }
             } else {
                 self.playhead.set_position(caret);
@@ -204,14 +212,19 @@ impl PlaybackSession {
         } else {
             self.playhead.clear_in_out();
             if self.transport.is_playing() {
-                if doc.current_position.is_some() {
+                if doc.current_position.is_some() && caret != engine_pos {
                     self.playhead.set_position(caret);
+                    seek_while_playing = true;
                 }
             } else {
                 self.playhead.set_position(caret);
             }
         }
         self.apply_to_engine();
+        if seek_while_playing {
+            // Position is already on the engine; bump so prefetch retargets.
+            self.engine.shared.bump_epoch();
+        }
         self.sync_monitor(&doc.composition.read().unwrap());
     }
 
@@ -225,15 +238,15 @@ impl PlaybackSession {
     pub fn start(&mut self) {
         self.playhead.set_position(self.playhead.playback_start());
         self.transport.set_state(TransportState::Playing);
-        self.engine.shared.bump_epoch();
         self.apply_to_engine();
+        self.engine.shared.bump_epoch();
     }
 
     pub fn play_from(&mut self, sample: usize) {
         self.playhead.set_position(sample);
         self.transport.set_state(TransportState::Playing);
-        self.engine.shared.bump_epoch();
         self.apply_to_engine();
+        self.engine.shared.bump_epoch();
     }
 
     pub fn play(&mut self) {
@@ -249,8 +262,8 @@ impl PlaybackSession {
             self.playhead.set_position(self.playhead.playback_start());
         }
         self.transport.set_state(TransportState::Playing);
-        self.engine.shared.bump_epoch();
         self.apply_to_engine();
+        self.engine.shared.bump_epoch();
     }
 
     pub fn pause(&mut self) {
@@ -293,9 +306,11 @@ impl PlaybackSession {
     fn seek_playhead(&mut self, sample: usize) {
         self.playhead.set_position(sample);
         if self.transport.is_playing() {
-            self.engine.shared.bump_epoch();
+            self.engine.shared.seek_to(sample);
+            self.apply_to_engine();
+        } else {
+            self.apply_to_engine();
         }
-        self.apply_to_engine();
     }
 
     pub fn toggle_loop(&mut self) {
@@ -316,8 +331,8 @@ impl PlaybackSession {
         self.playhead.clear_in_out();
         self.active_region = None;
         self.anchors.clear();
-        self.engine.shared.bump_epoch();
         self.apply_to_engine();
+        self.engine.shared.bump_epoch();
     }
 
     pub fn poll(&mut self, doc: &mut BufferDocument) -> bool {
@@ -343,6 +358,19 @@ fn should_restart_from_start(state: TransportState, at_end: bool, has_region: bo
         TransportState::Stopped => has_region || at_end,
         TransportState::Paused => at_end,
         TransportState::Playing => false,
+    }
+}
+
+/// While playing, a newly applied selection region seeks to its start (in-point).
+fn seek_target_after_region_change(
+    playing: bool,
+    region_changed: bool,
+    new_region: Option<(usize, usize)>,
+) -> Option<usize> {
+    if playing && region_changed {
+        new_region.map(|(start, _end)| start)
+    } else {
+        None
     }
 }
 
@@ -393,5 +421,42 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[test]
+    fn region_change_while_playing_seeks_to_region_start() {
+        assert_eq!(
+            seek_target_after_region_change(true, true, Some((100, 500))),
+            Some(100),
+            "finishing a region drag during play must seek to the in-point"
+        );
+        // Even when the engine is already at the in-point (drag started there),
+        // still seek so the caret leaves the out-point and prefetch resyncs.
+        assert_eq!(
+            seek_target_after_region_change(true, true, Some((200, 200))),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn region_unchanged_while_playing_does_not_seek() {
+        assert_eq!(
+            seek_target_after_region_change(true, false, Some((100, 500))),
+            None
+        );
+    }
+
+    #[test]
+    fn region_change_while_stopped_does_not_seek() {
+        assert_eq!(
+            seek_target_after_region_change(false, true, Some((100, 500))),
+            None,
+            "when stopped, finish_region_drag keeps the caret at the out-point"
+        );
+    }
+
+    #[test]
+    fn clearing_region_while_playing_does_not_seek_via_region_helper() {
+        assert_eq!(seek_target_after_region_change(true, true, None), None);
     }
 }

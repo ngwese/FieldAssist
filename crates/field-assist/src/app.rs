@@ -482,7 +482,9 @@ impl AppView {
         let document = cx.new(|_| BufferDocument::with_shared(composition.clone(), buffer.clone()));
         cx.observe(&document, move |this, entity, cx| {
             if this.session.active() == Some(id) {
-                this.playback.sync_from_document(entity.read(cx));
+                entity.update(cx, |doc, _| {
+                    this.playback.sync_from_document(doc);
+                });
                 this.spawn_peak_build(id, cx);
             }
         })
@@ -637,7 +639,9 @@ impl AppView {
         self.drain_pending_peaks(window, cx);
         if let Some(views) = self.active_views() {
             self.playback.bind_composition(views.composition.clone());
-            self.playback.sync_from_document(views.document.read(cx));
+            views.document.update(cx, |doc, _| {
+                self.playback.sync_from_document(doc);
+            });
             self.playback
                 .load_monitor_for_document(views.document.read(cx));
             Self::bind_list_panels(&self.edits, &self.markers, &self.regions, &views, cx);
@@ -1120,7 +1124,9 @@ impl AppView {
             doc.set_position_from_playback(0, ChannelScope::all());
             cx.notify();
         });
-        self.playback.sync_from_document(views.document.read(cx));
+        views.document.update(cx, |doc, _| {
+            self.playback.sync_from_document(doc);
+        });
         self.playback.play_from(0);
         views.workspace.update(cx, |workspace, cx| {
             workspace.sync_transport(TransportState::Playing, self.playback.looping(), cx);
@@ -1252,7 +1258,9 @@ impl AppView {
             let snapshot = views.buffer.read().unwrap();
             self.playback.reload(&snapshot);
             drop(snapshot);
-            self.playback.sync_from_document(views.document.read(cx));
+            views.document.update(cx, |doc, _| {
+                self.playback.sync_from_document(doc);
+            });
             self.playback
                 .load_monitor_for_document(views.document.read(cx));
             self.update_window_title(window, cx);
@@ -1652,7 +1660,9 @@ impl AppView {
                 .set_monitor_chain(chain.map(str::to_string));
             cx.notify();
         });
-        self.playback.sync_from_document(views.document.read(cx));
+        views.document.update(cx, |doc, _| {
+            self.playback.sync_from_document(doc);
+        });
         self.monitor.update(cx, |_, cx| cx.notify());
         self.update_window_title(window, cx);
         cx.notify();
@@ -1691,7 +1701,9 @@ impl AppView {
             drop(composition);
             cx.notify();
         });
-        self.playback.sync_from_document(views.document.read(cx));
+        views.document.update(cx, |doc, _| {
+            self.playback.sync_from_document(doc);
+        });
         self.monitor.update(cx, |_, cx| cx.notify());
         self.update_window_title(window, cx);
         cx.notify();
@@ -2209,8 +2221,10 @@ impl AppView {
     ) {
         if self.session.active() == Some(id) {
             if let Some(views) = self.views.get(&id).cloned() {
-                self.playback.sync_from_document(views.document.read(cx));
-                views.document.update(cx, |_, cx| cx.notify());
+                views.document.update(cx, |doc, cx| {
+                    self.playback.sync_from_document(doc);
+                    cx.notify();
+                });
                 views.waveform.update(cx, |_, cx| cx.notify());
                 self.monitor.update(cx, |_, cx| cx.notify());
             }
@@ -2361,9 +2375,9 @@ impl AppView {
         };
         views.document.update(cx, |doc, cx| {
             f(doc);
+            self.playback.sync_from_document(doc);
             cx.notify();
         });
-        self.playback.sync_from_document(views.document.read(cx));
         self.refresh_explorer(cx);
         self.spawn_peak_build(id, cx);
     }

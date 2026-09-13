@@ -313,6 +313,14 @@ impl PlaybackShared {
         self.timeline_ended.store(false, Ordering::SeqCst);
     }
 
+    /// Seek the audible playhead and resync prefetch (position then epoch).
+    ///
+    /// Order matters: prefetch reads `position` when it observes a new epoch.
+    pub fn seek_to(&self, sample: usize) {
+        self.position.store(sample, Ordering::SeqCst);
+        self.bump_epoch();
+    }
+
     /// Set transport state.
     pub fn set_transport(&self, state: TransportState) {
         if state == TransportState::Playing {
@@ -326,7 +334,7 @@ impl PlaybackShared {
         TransportState::from_u8(self.transport.load(Ordering::SeqCst))
     }
 
-    /// Set playhead sample.
+    /// Set playhead sample (no prefetch resync; prefer [`Self::seek_to`] while playing).
     pub fn set_position(&self, sample: usize) {
         self.position.store(sample, Ordering::SeqCst);
     }
@@ -1029,6 +1037,24 @@ mod tests {
     }
 
     #[test]
+    fn looping_region_wraps_after_seek_to_in_point() {
+        // Mirrors: create a selection region during play → seek to start → loop
+        // at the out-point back to the in-point.
+        let shared = shared(200);
+        shared.set_looping(true);
+        shared.set_in_out(Some(40), Some(80));
+        shared.seek_to(70);
+        let mut out = vec![0.0; 64];
+        play(&shared, &mut out);
+        assert_eq!(shared.transport(), TransportState::Playing);
+        assert_eq!(
+            shared.position(),
+            40,
+            "looping region must wrap playhead to in-point after crossing out-point"
+        );
+    }
+
+    #[test]
     fn looping_whole_buffer_wraps_published_position_to_zero() {
         let shared = shared(100);
         shared.set_looping(true);
@@ -1123,5 +1149,48 @@ mod tests {
         assert!(stats.min_headroom_ns > 0);
         assert!(stats.last_headroom_ns <= stats.last_budget_ns);
         assert_eq!(stats.slow_callbacks, 0);
+    }
+
+    #[test]
+    fn seek_to_retargets_prefetch_while_playing() {
+        let samples: Vec<f32> = (0..400).map(|i| i as f32).collect();
+        let shared = PlaybackShared::new(
+            Arc::new(PlanarAudio {
+                sample_rate: 44100,
+                channels: vec![samples],
+            }),
+            44100,
+        );
+        shared.set_transport(TransportState::Playing);
+        shared.bump_epoch();
+        for _ in 0..32 {
+            if !shared.prefetch_chunk() {
+                break;
+            }
+        }
+        let mut out = vec![0.0; 64];
+        shared.fill_output(&mut out);
+        assert!(shared.position() > 0);
+
+        shared.seek_to(200);
+        assert_eq!(shared.position(), 200);
+        for _ in 0..32 {
+            if !shared.prefetch_chunk() {
+                break;
+            }
+        }
+        let mut out = vec![0.0; 64];
+        shared.fill_output(&mut out);
+        assert!(
+            shared.position() >= 200,
+            "playhead must advance from the seek target, got {}",
+            shared.position()
+        );
+        assert!(
+            (out[0] - 200.0).abs() < 1e-3 || shared.position() > 200,
+            "first audible sample should come from near the seek point (got {})",
+            out[0]
+        );
+        assert_eq!(shared.transport(), TransportState::Playing);
     }
 }
