@@ -5,18 +5,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui_kit::{
-    actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, Bounds, ClickEvent,
-    Context, DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, FileDragPaths, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
-    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenuItem},
     v_flex, ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _,
+};
+use gpui_kit::{
+    actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, Bounds, ClickEvent,
+    Context, DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, FileDragPaths, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
+    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
 };
 
 use crate::model::DocumentId;
@@ -194,7 +194,13 @@ impl ExplorerPanel {
 
     pub fn set_documents(
         &mut self,
-        docs: &[(DocumentId, SharedString, bool, Option<String>, Option<PathBuf>)],
+        docs: &[(
+            DocumentId,
+            SharedString,
+            bool,
+            Option<String>,
+            Option<PathBuf>,
+        )],
         active: Option<DocumentId>,
         cx: &mut Context<Self>,
     ) {
@@ -335,16 +341,15 @@ fn section_key_for_group(group: Option<&str>) -> SectionKey {
 
 /// Overlay line that does not consume layout height (avoids list shift while
 /// dragging, which would otherwise flicker the drop slot around midpoints).
-fn insertion_marker_overlay(color: gpui_kit::Hsla, at_bottom: bool) -> impl IntoElement {
+fn insertion_marker_overlay(color: gpui_kit::Hsla) -> impl IntoElement {
     div()
         .absolute()
         .left(px(6.))
         .right(px(6.))
+        .top(px(-1.))
         .h(px(2.))
         .rounded_full()
         .bg(color)
-        .when(at_bottom, |this| this.bottom(px(-1.)))
-        .when(!at_bottom, |this| this.top(px(-1.)))
 }
 
 fn ghost_hover_bg(cx: &App) -> gpui_kit::Hsla {
@@ -496,7 +501,12 @@ impl Render for ExplorerPanel {
                                 let target = drop_key.clone();
                                 move |drag: &CompositionDrag, window, cx| {
                                     drop_on_section(
-                                        &explorer, &target, drag, section_len, window, cx,
+                                        &explorer,
+                                        &target,
+                                        drag,
+                                        section_len,
+                                        window,
+                                        cx,
                                     );
                                 }
                             })
@@ -519,11 +529,9 @@ impl Render for ExplorerPanel {
                     .children(open.then(|| {
                         let explorer = explorer.clone();
                         let drop_key = drop_key.clone();
-                        let items: Vec<ExplorerItem> =
-                            section.items.into_iter().cloned().collect();
+                        let items: Vec<ExplorerItem> = section.items.into_iter().cloned().collect();
                         v_flex().w_full().children({
-                            let last = items.len().saturating_sub(1);
-                            let mut rows = Vec::with_capacity(items.len());
+                            let mut rows = Vec::with_capacity(items.len() + 1);
                             for (index, item) in items.into_iter().enumerate() {
                                 let id = item.id;
                                 let name = item.name.clone();
@@ -535,8 +543,6 @@ impl Render for ExplorerPanel {
                                 let explorer = explorer.clone();
                                 let drop_target = drop_key.clone();
                                 let marker_top = show_slot == Some(index);
-                                let marker_bottom =
-                                    index == last && show_slot == Some(section_len);
                                 rows.push(
                                     h_flex()
                                         .id(SharedString::from(format!("composition-{id}")))
@@ -555,10 +561,7 @@ impl Render for ExplorerPanel {
                                             this.hover(|this| this.bg(highlight_bg))
                                         })
                                         .when(marker_top, |this| {
-                                            this.child(insertion_marker_overlay(cyan, false))
-                                        })
-                                        .when(marker_bottom, |this| {
-                                            this.child(insertion_marker_overlay(cyan, true))
+                                            this.child(insertion_marker_overlay(cyan))
                                         })
                                         .on_drag(
                                             CompositionDrag {
@@ -593,8 +596,7 @@ impl Render for ExplorerPanel {
                                                     event.event.position.y,
                                                     event.bounds,
                                                 );
-                                                let slot =
-                                                    if before { index } else { index + 1 };
+                                                let slot = if before { index } else { index + 1 };
                                                 this.set_drop_slot(Some((key.clone(), slot)), cx);
                                             }
                                         }))
@@ -716,16 +718,62 @@ impl Render for ExplorerPanel {
                                                 })
                                                 .when(!show_close && is_modified, |this| {
                                                     this.child(
-                                                        div()
-                                                            .size(px(6.))
-                                                            .rounded_full()
-                                                            .bg(muted),
+                                                        div().size(px(6.)).rounded_full().bg(muted),
                                                     )
                                                 })
                                         })
                                         .into_any_element(),
                                 );
                             }
+                            // Dedicated end gap: the last-row bottom marker used to sit
+                            // outside the row hitbox (bottom: -1), so releasing on it
+                            // missed every drop target and the reorder looked like a
+                            // no-op / off-by-one at the end of the list.
+                            let end_marker = show_slot == Some(section_len);
+                            let drop_target = drop_key.clone();
+                            let explorer = explorer.clone();
+                            rows.push(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "{}-end-gap",
+                                        drop_key.element_id()
+                                    )))
+                                    .relative()
+                                    .w_full()
+                                    .flex_none()
+                                    .h(px(12.))
+                                    .can_drop(|data, _, _| accepts_composition_drag(data))
+                                    .on_drag_move(cx.listener({
+                                        let key = drop_target.clone();
+                                        let len = section_len;
+                                        move |this,
+                                              event: &DragMoveEvent<CompositionDrag>,
+                                              _,
+                                              cx| {
+                                            if !event.bounds.contains(&event.event.position) {
+                                                return;
+                                            }
+                                            this.set_drop_slot(Some((key.clone(), len)), cx);
+                                        }
+                                    }))
+                                    .on_drop({
+                                        let target = drop_target;
+                                        move |drag: &CompositionDrag, window, cx| {
+                                            drop_on_section(
+                                                &explorer,
+                                                &target,
+                                                drag,
+                                                section_len,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    })
+                                    .when(end_marker, |this| {
+                                        this.child(insertion_marker_overlay(cyan))
+                                    })
+                                    .into_any_element(),
+                            );
                             rows
                         })
                     }))
@@ -837,5 +885,8 @@ mod tests {
         assert_eq!(index_in_group_after_remove(2, Some(2)), 2);
         assert_eq!(index_in_group_after_remove(3, Some(1)), 2);
         assert_eq!(index_in_group_after_remove(1, None), 1);
+        // End gap (drop_before == len) for a 3-item section.
+        assert_eq!(index_in_group_after_remove(3, Some(0)), 2);
+        assert_eq!(index_in_group_after_remove(3, Some(2)), 2);
     }
 }

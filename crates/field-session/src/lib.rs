@@ -1181,6 +1181,47 @@ mod tests {
     }
 
     #[test]
+    fn place_document_reorders_within_group_to_end() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        let c = session.push(Some(path("c.wav")));
+        session.mark_clean();
+
+        // Same pipeline as explorer: visual gap after last row (drop_before =
+        // len) adjusted for removing the dragged row.
+        let drop_before = 3;
+        let from = 0;
+        let index = if drop_before > from {
+            drop_before - 1
+        } else {
+            drop_before
+        };
+        assert_eq!(index, 2);
+        assert!(session.place_document(a, None, index));
+        assert_eq!(ids(&session), vec![b, c, a]);
+        assert!(session.is_dirty());
+
+        session.mark_clean();
+        assert!(session.place_document(b, None, 2));
+        assert_eq!(ids(&session), vec![c, a, b]);
+    }
+
+    #[test]
+    fn place_document_moves_second_to_last_to_end() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.wav")));
+        let b = session.push(Some(path("b.wav")));
+        let c = session.push(Some(path("c.wav")));
+        // Gap before last (index 1 after remove adjust for b at 1) is a no-op;
+        // index 2 must append.
+        assert!(session.place_document(b, None, 1));
+        assert_eq!(ids(&session), vec![a, b, c]);
+        assert!(session.place_document(b, None, 2));
+        assert_eq!(ids(&session), vec![a, c, b]);
+    }
+
+    #[test]
     fn from_json_rejects_unknown_kind() {
         let err = Session::from_json(
             r#"{"kind":"other","format_version":1,"id":"00000000-0000-0000-0000-000000000001","documents":[]}"#,
