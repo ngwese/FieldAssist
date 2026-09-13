@@ -208,7 +208,8 @@ impl Render for MonitorPanel {
                 &input_meters,
                 &meters,
                 muted,
-                theme.cyan_light,
+                // Match waveform channel 3 (`channel_color` → `chart_3`).
+                theme.chart_3,
                 theme.border,
             ))
             .child(meter_strip_section(
@@ -216,7 +217,7 @@ impl Render for MonitorPanel {
                 &output_meters,
                 &meters,
                 muted,
-                theme.cyan_light,
+                theme.chart_3,
                 theme.border,
             ))
             .child(output_section(
