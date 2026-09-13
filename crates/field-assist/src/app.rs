@@ -61,7 +61,8 @@ use crate::model::{
 use crate::monitor::MonitorChain;
 use crate::monitor_schema::{collect_param_addresses, param_ui_layout_from_json};
 use crate::playback::{
-    list_output_devices, output_device_name, resolve_output_device, PlaybackSession, TransportState,
+    list_output_devices, output_device_name, resolve_output_device, should_refresh_monitor_ui,
+    PlaybackSession, TransportState,
 };
 use crate::progress::ProgressState;
 use crate::script::{
@@ -176,6 +177,8 @@ pub struct AppView {
     add_marker_at_hover: bool,
     preview_enabled: bool,
     output_device: Option<String>,
+    /// Cached CPAL output names for the monitor dropdown (refreshed on demand).
+    output_devices_cache: Vec<String>,
     drop_layout: Option<Arc<DropLayout>>,
     pending_replace: Option<(DocumentId, PathBuf)>,
     workflow_bar: Option<(String, Vec<ToolbarItem>)>,
@@ -226,7 +229,15 @@ impl AppView {
                         this.header_meta.update(cx, |meta, cx| {
                             meta.set_transport(transport, cx);
                         });
-                        this.monitor.update(cx, |_, cx| cx.notify());
+                        // Avoid spinning MonitorPanel (~30 Hz) when idle/hidden;
+                        // meters are static once envelopes settle after stop.
+                        if should_refresh_monitor_ui(
+                            this.monitor_tab_visible(cx),
+                            transport == TransportState::Playing,
+                            this.playback.input_meters_active(),
+                        ) {
+                            this.monitor.update(cx, |_, cx| cx.notify());
+                        }
                     }
                 })
             });
@@ -450,6 +461,7 @@ impl AppView {
             add_marker_at_hover: true,
             preview_enabled: false,
             output_device,
+            output_devices_cache: Vec::new(),
             drop_layout: None,
             pending_replace: None,
             workflow_bar: None,
@@ -457,6 +469,7 @@ impl AppView {
             restoring_session: false,
         };
         this.load_init_lua(window, cx);
+        this.refresh_output_devices_cache();
         if let Some(path) = session_path {
             if let Err(err) = this.replace_session_from_path(&path, window, cx) {
                 this.show_load_error(&err, window, cx);
@@ -811,9 +824,7 @@ impl AppView {
             .filter_map(|address| self.monitor_param(&address).map(|value| (address, value)))
             .collect();
         let meters = self.monitor_meters();
-        let output_devices = list_output_devices()
-            .map(|devices| devices.into_iter().map(|info| info.name).collect())
-            .unwrap_or_default();
+        let output_devices = self.output_devices_cache.clone();
 
         Some(MonitorSnapshot {
             chain_label,
@@ -1611,6 +1622,7 @@ impl AppView {
             .set_output_device(&device)
             .map_err(|err| err.to_string())?;
         self.output_device = spec.map(|_| output_device_name(&device));
+        self.refresh_output_devices_cache();
         self.monitor.update(cx, |_, cx| cx.notify());
         cx.notify();
         Ok(())
@@ -1749,8 +1761,16 @@ impl AppView {
                 }
             }
         });
+        self.refresh_output_devices_cache();
+        self.monitor.update(cx, |_, cx| cx.notify());
         self.sync_view_menus(cx);
         cx.notify();
+    }
+
+    fn refresh_output_devices_cache(&mut self) {
+        self.output_devices_cache = list_output_devices()
+            .map(|devices| devices.into_iter().map(|info| info.name).collect())
+            .unwrap_or_default();
     }
 
     pub(crate) fn session(&self) -> &Session {

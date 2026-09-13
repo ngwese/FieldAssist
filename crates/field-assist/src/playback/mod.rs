@@ -15,4 +15,5 @@ pub use field_audio_playback::{
     list_output_devices, output_device_name, print_output_devices, resolve_output_device,
     MonitorProcess, PlaybackDataProvider, PlaybackEngine, Playhead, Transport, TransportState,
 };
+pub(crate) use session::should_refresh_monitor_ui;
 pub use session::PlaybackSession;

@@ -16,6 +16,10 @@ use super::anchors::{collect_anchors, next_anchor, previous_anchor_near};
 use super::provider::SharedCompositionProvider;
 use super::{PlaybackDataProvider, PlaybackEngine, Playhead, Transport, TransportState};
 
+/// Matches `INPUT_METER_QUIET_DB` in the playback engine: keep refreshing the
+/// monitor UI while envelopes are still decaying after stop/pause.
+const MONITOR_UI_METER_QUIET_DB: f32 = -89.0;
+
 pub struct PlaybackSession {
     provider: Arc<SharedCompositionProvider>,
     playhead: Playhead,
@@ -125,6 +129,11 @@ impl PlaybackSession {
 
     pub fn monitor_meters(&self) -> std::collections::HashMap<String, f32> {
         self.monitor.meters()
+    }
+
+    /// True while any input meter is still above the quiet floor (e.g. decay).
+    pub fn input_meters_active(&self) -> bool {
+        self.monitor.input_meters_above(MONITOR_UI_METER_QUIET_DB)
     }
 
     pub fn transport_state(&self) -> TransportState {
@@ -374,6 +383,18 @@ fn seek_target_after_region_change(
     }
 }
 
+/// Gate for the ~30 Hz monitor UI timer ([issue #14](https://github.com/ngwese/FieldAssist/issues/14)).
+///
+/// Skip repaints when the Monitor tab is hidden, or when transport is idle and
+/// meters have already settled — VU bars are static then and do not need paint.
+pub(crate) fn should_refresh_monitor_ui(
+    tab_visible: bool,
+    playing: bool,
+    meters_active: bool,
+) -> bool {
+    tab_visible && (playing || meters_active)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,5 +479,25 @@ mod tests {
     #[test]
     fn clearing_region_while_playing_does_not_seek_via_region_helper() {
         assert_eq!(seek_target_after_region_change(true, true, None), None);
+    }
+
+    #[test]
+    fn monitor_ui_refreshes_only_when_visible_and_live() {
+        assert!(
+            should_refresh_monitor_ui(true, true, false),
+            "playing with monitor tab visible must refresh meters"
+        );
+        assert!(
+            should_refresh_monitor_ui(true, false, true),
+            "post-stop meter decay must keep refreshing while visible"
+        );
+        assert!(
+            !should_refresh_monitor_ui(true, false, false),
+            "idle quiet meters must not spin the monitor UI"
+        );
+        assert!(
+            !should_refresh_monitor_ui(false, true, true),
+            "hidden monitor tab must not refresh even while playing"
+        );
     }
 }
