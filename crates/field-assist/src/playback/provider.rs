@@ -10,9 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use field_audio_playback::PlaybackDataProvider;
 
-use crate::audio::DecodedAudio;
 use crate::model::composition::Composition;
-use crate::model::Buffer;
 
 /// Playback provider whose composition target can be swapped without replacing
 /// the `Arc<dyn PlaybackDataProvider>` the engine already holds.
@@ -60,74 +58,59 @@ impl PlaybackDataProvider for SharedCompositionProvider {
     }
 }
 
-/// Newtype so assist can implement [`PlaybackDataProvider`] for decoded PCM.
-pub struct DecodedAudioProvider(pub DecodedAudio);
-
-impl PlaybackDataProvider for DecodedAudioProvider {
-    fn sample_rate(&self) -> u32 {
-        self.0.sample_rate
-    }
-
-    fn channel_count(&self) -> usize {
-        self.0.channel_count()
-    }
-
-    fn frames(&self) -> usize {
-        self.0.frames()
-    }
-
-    fn read_interleaved(&self, start: usize, count: usize, dest: &mut [f32]) {
-        read_planar_interleaved(&self.0.channels, start, count, dest);
-    }
-}
-
-/// Newtype so assist can implement [`PlaybackDataProvider`] for [`Buffer`].
-pub struct BufferProvider<'a>(pub &'a Buffer);
-
-impl PlaybackDataProvider for BufferProvider<'_> {
-    fn sample_rate(&self) -> u32 {
-        self.0.audio.sample_rate
-    }
-
-    fn channel_count(&self) -> usize {
-        self.0.audio.channel_count()
-    }
-
-    fn frames(&self) -> usize {
-        self.0.frames()
-    }
-
-    fn read_interleaved(&self, start: usize, count: usize, dest: &mut [f32]) {
-        read_planar_interleaved(&self.0.audio.channels, start, count, dest);
-    }
-}
-
-fn read_planar_interleaved(channels: &[Vec<f32>], start: usize, count: usize, dest: &mut [f32]) {
-    let ch_count = channels.len();
-    if ch_count == 0 {
-        dest.fill(0.0);
-        return;
-    }
-    let total = count * ch_count;
-    debug_assert!(dest.len() >= total);
-    dest[..total].fill(0.0);
-
-    for (ch, samples) in channels.iter().enumerate() {
-        let end = (start + count).min(samples.len());
-        if start >= end {
-            continue;
-        }
-        let slice = &samples[start..end];
-        for (frame, &sample) in slice.iter().enumerate() {
-            dest[frame * ch_count + ch] = sample;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::DecodedAudio;
     use crate::model::MediaRef;
+
+    /// Newtype so assist can implement [`PlaybackDataProvider`] for decoded PCM.
+    struct DecodedAudioProvider(DecodedAudio);
+
+    impl PlaybackDataProvider for DecodedAudioProvider {
+        fn sample_rate(&self) -> u32 {
+            self.0.sample_rate
+        }
+
+        fn channel_count(&self) -> usize {
+            self.0.channel_count()
+        }
+
+        fn frames(&self) -> usize {
+            self.0.frames()
+        }
+
+        fn read_interleaved(&self, start: usize, count: usize, dest: &mut [f32]) {
+            read_planar_interleaved(&self.0.channels, start, count, dest);
+        }
+    }
+
+    fn read_planar_interleaved(
+        channels: &[Vec<f32>],
+        start: usize,
+        count: usize,
+        dest: &mut [f32],
+    ) {
+        let ch_count = channels.len();
+        if ch_count == 0 {
+            dest.fill(0.0);
+            return;
+        }
+        let total = count * ch_count;
+        debug_assert!(dest.len() >= total);
+        dest[..total].fill(0.0);
+
+        for (ch, samples) in channels.iter().enumerate() {
+            let end = (start + count).min(samples.len());
+            if start >= end {
+                continue;
+            }
+            let slice = &samples[start..end];
+            for (frame, &sample) in slice.iter().enumerate() {
+                dest[frame * ch_count + ch] = sample;
+            }
+        }
+    }
 
     #[test]
     fn interleaves_stereo_frames() {

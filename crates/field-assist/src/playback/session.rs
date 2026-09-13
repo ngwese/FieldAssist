@@ -119,10 +119,6 @@ impl PlaybackSession {
         self.monitor.get_param(address)
     }
 
-    pub fn monitor_meter(&self, address: &str) -> Option<f32> {
-        self.monitor.meter(address)
-    }
-
     pub fn monitor_ui_json(&self) -> Option<&'static str> {
         self.monitor.ui_json()
     }
@@ -137,14 +133,6 @@ impl PlaybackSession {
 
     pub fn looping(&self) -> bool {
         self.playhead.looping()
-    }
-
-    pub fn position(&self) -> usize {
-        if self.transport.is_playing() {
-            self.engine.shared.position()
-        } else {
-            self.playhead.position()
-        }
     }
 
     pub fn refresh_anchors(&mut self, doc: &BufferDocument) {

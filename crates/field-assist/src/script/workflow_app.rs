@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use super::workflow::{WorkflowMeta, DEFAULT_WORKFLOW_COLOR};
+use super::workflow::WorkflowMeta;
 
 pub const SCOPE_DRAG_DROP: &str = "drag-drop";
 pub const SCOPE_MENU: &str = "menu";
@@ -83,6 +83,7 @@ pub fn workflows_for_menu(workflows: &[WorkflowMeta]) -> Vec<&WorkflowMeta> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::workflow::DEFAULT_WORKFLOW_COLOR;
     use super::*;
 
     fn meta(name: &str, display: &str, row: i64, priority: f64, scopes: &[&str]) -> WorkflowMeta {

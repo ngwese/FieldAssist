@@ -5,16 +5,14 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use field_audio_io::{
-    encoder as encoder_by_id, encoders as registry, planar_frames, select_channels,
-};
+use field_audio_io::{encoder as encoder_by_id, encoders as registry, select_channels};
 use field_audio_process::resample_planar;
 
 use crate::model::composition::Composition;
 use crate::progress::ProgressHandle;
 
 pub use field_audio_io::{
-    format_rate, snap_format, EncodeSpec, EncoderCaps, FormatEncoder, PcmFormat, RATE_PRESETS,
+    format_rate, snap_format, EncodeSpec, FormatEncoder, PcmFormat, RATE_PRESETS,
 };
 
 /// Look up built-in encoders.
@@ -105,8 +103,11 @@ fn write_encoded(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
     use crate::model::composition::{Composition, MediaId, MediaRef};
+    use field_audio_io::{planar_frames, EncoderCaps};
 
     fn sine(frames: usize, channels: usize, rate: u32) -> MediaRef {
         let samples = (0..channels)

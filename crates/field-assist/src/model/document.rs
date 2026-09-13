@@ -23,6 +23,7 @@ const DRAG_THRESHOLD_SAMPLES: usize = 0;
 
 pub struct BufferDocument {
     pub composition: Arc<RwLock<Composition>>,
+    #[allow(dead_code)] // twin Arc also kept on DocumentViews for UI
     pub buffer: Arc<RwLock<Buffer>>,
     pub selection: RegionCollection,
     pub current_position: Option<SamplePosition>,
@@ -40,6 +41,7 @@ pub struct BufferDocument {
 }
 
 impl BufferDocument {
+    #[cfg(test)]
     pub fn new(composition: Composition) -> Self {
         Self::with_shared(
             Arc::new(RwLock::new(composition)),
@@ -373,10 +375,6 @@ impl BufferDocument {
         self.set_current_position_sample(sample, scope);
     }
 
-    pub fn add_region(&mut self, start: usize, end: usize, channels: ChannelScope) -> RegionId {
-        self.add_labeled_region(start, end, channels, None, SELECTION_COLLECTION)
-    }
-
     pub fn add_labeled_region(
         &mut self,
         start: usize,
@@ -413,10 +411,6 @@ impl BufferDocument {
             }
         }
         false
-    }
-
-    pub fn named_collections(&self) -> Vec<RegionCollection> {
-        self.composition.read().unwrap().collections().to_vec()
     }
 
     pub fn collection_names(&self) -> Vec<String> {
@@ -754,10 +748,6 @@ impl BufferDocument {
         let from = self.composition.read().unwrap().edit_cursor();
         self.composition.write().unwrap().trim_ranges(&spans);
         self.after_tree_changed(from);
-    }
-
-    pub fn current_edit(&self) -> EditId {
-        self.composition.read().unwrap().current_edit()
     }
 
     pub(crate) fn find_region(&self, id: RegionId) -> Option<(String, crate::model::Region)> {

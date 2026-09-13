@@ -150,6 +150,7 @@ const KNOWN_COMMANDS: &[&str] = &[
 ];
 
 /// Command IDs that keymap, menus, and Lua `app:command` share.
+#[cfg(test)]
 pub fn known_commands() -> &'static [&'static str] {
     KNOWN_COMMANDS
 }
@@ -328,6 +329,7 @@ fn bindings_for(command_id: &str, keystrokes: &str) -> Vec<KeyBinding> {
         .collect()
 }
 
+#[cfg(test)]
 fn binding_for(command_id: &str, keystrokes: &str) -> Option<KeyBinding> {
     bindings_for(command_id, keystrokes).into_iter().next()
 }

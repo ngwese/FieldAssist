@@ -15,6 +15,4 @@ pub use field_audio_playback::{
     list_output_devices, output_device_name, print_output_devices, resolve_output_device,
     MonitorProcess, PlaybackDataProvider, PlaybackEngine, Playhead, Transport, TransportState,
 };
-#[allow(unused_imports)] // compatibility re-exports for app call sites
-pub use provider::{BufferProvider, DecodedAudioProvider, SharedCompositionProvider};
 pub use session::PlaybackSession;

@@ -56,6 +56,7 @@ pub enum ToolbarItem {
 }
 
 impl ToolbarItem {
+    #[cfg(test)]
     pub fn id(&self) -> Option<&str> {
         match self {
             Self::Button { id, .. }
@@ -76,6 +77,7 @@ impl ToolbarItem {
         }
     }
 
+    #[cfg(test)]
     pub fn command(&self) -> Option<&str> {
         match self {
             Self::Button { command, .. } => Some(command.as_str()),
@@ -83,6 +85,7 @@ impl ToolbarItem {
         }
     }
 
+    #[cfg(test)]
     pub fn label(&self) -> Option<&str> {
         match self {
             Self::Button { label, .. } | Self::Toggle { label, .. } => Some(label.as_str()),

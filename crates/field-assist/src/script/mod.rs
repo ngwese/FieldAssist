@@ -18,9 +18,11 @@ mod workflow_app;
 mod workflow_toolbar;
 
 pub use access::{enter, try_invoke_command};
+#[cfg(test)]
+pub use host::TestWorld;
 pub use host::{
     host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ResumeWorkflow, ScriptHost,
-    TestWorld, EMBEDDED_INIT,
+    EMBEDDED_INIT,
 };
 pub use workflow_app::DropLayout;
 pub use workflow_toolbar::{PathBrowse, ToolbarAlign, ToolbarItem};
@@ -908,7 +910,8 @@ mod tests {
     #[test]
     fn composition_close_removes_from_session() {
         let (mut host, world) = test_host();
-        let out = host.eval("app.composition:close(); return app.composition == nil, #app.compositions");
+        let out =
+            host.eval("app.composition:close(); return app.composition == nil, #app.compositions");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\t0"));
         assert!(world.borrow().session.is_empty());

@@ -115,6 +115,7 @@ pub struct TestWorld {
 }
 
 impl TestWorld {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             docs: HashMap::new(),
@@ -167,6 +168,7 @@ impl ScriptHost {
         Self::with_test(None)
     }
 
+    #[cfg(test)]
     pub fn for_test(world: Rc<RefCell<TestWorld>>) -> mlua::Result<Self> {
         Self::with_test(Some(world))
     }
@@ -351,6 +353,7 @@ impl ScriptHost {
             .map_err(|err| err.to_string())
     }
 
+    #[cfg(test)]
     pub fn finish_workflow(&self) -> Result<(), String> {
         self.handle.finish_workflow()
     }
@@ -438,6 +441,7 @@ impl ScriptHost {
         self.handle.fire_detect_layout(id);
     }
 
+    #[cfg(test)]
     pub fn layout_names(&self) -> Vec<String> {
         self.handle.layout_names()
     }
@@ -446,6 +450,7 @@ impl ScriptHost {
         self.handle.layout_choices()
     }
 
+    #[cfg(test)]
     pub fn layout(&self, name: &str) -> Option<super::layout::ChannelLayoutDef> {
         self.handle.layout(name)
     }
@@ -462,10 +467,12 @@ impl ScriptHost {
         std::mem::take(&mut self.handle.inner.borrow_mut().logs)
     }
 
+    #[cfg(test)]
     pub fn take_alerts(&self) -> Vec<(String, String)> {
         std::mem::take(&mut self.handle.inner.borrow_mut().alerts)
     }
 
+    #[cfg(test)]
     pub fn workflow_metas(&self) -> Vec<WorkflowMeta> {
         self.handle.workflow_metas()
     }
@@ -710,6 +717,7 @@ impl HostHandle {
             .cloned()
     }
 
+    #[cfg(test)]
     pub fn layout_names(&self) -> Vec<String> {
         self.inner
             .borrow()

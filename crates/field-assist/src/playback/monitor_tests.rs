@@ -68,6 +68,17 @@ mod tests {
         shared
     }
 
+    fn play(shared: &PlaybackShared, out: &mut [f32]) {
+        shared.set_transport(TransportState::Playing);
+        // Prefetch until the ring is full or playback ends (public API only).
+        for _ in 0..64 {
+            if !shared.prefetch_chunk() {
+                break;
+            }
+        }
+        shared.fill_output(out);
+    }
+
     #[test]
     fn monitor_subset_routes_last_two_channels() {
         let mut channels = vec![vec![0.0f32; 40]; 6];
@@ -76,9 +87,8 @@ mod tests {
             channels[5][i] = -0.6;
         }
         let shared = with_monitor(channels, MonitorChain::Stereo, Some(vec![4, 5]));
-        shared.set_transport(TransportState::Playing);
         let mut out = vec![0.0; 20];
-        shared.fill_output(&mut out);
+        play(&shared, &mut out);
         assert!((out[0] - 0.4).abs() < 0.05, "{}", out[0]);
         assert!((out[1] + 0.6).abs() < 0.05, "{}", out[1]);
         assert!((out[2] - 0.4).abs() < 0.05);
@@ -94,16 +104,14 @@ mod tests {
             channels[5][i] = -0.6;
         }
         let shared = with_monitor(channels.clone(), MonitorChain::Foa, Some(vec![0, 1, 2, 3]));
-        shared.set_transport(TransportState::Playing);
         let mut out = vec![0.0; 20];
-        shared.fill_output(&mut out);
+        play(&shared, &mut out);
         assert!((out[0] - 0.7071).abs() < 0.08, "{}", out[0]);
         assert!((out[1] - out[0]).abs() < 0.03);
 
         let shared = with_monitor(channels, MonitorChain::Stereo, Some(vec![4, 5]));
-        shared.set_transport(TransportState::Playing);
         let mut out = vec![0.0; 20];
-        shared.fill_output(&mut out);
+        play(&shared, &mut out);
         assert!((out[0] - 0.4).abs() < 0.05, "{}", out[0]);
         assert!((out[1] + 0.6).abs() < 0.05, "{}", out[1]);
     }
@@ -115,9 +123,8 @@ mod tests {
             channels[0][i] = 1.0 / 2.0f32.sqrt();
         }
         let shared = with_monitor(channels, MonitorChain::FoaFuma, Some(vec![0, 1, 2, 3]));
-        shared.set_transport(TransportState::Playing);
         let mut out = vec![0.0; 20];
-        shared.fill_output(&mut out);
+        play(&shared, &mut out);
         assert!((out[0] - 0.7071).abs() < 0.08, "{}", out[0]);
         assert!((out[1] - out[0]).abs() < 0.03);
     }

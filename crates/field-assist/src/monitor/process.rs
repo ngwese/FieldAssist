@@ -21,11 +21,6 @@ impl MonitorHostProcess {
     pub fn new(host: Arc<MonitorHost>) -> Self {
         Self { host }
     }
-
-    /// Underlying host (for working/session param policy APIs).
-    pub fn host(&self) -> &Arc<MonitorHost> {
-        &self.host
-    }
 }
 
 impl MonitorProcess for MonitorHostProcess {

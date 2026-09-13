@@ -12,7 +12,12 @@ Write commit messages in the imperative mood, for example:
 Hard-wrap every line of the commit message — subject and body — to 80
 characters or fewer. Do not leave the body as a single unwrapped paragraph.
 
-Run `cargo fmt` before committing any code so formatting stays consistent.
+Before committing any code:
+
+1. Run `cargo fmt` so formatting stays consistent.
+2. Run `cargo build` and `cargo test` and ensure both complete with **no
+   errors and no warnings** (including unused imports and dead code).
+3. Ensure **all tests pass**.
 
 ## Workspace
 

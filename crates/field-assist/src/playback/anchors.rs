@@ -22,10 +22,6 @@ pub fn collect_anchors(doc: &BufferDocument) -> Vec<usize> {
     anchors
 }
 
-pub fn previous_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
-    previous_anchor_near(anchors, pos, 0)
-}
-
 /// If `pos` is within `near` samples after the previous anchor N, skip to N-1
 /// so repeated Previous presses can walk backward while playback is moving.
 pub fn previous_anchor_near(anchors: &[usize], pos: usize, near: usize) -> Option<usize> {
@@ -35,6 +31,11 @@ pub fn previous_anchor_near(anchors: &[usize], pos: usize, near: usize) -> Optio
     } else {
         Some(n)
     }
+}
+
+#[cfg(test)]
+pub fn previous_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
+    previous_anchor_near(anchors, pos, 0)
 }
 
 pub fn next_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
