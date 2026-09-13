@@ -230,6 +230,7 @@ end
 -- expanded to readable audio/.facomp files. After this returns, the host binds
 -- the session.
 function Review:start(payload)
+  app:info("review", "starting")
   restore_output(self, app.session)
   local scope = payload.scope or "?"
   if scope == "menu" then
@@ -238,14 +239,14 @@ function Review:start(payload)
     for _, doc in ipairs(docs) do
       doc.group = "todo"
     end
-    app:info("review", string.format("menu: %d document(s) marked todo", #docs))
+    app:info("review", string.format("via menu: %d document(s) marked todo", #docs))
     show_toolbar(self)
     set_review_playback(true)
     app:command("view.show-explorer")
     return
   end
   local incoming = payload.paths or {}
-  app:info("review", string.format("%d path(s), scope=%s", #incoming, scope))
+  app:info("review", string.format("via drop: %d path(s), scope=%s", #incoming, scope))
   if #incoming == 0 then
     app:info("review", "(none)")
   else
