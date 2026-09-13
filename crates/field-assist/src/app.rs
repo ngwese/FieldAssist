@@ -51,8 +51,8 @@ use crate::dock_titles::{
     DETAIL_TAB_REGIONS, EXPLORER_DOCK_TAB_TITLES,
 };
 use crate::model::composition::{
-    default_marker_type, Composition, EditId, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
-    MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    default_marker_type, Composition, EditId, PeakBlockOutcome, DEFAULT_MARKER_TYPES,
+    MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 use crate::model::{
     is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, MarkerId,
@@ -160,6 +160,7 @@ pub struct AppView {
         >,
     >,
     pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
+    pending_peaks: Arc<Mutex<Vec<DocumentId>>>,
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
     render_sheet: Entity<RenderSheet>,
     render_sheet_open: bool,
@@ -179,6 +180,7 @@ pub struct AppView {
     pending_replace: Option<(DocumentId, PathBuf)>,
     workflow_bar: Option<(String, Vec<ToolbarItem>)>,
     workflow_bar_view: Entity<WorkflowBar>,
+    restoring_session: bool,
 }
 
 impl AppView {
@@ -205,6 +207,7 @@ impl AppView {
                     this.drain_pending_opens(window, cx);
                     this.drain_pending_load(window, cx);
                     this.drain_pending_render(window, cx);
+                    this.drain_pending_peaks(window, cx);
                     if let Some(views) = this.active_views() {
                         views.document.update(cx, |doc, cx| {
                             if this.playback.poll(doc) {
@@ -431,6 +434,7 @@ impl AppView {
             pending_opens,
             pending_load: Arc::new(Mutex::new(Vec::new())),
             pending_render: Arc::new(Mutex::new(Vec::new())),
+            pending_peaks: Arc::new(Mutex::new(Vec::new())),
             pending_loaded_scripts: Vec::new(),
             render_sheet,
             render_sheet_open: false,
@@ -450,6 +454,7 @@ impl AppView {
             pending_replace: None,
             workflow_bar: None,
             workflow_bar_view,
+            restoring_session: false,
         };
         this.load_init_lua(window, cx);
         if let Some(path) = session_path {
@@ -496,7 +501,12 @@ impl AppView {
             .new(|cx| WorkspacePanel::new(id, document.clone(), waveform.clone(), app.clone(), cx));
         workspace.update(cx, |workspace, _| {
             workspace.set_on_activated(Rc::new(move |id, window, cx| {
-                let _ = app.update(cx, |this, cx| this.focus_document(id, window, cx));
+                let _ = app.update(cx, |this, cx| {
+                    if this.restoring_session {
+                        return;
+                    }
+                    this.focus_document(id, window, cx);
+                });
             }));
         });
         DocumentViews {
@@ -623,6 +633,8 @@ impl AppView {
     }
 
     fn apply_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.drain_pending_load(window, cx);
+        self.drain_pending_peaks(window, cx);
         if let Some(views) = self.active_views() {
             self.playback.bind_composition(views.composition.clone());
             self.playback.sync_from_document(views.document.read(cx));
@@ -631,7 +643,17 @@ impl AppView {
             Self::bind_list_panels(&self.edits, &self.markers, &self.regions, &views, cx);
             self.monitor.update(cx, |_, cx| cx.notify());
             self.header_meta.update(cx, |meta, cx| {
-                meta.set_target(Some(views.document), Some(views.waveform), cx);
+                meta.set_target(
+                    Some(views.document.clone()),
+                    Some(views.waveform.clone()),
+                    cx,
+                );
+            });
+            if let Some(id) = self.session.active() {
+                self.spawn_peak_build(id, cx);
+            }
+            views.waveform.update(cx, |view, cx| {
+                view.bump_paint_epoch(cx);
             });
         } else {
             let idle = self.idle_composition.clone();
@@ -651,6 +673,7 @@ impl AppView {
         self.refresh_explorer(cx);
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
+        window.refresh();
         cx.notify();
     }
 
@@ -1202,7 +1225,9 @@ impl AppView {
             *views.buffer.write().unwrap() = Buffer::empty();
         }
         views.document.read(cx).progress.cancel();
-        self.spawn_peak_build(id, cx);
+        if self.session.active() == Some(id) {
+            self.spawn_peak_build(id, cx);
+        }
         views
             .document
             .update(cx, |doc, _| doc.reset_for_new_buffer());
@@ -2364,6 +2389,21 @@ impl AppView {
             .map(|pos| pos.sample)
     }
 
+    fn cancel_inactive_peak_jobs(&self, except: DocumentId, cx: &App) {
+        for (id, views) in &self.views {
+            if *id == except {
+                continue;
+            }
+            let progress = views.document.read(cx).progress.clone();
+            if progress
+                .snapshot()
+                .is_some_and(|state| state.label == "building peaks")
+            {
+                progress.cancel();
+            }
+        }
+    }
+
     fn spawn_peak_build(&self, id: DocumentId, cx: &mut Context<Self>) {
         let Some(views) = self.views.get(&id) else {
             return;
@@ -2375,27 +2415,50 @@ impl AppView {
         if views.document.read(cx).progress.snapshot().is_some() {
             return;
         }
+        self.cancel_inactive_peak_jobs(id, cx);
         let progress = views.document.read(cx).progress.clone();
         let epoch = progress.begin("building peaks");
-        views.waveform.update(cx, |_, cx| cx.notify());
+        views.waveform.update(cx, |view, cx| {
+            view.bump_paint_epoch(cx);
+        });
+        let pending = self.pending_peaks.clone();
         std::thread::spawn(move || {
-            let result =
-                Composition::build_missing_peak_caches_shared(&composition, Some(&progress), epoch);
-            match result {
-                Ok(updates) => {
-                    if !updates.is_empty() {
-                        let mut composition = composition.write().unwrap();
-                        if progress.is_epoch(epoch) {
-                            composition.apply_peak_caches(updates);
-                        }
+            loop {
+                match Composition::build_next_peak_block(&composition, Some(&progress), epoch) {
+                    Ok(PeakBlockOutcome::Progress) => {
+                        pending.lock().unwrap().push(id);
                     }
-                }
-                Err(err) => {
-                    eprintln!("failed to build peaks: {err:#}");
+                    Ok(PeakBlockOutcome::Complete) => {
+                        pending.lock().unwrap().push(id);
+                        break;
+                    }
+                    Ok(PeakBlockOutcome::Cancelled) => break,
+                    Err(err) => {
+                        eprintln!("failed to build peaks: {err:#}");
+                        break;
+                    }
                 }
             }
             progress.finish(epoch);
+            pending.lock().unwrap().push(id);
         });
+    }
+
+    fn drain_pending_peaks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let completed = std::mem::take(&mut *self.pending_peaks.lock().unwrap());
+        if completed.is_empty() {
+            return;
+        }
+        for id in completed {
+            let Some(views) = self.views.get(&id) else {
+                continue;
+            };
+            views.document.update(cx, |_, cx| cx.notify());
+            views.waveform.update(cx, |view, cx| {
+                view.bump_paint_epoch(cx);
+            });
+        }
+        window.refresh();
     }
 
     fn show_load_error(&self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -3148,6 +3211,9 @@ impl AppView {
         let progress = views.document.read(cx).progress.clone();
         std::thread::spawn(move || {
             let started = Instant::now();
+            // Header/project probe only. Overview bins are built later for the
+            // active document so session restore cannot stall a small file
+            // behind N parallel full-file decodes.
             let result = Composition::load_from_path_with_progress(&path, Some(&progress), epoch)
                 .map_err(|err| format!("{err:#}"));
             let elapsed = started.elapsed().as_secs_f64();
@@ -3291,7 +3357,7 @@ impl AppView {
             .map_err(|err| format!("{err:#}"))?;
         self.teardown_all_documents(window, cx);
         let ui = loaded.ui;
-        let active = loaded.session.active();
+        let first = loaded.session.documents().first().map(|doc| doc.id);
         let docs: Vec<DocumentId> = loaded
             .session
             .documents()
@@ -3299,17 +3365,22 @@ impl AppView {
             .map(|doc| doc.id)
             .collect();
         self.session = loaded.session;
+        self.restoring_session = true;
         for id in docs {
             self.attach_session_document(id, window, cx);
         }
-        if let Some(id) = active {
+        self.restoring_session = false;
+        if let Some(id) = first {
             if self.session.get(id).is_some() {
-                self.focus_document(id, window, cx);
+                self.ensure_tab(id, window, cx);
             }
         }
         self.apply_session_ui(ui.as_ref(), window, cx);
         self.session.mark_clean();
         self.refresh_explorer(cx);
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.sync_selection_to_active(cx);
+        });
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
         self.fire_session_loaded_script(window, cx);

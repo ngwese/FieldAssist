@@ -85,6 +85,7 @@ where
     hovered_edit: Option<u64>,
     pointer_over: bool,
     focus_handle: FocusHandle,
+    paint_epoch: u64,
 }
 
 impl<D> WaveformDisplay<D>
@@ -115,7 +116,18 @@ where
             hovered_edit: None,
             pointer_over: false,
             focus_handle: cx.focus_handle(),
+            paint_epoch: 0,
         }
+    }
+
+    /// Force the lane canvases to rebuild on the next frame.
+    ///
+    /// Peak bins live on the document, outside this view's fields. GPUI can
+    /// skip canvas paint when the element tree looks unchanged, so a window
+    /// drag would otherwise be the first thing that shows new overview data.
+    pub fn bump_paint_epoch(&mut self, cx: &mut Context<Self>) {
+        self.paint_epoch = self.paint_epoch.wrapping_add(1);
+        cx.notify();
     }
 
     /// Sample under the pointer, if any.
@@ -1146,6 +1158,7 @@ where
         let channel_count = WaveformDataProvider::channel_count(self.document.read(cx));
         let is_empty = WaveformDataProvider::frames(self.document.read(cx)) == 0;
         let job_progress = WaveformEditor::peak_status(self.document.read(cx));
+        let paint_epoch = self.paint_epoch;
 
         v_flex()
             .id("waveform-root")
@@ -1314,46 +1327,56 @@ where
                                                 ),
                                             )
                                             .child(
-                                                canvas(
-                                                    {
-                                                        let entity = entity.clone();
-                                                        move |bounds, _, cx| {
-                                                            entity.update(cx, |this, cx| {
-                                                                this.remember_viewport(
-                                                                    bounds,
-                                                                    ch == 0,
-                                                                    cx,
-                                                                );
-                                                            });
-                                                            bounds
-                                                        }
-                                                    },
-                                                    {
-                                                        let document = document.clone();
-                                                        let modified_ranges =
-                                                            modified_ranges.clone();
-                                                        let hover_ranges = hover_ranges.clone();
-                                                        let markers = markers.clone();
-                                                        move |bounds, _, window, cx| {
-                                                            let provider = document.read(cx);
-                                                            paint_lane(
-                                                                bounds,
-                                                                &*provider,
-                                                                ch,
-                                                                start_sample,
-                                                                samples_per_pixel,
-                                                                color,
-                                                                zero,
-                                                                hover_sample,
-                                                                &modified_ranges,
-                                                                &hover_ranges,
-                                                                &markers,
-                                                                window,
-                                                            );
-                                                        }
-                                                    },
-                                                )
-                                                .size_full(),
+                                                div()
+                                                    .id((
+                                                        "lane-canvas",
+                                                        (ch as u64) << 32 | paint_epoch,
+                                                    ))
+                                                    .size_full()
+                                                    .child(
+                                                        canvas(
+                                                            {
+                                                                let entity = entity.clone();
+                                                                move |bounds, _, cx| {
+                                                                    entity.update(cx, |this, cx| {
+                                                                        this.remember_viewport(
+                                                                            bounds,
+                                                                            ch == 0,
+                                                                            cx,
+                                                                        );
+                                                                    });
+                                                                    bounds
+                                                                }
+                                                            },
+                                                            {
+                                                                let document = document.clone();
+                                                                let modified_ranges =
+                                                                    modified_ranges.clone();
+                                                                let hover_ranges =
+                                                                    hover_ranges.clone();
+                                                                let markers = markers.clone();
+                                                                move |bounds, _, window, cx| {
+                                                                    let provider =
+                                                                        document.read(cx);
+                                                                    paint_lane(
+                                                                        bounds,
+                                                                        &*provider,
+                                                                        ch,
+                                                                        start_sample,
+                                                                        samples_per_pixel,
+                                                                        color,
+                                                                        zero,
+                                                                        hover_sample,
+                                                                        &modified_ranges,
+                                                                        &hover_ranges,
+                                                                        &markers,
+                                                                        window,
+                                                                    );
+                                                                }
+                                                            },
+                                                        )
+                                                        .size_full(),
+                                                    ),
                                             ),
                                     )
                                 })),

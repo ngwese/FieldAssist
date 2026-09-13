@@ -10,7 +10,8 @@ use anyhow::{bail, Context, Result};
 use field_audio_io::{probe_file, probe_header, ProbedFile, SymphoniaBlockSource};
 use field_audio_model::{
     BlockPager, BlockSource, ChannelScope, Marker, MarkerId, MarkerList, MarkerType, MediaId,
-    MediaPool, MediaRef, RegionCollection, RegionId, StoredMarker, SELECTION_COLLECTION,
+    MediaPool, MediaRef, RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES,
+    SELECTION_COLLECTION,
 };
 use field_audio_process::PEAK_BLOCK;
 use field_core::{encode_file_url, ProgressHandle};
@@ -20,6 +21,17 @@ use super::edit_ranges::{map_inclusive_through_inverse, map_inclusive_through_op
 use super::edl::{EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
 use super::tree::ClipTree;
 use super::{map_point_if_kept, map_point_if_kept_inverse};
+
+/// Result of folding one pager-sized peak chunk into a live composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeakBlockOutcome {
+    /// Bins were appended and at least one clip still needs overview data.
+    Progress,
+    /// Every sourced clip has overview bins covering its length.
+    Complete,
+    /// The job epoch was cancelled before or during this block.
+    Cancelled,
+}
 
 #[derive(Debug, Clone, Default)]
 /// Clipboard.
@@ -1285,6 +1297,10 @@ impl Composition {
                 return (min, max);
             }
         }
+        if clip.needs_peak_extend() {
+            // Later bins have not been folded yet; keep the UI off PCM.
+            return (0.0, 0.0);
+        }
         // Uncovered tail after an unaligned split (at most one peak block).
         let take = (len as usize).min(PEAK_BLOCK);
         let mut buf = vec![0.0; take];
@@ -1375,7 +1391,9 @@ impl Composition {
 
     /// `needs_peak_build`.
     pub fn needs_peak_build(&self) -> bool {
-        self.spans().iter().any(|span| span.clip.needs_peak_cache())
+        self.spans()
+            .iter()
+            .any(|span| span.clip.needs_peak_extend())
     }
 
     /// Overview paint can proceed if some clips already have bins, even while
@@ -1404,6 +1422,20 @@ impl Composition {
         }
     }
 
+    fn append_peak_chunk(
+        &mut self,
+        target: &Clip,
+        bins: Vec<Vec<(f32, f32)>>,
+        chunk_min: f32,
+        chunk_max: f32,
+    ) {
+        let key = clip_cache_key(target);
+        let id = target.id;
+        self.tree = extend_clip_cache(&self.tree, id, key, &bins, chunk_min, chunk_max);
+        self.edl
+            .map_snapshots(|tree| extend_clip_cache(tree, id, key, &bins, chunk_min, chunk_max));
+    }
+
     /// `build_missing_peak_caches`.
     pub fn build_missing_peak_caches(
         &self,
@@ -1421,6 +1453,8 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_ratio(epoch, 0, total.max(1));
         }
+        // Read pager-sized chunks, then fold into PEAK_BLOCK bins. Avoids
+        // thousands of lock/decode round-trips for small files.
         for span in &spans {
             if progress.is_some_and(|p| !p.is_epoch(epoch)) {
                 break;
@@ -1432,32 +1466,23 @@ impl Composition {
             let mut min = f32::MAX;
             let mut max = f32::MIN;
             let mut pos = 0u64;
-            let mut chunk = vec![0.0; PEAK_BLOCK];
             while pos < span.clip.len {
                 if progress.is_some_and(|p| !p.is_epoch(epoch)) {
                     return Ok(updated);
                 }
-                let take = ((span.clip.len - pos) as usize).min(PEAK_BLOCK);
-                for ch in 0..self.channel_count {
-                    let dest = &mut chunk[..take];
-                    self.read_clip_channel(span.clip.as_ref(), ch, pos, dest)?;
-                    let mut pmin = f32::MAX;
-                    let mut pmax = f32::MIN;
-                    for &s in dest.iter() {
-                        pmin = pmin.min(s);
-                        pmax = pmax.max(s);
-                        min = min.min(s);
-                        max = max.max(s);
-                    }
-                    peaks[ch].push(if pmin <= pmax {
-                        (pmin, pmax)
-                    } else {
-                        (0.0, 0.0)
-                    });
+                let take = ((span.clip.len - pos) as usize).min(BLOCK_FRAMES as usize);
+                let mut planar = vec![vec![0.0; take]; self.channel_count];
+                {
+                    let mut dests: Vec<&mut [f32]> =
+                        planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+                    self.read_clip(span.clip.as_ref(), pos, take as u64, &mut dests, 0)?;
+                }
+                for (ch, dest) in planar.iter().enumerate() {
+                    fold_peak_bins(dest, &mut peaks[ch], &mut min, &mut max);
                     done += take as u64;
-                    if let Some(progress) = progress {
-                        progress.set_ratio(epoch, done, total.max(1));
-                    }
+                }
+                if let Some(progress) = progress {
+                    progress.set_ratio(epoch, done, total.max(1));
                 }
                 pos += take as u64;
             }
@@ -1475,86 +1500,115 @@ impl Composition {
         Ok(updated)
     }
 
-    /// Same work as [`Self::build_missing_peak_caches`], but drops the
-    /// composition read lock between peak chunks so the UI can paint.
+    /// Fold one pager-sized chunk of overview bins into `composition`.
+    ///
+    /// The live tree is updated before this returns so the UI can paint
+    /// leading peaks while later blocks are still decoding.
+    pub fn build_next_peak_block(
+        composition: &RwLock<Self>,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<PeakBlockOutcome> {
+        if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+            return Ok(PeakBlockOutcome::Cancelled);
+        }
+        let (clip, channel_count, pos, total_samples) = {
+            let this = composition.read().unwrap();
+            let channel_count = this.channel_count;
+            let mut next = None;
+            let mut total = 0u64;
+            let mut covered = 0u64;
+            for span in this.tree.spans() {
+                if span.clip.source.is_none() {
+                    continue;
+                }
+                let clip_total = span.clip.len.saturating_mul(channel_count as u64);
+                total += clip_total;
+                let clip_covered = peak_covered_samples(span.clip.as_ref())
+                    .min(span.clip.len)
+                    .saturating_mul(channel_count as u64);
+                covered += clip_covered;
+                if next.is_none() && span.clip.needs_peak_extend() {
+                    next = Some((span.clip.clone(), peak_covered_samples(span.clip.as_ref())));
+                }
+            }
+            let Some((clip, pos)) = next else {
+                if let Some(progress) = progress {
+                    progress.set_fraction(epoch, 1.0);
+                }
+                return Ok(PeakBlockOutcome::Complete);
+            };
+            if let Some(progress) = progress {
+                progress.set_ratio(epoch, covered, total.max(1));
+            }
+            (clip, channel_count, pos, total)
+        };
+        if pos >= clip.len {
+            return Ok(PeakBlockOutcome::Complete);
+        }
+        if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+            return Ok(PeakBlockOutcome::Cancelled);
+        }
+        let take = ((clip.len - pos) as usize).min(BLOCK_FRAMES as usize);
+        let mut bins = vec![Vec::new(); channel_count];
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        {
+            let this = composition.read().unwrap();
+            let mut planar = vec![vec![0.0; take]; channel_count];
+            {
+                let mut dests: Vec<&mut [f32]> =
+                    planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+                this.read_clip(clip.as_ref(), pos, take as u64, &mut dests, 0)?;
+            }
+            for (ch, dest) in planar.iter().enumerate() {
+                fold_peak_bins(dest, &mut bins[ch], &mut min, &mut max);
+            }
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+                return Ok(PeakBlockOutcome::Cancelled);
+            }
+            this.append_peak_chunk(&clip, bins, min, max);
+            if let Some(progress) = progress {
+                let covered: u64 = this
+                    .tree
+                    .spans()
+                    .into_iter()
+                    .filter(|span| span.clip.source.is_some())
+                    .map(|span| {
+                        peak_covered_samples(span.clip.as_ref())
+                            .min(span.clip.len)
+                            .saturating_mul(this.channel_count as u64)
+                    })
+                    .sum();
+                progress.set_ratio(epoch, covered, total_samples.max(1));
+            }
+            if this.needs_peak_build() {
+                Ok(PeakBlockOutcome::Progress)
+            } else {
+                if let Some(progress) = progress {
+                    progress.set_fraction(epoch, 1.0);
+                }
+                Ok(PeakBlockOutcome::Complete)
+            }
+        }
+    }
+
+    /// Decode every missing overview block, applying each pager chunk as it
+    /// finishes so a shared UI lock can paint partial peaks.
     pub fn build_missing_peak_caches_shared(
         composition: &RwLock<Self>,
         progress: Option<&ProgressHandle>,
         epoch: u64,
-    ) -> Result<Vec<(u64, Clip)>> {
-        let (jobs, channel_count, total) = {
-            let this = composition.read().unwrap();
-            let channel_count = this.channel_count;
-            let jobs: Vec<(u64, Arc<Clip>)> = this
-                .tree
-                .spans()
-                .into_iter()
-                .filter(|span| span.clip.needs_peak_cache())
-                .map(|span| (span.start, span.clip.clone()))
-                .collect();
-            let total: u64 = jobs
-                .iter()
-                .map(|(_, clip)| clip.len.saturating_mul(channel_count as u64))
-                .sum();
-            (jobs, channel_count, total)
-        };
-        let mut done = 0u64;
-        let mut updated = Vec::new();
-        if let Some(progress) = progress {
-            progress.set_ratio(epoch, 0, total.max(1));
-        }
-        for (start, clip) in jobs {
-            if progress.is_some_and(|p| !p.is_epoch(epoch)) {
-                break;
+    ) -> Result<PeakBlockOutcome> {
+        loop {
+            match Self::build_next_peak_block(composition, progress, epoch)? {
+                PeakBlockOutcome::Progress => {}
+                other => return Ok(other),
             }
-            let mut peaks = vec![Vec::new(); channel_count];
-            let mut min = f32::MAX;
-            let mut max = f32::MIN;
-            let mut pos = 0u64;
-            let mut chunk = vec![0.0; PEAK_BLOCK];
-            while pos < clip.len {
-                if progress.is_some_and(|p| !p.is_epoch(epoch)) {
-                    return Ok(updated);
-                }
-                let take = ((clip.len - pos) as usize).min(PEAK_BLOCK);
-                {
-                    let this = composition.read().unwrap();
-                    for ch in 0..channel_count {
-                        let dest = &mut chunk[..take];
-                        this.read_clip_channel(clip.as_ref(), ch, pos, dest)?;
-                        let mut pmin = f32::MAX;
-                        let mut pmax = f32::MIN;
-                        for &s in dest.iter() {
-                            pmin = pmin.min(s);
-                            pmax = pmax.max(s);
-                            min = min.min(s);
-                            max = max.max(s);
-                        }
-                        peaks[ch].push(if pmin <= pmax {
-                            (pmin, pmax)
-                        } else {
-                            (0.0, 0.0)
-                        });
-                        done += take as u64;
-                        if let Some(progress) = progress {
-                            progress.set_ratio(epoch, done, total.max(1));
-                        }
-                    }
-                }
-                pos += take as u64;
-            }
-            let mut peaked = (*clip).clone();
-            peaked.cache = super::clip::ClipCache {
-                min: if min <= max { Some(min) } else { None },
-                max: if min <= max { Some(max) } else { None },
-                peaks,
-            };
-            updated.push((start, peaked));
         }
-        if let Some(progress) = progress {
-            progress.set_fraction(epoch, 1.0);
-        }
-        Ok(updated)
     }
 
     /// `to_project_file`.
@@ -1765,6 +1819,61 @@ impl Composition {
     fn replace_init_snapshot(&mut self, tree: ClipTree) {
         self.edl.replace_init_snapshot(tree);
     }
+}
+
+fn fold_peak_bins(samples: &[f32], peaks: &mut Vec<(f32, f32)>, min: &mut f32, max: &mut f32) {
+    for chunk in samples.chunks(PEAK_BLOCK) {
+        let mut pmin = f32::MAX;
+        let mut pmax = f32::MIN;
+        for &s in chunk {
+            pmin = pmin.min(s);
+            pmax = pmax.max(s);
+            *min = (*min).min(s);
+            *max = (*max).max(s);
+        }
+        peaks.push(if pmin <= pmax {
+            (pmin, pmax)
+        } else {
+            (0.0, 0.0)
+        });
+    }
+}
+
+fn peak_covered_samples(clip: &Clip) -> u64 {
+    clip.cache
+        .peaks
+        .first()
+        .map(|channel| channel.len() as u64 * PEAK_BLOCK as u64)
+        .unwrap_or(0)
+}
+
+fn extend_clip_cache(
+    tree: &ClipTree,
+    id: ClipId,
+    key: Option<(MediaId, u64, u64)>,
+    bins: &[Vec<(f32, f32)>],
+    chunk_min: f32,
+    chunk_max: f32,
+) -> ClipTree {
+    tree.map_clips(|clip| {
+        let same = clip.id == id || (key.is_some() && clip_cache_key(clip) == key);
+        if !same {
+            return clip.clone();
+        }
+        let mut clip = clip.clone();
+        if clip.cache.peaks.is_empty() {
+            clip.cache.peaks = bins.to_vec();
+        } else {
+            for (dst, src) in clip.cache.peaks.iter_mut().zip(bins.iter()) {
+                dst.extend_from_slice(src);
+            }
+        }
+        if chunk_min <= chunk_max {
+            clip.cache.min = Some(clip.cache.min.unwrap_or(f32::MAX).min(chunk_min));
+            clip.cache.max = Some(clip.cache.max.unwrap_or(f32::MIN).max(chunk_max));
+        }
+        clip
+    })
 }
 
 fn clip_cache_key(clip: &Clip) -> Option<(MediaId, u64, u64)> {
@@ -2310,12 +2419,58 @@ mod tests {
         assert!(lock.read().unwrap().needs_peak_build());
         let progress = ProgressHandle::new();
         let epoch = progress.begin("building peaks");
-        let updates =
+        let outcome =
             Composition::build_missing_peak_caches_shared(&lock, Some(&progress), epoch).unwrap();
-        assert!(!updates.is_empty());
-        lock.write().unwrap().apply_peak_caches(updates);
+        assert_eq!(outcome, super::PeakBlockOutcome::Complete);
         assert!(!lock.read().unwrap().needs_peak_build());
+        assert!(lock.read().unwrap().can_paint_overview());
         progress.finish(epoch);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn incremental_peak_block_paints_before_complete() {
+        use std::io::Write;
+        fn write_sine_wav(path: &std::path::Path, channels: u16, frames: u32, sample_rate: u32) {
+            let bits_per_sample: u16 = 16;
+            let block_align = channels * bits_per_sample / 8;
+            let byte_rate = sample_rate * u32::from(block_align);
+            let data_len = frames * u32::from(block_align);
+            let mut out = std::fs::File::create(path).unwrap();
+            out.write_all(b"RIFF").unwrap();
+            out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+            out.write_all(b"WAVE").unwrap();
+            out.write_all(b"fmt ").unwrap();
+            out.write_all(&16u32.to_le_bytes()).unwrap();
+            out.write_all(&1u16.to_le_bytes()).unwrap();
+            out.write_all(&channels.to_le_bytes()).unwrap();
+            out.write_all(&sample_rate.to_le_bytes()).unwrap();
+            out.write_all(&byte_rate.to_le_bytes()).unwrap();
+            out.write_all(&block_align.to_le_bytes()).unwrap();
+            out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+            out.write_all(b"data").unwrap();
+            out.write_all(&data_len.to_le_bytes()).unwrap();
+            for i in 0..frames {
+                let t = i as f32 / sample_rate as f32;
+                let sample = (t * 440.0 * std::f32::consts::TAU).sin();
+                let pcm = (sample * 0.6 * i16::MAX as f32) as i16;
+                for _ in 0..channels {
+                    out.write_all(&pcm.to_le_bytes()).unwrap();
+                }
+            }
+        }
+        let frames = BLOCK_FRAMES as u32 + 512;
+        let path = std::env::temp_dir().join("snd-composition-incremental-peak.wav");
+        write_sine_wav(&path, 1, frames, 44100);
+        let lock = std::sync::RwLock::new(Composition::load_from_path(&path).unwrap());
+        assert!(lock.read().unwrap().needs_peak_build());
+        let first = Composition::build_next_peak_block(&lock, None, 0).unwrap();
+        assert_eq!(first, PeakBlockOutcome::Progress);
+        assert!(lock.read().unwrap().can_paint_overview());
+        assert!(lock.read().unwrap().needs_peak_build());
+        let second = Composition::build_next_peak_block(&lock, None, 0).unwrap();
+        assert_eq!(second, PeakBlockOutcome::Complete);
+        assert!(!lock.read().unwrap().needs_peak_build());
         let _ = std::fs::remove_file(path);
     }
 

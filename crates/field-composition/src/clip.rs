@@ -158,6 +158,25 @@ impl Clip {
         self.source.is_some() && self.cache.is_missing_peaks()
     }
 
+    /// True when overview bins are missing or stop at least one full
+    /// [`PEAK_BLOCK`] short of `len`. A shortfall smaller than one bin is the
+    /// unaligned-split remainder and is not rebuilt.
+    pub fn needs_peak_extend(&self) -> bool {
+        if self.source.is_none() || self.len == 0 {
+            return false;
+        }
+        if self.cache.is_missing_peaks() {
+            return true;
+        }
+        let covered = self
+            .cache
+            .peaks
+            .first()
+            .map(|channel| channel.len() as u64 * PEAK_BLOCK as u64)
+            .unwrap_or(0);
+        covered.saturating_add(PEAK_BLOCK as u64) <= self.len
+    }
+
     /// `gain_at`.
     pub fn gain_at(&self, local: u64) -> f32 {
         if self.len == 0 || local >= self.len {
@@ -348,6 +367,8 @@ mod tests {
         assert_eq!(right.cache.peaks[0], [(-0.3, 1.0)]);
         assert!(!left.needs_peak_cache());
         assert!(!right.needs_peak_cache());
+        assert!(!left.needs_peak_extend());
+        assert!(!right.needs_peak_extend());
     }
 
     #[test]

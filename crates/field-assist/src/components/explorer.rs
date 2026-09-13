@@ -231,6 +231,15 @@ impl ExplorerPanel {
         cx.notify();
     }
 
+    /// Align keyboard/ghost selection with the active document.
+    pub fn sync_selection_to_active(&mut self, cx: &mut Context<Self>) {
+        if self.selected == self.active {
+            return;
+        }
+        self.selected = self.active;
+        cx.notify();
+    }
+
     fn selected_or_active(&self) -> Option<DocumentId> {
         self.selected.or(self.active)
     }
