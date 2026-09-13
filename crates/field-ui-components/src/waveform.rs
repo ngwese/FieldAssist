@@ -147,6 +147,7 @@ where
             return;
         }
         self.hovered_edit = id;
+        self.paint_epoch = self.paint_epoch.wrapping_add(1);
         cx.notify();
     }
 

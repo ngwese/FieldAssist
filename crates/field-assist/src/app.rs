@@ -56,7 +56,7 @@ use crate::model::composition::{
 };
 use crate::model::{
     is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, MarkerId,
-    Session, SessionDocksUi, SessionUi, SessionWindowUi,
+    RegionId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
 };
 use crate::monitor::MonitorChain;
 use crate::monitor_schema::{collect_param_addresses, param_ui_from_json};
@@ -716,7 +716,7 @@ impl AppView {
         markers.update(cx, |markers, cx| {
             let document_select = document.clone();
             let document_delete = document.clone();
-            let waveform = waveform.clone();
+            let waveform_select = waveform.clone();
             markers.set_target(
                 document.clone(),
                 Rc::new(move |_id, frame, _window, cx| {
@@ -724,7 +724,7 @@ impl AppView {
                         doc.set_position(frame as usize, ChannelScope::all());
                         cx.notify();
                     });
-                    waveform.update(cx, |view, cx| {
+                    waveform_select.update(cx, |view, cx| {
                         view.scroll_sample_into_view(frame as f64, cx);
                     });
                 }),
@@ -740,17 +740,24 @@ impl AppView {
         let document = views.document.clone();
         let waveform = views.waveform.clone();
         regions.update(cx, |regions, cx| {
-            let document = document.clone();
-            let waveform = waveform.clone();
+            let document_select = document.clone();
+            let document_delete = document.clone();
+            let waveform_select = waveform.clone();
             regions.set_target(
                 document.clone(),
                 Rc::new(move |_collection, _id, start, _window, cx| {
-                    document.update(cx, |doc, cx| {
+                    document_select.update(cx, |doc, cx| {
                         doc.set_position(start, ChannelScope::all());
                         cx.notify();
                     });
-                    waveform.update(cx, |view, cx| {
+                    waveform_select.update(cx, |view, cx| {
                         view.scroll_sample_into_view(start as f64, cx);
+                    });
+                }),
+                Rc::new(move |_collection, id, _window, cx| {
+                    document_delete.update(cx, |doc, cx| {
+                        doc.remove_region(RegionId(id));
+                        cx.notify();
                     });
                 }),
                 cx,

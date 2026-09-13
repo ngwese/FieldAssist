@@ -11,6 +11,10 @@ const EXTRA_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/logo/04-bands.svg"),
     ),
     (
+        "icons/arrow-right-from-line.svg",
+        include_bytes!("../assets/icons/arrow-right-from-line.svg"),
+    ),
+    (
         "icons/chevrons-left.svg",
         include_bytes!("../assets/icons/chevrons-left.svg"),
     ),

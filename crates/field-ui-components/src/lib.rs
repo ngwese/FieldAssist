@@ -78,7 +78,9 @@ pub use markers::{
 pub use messages::{LogLevel, LogLine, MessagesPanel};
 pub use monitor::{MonitorCallbacks, MonitorPanel, MonitorSnapshotProvider};
 pub use param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
-pub use regions::{RegionGroup, RegionRow, RegionSelectHandler, RegionsData, RegionsPanel};
+pub use regions::{
+    RegionDeleteHandler, RegionGroup, RegionRow, RegionSelectHandler, RegionsData, RegionsPanel,
+};
 pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
 pub use status_bar::{FileStatus, FileStatusBar, LayoutPicker};
 pub use theme::{content_foreground, ContentForeground};

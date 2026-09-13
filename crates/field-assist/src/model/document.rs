@@ -832,28 +832,16 @@ fn region_group(name: &str, regions: &[crate::model::Region], sample_rate: u32) 
         regions: regions
             .iter()
             .map(|region| {
-                let mut label = region
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| format!("{}–{}", region.start, region.end));
-                match &region.channels {
-                    ChannelScope::AllChannels => {}
-                    ChannelScope::Channels(channels) => {
-                        label.push_str("  ch ");
-                        label.push_str(
-                            &channels
-                                .iter()
-                                .map(|ch| ch.to_string())
-                                .collect::<Vec<_>>()
-                                .join(","),
-                        );
-                    }
-                }
+                let rate = f64::from(sample_rate.max(1));
+                let start_s = region.start as f64 / rate;
+                let end_s = region.end as f64 / rate;
+                let len = region.end.saturating_sub(region.start).saturating_add(1);
                 RegionRow {
                     id: region.id.0,
-                    label,
                     start: region.start,
-                    stamp: format_stamp(region.start as u64, sample_rate),
+                    end: region.end,
+                    time_line: format!("{start_s:.2}s – {end_s:.2}s"),
+                    sample_line: format!("{}–{}  ·  {len} smp", region.start, region.end),
                 }
             })
             .collect(),

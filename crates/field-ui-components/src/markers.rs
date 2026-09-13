@@ -6,13 +6,15 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
-    h_flex, v_flex, ActiveTheme as _, StyledExt as _,
+    h_flex, v_flex, ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
 };
 use gpui_kit::{
-    actions, div, px, uniform_list, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, Rgba,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    actions, div, prelude::FluentBuilder as _, px, App, ClickEvent, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    ParentElement as _, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window,
 };
 
 #[allow(missing_docs)]
@@ -24,6 +26,7 @@ mod marker_actions {
 pub use marker_actions::DeleteSelectedMarker;
 
 const CONTEXT: &str = "Markers";
+const CLOSE_HIT: f32 = 18.;
 
 /// One marker row for the list panel.
 #[derive(Clone, Debug)]
@@ -65,6 +68,7 @@ pub struct MarkersPanel<D: MarkersData + 'static> {
     on_select: Option<MarkerSelectHandler>,
     on_delete: Option<MarkerDeleteHandler>,
     selected: Option<u64>,
+    hovered_close: Option<u64>,
     last_fingerprint: Option<u64>,
     focus_handle: FocusHandle,
     _document_observe: Option<Subscription>,
@@ -83,6 +87,7 @@ impl<D: MarkersData + 'static> MarkersPanel<D> {
             on_select: None,
             on_delete: None,
             selected: None,
+            hovered_close: None,
             last_fingerprint: None,
             focus_handle: cx.focus_handle(),
             _document_observe: None,
@@ -101,6 +106,7 @@ impl<D: MarkersData + 'static> MarkersPanel<D> {
         self.on_select = Some(on_select);
         self.on_delete = Some(on_delete);
         self.selected = None;
+        self.hovered_close = None;
         self.last_fingerprint = self.document.as_ref().map(|doc| doc.read(cx).fingerprint());
         if let Some(document) = &self.document {
             self._document_observe = Some(cx.observe(document, |this, _, cx| {
@@ -121,6 +127,7 @@ impl<D: MarkersData + 'static> MarkersPanel<D> {
         self.on_select = None;
         self.on_delete = None;
         self.selected = None;
+        self.hovered_close = None;
         self.last_fingerprint = None;
         self._document_observe = None;
         cx.notify();
@@ -145,6 +152,7 @@ impl<D: MarkersData + 'static> MarkersPanel<D> {
             on_delete(id, window, cx);
         }
         self.selected = None;
+        self.hovered_close = None;
         cx.notify();
     }
 }
@@ -193,21 +201,18 @@ impl<D: MarkersData + 'static> Render for MarkersPanel<D> {
                 .into_any_element();
         };
         let selected = self.selected;
-        let rows: Rc<Vec<MarkerRow>> = Rc::new(
-            document
-                .read(cx)
-                .snapshot()
-                .into_iter()
-                .map(|mut row| {
-                    if selected == Some(row.id) {
-                        row.caret_highlight = true;
-                    }
-                    row
-                })
-                .collect(),
-        );
-        let count = rows.len();
-        let entity = cx.entity();
+        let hovered_close = self.hovered_close;
+        let rows: Vec<MarkerRow> = document
+            .read(cx)
+            .snapshot()
+            .into_iter()
+            .map(|mut row| {
+                if selected == Some(row.id) {
+                    row.caret_highlight = true;
+                }
+                row
+            })
+            .collect();
 
         v_flex()
             .id("markers-list")
@@ -217,111 +222,120 @@ impl<D: MarkersData + 'static> Render for MarkersPanel<D> {
                 this.delete_selected(window, cx);
             }))
             .size_full()
-            .child(
-                uniform_list("markers-rows", count, {
-                    let rows = rows.clone();
-                    let entity = entity.clone();
-                    let theme = RowTheme {
-                        accent: theme.accent,
-                        border: theme.border,
-                        secondary: theme.secondary,
-                        secondary_hover: theme.secondary_hover,
-                        foreground: theme.foreground,
-                        muted_foreground: theme.muted_foreground,
-                    };
-                    move |range, _, _cx| {
-                        range
-                            .map(|ix| marker_row_element(&entity, &rows[ix], &theme))
-                            .collect()
-                    }
-                })
-                .flex_1()
-                .size_full(),
-            )
+            .gap_1()
+            .overflow_y_scroll()
+            .children(rows.into_iter().map(|row| {
+                let swatch: gpui_kit::Hsla = Rgba {
+                    r: row.color[0],
+                    g: row.color[1],
+                    b: row.color[2],
+                    a: row.color[3],
+                }
+                .into();
+                let id = row.id;
+                let frame = row.frame;
+                let mut label = row.kind;
+                if !row.note.is_empty() {
+                    label.push_str("  ");
+                    label.push_str(&row.note);
+                }
+                let highlighted = row.caret_highlight;
+                let show_close = hovered_close == Some(id);
+                h_flex()
+                    .id(("marker-row", id))
+                    .w_full()
+                    .flex_none()
+                    .items_center()
+                    .gap_1p5()
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded(px(4.))
+                    .when(highlighted, |this| this.bg(theme.accent.opacity(0.25)))
+                    .cursor_pointer()
+                    .hover(|this| this.bg(theme.secondary_hover))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.selected = Some(id);
+                        this.focus_handle.focus(window, cx);
+                        if let Some(on_select) = this.on_select.clone() {
+                            on_select(id, frame, window, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .w(px(8.))
+                            .h(px(8.))
+                            .rounded(px(2.))
+                            .flex_none()
+                            .bg(swatch),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(theme.foreground)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(row.stamp),
+                    )
+                    .child(div().flex_1().min_w_0())
+                    .child(
+                        div()
+                            .id(("marker-close", id))
+                            .w(px(CLOSE_HIT))
+                            .h(px(CLOSE_HIT))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                this.hovered_close = if *hovered { Some(id) } else { None };
+                                cx.notify();
+                            }))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(on_delete) = this.on_delete.clone() {
+                                    on_delete(id, window, cx);
+                                }
+                                if this.selected == Some(id) {
+                                    this.selected = None;
+                                }
+                                this.hovered_close = None;
+                                cx.notify();
+                            }))
+                            .when(show_close, |this| {
+                                this.child(
+                                    Button::new(SharedString::from(format!("close-marker-{id}")))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Close)
+                                        .tab_stop(false)
+                                        .on_click(cx.listener(
+                                            move |this, _: &ClickEvent, window, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(on_delete) = this.on_delete.clone() {
+                                                    on_delete(id, window, cx);
+                                                }
+                                                if this.selected == Some(id) {
+                                                    this.selected = None;
+                                                }
+                                                this.hovered_close = None;
+                                                cx.notify();
+                                            },
+                                        )),
+                                )
+                            }),
+                    )
+            }))
             .into_any_element()
     }
-}
-
-struct RowTheme {
-    accent: gpui_kit::Hsla,
-    border: gpui_kit::Hsla,
-    secondary: gpui_kit::Hsla,
-    secondary_hover: gpui_kit::Hsla,
-    foreground: gpui_kit::Hsla,
-    muted_foreground: gpui_kit::Hsla,
-}
-
-fn marker_row_element<D: MarkersData + 'static>(
-    entity: &Entity<MarkersPanel<D>>,
-    row: &MarkerRow,
-    theme: &RowTheme,
-) -> impl IntoElement {
-    let swatch: gpui_kit::Hsla = Rgba {
-        r: row.color[0],
-        g: row.color[1],
-        b: row.color[2],
-        a: row.color[3],
-    }
-    .into();
-    let id = row.id;
-    let frame = row.frame;
-    let entity = entity.clone();
-    let mut label = row.kind.clone();
-    if !row.note.is_empty() {
-        label.push_str("  ");
-        label.push_str(&row.note);
-    }
-    h_flex()
-        .id(("marker-row", id))
-        .w_full()
-        .flex_none()
-        .items_center()
-        .gap_1p5()
-        .px_1p5()
-        .py_0p5()
-        .rounded(px(4.))
-        .border_1()
-        .border_color(if row.caret_highlight {
-            theme.accent
-        } else {
-            theme.border
-        })
-        .bg(if row.caret_highlight {
-            theme.accent.opacity(0.25)
-        } else {
-            theme.secondary
-        })
-        .cursor_pointer()
-        .hover(|this| this.bg(theme.secondary_hover))
-        .on_click(move |_: &ClickEvent, window, cx| {
-            entity.update(cx, |this, cx| {
-                this.selected = Some(id);
-                this.focus_handle.focus(window, cx);
-                if let Some(on_select) = this.on_select.clone() {
-                    on_select(id, frame, window, cx);
-                }
-                cx.notify();
-            });
-        })
-        .child(
-            div()
-                .w(px(8.))
-                .h(px(8.))
-                .rounded(px(2.))
-                .flex_none()
-                .bg(swatch),
-        )
-        .child(
-            div()
-                .text_xs()
-                .font_semibold()
-                .text_color(theme.foreground)
-                .child(label),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(row.stamp.clone()),
-        )
 }
