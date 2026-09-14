@@ -63,7 +63,7 @@ use crate::monitor::MonitorChain;
 use crate::monitor_schema::{collect_param_addresses, param_ui_layout_from_json};
 use crate::playback::{
     list_output_devices, output_device_name, resolve_output_device, should_refresh_monitor_ui,
-    PlaybackSession, TransportState,
+    PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackSession, TransportState,
 };
 use crate::progress::ProgressState;
 use crate::script::{
@@ -149,6 +149,7 @@ pub struct AppView {
     script: ScriptHost,
     idle_composition: Arc<RwLock<Composition>>,
     playback: PlaybackSession,
+    playback_faults: PlaybackFaultFlusher,
     app_menu_bar: Option<Entity<AppMenuBar>>,
     pending_opens: Arc<Mutex<Vec<PathBuf>>>,
     pending_load: Arc<
@@ -212,6 +213,7 @@ impl AppView {
                     this.drain_pending_load(window, cx);
                     this.drain_pending_render(window, cx);
                     this.drain_pending_peaks(window, cx);
+                    this.flush_playback_faults(cx);
                     if let Some(views) = this.active_views() {
                         views.document.update(cx, |doc, cx| {
                             if this.playback.poll(doc) {
@@ -450,6 +452,7 @@ impl AppView {
             script,
             idle_composition,
             playback,
+            playback_faults: PlaybackFaultFlusher::default(),
             app_menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
             pending_opens,
             pending_load: Arc::new(Mutex::new(Vec::new())),
@@ -1876,6 +1879,32 @@ impl AppView {
         }
         self.refresh_workflow_bar(cx);
         self.sync_view_menus(cx);
+    }
+
+    fn flush_playback_faults(&mut self, cx: &mut Context<Self>) {
+        if let Some(faults) = self.playback.take_faults() {
+            self.playback_faults.push(faults);
+        }
+        let messages = self.playback_faults.poll(Instant::now());
+        if messages.is_empty() {
+            return;
+        }
+        let lines: Vec<LogLine> = messages
+            .into_iter()
+            .map(|entry| LogLine {
+                level: match entry.level {
+                    PlaybackFaultLevel::Warn => LogLevel::Warn,
+                    PlaybackFaultLevel::Error => LogLevel::Error,
+                },
+                topic: "playback".into(),
+                text: entry.text,
+            })
+            .collect();
+        let visible = self.messages_tab_visible(cx);
+        self.messages.update(cx, |panel, cx| {
+            panel.append(lines, visible, cx);
+        });
+        self.dock_area.update(cx, |_, cx| cx.notify());
     }
 
     pub(crate) fn refresh_workflow_bar(&mut self, cx: &mut Context<Self>) {

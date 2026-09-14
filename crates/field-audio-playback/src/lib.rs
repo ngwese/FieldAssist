@@ -18,6 +18,9 @@
 //! lock the composition pager, and decode media. The CPAL callback only drains
 //! a lock-free [`PrefetchRing`] — see the crate `AGENTS.md` for the quality
 //! gates (zero heap allocation, zero blocking lock contention on the callback).
+//! Hosts drain underruns and CPAL stream errors with
+//! [`PlaybackShared::take_faults`] (and optional [`PlaybackFaultFlusher`]
+//! coalescing) on a non-realtime thread.
 //!
 //! `dasp::ring_buffer` is intentionally **not** used for this boundary: its
 //! `Fixed`/`Bounded` types require `&mut self` for push/pop and cannot be shared
@@ -42,6 +45,7 @@
 
 mod device;
 mod engine;
+mod faults;
 mod monitor;
 mod playhead;
 mod prefetch;
@@ -53,6 +57,10 @@ pub use device::{
     OutputDeviceInfo,
 };
 pub use engine::{PlaybackEngine, PlaybackShared, PlaybackStats, PLAYBACK_READ_FRAMES};
+pub use faults::{
+    PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackFaultMessage, PlaybackFaults,
+    PLAYBACK_FAULT_LOG_INTERVAL,
+};
 pub use monitor::{map_direct, MonitorProcess};
 pub use playhead::{Playhead, PlayheadEvent};
 pub use prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};

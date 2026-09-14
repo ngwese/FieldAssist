@@ -27,6 +27,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
 
+use super::faults::PlaybackFaults;
 use super::monitor::{map_direct, MonitorProcess};
 use super::prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 use super::provider::PlaybackDataProvider;
@@ -128,6 +129,12 @@ pub struct PlaybackShared {
     last_headroom_ns: AtomicU64,
     min_headroom_ns: AtomicU64,
     last_out_frames: AtomicU64,
+    /// Last CPAL stream-error `Display` text (error callback may allocate).
+    last_stream_error: ArcSwapOption<String>,
+    /// [`Self::underruns`] value last returned by [`Self::take_faults`].
+    fault_underrun_cursor: AtomicU64,
+    /// [`Self::stream_errors`] value last returned by [`Self::take_faults`].
+    fault_stream_error_cursor: AtomicU64,
 }
 
 struct PrefetchScratch {
@@ -199,6 +206,9 @@ impl PlaybackShared {
             last_headroom_ns: AtomicU64::new(0),
             min_headroom_ns: AtomicU64::new(u64::MAX),
             last_out_frames: AtomicU64::new(0),
+            last_stream_error: ArcSwapOption::empty(),
+            fault_underrun_cursor: AtomicU64::new(0),
+            fault_stream_error_cursor: AtomicU64::new(0),
         }
     }
 
@@ -251,6 +261,9 @@ impl PlaybackShared {
         self.last_headroom_ns.store(0, Ordering::Relaxed);
         self.min_headroom_ns.store(u64::MAX, Ordering::Relaxed);
         self.last_out_frames.store(0, Ordering::Relaxed);
+        self.last_stream_error.store(None);
+        self.fault_underrun_cursor.store(0, Ordering::Relaxed);
+        self.fault_stream_error_cursor.store(0, Ordering::Relaxed);
     }
 
     fn record_callback_timing(&self, out_frames: usize, out_rate: u32, callback_ns: u64) {
@@ -276,6 +289,44 @@ impl PlaybackShared {
     /// Record a CPAL stream error (xrun / device fault).
     pub fn record_stream_error(&self) {
         self.stream_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a CPAL stream error and keep its `Display` text for
+    /// [`Self::take_faults`]. Safe to call from the stream-error callback
+    /// (may allocate; that callback is not the output fill path).
+    pub fn record_stream_error_detail(&self, detail: String) {
+        self.record_stream_error();
+        self.last_stream_error.store(Some(Arc::new(detail)));
+    }
+
+    /// Drain underrun / stream-error deltas since the previous call.
+    ///
+    /// Intended for the UI / prefetch side — not the CPAL output callback.
+    /// Counters on [`PlaybackStats`] are left intact.
+    pub fn take_faults(&self) -> Option<PlaybackFaults> {
+        let underruns = self.underruns.load(Ordering::Relaxed);
+        let stream_errors = self.stream_errors.load(Ordering::Relaxed);
+        let prev_underruns = self
+            .fault_underrun_cursor
+            .swap(underruns, Ordering::Relaxed);
+        let prev_errors = self
+            .fault_stream_error_cursor
+            .swap(stream_errors, Ordering::Relaxed);
+        let underruns = underruns.saturating_sub(prev_underruns);
+        let stream_errors = stream_errors.saturating_sub(prev_errors);
+        if underruns == 0 && stream_errors == 0 {
+            return None;
+        }
+        let last_stream_error = if stream_errors > 0 {
+            self.last_stream_error.swap(None).map(|s| (*s).clone())
+        } else {
+            None
+        };
+        Some(PlaybackFaults {
+            underruns,
+            stream_errors,
+            last_stream_error,
+        })
     }
 
     /// Install or clear the monitor process used by the **realtime callback**.
@@ -621,9 +672,6 @@ impl PlaybackShared {
         } else {
             0
         };
-        if got < out_frames {
-            self.underruns.fetch_add(1, Ordering::Relaxed);
-        }
 
         let ring = self.ring.load_full();
         let end = self.playback_end();
@@ -632,6 +680,10 @@ impl PlaybackShared {
         let ended = self.timeline_ended.load(Ordering::SeqCst)
             && got < out_frames
             && ring.frames_available() == 0;
+        // Natural end-of-timeline is not a prefetch starve.
+        if got < out_frames && !ended {
+            self.underruns.fetch_add(1, Ordering::Relaxed);
+        }
 
         if self.epoch.load(Ordering::SeqCst) != epoch {
             let callback_ns = started.elapsed().as_nanos() as u64;
@@ -865,10 +917,7 @@ fn build_output_stream(
             device.build_output_stream(
                 stream_config.clone(),
                 move |data: &mut [f32], _| shared.fill_output(data),
-                move |e| {
-                    eprintln!("playback stream error: {e}");
-                    err.record_stream_error();
-                },
+                move |e| log_stream_error(&err, e),
                 None,
             )
         }
@@ -888,10 +937,7 @@ fn build_output_stream(
                         *out = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                     }
                 },
-                move |e| {
-                    eprintln!("playback stream error: {e}");
-                    err.record_stream_error();
-                },
+                move |e| log_stream_error(&err, e),
                 None,
             )
         }
@@ -911,16 +957,18 @@ fn build_output_stream(
                         *out = (sample.clamp(-1.0, 1.0) * i32::MAX as f32) as i32;
                     }
                 },
-                move |e| {
-                    eprintln!("playback stream error: {e}");
-                    err.record_stream_error();
-                },
+                move |e| log_stream_error(&err, e),
                 None,
             )
         }
         other => anyhow::bail!("unsupported output sample format: {other:?}"),
     }
     .map_err(Into::into)
+}
+
+fn log_stream_error(shared: &PlaybackShared, e: impl std::fmt::Display) {
+    eprintln!("playback stream error: {e}");
+    shared.record_stream_error_detail(e.to_string());
 }
 
 #[cfg(test)]
@@ -1192,5 +1240,60 @@ mod tests {
             out[0]
         );
         assert_eq!(shared.transport(), TransportState::Playing);
+    }
+
+    #[test]
+    fn fill_output_records_underrun_when_ring_empty() {
+        let shared = shared(200);
+        shared.reset_stats();
+        shared.set_transport(TransportState::Playing);
+        shared.bump_epoch();
+        let mut out = vec![0.0; 32];
+        shared.fill_output(&mut out);
+        assert_eq!(shared.stats().underruns, 1);
+        let faults = shared.take_faults().expect("underrun drain");
+        assert_eq!(faults.underruns, 1);
+        assert_eq!(faults.stream_errors, 0);
+        assert!(shared.take_faults().is_none());
+        assert_eq!(shared.stats().underruns, 1, "stats counters stay intact");
+    }
+
+    #[test]
+    fn end_of_timeline_does_not_count_as_underrun() {
+        let shared = shared(8);
+        shared.reset_stats();
+        let mut out = vec![0.0; 32];
+        play(&shared, &mut out);
+        assert_eq!(shared.transport(), TransportState::Stopped);
+        assert_eq!(
+            shared.stats().underruns,
+            0,
+            "draining the last frames is not a prefetch starve"
+        );
+        assert!(shared.take_faults().is_none());
+    }
+
+    #[test]
+    fn take_faults_includes_stream_error_detail() {
+        let shared = shared(8);
+        shared.record_stream_error_detail("DeviceNotAvailable".into());
+        shared.record_stream_error_detail("backend xrun".into());
+        let faults = shared.take_faults().expect("stream errors");
+        assert_eq!(faults.stream_errors, 2);
+        assert_eq!(faults.last_stream_error.as_deref(), Some("backend xrun"));
+        assert_eq!(shared.stats().stream_errors, 2);
+        assert!(shared.take_faults().is_none());
+    }
+
+    #[test]
+    fn reset_stats_clears_fault_cursors() {
+        let shared = shared(8);
+        shared.record_stream_error_detail("once".into());
+        assert!(shared.take_faults().is_some());
+        shared.reset_stats();
+        shared.record_stream_error_detail("again".into());
+        let faults = shared.take_faults().expect("after reset");
+        assert_eq!(faults.stream_errors, 1);
+        assert_eq!(faults.last_stream_error.as_deref(), Some("again"));
     }
 }

@@ -344,6 +344,11 @@ impl PlaybackSession {
         self.engine.shared.bump_epoch();
     }
 
+    /// Drain underrun / CPAL stream-error counts since the last call.
+    pub fn take_faults(&self) -> Option<field_audio_playback::PlaybackFaults> {
+        self.engine.shared.take_faults()
+    }
+
     pub fn poll(&mut self, doc: &mut BufferDocument) -> bool {
         let engine_state = self.engine.shared.transport();
         if engine_state == TransportState::Stopped

@@ -16,6 +16,10 @@ and anything it calls synchronously) must satisfy:
 4. **Bounded work** — pop the prefetch ring, run monitor DSP into a
    preallocated scratch, update atomics / stats.
 
+Stream-error callbacks may allocate (they already `eprintln!`). Capture the
+error `Display` text there and drain it via [`PlaybackShared::take_faults`]
+from the UI thread. Do not format Messages strings on `fill_output`.
+
 `dasp::ring_buffer::{Fixed, Bounded}` are **not** suitable for the
 prefetch↔callback boundary: they require `&mut self` and would need a mutex.
 Use [`PrefetchRing`](src/prefetch.rs) (atomic SPSC) instead.
@@ -31,6 +35,7 @@ Use [`PrefetchRing`](src/prefetch.rs) (atomic SPSC) instead.
 | Monitor `process_gathered` / meters | **callback** |
 | Monitor silence flush (meter decay after stop) | **callback** |
 | Transport / position atomics | either (atomics only) |
+| Drain xrun / underrun messages (`take_faults`) | UI / host (not callback) |
 
 Live monitor parameters apply on the callback so audible response tracks the
 device buffer (~1 period), not prefetch ring depth (issue #11).
