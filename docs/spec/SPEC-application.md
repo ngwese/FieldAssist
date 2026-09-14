@@ -157,8 +157,11 @@ that has both files open rebuilds the tree by matching `parent` to an open
 **Break Out to Composition** (Edit menu / `edit.break_out`) extracts each
 selected span into a new child composition that shares the parent’s media
 pool and decode cache. The child EDL is the parent’s reconstruction ops plus
-a founding `Trim`; Undo cannot go past that Trim. Saving the child writes a
-standalone `.facomp` that still references the original media.
+a founding `Trim`; Undo cannot go past that Trim. Each child gets a default
+display title of `N-` + parent name (or `N.M-` when breaking out from a child
+whose name already matches that pattern), with `N` / `M` unique among open
+siblings. Saving the child writes a standalone `.facomp` that still references
+the original media.
 
 On open, if a media file’s size or mtime disagrees with the stored stats, the
 app warns that source media changed and re-probes. Decoded blocks may spill
@@ -195,15 +198,17 @@ Lists every session document. Ungrouped documents appear under **session**;
 named entries from the session `groups` registry become sections (including
 empty groups), in registry order. Group headers can be renamed, added, deleted,
 or drag-reordered; order is saved in the `.fasession`. Within a section,
-documents that share an open parent composition are shown as a nested tree
-(indent by depth). Documents can be activated, opened as a pinned tab, closed,
-renamed in place (Shift+Return; in-memory title that dirties until save),
-regrouped, or reordered (including drag within or between sections, with a
-horizontal insertion marker). Modified compositions are marked. Context menu:
-Reveal Parent when a parent is open; group headers offer Rename / Add Group /
-Delete Group. An anchored Info tool shows the selected composition’s path and a
-scrolling Media table (path, sample rate, channels, length, size) for media in
-that composition’s pool.
+documents that sit in a contiguous block under an open parent are shown nested
+(indent by attached depth). A child moved out of that block stays linked but
+is not indented; a link icon is the child cue (click selects the parent;
+Shift+click reattaches). Documents can be activated, opened as a pinned tab,
+closed, renamed in place (Shift+Return; in-memory title that dirties until
+save), regrouped, or reordered (including drag within or between sections,
+with a horizontal insertion marker). Modified compositions are marked. Context
+menu: Reveal Parent when a parent is open; group headers offer Rename / Add
+Group / Delete Group. An anchored Info tool shows the selected composition’s
+path, the open parent’s name when linked, and a scrolling Media table (path,
+sample rate, channels, length, size) for media in that composition’s pool.
 
 ### Header and status
 
@@ -273,7 +278,7 @@ They are recorded on the composition EDL with undo/redo.
 | Remove (Delete) | Close the gap |
 | Duplicate | Insert a copy after the range |
 | Trim | Keep selected spans concatenated; discard the rest |
-| Break Out to Composition | Each selected span becomes a new child composition sharing media |
+| Break Out to Composition | Each selected span becomes a named child composition sharing media |
 
 The Edits panel lists EDL steps and can jump the cursor. The clip tree may
 also represent move and roll; those are not first-class menu commands.

@@ -740,12 +740,28 @@ impl AppView {
             .session
             .get(parent_id)
             .and_then(|doc| doc.group.clone());
+        let parent_name = self.display_title(parent_id, cx).to_string();
+        let tree = self.lineage_tree(cx);
+        let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        let mut sibling_names: Vec<String> = tree
+            .children(parent_id, &ordered)
+            .iter()
+            .map(|id| self.display_title(*id, cx).to_string())
+            .collect();
         let mut children = Vec::new();
         {
             let parent = parent_views.composition.read().unwrap();
             for &(start, len) in &spans {
                 match parent.break_out(start, len) {
-                    Ok(child) => children.push(child),
+                    Ok(mut child) => {
+                        let name = crate::break_out_name::next_break_out_name(
+                            &parent_name,
+                            &sibling_names,
+                        );
+                        child.set_display_title(&name);
+                        sibling_names.push(name);
+                        children.push(child);
+                    }
                     Err(err) => {
                         self.show_save_error(&format!("Break out failed: {err:#}"), window, cx);
                         return;
@@ -787,49 +803,32 @@ impl AppView {
         cx.notify();
     }
 
-    fn break_out_name_stem(&self, id: DocumentId, _cx: &App) -> String {
-        if let Some(path) = self
-            .session
-            .get(id)
-            .and_then(|doc| doc.project_path.as_ref().or(doc.source_path.as_ref()))
-        {
-            if let Some(stem) = path.file_stem() {
-                let stem = stem.to_string_lossy();
-                if !stem.is_empty() {
-                    return stem.into_owned();
-                }
-            }
-        }
-        self.views
-            .get(&id)
-            .map(|views| {
-                let name = views.composition.read().unwrap().suggested_facomp_name();
-                name.trim_end_matches(".facomp").to_string()
-            })
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "untitled".into())
-    }
-
     /// Suggested path for an unsaved break-out child next to its parent.
     fn suggested_break_out_path(&self, id: DocumentId, cx: &App) -> Option<PathBuf> {
         let tree = self.lineage_tree(cx);
         let parent_id = tree.parent(id)?;
         let parent_path = self.session.get(parent_id)?.file_path()?;
         let dir = parent_path.parent()?;
-        let stem = self.break_out_name_stem(parent_id, cx);
-        let siblings = self
-            .session
-            .documents()
+        if let Some(title) = self.views.get(&id).and_then(|views| {
+            views
+                .composition
+                .read()
+                .ok()?
+                .display_title()
+                .map(str::to_string)
+        }) {
+            return Some(dir.join(field_composition::normalize_facomp_file_name(&title)));
+        }
+        let parent_name = self.display_title(parent_id, cx).to_string();
+        let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        let sibling_names: Vec<String> = tree
+            .children(parent_id, &ordered)
             .iter()
-            .map(|d| d.id)
-            .collect::<Vec<_>>();
-        let index = tree
-            .children(parent_id, &siblings)
-            .iter()
-            .position(|sid| *sid == id)
-            .unwrap_or(0)
-            + 1;
-        Some(dir.join(format!("{stem}-{index}.facomp")))
+            .filter(|sid| **sid != id)
+            .map(|sid| self.display_title(*sid, cx).to_string())
+            .collect();
+        let name = crate::break_out_name::next_break_out_name(&parent_name, &sibling_names);
+        Some(dir.join(field_composition::normalize_facomp_file_name(&name)))
     }
 
     /// Write untitled compositions to suggested paths so session save can

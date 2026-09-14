@@ -75,21 +75,6 @@ impl LineageTree {
             .collect()
     }
 
-    /// Depth from the nearest open root (0 = root / orphan).
-    pub fn depth(&self, id: DocumentId) -> usize {
-        let mut depth = 0;
-        let mut seen = HashSet::new();
-        let mut current = id;
-        while let Some(parent) = self.parent(current) {
-            if !seen.insert(current) {
-                break;
-            }
-            depth += 1;
-            current = parent;
-        }
-        depth
-    }
-
     /// Walk open ancestors starting at `id` (inclusive).
     pub fn ancestors(&self, id: DocumentId) -> Vec<DocumentId> {
         let mut out = Vec::new();
@@ -171,24 +156,50 @@ impl LineageTree {
             .copied()
             .map(|id| {
                 let parent = self.parent(id);
+                let detached = parent.is_some() && !attached.contains(&id);
                 (
                     id,
                     ExplorerLineageFlags {
-                        depth: self.depth(id),
+                        depth: self.visual_depth(id, &attached),
                         parent,
-                        detached: parent.is_some() && !attached.contains(&id),
+                        detached,
                         has_children: !self.attached_children_of(id, ordered).is_empty(),
                     },
                 )
             })
             .collect()
     }
+
+    /// Explorer indent depth: detached rows are flat (`0`); attached rows count
+    /// hops until a detached ancestor (so children of a flattened row indent once).
+    fn visual_depth(&self, id: DocumentId, attached: &HashSet<DocumentId>) -> usize {
+        let parent = self.parent(id);
+        let detached = parent.is_some() && !attached.contains(&id);
+        if detached {
+            return 0;
+        }
+        let mut depth = 0;
+        let mut seen = HashSet::new();
+        let mut current = id;
+        while let Some(parent) = self.parent(current) {
+            if !seen.insert(current) {
+                break;
+            }
+            depth += 1;
+            let parent_detached = self.parent(parent).is_some() && !attached.contains(&parent);
+            if parent_detached {
+                break;
+            }
+            current = parent;
+        }
+        depth
+    }
 }
 
 /// Explorer presentation derived from open composition lineage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExplorerLineageFlags {
-    /// Indent depth from the nearest open root.
+    /// Visual indent depth (0 when detached; otherwise hops to a detached ancestor / root).
     pub depth: usize,
     /// Open parent document when the parent composition is in the session.
     pub parent: Option<DocumentId>,
@@ -244,7 +255,8 @@ mod tests {
         let tree = LineageTree::from_nodes(&[a, b]);
         assert_eq!(tree.parent(doc(2)), Some(doc(1)));
         assert_eq!(tree.children(doc(1), &[doc(1), doc(2)]), vec![doc(2)]);
-        assert_eq!(tree.depth(doc(2)), 1);
+        let flags = tree.explorer_flags(&[doc(1), doc(2)]);
+        assert_eq!(flags[&doc(2)].depth, 1);
     }
 
     #[test]
@@ -256,7 +268,8 @@ mod tests {
         };
         let tree = LineageTree::from_nodes(&[b]);
         assert_eq!(tree.parent(doc(2)), None);
-        assert_eq!(tree.depth(doc(2)), 0);
+        let flags = tree.explorer_flags(&[doc(2)]);
+        assert_eq!(flags[&doc(2)].depth, 0);
     }
 
     #[test]
@@ -471,7 +484,43 @@ mod tests {
         assert!(!flags[&doc(2)].detached);
         assert!(!flags[&doc(2)].has_children);
         assert_eq!(flags[&doc(3)].parent, Some(doc(2)));
-        assert_eq!(flags[&doc(3)].depth, 2);
+        assert_eq!(flags[&doc(3)].depth, 0);
         assert!(flags[&doc(3)].detached);
+    }
+
+    #[test]
+    fn explorer_detached_child_with_attached_grandchild() {
+        // Child dragged out; grandchild still sits immediately under the child.
+        let root = LineageNode {
+            document: doc(1),
+            composition: comp(10),
+            parent: None,
+        };
+        let other = LineageNode {
+            document: doc(4),
+            composition: comp(40),
+            parent: None,
+        };
+        let child = LineageNode {
+            document: doc(2),
+            composition: comp(20),
+            parent: Some(comp(10)),
+        };
+        let grand = LineageNode {
+            document: doc(3),
+            composition: comp(30),
+            parent: Some(comp(20)),
+        };
+        let tree = LineageTree::from_nodes(&[root, other, child, grand]);
+        let ordered = [doc(1), doc(4), doc(2), doc(3)];
+        let flags = tree.explorer_flags(&ordered);
+
+        assert!(!flags[&doc(1)].has_children);
+        assert!(flags[&doc(2)].detached);
+        assert_eq!(flags[&doc(2)].depth, 0);
+        assert!(flags[&doc(2)].has_children);
+        assert!(!flags[&doc(3)].detached);
+        assert_eq!(flags[&doc(3)].parent, Some(doc(2)));
+        assert_eq!(flags[&doc(3)].depth, 1);
     }
 }

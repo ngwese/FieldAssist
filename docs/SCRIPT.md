@@ -406,7 +406,7 @@ removed region/marker errors on further field access.
 | `undo()` / `redo()` | History; return whether a step ran. |
 | `cut()` / `copy()` / `paste()` | Clipboard over selection spans. |
 | `clear()` / `remove()` / `duplicate()` / `trim()` | Same as Edit menu on selection. |
-| `break_out()` | Edit → Break Out: each selection span becomes a child composition. Returns one composition or a list. |
+| `break_out()` | Edit → Break Out: each selection span becomes a child composition with a default `N-` / `N.M-` display title. Returns one composition or a list. |
 
 Channel scopes (`select`, `add_region`): omit / `nil` / `"all"`, or `{0, 1}`.
 

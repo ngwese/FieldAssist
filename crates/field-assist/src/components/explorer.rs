@@ -1769,6 +1769,16 @@ impl Render for ExplorerPanel {
                         children
                     });
                 if active_tool == Some(ExplorerTool::Info) {
+                    let info_item = info_focus.as_ref().and_then(|(id, _)| {
+                        self.items.iter().find(|item| item.id == *id)
+                    });
+                    let parent_name = info_item.and_then(|item| {
+                        let parent_id = item.parent?;
+                        self.items
+                            .iter()
+                            .find(|p| p.id == parent_id)
+                            .map(|p| p.name.clone())
+                    });
                     let composition_path = match info_focus.as_ref() {
                         Some((_, Some(path))) => {
                             let full = path.display().to_string();
@@ -1798,6 +1808,48 @@ impl Render for ExplorerPanel {
                             .child("(none)")
                             .into_any_element(),
                     };
+                    let mut composition_rows = vec![h_flex()
+                        .w_full()
+                        .items_start()
+                        .gap_1()
+                        .child(
+                            div()
+                                .w(px(44.))
+                                .flex_none()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("path"),
+                        )
+                        .child(composition_path)
+                        .into_any_element()];
+                    if let Some(name) = parent_name {
+                        composition_rows.push(
+                            h_flex()
+                                .w_full()
+                                .items_start()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .w(px(44.))
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child("parent"),
+                                )
+                                .child(
+                                    div()
+                                        .id("explorer-info-parent")
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(name),
+                                )
+                                .into_any_element(),
+                        );
+                    }
                     let info = v_flex()
                         .id("explorer-info-pane")
                         .size_full()
@@ -1845,21 +1897,7 @@ impl Render for ExplorerPanel {
                                         .font_semibold()
                                         .child("Composition"),
                                 )
-                                .child(
-                                    h_flex()
-                                        .w_full()
-                                        .items_start()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .w(px(36.))
-                                                .flex_none()
-                                                .text_xs()
-                                                .text_color(muted)
-                                                .child("path"),
-                                        )
-                                        .child(composition_path),
-                                ),
+                                .children(composition_rows),
                         )
                         .child(
                             v_flex()

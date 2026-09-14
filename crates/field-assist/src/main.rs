@@ -40,6 +40,7 @@ pub fn app_version_detail() -> String {
 mod app;
 mod assets;
 mod audio;
+mod break_out_name;
 mod commands;
 mod components;
 mod dock_titles;
