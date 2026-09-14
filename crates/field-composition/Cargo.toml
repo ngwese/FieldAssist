@@ -13,3 +13,4 @@ field-audio-io = { path = "../field-audio-io" }
 field-audio-process = { path = "../field-audio-process" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }

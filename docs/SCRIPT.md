@@ -275,7 +275,7 @@ Show and hide are idempotent. Menus use the toggle variants.
 `transport.loop`, `transport.preview`
 
 **Edit:** `edit.undo`, `edit.redo`, `edit.cut`, `edit.copy`, `edit.paste`,
-`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`
+`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.break_out`
 
 **Selection / markers:** `selection.select_all`, `selection.select_none`,
 `selection.invert`, `selection.marker_type_blue`, `selection.marker_type_yellow`,
@@ -355,7 +355,9 @@ removed region/marker errors on further field access.
 | Property | Access | Description |
 | --- | --- | --- |
 | `name` | read | Display title (file name when saved). |
-| `id` | read | Document UUID in the session. |
+| `id` | read | Composition UUID (stable across sessions; stored in `.facomp`). |
+| `parent` | read | Open parent composition, or `nil` if none / not in this session. |
+| `children` | read | Open child compositions (table), in session order. |
 | `path` | read | Source or project path, if any. |
 | `group` | read/write | Session grouping label; `nil` clears. Not written to `.facomp`. |
 | `state` | read/write | Session workflow state; `nil` clears. |
@@ -397,6 +399,7 @@ removed region/marker errors on further field access.
 | `undo()` / `redo()` | History; return whether a step ran. |
 | `cut()` / `copy()` / `paste()` | Clipboard over selection spans. |
 | `clear()` / `remove()` / `duplicate()` / `trim()` | Same as Edit menu on selection. |
+| `break_out()` | Edit → Break Out: each selection span becomes a child composition. Returns one composition or a list. |
 
 Channel scopes (`select`, `add_region`): omit / `nil` / `"all"`, or `{0, 1}`.
 
@@ -408,6 +411,14 @@ Selection and timeline edit:
 local c = app.composition
 c:select(0, c.frames - 1)
 c:trim()
+```
+
+Break out selection spans into child compositions (shares media; saves as a
+standalone `.facomp` with a founding Trim):
+
+```lua
+local child = c:break_out()
+print(child.id, child.parent and child.parent.id)
 ```
 
 Named region:

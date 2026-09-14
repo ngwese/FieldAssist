@@ -1,11 +1,37 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use field_audio_model::{MarkerType, RegionCollection, StoredMarker};
 
 use super::tree::ClipTree;
+
+/// Stable identity for a composition across saves and sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CompositionId(pub Uuid);
+
+impl CompositionId {
+    /// Mint a new random composition id.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for CompositionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for CompositionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// EditId.
@@ -101,6 +127,10 @@ pub struct Edl {
     edits: Vec<Edit>,
     cursor: usize,
     next_id: u64,
+    /// Lowest cursor index Undo may reach (inclusive). Used to freeze the
+    /// founding Trim of a break-out child so Undo cannot restore the parent
+    /// take.
+    undo_floor: usize,
 }
 
 impl Edl {
@@ -114,12 +144,29 @@ impl Edl {
             }],
             cursor: 0,
             next_id: 1,
+            undo_floor: 0,
         }
     }
 
     /// `cursor`.
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+
+    /// Lowest cursor Undo may reach.
+    pub fn undo_floor(&self) -> usize {
+        self.undo_floor
+    }
+
+    /// Freeze Undo so it cannot go below `floor` (clamped to the current
+    /// cursor).
+    pub fn set_undo_floor(&mut self, floor: usize) {
+        self.undo_floor = floor.min(self.cursor);
+    }
+
+    /// Drop redo history beyond the current cursor.
+    pub fn truncate_to_cursor(&mut self) {
+        self.edits.truncate(self.cursor + 1);
     }
 
     /// `current`.
@@ -168,7 +215,7 @@ impl Edl {
 
     /// `can_undo`.
     pub fn can_undo(&self) -> bool {
-        self.cursor > 0
+        self.cursor > self.undo_floor
     }
 
     /// `can_redo`.
@@ -197,6 +244,9 @@ impl Edl {
     /// `jump_to`.
     pub fn jump_to(&mut self, id: EditId) -> Option<ClipTree> {
         let index = self.edits.iter().position(|edit| edit.id == id)?;
+        if index < self.undo_floor {
+            return None;
+        }
         self.cursor = index;
         Some(self.snapshot())
     }
@@ -239,9 +289,19 @@ pub enum InitialState {
     },
 }
 
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// ProjectFile.
 pub struct ProjectFile {
+    /// Stable composition identity (minted when missing on load).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<CompositionId>,
+    /// Parent composition identity when this file was broken out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<CompositionId>,
     /// sample_rate.
     pub sample_rate: u32,
     /// channel_count.
@@ -254,6 +314,9 @@ pub struct ProjectFile {
     pub edits: Vec<EditOp>,
     /// edit_cursor.
     pub edit_cursor: usize,
+    /// Undo floor (break-out founding Trim). Omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub undo_floor: usize,
     #[serde(default)]
     /// markers.
     pub markers: Vec<StoredMarker>,
@@ -277,7 +340,7 @@ pub struct ProjectFile {
 /// FACOMP_KIND:.
 pub const FACOMP_KIND: &str = "facomp";
 /// FACOMP_FORMAT_VERSION:.
-pub const FACOMP_FORMAT_VERSION: u32 = 5;
+pub const FACOMP_FORMAT_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// ProjectEnvelope.
@@ -310,7 +373,7 @@ impl ProjectEnvelope {
             bail!("not a FieldAssist composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            1 | 2 | 3 | 4 | 5 => Ok(envelope),
+            1 | 2 | 3 | 4 | 5 | 6 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer FieldAssist (format_version {n})")

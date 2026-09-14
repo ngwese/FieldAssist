@@ -34,8 +34,8 @@ pub use edit_ranges::{
     map_point_if_kept_inverse, map_point_through_inverse, map_point_through_op,
 };
 pub use edl::{
-    Edit, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile, FACOMP_FORMAT_VERSION,
-    FACOMP_KIND,
+    CompositionId, Edit, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile,
+    FACOMP_FORMAT_VERSION, FACOMP_KIND,
 };
 pub use field_audio_model::{
     default_marker_type, marker_type_color, BlockPager, BlockSource, Marker, MarkerId, MarkerList,

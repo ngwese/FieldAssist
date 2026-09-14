@@ -13,8 +13,8 @@ pub use field_audio_model::{
 pub use field_composition as composition;
 #[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_composition::{
-    default_marker_type, is_facomp_path, marker_type_color, Clipboard, Composition, EditId, EditOp,
-    Marker, MarkerId, MarkerType, MediaRef, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
+    default_marker_type, is_facomp_path, marker_type_color, Clipboard, Composition, CompositionId,
+    EditId, EditOp, Marker, MarkerId, MarkerType, MediaRef, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
     MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 pub use field_session as session;

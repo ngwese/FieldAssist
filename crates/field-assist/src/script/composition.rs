@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{FromLua, IntoLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::model::buffer::{ChannelScope, RegionId};
 use crate::model::document::BufferDocument;
@@ -44,6 +44,19 @@ impl UserData for LuaComposition {
         fields.add_field_method_get("id", |lua, this| {
             let host = host_from_lua(lua)?;
             host.composition_id(this.id)
+        });
+        fields.add_field_method_get("parent", |lua, this| {
+            let host = host_from_lua(lua)?;
+            host.composition_parent(this.id)
+        });
+        fields.add_field_method_get("children", |lua, this| {
+            let host = host_from_lua(lua)?;
+            let children = host.composition_children(this.id)?;
+            let table = lua.create_table()?;
+            for (index, child) in children.into_iter().enumerate() {
+                table.set(index + 1, child)?;
+            }
+            Ok(table)
         });
         fields.add_field_method_get("group", |lua, this| {
             let host = host_from_lua(lua)?;
@@ -473,6 +486,20 @@ impl UserData for LuaComposition {
                 doc.edit_trim();
                 true
             })
+        });
+        methods.add_method("break_out", |lua, this, ()| {
+            let host = host_from_lua(lua)?;
+            let created = host.break_out_composition(this.id)?;
+            match created.len() {
+                1 => created.into_iter().next().unwrap().into_lua(lua),
+                _ => {
+                    let table = lua.create_table()?;
+                    for (index, child) in created.into_iter().enumerate() {
+                        table.set(index + 1, child)?;
+                    }
+                    Ok(Value::Table(table))
+                }
+            }
         });
     }
 }

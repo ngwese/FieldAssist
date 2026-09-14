@@ -71,23 +71,29 @@ fn format_len(len: u64) -> String {
 impl EditsData for BufferDocument {
     fn fingerprint(&self) -> u64 {
         let composition = self.composition.read().unwrap();
-        composition.current_edit().0 ^ ((composition.edits().len() as u64) << 32)
+        composition.current_edit().0
+            ^ ((composition.edits().len() as u64) << 32)
+            ^ ((composition.undo_floor() as u64) << 48)
     }
 
     fn snapshot(&self) -> Vec<EditCard> {
         let composition = self.composition.read().unwrap();
         let sample_rate = composition.sample_rate();
         let current = composition.current_edit();
+        let floor = composition.undo_floor();
         composition
             .edits()
             .iter()
+            .enumerate()
             .rev()
-            .map(|edit| EditCard {
+            .map(|(index, edit)| EditCard {
                 id: edit.id.0,
                 title: edit_title(&edit.op).to_string(),
                 detail: edit_detail(&edit.op, sample_rate),
                 is_current: edit.id == current,
                 is_future: edit.id.0 > current.0,
+                // Newest-first: separator sits above the first founding card.
+                separator_before: floor > 0 && index == floor,
             })
             .collect()
     }

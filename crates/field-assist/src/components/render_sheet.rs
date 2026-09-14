@@ -22,6 +22,19 @@ use crate::render::{
     encoder, encoders, format_rate, snap_format, EncodeSpec, PcmFormat, RenderJob, RATE_PRESETS,
 };
 
+/// Optional render defaults inherited from parent/session properties.
+#[derive(Debug, Clone, Default)]
+pub struct RenderPrefs {
+    /// Encoder id (`wav`, `flac`, …).
+    pub encoder: Option<String>,
+    /// PCM sample format when the encoder supports it.
+    pub sample_format: Option<PcmFormat>,
+    /// Output sample rate.
+    pub sample_rate: Option<u32>,
+    /// Channel enable mask matching the composition channel count.
+    pub channels_selected: Option<Vec<bool>>,
+}
+
 const LABEL_WIDTH: gpui_kit::Rems = rems(7.);
 const VALUE_WIDTH: gpui_kit::Rems = rems(11.);
 
@@ -62,6 +75,8 @@ impl RenderSheet {
         }
     }
 
+    /// Configure from composition defaults (no inherited prefs).
+    #[allow(dead_code)]
     pub fn configure(
         &mut self,
         composition: &Composition,
@@ -69,19 +84,38 @@ impl RenderSheet {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let encoder = encoder("wav").expect("wav encoder");
+        self.configure_with_prefs(composition, directory, None, window, cx);
+    }
+
+    /// Configure from composition, optionally overlaying inherited render prefs.
+    pub fn configure_with_prefs(
+        &mut self,
+        composition: &Composition,
+        directory: PathBuf,
+        prefs: Option<&RenderPrefs>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let encoder_id = prefs.and_then(|p| p.encoder.as_deref()).unwrap_or("wav");
+        let encoder = encoder(encoder_id).unwrap_or_else(|| encoder("wav").expect("wav encoder"));
         self.encoder_id = encoder.id().into();
         let bits = composition
             .pool()
             .first()
             .and_then(|media| media.bits_per_sample);
-        self.sample_format = snap_format(
-            encoder.capabilities(),
-            bits.and_then(PcmFormat::from_bits).or(Some(PcmFormat::S24)),
-        );
-        self.sample_rate = composition.sample_rate().max(1);
+        let preferred_format = prefs
+            .and_then(|p| p.sample_format)
+            .or_else(|| bits.and_then(PcmFormat::from_bits))
+            .or(Some(PcmFormat::S24));
+        self.sample_format = snap_format(encoder.capabilities(), preferred_format);
+        self.sample_rate = prefs
+            .and_then(|p| p.sample_rate)
+            .unwrap_or_else(|| composition.sample_rate().max(1));
         let count = composition.channel_count().max(1);
-        self.channels_selected = vec![true; count];
+        self.channels_selected = prefs
+            .and_then(|p| p.channels_selected.clone())
+            .filter(|selected| selected.len() == count)
+            .unwrap_or_else(|| vec![true; count]);
         self.channel_labels = (0..count).map(|ch| composition.channel_label(ch)).collect();
         let filename = format!("{}.{}", composition.display_name(), encoder.extension());
         self.directory.update(cx, |input, cx| {

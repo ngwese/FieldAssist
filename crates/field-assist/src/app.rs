@@ -29,9 +29,9 @@ use gpui_kit::{
 use crate::assets::AppAssets;
 use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, CancelWorkflow, Close, DeleteMarker,
-    EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim,
-    EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
-    Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
+    EditBreakOut, EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove,
+    EditTrim, EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open,
+    Quit, Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
     SetActiveMarkerType, Settings, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
     TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
     TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
@@ -50,6 +50,7 @@ use crate::dock_titles::{
     DETAIL_DOCK_TAB_TITLES, DETAIL_TAB_HISTORY, DETAIL_TAB_MARKER, DETAIL_TAB_MONITOR,
     DETAIL_TAB_REGIONS, EXPLORER_DOCK_TAB_TITLES,
 };
+use crate::lineage::{ExplorerLineageFlags, LineageNode, LineageTree};
 use crate::model::composition::{
     default_marker_type, Composition, EditId, PeakBlockOutcome, DEFAULT_MARKER_TYPES,
     MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
@@ -562,28 +563,247 @@ impl AppView {
     }
 
     pub(crate) fn refresh_explorer(&self, cx: &mut Context<Self>) {
-        let docs: Vec<_> = self
+        let tree = self.lineage_tree(cx);
+        let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        let mut by_group: HashMap<Option<String>, Vec<DocumentId>> = HashMap::new();
+        for doc in self.session.documents() {
+            by_group.entry(doc.group.clone()).or_default().push(doc.id);
+        }
+        let mut flags: HashMap<DocumentId, ExplorerLineageFlags> = HashMap::new();
+        for ids in by_group.values() {
+            flags.extend(tree.explorer_flags(ids));
+        }
+        let by_id: HashMap<DocumentId, _> = self
             .session
             .documents()
             .iter()
-            .map(|doc| {
+            .map(|doc| (doc.id, doc))
+            .collect();
+        let docs: Vec<_> = ordered
+            .into_iter()
+            .filter_map(|id| {
+                let doc = by_id.get(&id)?;
                 let modified = self
                     .views
                     .get(&doc.id)
                     .is_some_and(|views| views.composition.read().unwrap().is_modified());
-                (
+                let row = flags.get(&doc.id).copied().unwrap_or(ExplorerLineageFlags {
+                    depth: 0,
+                    parent: None,
+                    detached: false,
+                    has_children: false,
+                });
+                Some((
                     doc.id,
                     self.display_title(doc.id, cx),
                     modified,
                     doc.group.clone(),
                     doc.file_path().map(PathBuf::from),
-                )
+                    row.depth,
+                    row.parent,
+                    row.detached,
+                    row.has_children,
+                ))
             })
             .collect();
         let active = self.session.active();
         self.explorer.update(cx, |explorer, cx| {
             explorer.set_documents(&docs, active, cx);
         });
+    }
+
+    fn lineage_tree(&self, _cx: &App) -> LineageTree {
+        let nodes: Vec<LineageNode> = self
+            .session
+            .documents()
+            .iter()
+            .filter_map(|doc| {
+                let views = self.views.get(&doc.id)?;
+                let composition = views.composition.read().unwrap();
+                Some(LineageNode {
+                    document: doc.id,
+                    composition: composition.id(),
+                    parent: composition.parent_id(),
+                })
+            })
+            .collect();
+        LineageTree::from_nodes(&nodes)
+    }
+
+    /// Share decode caches with open parents after a load or break-out.
+    fn adopt_shared_media_from_lineage(&mut self, _cx: &App) {
+        let tree = self.lineage_tree(_cx);
+        let ids: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        for id in ids {
+            let Some(parent_id) = tree.parent(id) else {
+                continue;
+            };
+            let Some(parent_views) = self.views.get(&parent_id).cloned() else {
+                continue;
+            };
+            let Some(child_views) = self.views.get(&id).cloned() else {
+                continue;
+            };
+            let parent = parent_views.composition.read().unwrap();
+            child_views
+                .composition
+                .write()
+                .unwrap()
+                .adopt_shared_media(&parent);
+        }
+    }
+
+    fn break_out_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(parent_id) = self.session.active() else {
+            return;
+        };
+        let Some(parent_views) = self.views.get(&parent_id).cloned() else {
+            return;
+        };
+        let spans = parent_views.document.read(cx).selection_spans();
+        let spans: Vec<(u64, u64)> = spans.into_iter().filter(|(_, len)| *len > 0).collect();
+        if spans.is_empty() {
+            return;
+        }
+        let parent_group = self
+            .session
+            .get(parent_id)
+            .and_then(|doc| doc.group.clone());
+        let mut children = Vec::new();
+        {
+            let parent = parent_views.composition.read().unwrap();
+            for &(start, len) in &spans {
+                match parent.break_out(start, len) {
+                    Ok(child) => children.push(child),
+                    Err(err) => {
+                        self.show_save_error(&format!("Break out failed: {err:#}"), window, cx);
+                        return;
+                    }
+                }
+            }
+        }
+        let mut last_id = None;
+        let mut insert_at = self
+            .session
+            .documents()
+            .iter()
+            .filter(|doc| doc.group == parent_group)
+            .position(|doc| doc.id == parent_id)
+            .map(|i| i + 1)
+            .unwrap_or_else(|| {
+                self.session
+                    .documents()
+                    .iter()
+                    .filter(|doc| doc.group == parent_group)
+                    .count()
+            });
+        for child in children {
+            let composition = Arc::new(RwLock::new(child));
+            let buffer = Arc::new(RwLock::new(Buffer::empty()));
+            let id = self.add_document(composition, buffer, None, window, cx);
+            self.session
+                .place_document(id, parent_group.clone(), insert_at);
+            insert_at += 1;
+            self.pin_tab(id, cx);
+            last_id = Some(id);
+        }
+        self.adopt_shared_media_from_lineage(cx);
+        if let Some(id) = last_id {
+            self.session.focus(id);
+            self.apply_active(window, cx);
+        }
+        self.refresh_explorer(cx);
+        cx.notify();
+    }
+
+    fn break_out_name_stem(&self, id: DocumentId, _cx: &App) -> String {
+        if let Some(path) = self
+            .session
+            .get(id)
+            .and_then(|doc| doc.project_path.as_ref().or(doc.source_path.as_ref()))
+        {
+            if let Some(stem) = path.file_stem() {
+                let stem = stem.to_string_lossy();
+                if !stem.is_empty() {
+                    return stem.into_owned();
+                }
+            }
+        }
+        self.views
+            .get(&id)
+            .map(|views| {
+                let name = views.composition.read().unwrap().suggested_facomp_name();
+                name.trim_end_matches(".facomp").to_string()
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "untitled".into())
+    }
+
+    /// Suggested path for an unsaved break-out child next to its parent.
+    fn suggested_break_out_path(&self, id: DocumentId, cx: &App) -> Option<PathBuf> {
+        let tree = self.lineage_tree(cx);
+        let parent_id = tree.parent(id)?;
+        let parent_path = self.session.get(parent_id)?.file_path()?;
+        let dir = parent_path.parent()?;
+        let stem = self.break_out_name_stem(parent_id, cx);
+        let siblings = self
+            .session
+            .documents()
+            .iter()
+            .map(|d| d.id)
+            .collect::<Vec<_>>();
+        let index = tree
+            .children(parent_id, &siblings)
+            .iter()
+            .position(|sid| *sid == id)
+            .unwrap_or(0)
+            + 1;
+        Some(dir.join(format!("{stem}-{index}.facomp")))
+    }
+
+    /// Write untitled compositions to suggested paths so session save can
+    /// record file URLs (break-out children first).
+    fn ensure_untitled_documents_saved(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let untitled: Vec<DocumentId> = self
+            .session
+            .documents()
+            .iter()
+            .filter(|doc| doc.file_path().is_none())
+            .map(|doc| doc.id)
+            .collect();
+        for id in &untitled {
+            let path = self
+                .suggested_break_out_path(*id, cx)
+                .or_else(|| {
+                    let dir = self.suggested_save_directory(*id, cx);
+                    let name = self
+                        .views
+                        .get(id)
+                        .map(|views| views.composition.read().unwrap().suggested_facomp_name())
+                        .unwrap_or_else(|| "untitled.facomp".into());
+                    Some(dir.join(name))
+                })
+                .ok_or_else(|| "Cannot save untitled composition without a path.".to_string())?;
+            let Some(views) = self.views.get(id) else {
+                return Err("Composition is not open.".into());
+            };
+            views
+                .composition
+                .write()
+                .unwrap()
+                .save_to_path(&path)
+                .map_err(|err| format!("{err:#}"))?;
+            self.session.set_project_path(*id, path);
+        }
+        if !untitled.is_empty() {
+            self.refresh_explorer(cx);
+            self.update_window_title(window, cx);
+        }
+        Ok(())
     }
 
     fn update_window_title(&self, window: &mut Window, cx: &App) {
@@ -1235,6 +1455,30 @@ impl AppView {
                 self.session.place_document(id, group, index);
                 self.refresh_explorer(cx);
             }
+            ExplorerEvent::Reattach(id) => {
+                let tree = self.lineage_tree(cx);
+                let Some(parent_id) = tree.parent(id) else {
+                    return;
+                };
+                let parent_group = self
+                    .session
+                    .get(parent_id)
+                    .and_then(|doc| doc.group.clone());
+                let members: Vec<DocumentId> = self
+                    .session
+                    .documents()
+                    .iter()
+                    .filter(|doc| doc.id != id && doc.group == parent_group)
+                    .map(|doc| doc.id)
+                    .collect();
+                let index = members
+                    .iter()
+                    .position(|&member| member == parent_id)
+                    .map(|i| i + 1)
+                    .unwrap_or(members.len());
+                self.session.place_document(id, parent_group, index);
+                self.refresh_explorer(cx);
+            }
         }
     }
 
@@ -1277,6 +1521,7 @@ impl AppView {
             self.update_window_title(window, cx);
         }
         self.refresh_explorer(cx);
+        self.adopt_shared_media_from_lineage(cx);
         self.pending_loaded_scripts.push((id, elapsed));
         cx.notify();
     }
@@ -1842,6 +2087,43 @@ impl AppView {
         Some(self.display_title(id, cx).to_string())
     }
 
+    pub(crate) fn script_composition_uuid(&self, id: DocumentId, _cx: &App) -> Option<String> {
+        self.views
+            .get(&id)
+            .map(|views| views.composition.read().unwrap().id().to_string())
+    }
+
+    pub(crate) fn script_composition_parent(&self, id: DocumentId, cx: &App) -> Option<DocumentId> {
+        self.lineage_tree(cx).parent(id)
+    }
+
+    pub(crate) fn script_composition_children(&self, id: DocumentId, cx: &App) -> Vec<DocumentId> {
+        let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        self.lineage_tree(cx).children(id, &ordered)
+    }
+
+    pub(crate) fn script_break_out(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Vec<DocumentId>, String> {
+        if self.session.active() != Some(id) {
+            self.session.focus(id);
+            self.apply_active(window, cx);
+        }
+        let before: HashSet<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        self.break_out_selection(window, cx);
+        let created: Vec<DocumentId> = self
+            .session
+            .documents()
+            .iter()
+            .map(|d| d.id)
+            .filter(|doc| !before.contains(doc))
+            .collect();
+        Ok(created)
+    }
+
     pub(crate) fn script_path(&self, id: DocumentId) -> Option<PathBuf> {
         self.session
             .get(id)
@@ -2351,6 +2633,7 @@ impl AppView {
             "edit.remove" => self.run_edit(cx, |doc| doc.edit_remove()),
             "edit.duplicate" => self.run_edit(cx, |doc| doc.edit_duplicate()),
             "edit.trim" => self.run_edit(cx, |doc| doc.edit_trim()),
+            "edit.break_out" => self.break_out_selection(window, cx),
             "selection.select_all" => self.run_edit(cx, |doc| doc.select_all()),
             "selection.select_none" => self.run_edit(cx, |doc| doc.clear_selection()),
             "selection.invert" => self.run_edit(cx, |doc| doc.invert_selection()),
@@ -2659,7 +2942,16 @@ impl AppView {
         };
         let result = {
             let started = Instant::now();
-            let result = views.composition.write().unwrap().save_to_path(&path);
+            let mut composition = views.composition.write().unwrap();
+            let is_save_as = self
+                .session
+                .get(id)
+                .and_then(|doc| doc.project_path.as_ref())
+                .is_some_and(|existing| existing != &path);
+            if is_save_as {
+                composition.mint_new_id();
+            }
+            let result = composition.save_to_path(&path);
             (result, started.elapsed().as_secs_f64())
         };
         match result {
@@ -3043,12 +3335,63 @@ impl AppView {
             return;
         };
         let directory = self.suggested_save_directory(id, cx);
+        let prefs = self.render_prefs_for(id, cx);
         let composition = views.composition.clone();
         self.render_sheet.update(cx, |sheet, cx| {
-            sheet.configure(&composition.read().unwrap(), directory, window, cx);
+            sheet.configure_with_prefs(
+                &composition.read().unwrap(),
+                directory,
+                Some(&prefs),
+                window,
+                cx,
+            );
         });
         self.render_sheet_open = true;
         cx.notify();
+    }
+
+    fn render_prefs_for(
+        &self,
+        id: DocumentId,
+        cx: &App,
+    ) -> crate::components::render_sheet::RenderPrefs {
+        use crate::components::render_sheet::RenderPrefs;
+        use crate::render::PcmFormat;
+
+        let mut prefs = RenderPrefs::default();
+        prefs.encoder = self.inherited_property(id, "render.encoder", cx);
+        prefs.sample_rate = self
+            .inherited_property(id, "render.sample_rate", cx)
+            .and_then(|value| value.parse().ok());
+        prefs.sample_format = self
+            .inherited_property(id, "render.sample_format", cx)
+            .and_then(|value| match value.as_str() {
+                "s16" | "S16" => Some(PcmFormat::S16),
+                "s24" | "S24" => Some(PcmFormat::S24),
+                "s32" | "S32" => Some(PcmFormat::S32),
+                "f32" | "F32" => Some(PcmFormat::F32),
+                _ => None,
+            });
+        if let Some(mask) = self.inherited_property(id, "render.channels", cx) {
+            prefs.channels_selected =
+                Some(mask.split(',').map(|part| part.trim() == "1").collect());
+        }
+        prefs
+    }
+
+    /// Resolve a document/session string property walking open parents.
+    pub(crate) fn inherited_property(&self, id: DocumentId, key: &str, cx: &App) -> Option<String> {
+        let tree = self.lineage_tree(cx);
+        for ancestor in tree.ancestors(id) {
+            if let Some(value) = self
+                .session
+                .get(ancestor)
+                .and_then(|doc| doc.properties.get(key).cloned())
+            {
+                return Some(value);
+            }
+        }
+        self.session.properties().get(key).cloned()
     }
 
     fn close_render_sheet(&mut self, cx: &mut Context<Self>) {
@@ -3359,6 +3702,13 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Err(err) = self.ensure_untitled_documents_saved(window, cx) {
+            if after == AfterSessionWrite::Continue {
+                self.pending_continue = None;
+            }
+            self.show_save_error(&err, window, cx);
+            return;
+        }
         if !self.suspend_active_workflow(window, cx) {
             if after == AfterSessionWrite::Continue {
                 self.pending_continue = None;
@@ -4193,6 +4543,10 @@ fn edit_trim(_: &EditTrim, cx: &mut App) {
     let _ = crate::commands::dispatch("edit.trim", cx);
 }
 
+fn edit_break_out(_: &EditBreakOut, cx: &mut App) {
+    let _ = crate::commands::dispatch("edit.break_out", cx);
+}
+
 fn select_all(_: &SelectAll, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.select_all", cx);
 }
@@ -4341,6 +4695,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         MenuItem::action("Remove", EditRemove),
         MenuItem::action("Duplicate", EditDuplicate),
         MenuItem::action("Trim to Selection", EditTrim),
+        MenuItem::action("Break Out to Composition", EditBreakOut),
     ];
     if !cfg!(target_os = "macos") {
         edit_items.push(MenuItem::separator());
@@ -4466,6 +4821,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(edit_remove);
     cx.on_action(edit_duplicate);
     cx.on_action(edit_trim);
+    cx.on_action(edit_break_out);
     cx.on_action(select_all);
     cx.on_action(select_none);
     cx.on_action(invert_selection);

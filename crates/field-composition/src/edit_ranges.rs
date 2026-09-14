@@ -286,17 +286,21 @@ pub fn ranges_for_edit(edits: &[Edit], cursor: usize, index: usize) -> Vec<Frame
     map_ranges_through_ops(ranges, &edits[index + 1..=cursor])
 }
 
-/// Landing ranges for every applied user edit, mapped onto the tree at `cursor`.
+/// Landing ranges for every applied user edit above `undo_floor`, mapped onto
+/// the tree at `cursor`.
 ///
+/// Edits at or below `undo_floor` (break-out founding history) are excluded so
+/// the waveform change bars only reflect edits the user can still undo.
 /// Adjacent ranges from different edits are kept separate so the waveform can
 /// draw a gap between them.
-pub fn modified_ranges(edits: &[Edit], cursor: usize) -> Vec<FrameRange> {
+pub fn modified_ranges(edits: &[Edit], cursor: usize, undo_floor: usize) -> Vec<FrameRange> {
     if edits.is_empty() {
         return Vec::new();
     }
     let cursor = cursor.min(edits.len() - 1);
+    let start = undo_floor.saturating_add(1).max(1);
     let mut all = Vec::new();
-    for index in 1..=cursor {
+    for index in start..=cursor {
         all.extend(ranges_for_edit(edits, cursor, index));
     }
     all.sort_by_key(|&(start, _)| start);
@@ -351,7 +355,7 @@ mod tests {
             edit(2, EditOp::Paste { at: 0, len: 4 }, media_tree(24)),
         ];
         assert_eq!(ranges_for_edit(&edits, 2, 1), vec![(9, 14)]);
-        assert_eq!(modified_ranges(&edits, 2), vec![(0, 4), (9, 14)]);
+        assert_eq!(modified_ranges(&edits, 2, 0), vec![(0, 4), (9, 14)]);
     }
 
     #[test]
@@ -408,5 +412,17 @@ mod tests {
             map_inclusive_through_op(40, 59, &EditOp::Paste { at: 50, len: 10 }),
             Some((40, 69))
         );
+    }
+
+    #[test]
+    fn undo_floor_skips_founding_edits_in_modified_ranges() {
+        let edits = vec![
+            edit(0, EditOp::Init, media_tree(20)),
+            edit(1, EditOp::Trim { start: 2, len: 10 }, media_tree(10)),
+            edit(2, EditOp::Delete { start: 1, len: 2 }, media_tree(10)),
+        ];
+        assert_eq!(modified_ranges(&edits, 2, 0), vec![(0, 10), (1, 3)]);
+        assert_eq!(modified_ranges(&edits, 2, 1), vec![(1, 3)]);
+        assert!(modified_ranges(&edits, 1, 1).is_empty());
     }
 }

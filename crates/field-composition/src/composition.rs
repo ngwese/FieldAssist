@@ -18,7 +18,7 @@ use field_core::{encode_file_url, ProgressHandle};
 
 use super::clip::{Clip, ClipId, ClipSpan};
 use super::edit_ranges::{map_inclusive_through_inverse, map_inclusive_through_op};
-use super::edl::{EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
+use super::edl::{CompositionId, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
 use super::tree::ClipTree;
 use super::{map_point_if_kept, map_point_if_kept_inverse};
 
@@ -58,11 +58,15 @@ impl Clipboard {
 
 /// Composition.
 pub struct Composition {
+    id: CompositionId,
+    parent: Option<CompositionId>,
+    /// True when `id` was minted for a legacy file and must be saved.
+    identity_dirty: bool,
     sample_rate: u32,
     channel_count: usize,
     tree: ClipTree,
     pool: MediaPool,
-    pager: Mutex<BlockPager>,
+    pager: Arc<Mutex<BlockPager>>,
     edl: Edl,
     next_clip_id: u64,
     clipboard: Clipboard,
@@ -112,12 +116,15 @@ impl Composition {
     pub fn new(sample_rate: u32, channel_count: usize) -> Self {
         let tree = ClipTree::empty();
         let mut composition = Self {
+            id: CompositionId::new(),
+            parent: None,
+            identity_dirty: false,
             sample_rate,
             channel_count,
             edl: Edl::new(tree.clone()),
             tree,
             pool: MediaPool::new(),
-            pager: Mutex::new(BlockPager::in_memory()),
+            pager: Arc::new(Mutex::new(BlockPager::in_memory())),
             next_clip_id: 1,
             clipboard: Clipboard {
                 sample_rate,
@@ -160,12 +167,15 @@ impl Composition {
         next_clip_id += 1;
         let tree = ClipTree::from_clip(clip);
         let mut composed = Self {
+            id: CompositionId::new(),
+            parent: None,
+            identity_dirty: false,
             sample_rate,
             channel_count,
             edl: Edl::new(tree.clone()),
             tree,
             pool,
-            pager: Mutex::new(BlockPager::in_memory()),
+            pager: Arc::new(Mutex::new(BlockPager::in_memory())),
             next_clip_id,
             clipboard: Clipboard {
                 sample_rate,
@@ -302,7 +312,8 @@ impl Composition {
 
     /// `is_modified`.
     pub fn is_modified(&self) -> bool {
-        self.edl.current_id() != self.clean_edit_id
+        self.identity_dirty
+            || self.edl.current_id() != self.clean_edit_id
             || self.markers.to_vec() != self.clean_markers
             || named_regions(&self.collections) != named_regions(&self.clean_collections)
     }
@@ -311,13 +322,101 @@ impl Composition {
         self.clean_edit_id = self.edl.current_id();
         self.clean_markers = self.markers.to_vec();
         self.clean_collections = self.collections.clone();
+        self.identity_dirty = false;
     }
 
     /// `with_spill_dir`.
     pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
         let source: Arc<dyn BlockSource> = Arc::new(SymphoniaBlockSource);
-        self.pager = Mutex::new(BlockPager::new(dir.as_ref().to_path_buf(), source)?);
+        self.pager = Arc::new(Mutex::new(BlockPager::new(
+            dir.as_ref().to_path_buf(),
+            source,
+        )?));
         Ok(self)
+    }
+
+    /// Stable composition identity.
+    pub fn id(&self) -> CompositionId {
+        self.id
+    }
+
+    /// Parent composition identity when this was broken out from another.
+    pub fn parent_id(&self) -> Option<CompositionId> {
+        self.parent
+    }
+
+    /// Mint a fresh identity while keeping the parent link (Save As).
+    pub fn mint_new_id(&mut self) {
+        self.id = CompositionId::new();
+        self.identity_dirty = true;
+    }
+
+    /// Share the parent's decode cache so break-out children do not re-decode.
+    pub fn adopt_shared_media(&mut self, parent: &Composition) {
+        self.pager = Arc::clone(&parent.pager);
+    }
+
+    /// Whether this composition shares its block pager with `other`.
+    pub fn shares_pager_with(&self, other: &Composition) -> bool {
+        Arc::ptr_eq(&self.pager, &other.pager)
+    }
+
+    /// Extract `[start, start+len)` into a new child composition that shares
+    /// media and the block pager with this composition.
+    pub fn break_out(&self, start: u64, len: u64) -> Result<Composition> {
+        if len == 0 {
+            bail!("break out range is empty");
+        }
+        if start.saturating_add(len) > self.frames() {
+            bail!("break out range is outside the composition");
+        }
+        let mut child = self.clone_at_cursor();
+        child.id = CompositionId::new();
+        child.parent = Some(self.id);
+        child.identity_dirty = false;
+        child.trim(start, len);
+        child.edl.set_undo_floor(child.edl.cursor());
+        // Leave dirty so the first save writes the standalone child.
+        child.clean_edit_id = EditId(u64::MAX);
+        child.clean_markers.clear();
+        child.clean_collections.clear();
+        Ok(child)
+    }
+
+    /// Clone reconstruction state at the current cursor, sharing the pager.
+    fn clone_at_cursor(&self) -> Composition {
+        let mut edl = self.edl.clone();
+        edl.truncate_to_cursor();
+        Composition {
+            id: self.id,
+            parent: self.parent,
+            identity_dirty: false,
+            sample_rate: self.sample_rate,
+            channel_count: self.channel_count,
+            tree: self.tree.clone(),
+            pool: self.pool.clone(),
+            pager: Arc::clone(&self.pager),
+            edl,
+            next_clip_id: self.next_clip_id,
+            clipboard: Clipboard {
+                sample_rate: self.sample_rate,
+                channel_count: self.channel_count,
+                clips: Vec::new(),
+            },
+            initial: self.initial.clone(),
+            markers: self.markers.clone(),
+            marker_types: self.marker_types.clone(),
+            collections: self.collections.clone(),
+            next_region_id: self.next_region_id,
+            channel_layout: self.channel_layout.clone(),
+            chosen_channel_layout: self.chosen_channel_layout.clone(),
+            channel_labels: self.channel_labels.clone(),
+            clean_edit_id: EditId(0),
+            clean_markers: Vec::new(),
+            clean_collections: Vec::new(),
+            monitor_chain: self.monitor_chain.clone(),
+            playback_channels: self.playback_channels.clone(),
+        }
     }
 
     /// `display_name`.
@@ -781,21 +880,35 @@ impl Composition {
         rebuilt
     }
 
-    /// Regions changed by applied edits, in the current timeline.
+    /// Regions changed by applied edits above the undo floor, in the current
+    /// timeline. Founding break-out history does not contribute change bars.
     ///
     /// Adjacent landings from different edits stay separate so the waveform
     /// can draw a gap between them.
     pub fn modified_ranges(&self) -> Vec<(u64, u64)> {
-        super::edit_ranges::modified_ranges(self.edl.edits(), self.edl.cursor())
+        super::edit_ranges::modified_ranges(
+            self.edl.edits(),
+            self.edl.cursor(),
+            self.edl.undo_floor(),
+        )
     }
 
-    /// Where `id` landed on the current timeline, if that edit is applied.
+    /// Where `id` landed on the current timeline, if that edit is applied and
+    /// above the undo floor.
     pub fn ranges_for_edit(&self, id: EditId) -> Vec<(u64, u64)> {
         let edits = self.edl.edits();
         let Some(index) = edits.iter().position(|edit| edit.id == id) else {
             return Vec::new();
         };
+        if index <= self.edl.undo_floor() {
+            return Vec::new();
+        }
         super::edit_ranges::ranges_for_edit(edits, self.edl.cursor(), index)
+    }
+
+    /// Lowest edit index Undo may reach (break-out founding Trim).
+    pub fn undo_floor(&self) -> usize {
+        self.edl.undo_floor()
     }
 
     fn fill_clipboard(&mut self, start: u64, len: u64) {
@@ -1614,12 +1727,15 @@ impl Composition {
     /// `to_project_file`.
     pub fn to_project_file(&self) -> ProjectFile {
         ProjectFile {
+            id: Some(self.id),
+            parent: self.parent,
             sample_rate: self.sample_rate,
             channel_count: self.channel_count,
             media: self.pool.clone().into_refs(),
             initial: self.initial.clone(),
             edits: self.edl.ops_from_first_user(),
             edit_cursor: self.edl.cursor(),
+            undo_floor: self.edl.undo_floor(),
             markers: self.markers.iter().map(StoredMarker::from).collect(),
             marker_types: self.marker_types.clone(),
             collections: self.collections.clone(),
@@ -1647,6 +1763,12 @@ impl Composition {
     pub fn from_project_file(file: ProjectFile) -> Result<Self> {
         let sample_rate = file.sample_rate;
         let channel_count = file.channel_count;
+        let (id, identity_dirty) = match file.id {
+            Some(id) => (id, false),
+            None => (CompositionId::new(), true),
+        };
+        let parent = file.parent;
+        let undo_floor = file.undo_floor;
         let mut composition = match &file.initial {
             InitialState::Empty => Composition::new(sample_rate, channel_count),
             InitialState::FromMedia { media_id } => {
@@ -1663,6 +1785,9 @@ impl Composition {
                 composed
             }
         };
+        composition.id = id;
+        composition.parent = parent;
+        composition.identity_dirty = identity_dirty;
         if matches!(file.initial, InitialState::Empty) {
             for media in file.media {
                 composition.pool.insert(media);
@@ -1674,6 +1799,7 @@ impl Composition {
         if let Some(tree) = composition.edl.jump_to_index(file.edit_cursor) {
             composition.adopt_tree(tree);
         }
+        composition.edl.set_undo_floor(undo_floor);
         composition.markers =
             MarkerList::from_vec(file.markers.iter().cloned().map(Marker::from).collect());
         if file.marker_types.is_empty() {
@@ -1698,7 +1824,16 @@ impl Composition {
         composition.monitor_chain = file.monitor_chain.filter(|name| !name.is_empty());
         composition.playback_channels =
             normalize_playback_channels(file.playback_channels, composition.channel_count);
-        composition.mark_clean();
+        if identity_dirty {
+            // Minted id for a legacy file — leave dirty so the next save
+            // persists identity.
+            composition.clean_edit_id = composition.edl.current_id();
+            composition.clean_markers = composition.markers.to_vec();
+            composition.clean_collections = composition.collections.clone();
+            composition.identity_dirty = true;
+        } else {
+            composition.mark_clean();
+        }
         Ok(composition)
     }
 
@@ -2264,7 +2399,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 5);
+        assert_eq!(value["format_version"], 6);
         let media = &value["media"][0];
         assert!(media.get("url").is_some());
         assert!(media.get("path").is_none());
@@ -2547,12 +2682,15 @@ mod tests {
             samples: None,
         };
         let file = ProjectFile {
+            id: None,
+            parent: None,
             sample_rate: 44100,
             channel_count: 1,
             media: vec![media],
             initial: InitialState::FromMedia { media_id: 1 },
             edits: Vec::new(),
             edit_cursor: 0,
+            undo_floor: 0,
             markers: Vec::new(),
             marker_types: Vec::new(),
             collections: Vec::new(),
@@ -2694,7 +2832,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 5);
+        assert_eq!(value["format_version"], 6);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -2736,7 +2874,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 5);
+        assert_eq!(value["format_version"], 6);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()
@@ -2838,5 +2976,119 @@ mod tests {
             .unwrap()
             .iter()
             .any(|ty| ty["name"] == "Red"));
+    }
+
+    #[test]
+    fn break_out_shares_pager_and_sets_parent() {
+        let parent = Composition::from_media(sine_media(48, 1, 44100)).unwrap();
+        let parent_id = parent.id();
+        let child = parent.break_out(10, 12).unwrap();
+        assert_eq!(child.frames(), 12);
+        assert_eq!(child.parent_id(), Some(parent_id));
+        assert_ne!(child.id(), parent_id);
+        assert!(child.shares_pager_with(&parent));
+        assert!(child.is_modified());
+        assert!(!child.can_undo());
+        let json = child.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["format_version"], 6);
+        assert_eq!(value["parent"], parent_id.to_string());
+        assert_eq!(value["id"], child.id().to_string());
+        assert_eq!(value["edits"][0]["type"], "trim");
+        assert_eq!(value["edits"][0]["start"], 10);
+        assert_eq!(value["edits"][0]["len"], 12);
+        assert_eq!(value["undo_floor"], 1);
+        let restored = Composition::from_json(&json).unwrap();
+        assert_eq!(restored.frames(), 12);
+        assert_eq!(restored.parent_id(), Some(parent_id));
+        assert_eq!(restored.id(), child.id());
+        assert!(!restored.can_undo());
+        restored.assert_invariants();
+    }
+
+    #[test]
+    fn break_out_nested_replays_two_trims() {
+        let root = Composition::from_media(sine_media(100, 1, 44100)).unwrap();
+        let child = root.break_out(20, 40).unwrap();
+        let grand = child.break_out(5, 10).unwrap();
+        assert_eq!(grand.frames(), 10);
+        assert_eq!(child.parent_id(), Some(root.id()));
+        assert_eq!(grand.parent_id(), Some(child.id()));
+        let json = grand.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["edits"].as_array().unwrap().len(), 2);
+        assert_eq!(value["edits"][0]["type"], "trim");
+        assert_eq!(value["edits"][1]["type"], "trim");
+        assert_eq!(value["parent"], child.id().to_string());
+        let restored = Composition::from_json(&json).unwrap();
+        assert_eq!(restored.frames(), 10);
+        assert_eq!(restored.parent_id(), Some(child.id()));
+        assert!(!restored.can_undo());
+    }
+
+    #[test]
+    fn break_out_founding_trim_not_undoable_after_edit() {
+        let parent = Composition::from_media(sine_media(32, 1, 44100)).unwrap();
+        let mut child = parent.break_out(4, 16).unwrap();
+        assert!(!child.can_undo());
+        child.remove(0, 2);
+        assert!(child.can_undo());
+        assert!(child.undo());
+        assert_eq!(child.frames(), 16);
+        assert!(!child.can_undo());
+    }
+
+    #[test]
+    fn break_out_founding_trim_excluded_from_change_bars() {
+        let parent = Composition::from_media(sine_media(32, 1, 44100)).unwrap();
+        let mut child = parent.break_out(4, 16).unwrap();
+        assert!(
+            child.modified_ranges().is_empty(),
+            "founding Trim must not paint a full-timeline change bar"
+        );
+        child.delete(2, 4);
+        assert_eq!(child.modified_ranges(), vec![(2, 6)]);
+        assert!(child.ranges_for_edit(child.edits()[1].id).is_empty());
+    }
+
+    #[test]
+    fn legacy_v5_load_mints_id_and_is_dirty() {
+        let json = r#"{
+            "kind":"facomp",
+            "format_version":5,
+            "sample_rate":44100,
+            "channel_count":1,
+            "media":[],
+            "initial":{"type":"empty"},
+            "edits":[],
+            "edit_cursor":0
+        }"#;
+        let restored = Composition::from_json(json).unwrap();
+        assert!(restored.is_modified());
+        let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
+        assert_eq!(saved["format_version"], 6);
+        assert!(saved.get("id").is_some());
+    }
+
+    #[test]
+    fn mint_new_id_keeps_parent() {
+        let parent = Composition::from_media(sine_media(16, 1, 44100)).unwrap();
+        let mut child = parent.break_out(2, 8).unwrap();
+        let old = child.id();
+        let parent_id = child.parent_id();
+        child.mint_new_id();
+        assert_ne!(child.id(), old);
+        assert_eq!(child.parent_id(), parent_id);
+        assert!(child.is_modified());
+    }
+
+    #[test]
+    fn adopt_shared_media_rebinds_pager() {
+        let parent = Composition::from_media(sine_media(16, 1, 44100)).unwrap();
+        let mut child = parent.break_out(0, 8).unwrap();
+        let other = Composition::from_media(sine_media(16, 1, 44100)).unwrap();
+        child.adopt_shared_media(&other);
+        assert!(child.shares_pager_with(&other));
+        assert!(!child.shares_pager_with(&parent));
     }
 }

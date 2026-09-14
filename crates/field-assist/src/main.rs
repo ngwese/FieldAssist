@@ -43,6 +43,7 @@ mod audio;
 mod commands;
 mod components;
 mod dock_titles;
+mod lineage;
 mod model;
 mod monitor;
 mod monitor_schema;

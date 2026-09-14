@@ -1273,7 +1273,64 @@ impl HostHandle {
 
     pub fn composition_id(&self, id: DocumentId) -> mlua::Result<String> {
         self.require_document(id)?;
+        if let Ok(Some(uuid)) =
+            access::with_view(|view, _, cx| view.script_composition_uuid(id, cx))
+        {
+            return Ok(uuid);
+        }
+        // Detached / test documents have no live Composition yet; use the
+        // session document id so scripts can still key by `c.id`.
         Ok(id.to_string())
+    }
+
+    pub fn composition_parent(&self, id: DocumentId) -> mlua::Result<Option<LuaComposition>> {
+        self.require_document(id)?;
+        if let Some(test) = &self.inner.borrow().test {
+            let _ = test;
+            return Ok(None);
+        }
+        access::with_view(|view, _, cx| {
+            Ok(view
+                .script_composition_parent(id, cx)
+                .map(|pid| LuaComposition { id: pid }))
+        })
+        .map_err(mlua::Error::runtime)?
+    }
+
+    pub fn composition_children(&self, id: DocumentId) -> mlua::Result<Vec<LuaComposition>> {
+        self.require_document(id)?;
+        if let Some(test) = &self.inner.borrow().test {
+            let _ = test;
+            return Ok(Vec::new());
+        }
+        access::with_view(|view, _, cx| {
+            Ok(view
+                .script_composition_children(id, cx)
+                .into_iter()
+                .map(|pid| LuaComposition { id: pid })
+                .collect())
+        })
+        .map_err(mlua::Error::runtime)?
+    }
+
+    pub fn break_out_composition(&self, id: DocumentId) -> mlua::Result<Vec<LuaComposition>> {
+        self.require_document(id)?;
+        if let Some(test) = &self.inner.borrow().test {
+            let _ = test;
+            return Err(mlua::Error::runtime(
+                "break_out is not available in tests without a UI session",
+            ));
+        }
+        access::with_view(|view, window, cx| {
+            view.script_break_out(id, window, cx)
+                .map(|ids| {
+                    ids.into_iter()
+                        .map(|pid| LuaComposition { id: pid })
+                        .collect()
+                })
+                .map_err(mlua::Error::runtime)
+        })
+        .map_err(mlua::Error::runtime)?
     }
 
     pub fn document_group(&self, id: DocumentId) -> mlua::Result<Option<String>> {

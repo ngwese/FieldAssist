@@ -10,9 +10,9 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, StyledExt as _,
 };
 use gpui_kit::{
-    div, px, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, hsla, prelude::FluentBuilder as _, px, App, ClickEvent, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
 /// One edit-history card.
@@ -28,6 +28,9 @@ pub struct EditCard {
     pub is_current: bool,
     /// Whether this edit is after the current tip (undone future).
     pub is_future: bool,
+    /// Draw an orange baseline separator above this card (newest-first list:
+    /// marks the first founding / undo-floor edit).
+    pub separator_before: bool,
 }
 
 /// Host-provided edit-history data.
@@ -152,6 +155,7 @@ impl<D: EditsData + 'static> Render for EditsPanel<D> {
             return v_flex().id("edits-list").size_full().into_any_element();
         };
         let cards = document.read(cx).snapshot();
+        let orange = hsla(0.08, 0.85, 0.55, 1.0);
 
         v_flex()
             .id("edits-list")
@@ -160,55 +164,73 @@ impl<D: EditsData + 'static> Render for EditsPanel<D> {
             .overflow_y_scroll()
             .children(cards.into_iter().map(|card| {
                 let id = card.id;
+                let separator = card.separator_before;
                 v_flex()
-                    .id(("edit-card", id))
+                    .id(("edit-card-wrap", id))
                     .w_full()
                     .flex_none()
-                    .gap_0()
-                    .px_1p5()
-                    .py_0p5()
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(if card.is_current {
-                        theme.accent
-                    } else {
-                        theme.border
+                    .gap_1()
+                    .when(separator, |this| {
+                        this.child(
+                            div()
+                                .id(("edit-baseline", id))
+                                .w_full()
+                                .h(px(2.))
+                                .rounded(px(1.))
+                                .bg(orange),
+                        )
                     })
-                    .bg(if card.is_current {
-                        theme.accent.opacity(0.25)
-                    } else {
-                        theme.secondary
-                    })
-                    .opacity(if card.is_future { 0.55 } else { 1.0 })
-                    .cursor_pointer()
-                    .hover(|this| this.bg(theme.secondary_hover))
-                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
-                        let Some(on_hover) = this.on_hover.clone() else {
-                            return;
-                        };
-                        on_hover(if *hovered { Some(id) } else { None }, window, cx);
-                    }))
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        if event.click_count() >= 2 {
-                            if let Some(on_activate) = this.on_activate.clone() {
-                                on_activate(id, window, cx);
-                            }
-                        } else if let Some(on_click) = this.on_click.clone() {
-                            on_click(id, window, cx);
-                        }
-                    }))
                     .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(theme.foreground)
-                            .child(card.title),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(card.detail),
+                        v_flex()
+                            .id(("edit-card", id))
+                            .w_full()
+                            .flex_none()
+                            .gap_0()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(if card.is_current {
+                                theme.accent
+                            } else {
+                                theme.border
+                            })
+                            .bg(if card.is_current {
+                                theme.accent.opacity(0.25)
+                            } else {
+                                theme.secondary
+                            })
+                            .opacity(if card.is_future { 0.55 } else { 1.0 })
+                            .cursor_pointer()
+                            .hover(|this| this.bg(theme.secondary_hover))
+                            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                                let Some(on_hover) = this.on_hover.clone() else {
+                                    return;
+                                };
+                                on_hover(if *hovered { Some(id) } else { None }, window, cx);
+                            }))
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                if event.click_count() >= 2 {
+                                    if let Some(on_activate) = this.on_activate.clone() {
+                                        on_activate(id, window, cx);
+                                    }
+                                } else if let Some(on_click) = this.on_click.clone() {
+                                    on_click(id, window, cx);
+                                }
+                            }))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(theme.foreground)
+                                    .child(card.title),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(card.detail),
+                            ),
                     )
             }))
             .into_any_element()

@@ -137,10 +137,24 @@ A composition is a clip-tree timeline over a media pool. Source audio is
 referenced by URL and file stats; PCM is never stored in `.facomp`. Timeline
 edits change the EDL and clip tree only.
 
-`.facomp` JSON (`kind: facomp`, `format_version: 5`) includes sample rate,
-channel count, media metadata, the initial clip tree, edit ops and cursor,
+`.facomp` JSON (`kind: facomp`, `format_version: 6`) includes a stable
+composition `id` (UUID), optional `parent` (parent composition UUID when
+broken out), sample rate, channel count, media metadata, the initial clip
+tree, edit ops and cursor, optional `undo_floor` (break-out founding Trim),
 markers, marker types, named collections, optional `channel_layout`,
-`monitor_chain`, and `playback_channels`.
+`monitor_chain`, and `playback_channels`. Legacy v1–5 files mint an `id` on
+load and are marked dirty so the next save persists it. **Save As** mints a
+new `id` while keeping `parent`.
+
+Parent→child lineage lives on the composition, not the session. Any session
+that has both files open rebuilds the tree by matching `parent` to an open
+`id`. A child opened alone displays as a root until its parent is added.
+
+**Break Out to Composition** (Edit menu / `edit.break_out`) extracts each
+selected span into a new child composition that shares the parent’s media
+pool and decode cache. The child EDL is the parent’s reconstruction ops plus
+a founding `Trim`; Undo cannot go past that Trim. Saving the child writes a
+standalone `.facomp` that still references the original media.
 
 On open, if a media file’s size or mtime disagrees with the stored stats, the
 app warns that source media changed and re-probes. Decoded blocks may spill
@@ -174,10 +188,12 @@ that overlay.
 ### Explorer
 
 Lists every session document. Ungrouped documents appear under **session**;
-named `group` values become sections. Documents can be activated, opened as a
-pinned tab, closed, regrouped, or reordered (including drag within or between
-sections, with a horizontal insertion marker). Modified compositions are
-marked.
+named `group` values become sections. Within a section, documents that share
+an open parent composition are shown as a nested tree (indent by depth).
+Documents can be activated, opened as a pinned tab, closed, regrouped, or
+reordered (including drag within or between sections, with a horizontal
+insertion marker). Modified compositions are marked. Context menu: Reveal
+Parent when a parent is open in the session.
 
 ### Header and status
 
@@ -247,6 +263,7 @@ They are recorded on the composition EDL with undo/redo.
 | Remove (Delete) | Close the gap |
 | Duplicate | Insert a copy after the range |
 | Trim | Keep selected spans concatenated; discard the rest |
+| Break Out to Composition | Each selected span becomes a new child composition sharing media |
 
 The Edits panel lists EDL steps and can jump the cursor. The clip tree may
 also represent move and roll; those are not first-class menu commands.
@@ -347,7 +364,7 @@ idempotent; menus and status-bar pane buttons use the toggles.
 `transport.loop`, `transport.preview`
 
 **Edit:** `edit.undo`, `edit.redo`, `edit.cut`, `edit.copy`, `edit.paste`,
-`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`
+`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.break_out`
 
 **Selection:** `selection.select_all`, `selection.select_none`,
 `selection.invert`, `selection.marker_type_blue`,
