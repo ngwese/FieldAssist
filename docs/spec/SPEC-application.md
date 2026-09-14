@@ -94,6 +94,8 @@ A session holds:
 
 - A stable UUID
 - Optional path of the `.fasession` file
+- Ordered named `groups` registry (may include empty sections; order is the
+  explorer section order)
 - Ordered documents, each with a UUID
 - Which document is active
 - Optional bound workflow name
@@ -121,15 +123,17 @@ file while a transient tab exists can replace that tab. Pinning keeps the tab.
 Explorer “open tab” opens and pins.
 
 **Dirty / save prompts:** a composition is modified when its edit cursor,
-markers, or named region collections differ from the last save. Channel layout,
-monitor chain, and playback-channel subset alone do not dirty a composition.
-An untitled session does not prompt to save even if its membership changed; a
-session prompts only when it is dirty **and** already has a path.
+markers, named region collections, or in-memory display title differ from the
+last save. Channel layout, monitor chain, and playback-channel subset alone do
+not dirty a composition. An untitled session does not prompt to save even if
+its membership changed; a session prompts only when it is dirty **and** already
+has a path.
 
 Save Session writes JSON (`kind: fasession`, `format_version: 1`) atomically
 (temp file then rename). Document URLs are stored relative to the session file
-when possible. Save fails if any document has no file URL. Suggested file name
-is `{workflow}.fasession` when a workflow is bound, otherwise `session.fasession`.
+when possible. The ordered `groups` list is persisted (including empty groups).
+Save fails if any document has no file URL. Suggested file name is
+`{workflow}.fasession` when a workflow is bound, otherwise `session.fasession`.
 
 ## Composition
 
@@ -188,12 +192,18 @@ that overlay.
 ### Explorer
 
 Lists every session document. Ungrouped documents appear under **session**;
-named `group` values become sections. Within a section, documents that share
-an open parent composition are shown as a nested tree (indent by depth).
-Documents can be activated, opened as a pinned tab, closed, regrouped, or
-reordered (including drag within or between sections, with a horizontal
-insertion marker). Modified compositions are marked. Context menu: Reveal
-Parent when a parent is open in the session.
+named entries from the session `groups` registry become sections (including
+empty groups), in registry order. Group headers can be renamed, added, deleted,
+or drag-reordered; order is saved in the `.fasession`. Within a section,
+documents that share an open parent composition are shown as a nested tree
+(indent by depth). Documents can be activated, opened as a pinned tab, closed,
+renamed in place (Shift+Return; in-memory title that dirties until save),
+regrouped, or reordered (including drag within or between sections, with a
+horizontal insertion marker). Modified compositions are marked. Context menu:
+Reveal Parent when a parent is open; group headers offer Rename / Add Group /
+Delete Group. An anchored Info tool shows the selected composition’s path and a
+scrolling Media table (path, sample rate, channels, length, size) for media in
+that composition’s pool.
 
 ### Header and status
 

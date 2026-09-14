@@ -145,6 +145,8 @@ pub struct Session {
     properties: BTreeMap<String, String>,
     capture_ui: bool,
     dirty: bool,
+    /// Ordered named explorer groups (may be empty of documents).
+    groups: Vec<String>,
     documents: Vec<SessionDocument>,
     active: Option<DocumentId>,
 }
@@ -165,6 +167,7 @@ impl Session {
             properties: BTreeMap::new(),
             capture_ui: true,
             dirty: false,
+            groups: Vec::new(),
             documents: Vec::new(),
             active: None,
         }
@@ -445,6 +448,9 @@ impl Session {
     /// `set_document_group`.
     pub fn set_document_group(&mut self, id: DocumentId, group: Option<String>) -> bool {
         let group = group.filter(|name| !name.is_empty());
+        if let Some(name) = group.as_ref() {
+            self.ensure_group(name);
+        }
         let changed = match self.get_mut(id) {
             Some(doc) if doc.group != group => {
                 doc.group = group;
@@ -456,6 +462,132 @@ impl Session {
         if changed {
             self.mark_dirty();
         }
+        true
+    }
+
+    /// Ordered named groups in the session registry (may be empty of members).
+    pub fn groups(&self) -> &[String] {
+        &self.groups
+    }
+
+    /// Ensure `name` appears in the group registry (append if missing).
+    pub fn ensure_group(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        if self.groups.iter().any(|g| g == name) {
+            return false;
+        }
+        self.groups.push(name.to_string());
+        self.mark_dirty();
+        true
+    }
+
+    /// Append a named group. No-op for empty or duplicate names. Returns true
+    /// when the registry changed.
+    pub fn add_group(&mut self, name: impl AsRef<str>) -> bool {
+        self.ensure_group(name.as_ref())
+    }
+
+    /// Insert a named group after `after` (or at the end when `after` is None /
+    /// unknown). No-op for empty or duplicate names.
+    pub fn add_group_after(&mut self, name: impl AsRef<str>, after: Option<&str>) -> bool {
+        let name = name.as_ref().trim();
+        if name.is_empty() || self.groups.iter().any(|g| g == name) {
+            return false;
+        }
+        let index = after
+            .and_then(|a| self.groups.iter().position(|g| g == a))
+            .map(|i| i + 1)
+            .unwrap_or(self.groups.len());
+        self.groups.insert(index, name.to_string());
+        self.mark_dirty();
+        true
+    }
+
+    /// Rename a registry group and all member documents. Returns false if
+    /// `old` is missing or `new` is empty / already used.
+    pub fn rename_group(&mut self, old: &str, new: impl AsRef<str>) -> bool {
+        let new = new.as_ref().trim();
+        if new.is_empty() {
+            return false;
+        }
+        let Some(index) = self.groups.iter().position(|g| g == old) else {
+            return false;
+        };
+        if old == new {
+            return true;
+        }
+        if self.groups.iter().any(|g| g == new) {
+            return false;
+        }
+        self.groups[index] = new.to_string();
+        for doc in &mut self.documents {
+            if doc.group.as_deref() == Some(old) {
+                doc.group = Some(new.to_string());
+            }
+        }
+        self.mark_dirty();
+        true
+    }
+
+    /// Remove a registry group and clear membership on documents.
+    pub fn delete_group(&mut self, name: &str) -> bool {
+        let Some(index) = self.groups.iter().position(|g| g == name) else {
+            return false;
+        };
+        self.groups.remove(index);
+        for doc in &mut self.documents {
+            if doc.group.as_deref() == Some(name) {
+                doc.group = None;
+            }
+        }
+        self.mark_dirty();
+        true
+    }
+
+    /// Move a named group to `index` within the registry (0-based, clamped).
+    pub fn move_group(&mut self, name: &str, index: usize) -> bool {
+        let Some(from) = self.groups.iter().position(|g| g == name) else {
+            return false;
+        };
+        let group = self.groups.remove(from);
+        let to = index.min(self.groups.len());
+        if to == from {
+            self.groups.insert(to, group);
+            return true;
+        }
+        self.groups.insert(to, group);
+        self.mark_dirty();
+        true
+    }
+
+    /// Replace the group registry. Documents whose group is not in `names`
+    /// become ungrouped. Empty names are skipped; duplicates keep first.
+    pub fn set_groups(&mut self, names: Vec<String>) -> bool {
+        let mut groups = Vec::new();
+        for name in names {
+            let name = name.trim();
+            if name.is_empty() || groups.iter().any(|g| g == name) {
+                continue;
+            }
+            groups.push(name.to_string());
+        }
+        let mut docs_changed = false;
+        for doc in &mut self.documents {
+            if let Some(group) = doc.group.as_ref() {
+                if !groups.iter().any(|g| g == group) {
+                    doc.group = None;
+                    docs_changed = true;
+                }
+            }
+        }
+        if self.groups == groups && !docs_changed {
+            return true;
+        }
+        self.groups = groups;
+        self.mark_dirty();
         true
     }
 
@@ -491,6 +623,9 @@ impl Session {
         let Some(from) = self.documents.iter().position(|doc| doc.id == id) else {
             return false;
         };
+        if let Some(name) = group.as_ref() {
+            self.ensure_group(name);
+        }
         let mut doc = self.documents.remove(from);
         let group_changed = doc.group != group;
         doc.group = group.clone();
@@ -646,6 +781,7 @@ impl Session {
             properties: self.properties.clone(),
             active: self.active,
             capture_ui: self.capture_ui,
+            groups: self.groups.clone(),
             documents,
             ui: None,
         })
@@ -681,6 +817,14 @@ impl Session {
             .active
             .filter(|id| documents.iter().any(|doc| doc.id == *id))
             .or_else(|| documents.first().map(|doc| doc.id));
+        let mut groups = envelope.groups;
+        for doc in &documents {
+            if let Some(name) = doc.group.as_ref() {
+                if !name.is_empty() && !groups.iter().any(|g| g == name) {
+                    groups.push(name.clone());
+                }
+            }
+        }
         Ok(LoadedSession {
             session: Session {
                 id: envelope.id,
@@ -689,6 +833,7 @@ impl Session {
                 properties: envelope.properties,
                 capture_ui: envelope.capture_ui,
                 dirty: false,
+                groups,
                 documents,
                 active,
             },
@@ -799,6 +944,9 @@ struct SessionEnvelope {
     #[serde(default = "default_true")]
     /// capture_ui.
     pub capture_ui: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Ordered named explorer groups.
+    pub groups: Vec<String>,
     /// documents.
     pub documents: Vec<SessionDocumentFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1219,6 +1367,39 @@ mod tests {
         assert_eq!(ids(&session), vec![a, b, c]);
         assert!(session.place_document(b, None, 2));
         assert_eq!(ids(&session), vec![a, c, b]);
+    }
+
+    #[test]
+    fn groups_registry_round_trips_and_reorders() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.facomp")));
+        let b = session.push(Some(path("b.facomp")));
+        assert!(session.add_group("todo"));
+        assert!(session.add_group("done"));
+        assert!(session.set_document_group(a, Some("todo".into())));
+        assert!(session.set_document_group(b, Some("done".into())));
+        assert!(session.add_group("empty"));
+        assert_eq!(session.groups(), &["todo", "done", "empty"]);
+        assert!(session.move_group("empty", 0));
+        assert_eq!(session.groups(), &["empty", "todo", "done"]);
+        assert!(session.rename_group("todo", "review"));
+        assert_eq!(session.get(a).unwrap().group.as_deref(), Some("review"));
+        let json = session.to_json(named).unwrap();
+        assert!(json.contains("\"groups\""));
+        let loaded = Session::from_json(&json, None).unwrap().session;
+        assert_eq!(loaded.groups(), &["empty", "review", "done"]);
+        assert!(loaded.get(a).unwrap().group.as_deref() == Some("review"));
+    }
+
+    #[test]
+    fn delete_group_ungroups_members() {
+        let mut session = Session::new();
+        let a = session.push(Some(path("a.facomp")));
+        session.add_group("todo");
+        session.set_document_group(a, Some("todo".into()));
+        assert!(session.delete_group("todo"));
+        assert!(session.groups().is_empty());
+        assert_eq!(session.get(a).unwrap().group, None);
     }
 
     #[test]

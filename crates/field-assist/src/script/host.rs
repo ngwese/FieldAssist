@@ -561,6 +561,15 @@ impl HostHandle {
         })
     }
 
+    pub fn set_display_name(&self, id: DocumentId, name: String) -> mlua::Result<()> {
+        if let Some(test) = &self.inner.borrow().test {
+            test.borrow_mut().names.insert(id, name);
+            return Ok(());
+        }
+        access::with_view(|view, window, cx| view.script_set_display_name(id, name, window, cx))
+            .map_err(|_| mlua::Error::runtime("UI is not available"))?
+    }
+
     pub fn path(&self, id: DocumentId) -> Option<PathBuf> {
         if let Some(test) = &self.inner.borrow().test {
             if let Some(path) = test.borrow().paths.get(&id).cloned().flatten() {
@@ -920,6 +929,98 @@ impl HostHandle {
     pub fn session_group_count(&self, which: Option<SessionId>, group: &str) -> usize {
         self.with_session_kind(which, |session| session.group_count(group))
             .unwrap_or(0)
+    }
+
+    pub fn session_groups(&self, which: Option<SessionId>) -> Vec<String> {
+        self.with_session_kind(which, |session| session.groups().to_vec())
+            .unwrap_or_default()
+    }
+
+    pub fn set_session_groups(
+        &self,
+        which: Option<SessionId>,
+        groups: Vec<String>,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
+            session.set_groups(groups);
+            Ok(())
+        })?;
+        if which.is_none() {
+            self.refresh_explorer();
+        }
+        Ok(())
+    }
+
+    pub fn add_session_group(&self, which: Option<SessionId>, name: String) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
+            session.add_group(name);
+            Ok(())
+        })?;
+        if which.is_none() {
+            self.refresh_explorer();
+        }
+        Ok(())
+    }
+
+    pub fn rename_session_group(
+        &self,
+        which: Option<SessionId>,
+        old: String,
+        new: String,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
+            if session.rename_group(&old, new) {
+                Ok(())
+            } else {
+                Err(mlua::Error::runtime("could not rename group"))
+            }
+        })?;
+        if which.is_none() {
+            self.refresh_explorer();
+        }
+        Ok(())
+    }
+
+    pub fn delete_session_group(&self, which: Option<SessionId>, name: String) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
+            if session.delete_group(&name) {
+                Ok(())
+            } else {
+                Err(mlua::Error::runtime("group not found"))
+            }
+        })?;
+        if which.is_none() {
+            self.refresh_explorer();
+        }
+        Ok(())
+    }
+
+    /// Move a named group to 1-based `index` within `session.groups`.
+    pub fn move_session_group(
+        &self,
+        which: Option<SessionId>,
+        name: String,
+        index: i64,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |session| {
+            let len = session.groups().len() as i64;
+            if len == 0 {
+                return Err(mlua::Error::runtime("session has no named groups"));
+            }
+            if index < 1 || index > len {
+                return Err(mlua::Error::runtime(format!(
+                    "move_group index must be between 1 and {len}"
+                )));
+            }
+            if !session.move_group(&name, (index - 1) as usize) {
+                return Err(mlua::Error::runtime("group not found"));
+            }
+            Ok(())
+        })?;
+        if which.is_none() {
+            self.refresh_explorer();
+        }
+        Ok(())
     }
 
     /// Move `id` to 1-based `index` within the chosen session's document list.

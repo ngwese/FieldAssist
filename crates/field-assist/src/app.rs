@@ -39,7 +39,7 @@ use crate::commands::{
     ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::empty_pane::EmptyPane;
-use crate::components::explorer::{ExplorerEvent, ExplorerPanel};
+use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
 use crate::components::header_meta::HeaderMeta;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::render_sheet::RenderSheet;
@@ -268,9 +268,17 @@ impl AppView {
 
         let explorer = cx.new(|cx| ExplorerPanel::new(cx));
         explorer.update(cx, |explorer, _| {
-            let app = app.clone();
+            let app_for_handler = app.clone();
             explorer.set_handler(Rc::new(move |event, window, cx| {
-                let _ = app.update(cx, |this, cx| this.handle_explorer(event, window, cx));
+                let _ =
+                    app_for_handler.update(cx, |this, cx| this.handle_explorer(event, window, cx));
+            }));
+            let app_for_info = app.clone();
+            explorer.set_info_provider(Rc::new(move |id, cx| {
+                app_for_info
+                    .upgrade()
+                    .map(|app| app.read(cx).info_media_rows(id))
+                    .unwrap_or_default()
             }));
         });
         let empty_editors = cx.new(|cx| {
@@ -544,6 +552,12 @@ impl AppView {
     }
 
     fn display_title(&self, id: DocumentId, _cx: &App) -> SharedString {
+        if let Some(views) = self.views.get(&id) {
+            let composition = views.composition.read().unwrap();
+            if composition.display_title().is_some() {
+                return composition.display_name().into();
+            }
+        }
         if let Some(path) = self
             .session
             .get(id)
@@ -560,6 +574,29 @@ impl AppView {
             .get(&id)
             .map(|views| Self::composition_title(&views.composition.read().unwrap()))
             .unwrap_or_else(|| crate::APP_NAME.into())
+    }
+
+    /// Directory + display-title basename when the composition was renamed in
+    /// memory; otherwise the existing project path.
+    fn save_path_for_document(&self, id: DocumentId) -> Option<PathBuf> {
+        let doc = self.session.get(id)?;
+        let title = self.views.get(&id).and_then(|views| {
+            views
+                .composition
+                .read()
+                .ok()?
+                .display_title()
+                .map(str::to_string)
+        });
+        if let Some(title) = title {
+            let dir = doc
+                .project_path
+                .as_ref()
+                .or(doc.source_path.as_ref())
+                .and_then(|path| path.parent())?;
+            return Some(dir.join(field_composition::normalize_facomp_file_name(&title)));
+        }
+        doc.project_path.clone()
     }
 
     pub(crate) fn refresh_explorer(&self, cx: &mut Context<Self>) {
@@ -608,8 +645,39 @@ impl AppView {
             .collect();
         let active = self.session.active();
         self.explorer.update(cx, |explorer, cx| {
-            explorer.set_documents(&docs, active, cx);
+            explorer.set_documents(&docs, self.session.groups(), active, cx);
         });
+    }
+
+    fn info_media_rows(&self, id: DocumentId) -> Vec<InfoMediaRow> {
+        let Some(views) = self.views.get(&id) else {
+            return Vec::new();
+        };
+        let composition = views.composition.read().unwrap();
+        let mut media: Vec<_> = composition.pool().iter().collect();
+        media.sort_by_key(|m| m.id.0);
+        media
+            .into_iter()
+            .map(|m| {
+                let path = if !m.path.as_os_str().is_empty() {
+                    m.path.display().to_string()
+                } else {
+                    m.url.clone()
+                };
+                let duration_secs = if m.sample_rate > 0 {
+                    m.frame_count as f64 / f64::from(m.sample_rate)
+                } else {
+                    0.0
+                };
+                InfoMediaRow {
+                    path,
+                    sample_rate: m.sample_rate,
+                    channel_count: m.channel_count,
+                    duration_secs,
+                    size_bytes: m.size_bytes,
+                }
+            })
+            .collect()
     }
 
     fn lineage_tree(&self, _cx: &App) -> LineageTree {
@@ -1479,6 +1547,31 @@ impl AppView {
                 self.session.place_document(id, parent_group, index);
                 self.refresh_explorer(cx);
             }
+            ExplorerEvent::Rename { id, name } => {
+                if let Some(views) = self.views.get(&id) {
+                    views.composition.write().unwrap().set_display_title(name);
+                }
+                self.refresh_explorer(cx);
+                if self.session.active() == Some(id) {
+                    self.update_window_title(window, cx);
+                }
+            }
+            ExplorerEvent::RenameGroup { from, to } => {
+                self.session.rename_group(&from, to);
+                self.refresh_explorer(cx);
+            }
+            ExplorerEvent::AddGroup { name, after } => {
+                self.session.add_group_after(name, after.as_deref());
+                self.refresh_explorer(cx);
+            }
+            ExplorerEvent::DeleteGroup { name } => {
+                self.session.delete_group(&name);
+                self.refresh_explorer(cx);
+            }
+            ExplorerEvent::MoveGroup { name, index } => {
+                self.session.move_group(&name, index);
+                self.refresh_explorer(cx);
+            }
         }
     }
 
@@ -2062,12 +2155,8 @@ impl AppView {
         if self.session.get(id).is_none() {
             return Err("composition is not open".into());
         }
-        if let Some(path) = self
-            .session
-            .get(id)
-            .and_then(|doc| doc.project_path.clone())
-        {
-            self.write_project(id, path, AfterWrite::None, window, cx);
+        if let Some(path) = self.save_path_for_document(id) {
+            self.write_project(id, path, AfterWrite::None, false, window, cx);
         } else {
             self.prompt_save_as_for(id, AfterWrite::None, window, cx);
         }
@@ -2085,6 +2174,24 @@ impl AppView {
 
     pub(crate) fn script_display_name(&self, id: DocumentId, cx: &App) -> Option<String> {
         Some(self.display_title(id, cx).to_string())
+    }
+
+    pub(crate) fn script_set_display_name(
+        &mut self,
+        id: DocumentId,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> mlua::Result<()> {
+        let Some(views) = self.views.get(&id) else {
+            return Err(mlua::Error::runtime("composition is not open"));
+        };
+        views.composition.write().unwrap().set_display_title(name);
+        self.refresh_explorer(cx);
+        if self.session.active() == Some(id) {
+            self.update_window_title(window, cx);
+        }
+        Ok(())
     }
 
     pub(crate) fn script_composition_uuid(&self, id: DocumentId, _cx: &App) -> Option<String> {
@@ -2471,12 +2578,8 @@ impl AppView {
     }
 
     fn save_then_replace(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self
-            .session
-            .get(id)
-            .and_then(|doc| doc.project_path.clone())
-        {
-            self.write_project(id, path, AfterWrite::Replace, window, cx);
+        if let Some(path) = self.save_path_for_document(id) {
+            self.write_project(id, path, AfterWrite::Replace, false, window, cx);
         } else {
             self.prompt_save_as_for(id, AfterWrite::Replace, window, cx);
         }
@@ -2852,12 +2955,8 @@ impl AppView {
             self.show_save_error("No composition is open.", window, cx);
             return;
         };
-        if let Some(path) = self
-            .session
-            .get(id)
-            .and_then(|doc| doc.project_path.clone())
-        {
-            self.write_project(id, path, AfterWrite::None, window, cx);
+        if let Some(path) = self.save_path_for_document(id) {
+            self.write_project(id, path, AfterWrite::None, false, window, cx);
         } else {
             self.prompt_save_as(window, cx);
         }
@@ -2914,7 +3013,7 @@ impl AppView {
             };
             let _ = cx.update(|window, cx| {
                 view.update(cx, |this, cx| {
-                    this.write_project(id, path, after, window, cx);
+                    this.write_project(id, path, after, true, window, cx);
                 });
             });
         })
@@ -2926,6 +3025,7 @@ impl AppView {
         id: DocumentId,
         path: PathBuf,
         after: AfterWrite,
+        mint_new_id: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2943,12 +3043,12 @@ impl AppView {
         let result = {
             let started = Instant::now();
             let mut composition = views.composition.write().unwrap();
-            let is_save_as = self
+            let path_changed = self
                 .session
                 .get(id)
                 .and_then(|doc| doc.project_path.as_ref())
                 .is_some_and(|existing| existing != &path);
-            if is_save_as {
+            if mint_new_id && path_changed {
                 composition.mint_new_id();
             }
             let result = composition.save_to_path(&path);
@@ -3070,12 +3170,8 @@ impl AppView {
     }
 
     fn save_then_close(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = self
-            .session
-            .get(id)
-            .and_then(|doc| doc.project_path.clone())
-        {
-            self.write_project(id, path, AfterWrite::Close, window, cx);
+        if let Some(path) = self.save_path_for_document(id) {
+            self.write_project(id, path, AfterWrite::Close, false, window, cx);
         } else {
             self.prompt_save_as_for(id, AfterWrite::Close, window, cx);
         }
@@ -3266,12 +3362,8 @@ impl AppView {
                 self.quit_save_queue.remove(0);
                 continue;
             }
-            if let Some(path) = self
-                .session
-                .get(id)
-                .and_then(|doc| doc.project_path.clone())
-            {
-                self.write_project(id, path, AfterWrite::ContinuePending, window, cx);
+            if let Some(path) = self.save_path_for_document(id) {
+                self.write_project(id, path, AfterWrite::ContinuePending, false, window, cx);
                 return;
             }
             self.prompt_save_as_for(id, AfterWrite::ContinuePending, window, cx);

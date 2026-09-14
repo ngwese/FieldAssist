@@ -307,12 +307,17 @@ a detached session for scripts; `open` / `save` / `save_as` / setting
 | `properties` | read/write | String→string map (`nil` values rejected). Snapshot on read. |
 | `composition` | read/write | Focused composition, or `nil` (UI session only for write). |
 | `compositions` | read | Compositions in order. |
+| `groups` | read/write | Ordered named explorer groups (may be empty of members). Assigning a string list replaces the registry; documents whose group is dropped become ungrouped. |
 
 ### Methods
 
 | Method | Description |
 | --- | --- |
 | `group_count(name)` | Documents whose `group` equals `name`. |
+| `add_group(name)` | Append a named group (no-op if empty or duplicate). |
+| `rename_group(old, new)` | Rename a registry group and all member documents. |
+| `delete_group(name)` | Remove a registry group; members become ungrouped. |
+| `move_group(name, index)` | Place `name` at 1-based `groups[index]`. |
 | `move(doc, index)` | Place `doc` at 1-based `compositions[index]` (`1 .. #compositions`). |
 | `open(path)` | Audio/`.facomp` → add; `.fasession` → replace UI session. |
 | `save()` / `save_as(path)` | Persist the UI session. |
@@ -325,8 +330,10 @@ Session metadata and grouping:
 ```lua
 local s = app.session
 s.properties = { batch = "2026-09" }
+s:add_group("todo")
 print(s:group_count("todo"))
 s:move(s.compositions[2], 1)
+s:move_group("todo", 1)
 ```
 
 Merge paths from another `.fasession` without replacing the UI:
@@ -354,7 +361,7 @@ removed region/marker errors on further field access.
 
 | Property | Access | Description |
 | --- | --- | --- |
-| `name` | read | Display title (file name when saved). |
+| `name` | read/write | Display title. Assigning renames in memory and dirties the composition; on save the name becomes the `.facomp` basename next to `project_path` / `source_path`. |
 | `id` | read | Composition UUID (stable across sessions; stored in `.facomp`). |
 | `parent` | read | Open parent composition, or `nil` if none / not in this session. |
 | `children` | read | Open child compositions (table), in session order. |

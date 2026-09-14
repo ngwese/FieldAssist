@@ -90,12 +90,42 @@ impl UserData for LuaSession {
                 .collect();
             Ok(docs)
         });
+        fields.add_field_method_get("groups", |lua, this| {
+            let host = host_from_lua(lua)?;
+            let groups = host.session_groups(this.id);
+            let table = lua.create_table()?;
+            for (index, name) in groups.into_iter().enumerate() {
+                table.set(index + 1, name)?;
+            }
+            Ok(table)
+        });
+        fields.add_field_method_set("groups", |lua, this, value: Value| {
+            let host = host_from_lua(lua)?;
+            let groups = string_list_from_lua(value)?;
+            host.set_session_groups(this.id, groups)
+        });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("group_count", |lua, this, group: String| {
             let host = host_from_lua(lua)?;
             Ok(host.session_group_count(this.id, &group) as i64)
+        });
+        methods.add_method("add_group", |lua, this, name: String| {
+            let host = host_from_lua(lua)?;
+            host.add_session_group(this.id, name)
+        });
+        methods.add_method("rename_group", |lua, this, (old, new): (String, String)| {
+            let host = host_from_lua(lua)?;
+            host.rename_session_group(this.id, old, new)
+        });
+        methods.add_method("delete_group", |lua, this, name: String| {
+            let host = host_from_lua(lua)?;
+            host.delete_session_group(this.id, name)
+        });
+        methods.add_method("move_group", |lua, this, (name, index): (String, i64)| {
+            let host = host_from_lua(lua)?;
+            host.move_session_group(this.id, name, index)
         });
         methods.add_method("move", |lua, this, (doc, index): (LuaComposition, i64)| {
             let host = host_from_lua(lua)?;
@@ -144,6 +174,30 @@ pub fn optional_lua_string(value: Value) -> mlua::Result<Option<String>> {
         }
         other => Err(mlua::Error::runtime(format!(
             "expected a string or nil, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn string_list_from_lua(value: Value) -> mlua::Result<Vec<String>> {
+    match value {
+        Value::Table(table) => {
+            let mut out = Vec::new();
+            for pair in table.sequence_values::<Value>() {
+                match pair? {
+                    Value::String(value) => out.push(value.to_str()?.to_owned()),
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "groups entries must be strings, got {}",
+                            other.type_name()
+                        )))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        other => Err(mlua::Error::runtime(format!(
+            "groups must be a table, got {}",
             other.type_name()
         ))),
     }

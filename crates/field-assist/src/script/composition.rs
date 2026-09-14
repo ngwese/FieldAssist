@@ -37,6 +37,10 @@ impl UserData for LuaComposition {
             host.display_name(this.id)
                 .ok_or_else(|| mlua::Error::runtime("composition is not open"))
         });
+        fields.add_field_method_set("name", |lua, this, value: String| {
+            let host = host_from_lua(lua)?;
+            host.set_display_name(this.id, value)
+        });
         fields.add_field_method_get("path", |lua, this| {
             let host = host_from_lua(lua)?;
             Ok(host.path(this.id).map(|path| path.display().to_string()))

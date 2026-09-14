@@ -9,8 +9,12 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
+    input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
-    v_flex, ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Sizable as _,
+    resizable_panel,
+    tooltip::Tooltip,
+    v_flex, v_resizable, ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed,
+    Selectable as _, Sizable as _, StyledExt as _,
 };
 use gpui_kit::{
     actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, Bounds, ClickEvent,
@@ -21,17 +25,92 @@ use gpui_kit::{
 
 use crate::model::DocumentId;
 
-actions!(explorer, [ConfirmSelected, SelectPrev, SelectNext]);
+actions!(
+    explorer,
+    [
+        ConfirmSelected,
+        SelectPrev,
+        SelectNext,
+        RenameSelected,
+        CancelRename
+    ]
+);
 
 const CONTEXT: &str = "Compositions";
 const SESSION_LABEL: &str = "session";
 const DISCLOSURE_SLOT: f32 = 14.;
+const INFO_PATH_CHARS: usize = 40;
+const INFO_MEDIA_PATH_CHARS: usize = 28;
+const INFO_PANE_DEFAULT: f32 = 160.;
+const INFO_PANE_MIN: f32 = 96.;
+const INFO_PANE_MAX: f32 = 480.;
+
+/// One media entry shown in the explorer Info tool.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InfoMediaRow {
+    pub path: String,
+    pub sample_rate: u32,
+    pub channel_count: usize,
+    pub duration_secs: f64,
+    pub size_bytes: u64,
+}
+
+type InfoProvider = Rc<dyn Fn(DocumentId, &App) -> Vec<InfoMediaRow>>;
 
 struct LinkIcon;
 
 impl IconNamed for LinkIcon {
     fn path(self) -> SharedString {
         "icons/link-2.svg".into()
+    }
+}
+
+/// Shorten `text` to at most `max_chars`, keeping the start and end with `…`
+/// in the middle.
+fn middle_ellipsis(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".into();
+    }
+    let keep = max_chars - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    let mut out = String::with_capacity(max_chars);
+    out.extend(chars.iter().take(head));
+    out.push('…');
+    out.extend(chars.iter().skip(chars.len() - tail));
+    out
+}
+
+fn format_duration_secs(secs: f64) -> String {
+    if !secs.is_finite() || secs < 0. {
+        return "—".into();
+    }
+    if secs < 10. {
+        format!("{secs:.2}s")
+    } else if secs < 100. {
+        format!("{secs:.1}s")
+    } else {
+        format!("{secs:.0}s")
+    }
+}
+
+fn format_size_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.;
+    const MB: f64 = KB * 1024.;
+    const GB: f64 = MB * 1024.;
+    let n = bytes as f64;
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if n < MB {
+        format!("{:.1} KB", n / KB)
+    } else if n < GB {
+        format!("{:.1} MB", n / MB)
+    } else {
+        format!("{:.2} GB", n / GB)
     }
 }
 
@@ -49,6 +128,26 @@ pub enum ExplorerEvent {
     },
     /// Move `id` back to sit immediately under its open parent.
     Reattach(DocumentId),
+    Rename {
+        id: DocumentId,
+        name: String,
+    },
+    RenameGroup {
+        from: String,
+        to: String,
+    },
+    AddGroup {
+        name: String,
+        after: Option<String>,
+    },
+    DeleteGroup {
+        name: String,
+    },
+    /// Move named group to 0-based `index` among named groups.
+    MoveGroup {
+        name: String,
+        index: usize,
+    },
 }
 
 #[derive(Clone, PartialEq)]
@@ -95,6 +194,18 @@ impl SectionKey {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RenameTarget {
+    Document(DocumentId),
+    Group { name: String },
+    NewGroup { after: Option<String> },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExplorerTool {
+    Info,
+}
+
 /// Drag payload for explorer compositions. Path is offered to path fields and
 /// as a native file drag when the pointer leaves the window.
 #[derive(Clone, Debug)]
@@ -118,12 +229,35 @@ impl Render for CompositionDrag {
     }
 }
 
+/// Drag payload for reordering named group headers.
+#[derive(Clone, Debug)]
+struct GroupDrag {
+    name: String,
+}
+
+impl Render for GroupDrag {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_0p5()
+            .text_xs()
+            .bg(cx.theme().secondary)
+            .text_color(cx.theme().muted_foreground)
+            .rounded(cx.theme().radius)
+            .shadow_md()
+            .child(self.name.clone())
+    }
+}
+
 struct ExplorerSection<'a> {
     key: SectionKey,
     items: Vec<&'a ExplorerItem>,
 }
 
-fn group_sections(items: &[ExplorerItem]) -> Vec<ExplorerSection<'_>> {
+fn group_sections<'a>(
+    items: &'a [ExplorerItem],
+    session_groups: &[String],
+) -> Vec<ExplorerSection<'a>> {
     let mut sections = Vec::new();
     let session: Vec<&ExplorerItem> = items.iter().filter(|item| item.group.is_none()).collect();
     if !session.is_empty() {
@@ -132,24 +266,18 @@ fn group_sections(items: &[ExplorerItem]) -> Vec<ExplorerSection<'_>> {
             items: session,
         });
     }
-    let mut named_order: Vec<String> = Vec::new();
     let mut named: HashMap<String, Vec<&ExplorerItem>> = HashMap::new();
     for item in items {
         let Some(name) = item.group.as_ref() else {
             continue;
         };
-        if !named.contains_key(name) {
-            named_order.push(name.clone());
-        }
         named.entry(name.clone()).or_default().push(item);
     }
-    for name in named_order {
-        if let Some(group_items) = named.remove(&name) {
-            sections.push(ExplorerSection {
-                key: SectionKey::Named(name),
-                items: group_items,
-            });
-        }
+    for name in session_groups {
+        sections.push(ExplorerSection {
+            key: SectionKey::Named(name.clone()),
+            items: named.remove(name).unwrap_or_default(),
+        });
     }
     sections
 }
@@ -229,15 +357,23 @@ type EventHandler = Rc<dyn Fn(ExplorerEvent, &mut Window, &mut App)>;
 
 pub struct ExplorerPanel {
     items: Vec<ExplorerItem>,
+    session_groups: Vec<String>,
     active: Option<DocumentId>,
     selected: Option<DocumentId>,
     hovered_close: Option<DocumentId>,
-    /// Insertion gap while dragging: before index `0..=section.len`.
+    /// Insertion gap while dragging a composition: before index `0..=section.len`.
     drop_slot: Option<(SectionKey, usize)>,
+    /// Insertion gap while dragging a named group header: before index among
+    /// named groups (`0..=session_groups.len`).
+    group_drop_slot: Option<usize>,
     collapsed: HashSet<SectionKey>,
     /// Parents whose attached children are hidden.
     collapsed_parents: HashSet<DocumentId>,
+    renaming: Option<RenameTarget>,
+    rename_input: Option<Entity<InputState>>,
+    active_tool: Option<ExplorerTool>,
     on_event: Option<EventHandler>,
+    info_provider: Option<InfoProvider>,
     focus_handle: FocusHandle,
 }
 
@@ -245,24 +381,36 @@ impl ExplorerPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         cx.bind_keys([
             KeyBinding::new("enter", ConfirmSelected, Some(CONTEXT)),
+            KeyBinding::new("shift-enter", RenameSelected, Some(CONTEXT)),
+            KeyBinding::new("escape", CancelRename, Some(CONTEXT)),
             KeyBinding::new("up", SelectPrev, Some(CONTEXT)),
             KeyBinding::new("down", SelectNext, Some(CONTEXT)),
         ]);
         Self {
             items: Vec::new(),
+            session_groups: Vec::new(),
             active: None,
             selected: None,
             hovered_close: None,
             drop_slot: None,
+            group_drop_slot: None,
             collapsed: HashSet::new(),
             collapsed_parents: HashSet::new(),
+            renaming: None,
+            rename_input: None,
+            active_tool: None,
             on_event: None,
+            info_provider: None,
             focus_handle: cx.focus_handle(),
         }
     }
 
     pub fn set_handler(&mut self, handler: EventHandler) {
         self.on_event = Some(handler);
+    }
+
+    pub fn set_info_provider(&mut self, provider: InfoProvider) {
+        self.info_provider = Some(provider);
     }
 
     fn handler(&self) -> Option<EventHandler> {
@@ -282,6 +430,7 @@ impl ExplorerPanel {
             bool,
             bool,
         )],
+        session_groups: &[String],
         active: Option<DocumentId>,
         cx: &mut Context<Self>,
     ) {
@@ -303,22 +452,32 @@ impl ExplorerPanel {
                 },
             )
             .collect();
-        if items == self.items && active == self.active {
+        if items == self.items
+            && active == self.active
+            && session_groups == self.session_groups.as_slice()
+        {
             return;
         }
         let keep = self
             .selected
             .filter(|id| items.iter().any(|item| item.id == *id));
         self.items = items;
+        self.session_groups = session_groups.to_vec();
         self.active = active;
         self.selected = keep.or(active);
-        let live: HashSet<_> = group_sections(&self.items)
+        let live: HashSet<_> = group_sections(&self.items, &self.session_groups)
             .into_iter()
             .map(|section| section.key)
             .collect();
         self.collapsed.retain(|key| live.contains(key));
         let live_ids: HashSet<_> = self.items.iter().map(|item| item.id).collect();
         self.collapsed_parents.retain(|id| live_ids.contains(id));
+        if let Some(RenameTarget::Document(id)) = self.renaming {
+            if !live_ids.contains(&id) {
+                self.renaming = None;
+                self.rename_input = None;
+            }
+        }
         cx.notify();
     }
 
@@ -344,7 +503,7 @@ impl ExplorerPanel {
 
     fn visible_ids(&self) -> Vec<DocumentId> {
         let mut out = Vec::new();
-        for section in group_sections(&self.items) {
+        for section in group_sections(&self.items, &self.session_groups) {
             if self.collapsed.contains(&section.key) {
                 continue;
             }
@@ -359,6 +518,9 @@ impl ExplorerPanel {
     }
 
     fn select_delta(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.renaming.is_some() {
+            return;
+        }
         let visible = self.visible_ids();
         if visible.is_empty() {
             return;
@@ -387,6 +549,99 @@ impl ExplorerPanel {
             cx.notify();
         }
     }
+
+    fn set_group_drop_slot(&mut self, slot: Option<usize>, cx: &mut Context<Self>) {
+        if self.group_drop_slot != slot {
+            self.group_drop_slot = slot;
+            cx.notify();
+        }
+    }
+
+    fn begin_rename(&mut self, target: RenameTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let seed = match &target {
+            RenameTarget::Document(id) => self
+                .items
+                .iter()
+                .find(|item| item.id == *id)
+                .map(|item| item.name.to_string())
+                .unwrap_or_default(),
+            RenameTarget::Group { name } => name.clone(),
+            RenameTarget::NewGroup { .. } => String::new(),
+        };
+        let input = cx.new(|cx| InputState::new(window, cx));
+        input.update(cx, |state, cx| {
+            state.set_value(seed, window, cx);
+            state.select_all(window, cx);
+        });
+        cx.subscribe_in(
+            &input,
+            window,
+            |this, _input, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                } => this.commit_rename(window, cx),
+                InputEvent::Blur => this.commit_rename(window, cx),
+                _ => {}
+            },
+        )
+        .detach();
+        self.renaming = Some(target);
+        self.rename_input = Some(input.clone());
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        if self.renaming.is_none() && self.rename_input.is_none() {
+            return;
+        }
+        self.renaming = None;
+        self.rename_input = None;
+        cx.notify();
+    }
+
+    fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.renaming.take() else {
+            self.rename_input = None;
+            return;
+        };
+        let name = self
+            .rename_input
+            .take()
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        cx.notify();
+        if name.is_empty() {
+            return;
+        }
+        let event = match target {
+            RenameTarget::Document(id) => ExplorerEvent::Rename { id, name },
+            RenameTarget::Group { name: from } => ExplorerEvent::RenameGroup { from, to: name },
+            RenameTarget::NewGroup { after } => ExplorerEvent::AddGroup { name, after },
+        };
+        let explorer = cx.entity();
+        window.defer(cx, move |window, cx| {
+            dispatch(&explorer, event, window, cx);
+        });
+    }
+
+    fn toggle_info_tool(&mut self, cx: &mut Context<Self>) {
+        if self.active_tool == Some(ExplorerTool::Info) {
+            self.active_tool = None;
+        } else {
+            self.active_tool = Some(ExplorerTool::Info);
+        }
+        cx.notify();
+    }
+
+    fn close_tool(&mut self, cx: &mut Context<Self>) {
+        if self.active_tool.take().is_some() {
+            cx.notify();
+        }
+    }
 }
 
 /// Call the host without holding an `ExplorerPanel` lease. `AppView`
@@ -405,6 +660,10 @@ fn dispatch(
 
 fn accepts_composition_drag(data: &dyn std::any::Any) -> bool {
     data.downcast_ref::<CompositionDrag>().is_some()
+}
+
+fn accepts_group_drag(data: &dyn std::any::Any) -> bool {
+    data.downcast_ref::<GroupDrag>().is_some()
 }
 
 fn drop_on_section(
@@ -454,6 +713,38 @@ fn drop_on_section(
         ExplorerEvent::Place {
             id: drag.id,
             group: target.group_name(),
+            index,
+        },
+        window,
+        cx,
+    );
+}
+
+fn drop_group(
+    explorer: &Entity<ExplorerPanel>,
+    drag: &GroupDrag,
+    named_count: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let drop_before = explorer.read(cx).group_drop_slot.unwrap_or(named_count);
+    let from = explorer
+        .read(cx)
+        .session_groups
+        .iter()
+        .position(|name| name == &drag.name);
+    let index = index_in_group_after_remove(drop_before, from);
+    explorer.update(cx, |this, cx| {
+        this.group_drop_slot = None;
+        cx.notify();
+    });
+    if from == Some(index) {
+        return;
+    }
+    dispatch(
+        explorer,
+        ExplorerEvent::MoveGroup {
+            name: drag.name.clone(),
             index,
         },
         window,
@@ -527,33 +818,60 @@ impl Panel for ExplorerPanel {
 }
 
 impl Render for ExplorerPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let explorer = cx.entity();
         let hovered_close = self.hovered_close;
         let selected = self.selected;
         let active = self.active;
         let collapsed = self.collapsed.clone();
         let collapsed_parents = self.collapsed_parents.clone();
+        let renaming = self.renaming.clone();
+        let rename_input = self.rename_input.clone();
+        let active_tool = self.active_tool;
         let highlight_bg = ghost_hover_bg(cx);
         let muted = cx.theme().muted_foreground;
         let cyan = cx.theme().cyan;
         let radius = cx.theme().radius;
-        let sections = group_sections(&self.items);
+        let border = cx.theme().border;
+        let sections = group_sections(&self.items, &self.session_groups);
+        let named_count = self.session_groups.len();
         let drop_slot = if cx.has_active_drag() {
             self.drop_slot.clone()
         } else {
             None
         };
+        let group_drop_slot = if cx.has_active_drag() {
+            self.group_drop_slot
+        } else {
+            None
+        };
 
-        div()
-            .id("compositions-list")
+        let info_focus = self.selected_or_active().and_then(|id| {
+            self.items
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| (item.id, item.path.clone()))
+        });
+        let info_media = match (
+            active_tool,
+            info_focus.as_ref(),
+            self.info_provider.as_ref(),
+        ) {
+            (Some(ExplorerTool::Info), Some((id, _)), Some(provider)) => provider(*id, cx),
+            _ => Vec::new(),
+        };
+
+        v_flex()
+            .id("compositions-panel")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .size_full()
-            .overflow_y_scroll()
             .on_action({
                 let explorer = explorer.clone();
                 move |_: &ConfirmSelected, window, cx| {
+                    if explorer.read(cx).renaming.is_some() {
+                        return;
+                    }
                     let Some(id) = explorer.read(cx).selected_or_active() else {
                         return;
                     };
@@ -564,443 +882,79 @@ impl Render for ExplorerPanel {
                     dispatch(&explorer, ExplorerEvent::Activate(id), window, cx);
                 }
             })
+            .on_action({
+                let explorer = explorer.clone();
+                move |_: &RenameSelected, window, cx| {
+                    let Some(id) = explorer.read(cx).selected_or_active() else {
+                        return;
+                    };
+                    explorer.update(cx, |this, cx| {
+                        this.begin_rename(RenameTarget::Document(id), window, cx);
+                    });
+                }
+            })
+            .on_action(cx.listener(|this, _: &CancelRename, _, cx| {
+                this.cancel_rename(cx);
+            }))
             .on_action(cx.listener(|this, _: &SelectPrev, _, cx| {
                 this.select_delta(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
                 this.select_delta(1, cx);
             }))
-            .children(sections.into_iter().map(|section| {
-                let open = !collapsed.contains(&section.key);
-                let explorer = explorer.clone();
-                let header_key = section.key.clone();
-                let drop_key = section.key.clone();
-                let visible_items: Vec<ExplorerItem> =
-                    visible_section_items(&section.items, &collapsed_parents)
-                        .into_iter()
-                        .cloned()
-                        .collect();
-                let section_len = visible_items.len();
-                let show_slot = drop_slot
-                    .as_ref()
-                    .filter(|(key, _)| key == &section.key)
-                    .map(|(_, before)| *before);
-                v_flex()
-                    .id(section.key.element_id())
+            .child({
+                let list = div()
+                    .id("compositions-list")
+                    .flex_1()
                     .w_full()
-                    .flex_none()
-                    .can_drop(|data, _, _| accepts_composition_drag(data))
-                    .on_drag_move(cx.listener({
-                        let key = drop_key.clone();
-                        let len = section_len;
-                        move |this, event: &DragMoveEvent<CompositionDrag>, _, cx| {
-                            if !event.bounds.contains(&event.event.position) {
-                                return;
-                            }
-                            this.set_drop_slot(Some((key.clone(), len)), cx);
-                        }
-                    }))
-                    .on_drop({
-                        let explorer = explorer.clone();
-                        let target = drop_key.clone();
-                        move |drag: &CompositionDrag, window, cx| {
-                            drop_on_section(&explorer, &target, drag, section_len, window, cx);
-                        }
-                    })
-                    .child({
-                        let explorer = explorer.clone();
-                        h_flex()
-                            .id(SharedString::from(format!(
-                                "{}-header",
-                                section.key.element_id()
-                            )))
-                            .w_full()
-                            .flex_none()
-                            .items_center()
-                            .gap_1()
-                            .px_1p5()
-                            .py_0p5()
-                            .cursor_pointer()
-                            .can_drop(|data, _, _| accepts_composition_drag(data))
-                            .on_drag_move(cx.listener({
-                                let key = drop_key.clone();
-                                move |this, event: &DragMoveEvent<CompositionDrag>, _, cx| {
-                                    if !event.bounds.contains(&event.event.position) {
-                                        return;
-                                    }
-                                    this.set_drop_slot(Some((key.clone(), 0)), cx);
-                                }
-                            }))
-                            .on_drop({
-                                let explorer = explorer.clone();
-                                let target = drop_key.clone();
-                                move |drag: &CompositionDrag, window, cx| {
-                                    drop_on_section(
-                                        &explorer,
-                                        &target,
-                                        drag,
-                                        section_len,
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            })
-                            .child(
-                                Icon::new(if open {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                })
-                                .xsmall()
-                                .text_color(muted),
-                            )
-                            .child(div().text_xs().text_color(muted).child(section.key.label()))
-                            .on_click(move |_, _, cx| {
-                                explorer.update(cx, |this, cx| {
-                                    this.toggle_section(header_key.clone(), cx);
-                                });
-                            })
-                    })
-                    .children(open.then(|| {
-                        let explorer = explorer.clone();
-                        let drop_key = drop_key.clone();
-                        let collapsed_parents = collapsed_parents.clone();
-                        v_flex().w_full().children({
-                            let mut rows = Vec::with_capacity(visible_items.len() + 1);
-                            for (index, item) in visible_items.into_iter().enumerate() {
-                                let id = item.id;
-                                let name = item.name.clone();
-                                let path = item.path.clone();
-                                let is_modified = item.modified;
-                                let depth = item.depth;
-                                let parent_id = item.parent;
-                                let detached = item.detached;
-                                let has_children = item.has_children;
-                                let parent_open = has_children && !collapsed_parents.contains(&id);
-                                let highlighted = selected == Some(id);
-                                let is_active = active == Some(id);
-                                let show_close = hovered_close == Some(id);
-                                let explorer = explorer.clone();
-                                let drop_target = drop_key.clone();
-                                let marker_top = show_slot == Some(index);
-                                let indent = px(8.0 + depth as f32 * 12.0);
-                                rows.push(
-                                    h_flex()
-                                        .id(SharedString::from(format!("composition-{id}")))
-                                        .relative()
-                                        .w_full()
-                                        .flex_none()
-                                        .items_center()
-                                        .pl(indent)
-                                        .pr_1p5()
-                                        .py_0p5()
-                                        .gap_0p5()
-                                        .rounded(radius)
-                                        .text_xs()
-                                        .cursor_pointer()
-                                        .when(highlighted, |this| this.bg(highlight_bg))
-                                        .when(!highlighted, |this| {
-                                            this.hover(|this| this.bg(highlight_bg))
-                                        })
-                                        .when(marker_top, |this| {
-                                            this.child(insertion_marker_overlay(cyan))
-                                        })
-                                        .on_drag(
-                                            CompositionDrag {
-                                                id,
-                                                name: name.clone(),
-                                                path: path.clone(),
-                                            },
-                                            |drag, _, _, cx| {
-                                                cx.stop_propagation();
-                                                cx.new(|_| drag.clone())
-                                            },
-                                        )
-                                        .external_drag_payload(|drag: &CompositionDrag, _, _| {
-                                            drag.path.as_ref().map(|path| {
-                                                ExternalDragPayload::Files(FileDragPaths::new([(
-                                                    path.clone(),
-                                                    false,
-                                                )]))
-                                            })
-                                        })
-                                        .can_drop(|data, _, _| accepts_composition_drag(data))
-                                        .on_drag_move(cx.listener({
-                                            let key = drop_target.clone();
-                                            move |this,
-                                                  event: &DragMoveEvent<CompositionDrag>,
-                                                  _,
-                                                  cx| {
-                                                if !event.bounds.contains(&event.event.position) {
-                                                    return;
-                                                }
-                                                let before = slot_before_from_y(
-                                                    event.event.position.y,
-                                                    event.bounds,
-                                                );
-                                                let slot = if before { index } else { index + 1 };
-                                                this.set_drop_slot(Some((key.clone(), slot)), cx);
-                                            }
-                                        }))
-                                        .on_drop({
-                                            let explorer = explorer.clone();
-                                            let target = drop_target;
-                                            move |drag: &CompositionDrag, window, cx| {
-                                                drop_on_section(
-                                                    &explorer,
-                                                    &target,
-                                                    drag,
-                                                    section_len,
-                                                    window,
-                                                    cx,
-                                                );
-                                            }
-                                        })
-                                        .on_click({
-                                            let explorer = explorer.clone();
-                                            move |event: &ClickEvent, window, cx| {
-                                                explorer.update(cx, |this, cx| {
-                                                    this.selected = Some(id);
-                                                    cx.notify();
-                                                });
-                                                let event = if event.click_count() >= 2 {
-                                                    ExplorerEvent::OpenTab(id)
-                                                } else {
-                                                    ExplorerEvent::Activate(id)
-                                                };
-                                                dispatch(&explorer, event, window, cx);
-                                            }
-                                        })
-                                        .context_menu({
-                                            let explorer = explorer.clone();
-                                            move |menu, _, _| {
-                                                let mut menu = menu;
-                                                if let Some(parent_id) = parent_id {
-                                                    menu = menu.item(
-                                                        PopupMenuItem::new("Reveal Parent")
-                                                            .on_click({
-                                                                let explorer = explorer.clone();
-                                                                move |_, window, cx| {
-                                                                    dispatch(
-                                                                        &explorer,
-                                                                        ExplorerEvent::Activate(
-                                                                            parent_id,
-                                                                        ),
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                }
-                                                            }),
-                                                    );
-                                                }
-                                                menu.item(PopupMenuItem::new("Close").on_click({
-                                                    let explorer = explorer.clone();
-                                                    move |_, window, cx| {
-                                                        dispatch(
-                                                            &explorer,
-                                                            ExplorerEvent::Close(id),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    }
-                                                }))
-                                            }
-                                        })
-                                        .child(
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "comp-disclose-{id}"
-                                                )))
-                                                .w(px(DISCLOSURE_SLOT))
-                                                .h(px(DISCLOSURE_SLOT))
-                                                .flex()
-                                                .flex_none()
-                                                .items_center()
-                                                .justify_center()
-                                                .when(has_children, |this| {
-                                                    let explorer = explorer.clone();
-                                                    this.cursor_pointer()
-                                                        .on_mouse_down(
-                                                            MouseButton::Left,
-                                                            |_, _, cx| {
-                                                                cx.stop_propagation();
-                                                            },
-                                                        )
-                                                        .on_click(move |_, _, cx| {
-                                                            cx.stop_propagation();
-                                                            explorer.update(cx, |this, cx| {
-                                                                this.toggle_parent_collapse(id, cx);
-                                                            });
-                                                        })
-                                                        .child(
-                                                            Icon::new(if parent_open {
-                                                                IconName::ChevronDown
-                                                            } else {
-                                                                IconName::ChevronRight
-                                                            })
-                                                            .xsmall()
-                                                            .text_color(muted),
-                                                        )
-                                                }),
-                                        )
-                                        .when(detached, |this| {
-                                            let explorer = explorer.clone();
-                                            this.child(
-                                                div()
-                                                    .id(SharedString::from(format!(
-                                                        "comp-link-{id}"
-                                                    )))
-                                                    .w(px(DISCLOSURE_SLOT))
-                                                    .h(px(DISCLOSURE_SLOT))
-                                                    .flex()
-                                                    .flex_none()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .cursor_pointer()
-                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                        cx.stop_propagation();
-                                                    })
-                                                    .on_click({
-                                                        let explorer = explorer.clone();
-                                                        move |event: &ClickEvent, window, cx| {
-                                                            cx.stop_propagation();
-                                                            if event.modifiers().shift {
-                                                                dispatch(
-                                                                    &explorer,
-                                                                    ExplorerEvent::Reattach(id),
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            } else if let Some(parent_id) =
-                                                                parent_id
-                                                            {
-                                                                explorer.update(cx, |this, cx| {
-                                                                    this.selected = Some(parent_id);
-                                                                    cx.notify();
-                                                                });
-                                                                dispatch(
-                                                                    &explorer,
-                                                                    ExplorerEvent::Activate(
-                                                                        parent_id,
-                                                                    ),
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            }
-                                                        }
-                                                    })
-                                                    .child(
-                                                        Icon::new(LinkIcon)
-                                                            .xsmall()
-                                                            .text_color(muted),
-                                                    ),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .text_xs()
-                                                .when(is_active, |this| this.text_color(cyan))
-                                                .child(name),
-                                        )
-                                        .child({
-                                            let explorer = explorer.clone();
-                                            div()
-                                                .id(SharedString::from(format!("comp-eol-{id}")))
-                                                .w(px(18.))
-                                                .h(px(18.))
-                                                .flex()
-                                                .flex_none()
-                                                .items_center()
-                                                .justify_center()
-                                                .on_hover({
-                                                    let explorer = explorer.clone();
-                                                    move |hovered: &bool, _, cx| {
-                                                        explorer.update(cx, |this, cx| {
-                                                            this.hovered_close = if *hovered {
-                                                                Some(id)
-                                                            } else {
-                                                                None
-                                                            };
-                                                            cx.notify();
-                                                        });
-                                                    }
-                                                })
-                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                    cx.stop_propagation();
-                                                })
-                                                .on_click({
-                                                    let explorer = explorer.clone();
-                                                    move |_, window, cx| {
-                                                        cx.stop_propagation();
-                                                        dispatch(
-                                                            &explorer,
-                                                            ExplorerEvent::Close(id),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    }
-                                                })
-                                                .when(show_close, |this| {
-                                                    this.child(
-                                                        Button::new(SharedString::from(format!(
-                                                            "close-comp-{id}"
-                                                        )))
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .icon(IconName::Close)
-                                                        .tab_stop(false)
-                                                        .on_click({
-                                                            let explorer = explorer.clone();
-                                                            move |_, window, cx| {
-                                                                cx.stop_propagation();
-                                                                dispatch(
-                                                                    &explorer,
-                                                                    ExplorerEvent::Close(id),
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            }
-                                                        }),
-                                                    )
-                                                })
-                                                .when(!show_close && is_modified, |this| {
-                                                    this.child(
-                                                        div().size(px(6.)).rounded_full().bg(muted),
-                                                    )
-                                                })
-                                        })
-                                        .into_any_element(),
-                                );
-                            }
-                            // Dedicated end gap: the last-row bottom marker used to sit
-                            // outside the row hitbox (bottom: -1), so releasing on it
-                            // missed every drop target and the reorder looked like a
-                            // no-op / off-by-one at the end of the list.
-                            let end_marker = show_slot == Some(section_len);
-                            let drop_target = drop_key.clone();
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children({
+                        let mut children = Vec::new();
+                        let mut named_index = 0usize;
+                        for section in sections {
+                            let is_named = matches!(section.key, SectionKey::Named(_));
+                            let this_named_index = if is_named {
+                                let i = named_index;
+                                named_index += 1;
+                                Some(i)
+                            } else {
+                                None
+                            };
+
+                            let open = !collapsed.contains(&section.key);
                             let explorer = explorer.clone();
-                            rows.push(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "{}-end-gap",
-                                        drop_key.element_id()
-                                    )))
-                                    .relative()
+                            let header_key = section.key.clone();
+                            let drop_key = section.key.clone();
+                            let visible_items: Vec<ExplorerItem> =
+                                visible_section_items(&section.items, &collapsed_parents)
+                                    .into_iter()
+                                    .cloned()
+                                    .collect();
+                            let section_len = visible_items.len();
+                            let show_slot = drop_slot
+                                .as_ref()
+                                .filter(|(key, _)| key == &section.key)
+                                .map(|(_, before)| *before);
+                            let show_group_marker = this_named_index
+                                .and_then(|i| group_drop_slot.filter(|&slot| slot == i));
+                            let renaming_this_group = matches!(
+                                &renaming,
+                                Some(RenameTarget::Group { name })
+                                    if section.key.group_name().as_deref() == Some(name.as_str())
+                            );
+                            let group_name = section.key.group_name();
+
+                            children.push(
+                                v_flex()
+                                    .id(section.key.element_id())
                                     .w_full()
                                     .flex_none()
-                                    .h(px(12.))
                                     .can_drop(|data, _, _| accepts_composition_drag(data))
                                     .on_drag_move(cx.listener({
-                                        let key = drop_target.clone();
+                                        let key = drop_key.clone();
                                         let len = section_len;
-                                        move |this,
-                                              event: &DragMoveEvent<CompositionDrag>,
-                                              _,
-                                              cx| {
+                                        move |this, event: &DragMoveEvent<CompositionDrag>, _, cx| {
                                             if !event.bounds.contains(&event.event.position) {
                                                 return;
                                             }
@@ -1008,7 +962,8 @@ impl Render for ExplorerPanel {
                                         }
                                     }))
                                     .on_drop({
-                                        let target = drop_target;
+                                        let explorer = explorer.clone();
+                                        let target = drop_key.clone();
                                         move |drag: &CompositionDrag, window, cx| {
                                             drop_on_section(
                                                 &explorer,
@@ -1020,16 +975,1131 @@ impl Render for ExplorerPanel {
                                             );
                                         }
                                     })
+                                    .child({
+                                        let explorer = explorer.clone();
+                                        let label = if renaming_this_group {
+                                            if let Some(input) = rename_input.clone() {
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .child(Input::new(&input).xsmall().w_full())
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .into_any_element()
+                                            } else {
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(section.key.label())
+                                                    .into_any_element()
+                                            }
+                                        } else {
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(section.key.label())
+                                                .into_any_element()
+                                        };
+                                        h_flex()
+                                            .id(SharedString::from(format!(
+                                                "{}-header",
+                                                section.key.element_id()
+                                            )))
+                                            .relative()
+                                            .w_full()
+                                            .flex_none()
+                                            .items_center()
+                                            .gap_1()
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .cursor_pointer()
+                                            .when(show_group_marker.is_some(), |this| {
+                                                this.child(insertion_marker_overlay(cyan))
+                                            })
+                                            .can_drop(|data, _, _| {
+                                                accepts_composition_drag(data)
+                                                    || accepts_group_drag(data)
+                                            })
+                                            .on_drag_move(cx.listener({
+                                                let key = drop_key.clone();
+                                                move |this,
+                                                      event: &DragMoveEvent<CompositionDrag>,
+                                                      _,
+                                                      cx| {
+                                                    if !event
+                                                        .bounds
+                                                        .contains(&event.event.position)
+                                                    {
+                                                        return;
+                                                    }
+                                                    this.set_drop_slot(
+                                                        Some((key.clone(), 0)),
+                                                        cx,
+                                                    );
+                                                }
+                                            }))
+                                            .on_drop({
+                                                let explorer = explorer.clone();
+                                                let target = drop_key.clone();
+                                                move |drag: &CompositionDrag, window, cx| {
+                                                    drop_on_section(
+                                                        &explorer,
+                                                        &target,
+                                                        drag,
+                                                        section_len,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            })
+                                            .when_some(this_named_index, |this, named_i| {
+                                                this.on_drag(
+                                                    GroupDrag {
+                                                        name: group_name
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    },
+                                                    |drag, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        cx.new(|_| drag.clone())
+                                                    },
+                                                )
+                                                .on_drag_move(cx.listener(
+                                                    move |this,
+                                                          event: &DragMoveEvent<GroupDrag>,
+                                                          _,
+                                                          cx| {
+                                                        if !event
+                                                            .bounds
+                                                            .contains(&event.event.position)
+                                                        {
+                                                            return;
+                                                        }
+                                                        let before = slot_before_from_y(
+                                                            event.event.position.y,
+                                                            event.bounds,
+                                                        );
+                                                        let slot = if before {
+                                                            named_i
+                                                        } else {
+                                                            named_i + 1
+                                                        };
+                                                        this.set_group_drop_slot(Some(slot), cx);
+                                                    },
+                                                ))
+                                                .on_drop({
+                                                    let explorer = explorer.clone();
+                                                    move |drag: &GroupDrag, window, cx| {
+                                                        drop_group(
+                                                            &explorer,
+                                                            drag,
+                                                            named_count,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                })
+                                            })
+                                            .when(!renaming_this_group, |this| {
+                                                this.on_click({
+                                                    let explorer = explorer.clone();
+                                                    let header_key = header_key.clone();
+                                                    move |_, _, cx| {
+                                                        explorer.update(cx, |this, cx| {
+                                                            this.toggle_section(
+                                                                header_key.clone(),
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                })
+                                            })
+                                            .context_menu({
+                                                let explorer = explorer.clone();
+                                                let group_name = group_name.clone();
+                                                move |menu, _, _| {
+                                                    let add_group = PopupMenuItem::new(
+                                                        "Add Group...",
+                                                    )
+                                                    .on_click({
+                                                        let explorer = explorer.clone();
+                                                        let after = group_name.clone();
+                                                        move |_, window, cx| {
+                                                            explorer.update(cx, |this, cx| {
+                                                                this.begin_rename(
+                                                                    RenameTarget::NewGroup {
+                                                                        after: after.clone(),
+                                                                    },
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    });
+                                                    if let Some(name) = group_name.clone() {
+                                                        menu.item(
+                                                            PopupMenuItem::new("Rename...")
+                                                                .on_click({
+                                                                    let explorer = explorer.clone();
+                                                                    let name = name.clone();
+                                                                    move |_, window, cx| {
+                                                                        explorer.update(
+                                                                            cx,
+                                                                            |this, cx| {
+                                                                                this.begin_rename(
+                                                                                    RenameTarget::Group {
+                                                                                        name: name
+                                                                                            .clone(),
+                                                                                    },
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            },
+                                                                        );
+                                                                    }
+                                                                }),
+                                                        )
+                                                        .item(add_group)
+                                                        .item(
+                                                            PopupMenuItem::new("Delete Group")
+                                                                .on_click({
+                                                                    let explorer = explorer.clone();
+                                                                    move |_, window, cx| {
+                                                                        dispatch(
+                                                                            &explorer,
+                                                                            ExplorerEvent::DeleteGroup {
+                                                                                name: name.clone(),
+                                                                            },
+                                                                            window,
+                                                                            cx,
+                                                                        );
+                                                                    }
+                                                                }),
+                                                        )
+                                                    } else {
+                                                        menu.item(add_group)
+                                                    }
+                                                }
+                                            })
+                                            .child(
+                                                Icon::new(if open {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                })
+                                                .xsmall()
+                                                .text_color(muted),
+                                            )
+                                            .child(label)
+                                    })
+                                    .children(open.then(|| {
+                                        let explorer = explorer.clone();
+                                        let drop_key = drop_key.clone();
+                                        let collapsed_parents = collapsed_parents.clone();
+                                        let renaming = renaming.clone();
+                                        let rename_input = rename_input.clone();
+                                        v_flex().w_full().children({
+                                            let mut rows =
+                                                Vec::with_capacity(visible_items.len() + 1);
+                                            for (index, item) in
+                                                visible_items.into_iter().enumerate()
+                                            {
+                                                let id = item.id;
+                                                let name = item.name.clone();
+                                                let path = item.path.clone();
+                                                let is_modified = item.modified;
+                                                let depth = item.depth;
+                                                let parent_id = item.parent;
+                                                let detached = item.detached;
+                                                let has_children = item.has_children;
+                                                let parent_open =
+                                                    has_children && !collapsed_parents.contains(&id);
+                                                let highlighted = selected == Some(id);
+                                                let is_active = active == Some(id);
+                                                let show_close = hovered_close == Some(id);
+                                                let renaming_this = matches!(
+                                                    &renaming,
+                                                    Some(RenameTarget::Document(doc)) if *doc == id
+                                                );
+                                                let explorer = explorer.clone();
+                                                let drop_target = drop_key.clone();
+                                                let marker_top = show_slot == Some(index);
+                                                let indent = px(8.0 + depth as f32 * 12.0);
+                                                rows.push(
+                                                    h_flex()
+                                                        .id(SharedString::from(format!(
+                                                            "composition-{id}"
+                                                        )))
+                                                        .relative()
+                                                        .w_full()
+                                                        .flex_none()
+                                                        .items_center()
+                                                        .pl(indent)
+                                                        .pr_1p5()
+                                                        .py_0p5()
+                                                        .gap_0p5()
+                                                        .rounded(radius)
+                                                        .text_xs()
+                                                        .cursor_pointer()
+                                                        .when(highlighted, |this| {
+                                                            this.bg(highlight_bg)
+                                                        })
+                                                        .when(!highlighted, |this| {
+                                                            this.hover(|this| this.bg(highlight_bg))
+                                                        })
+                                                        .when(marker_top, |this| {
+                                                            this.child(insertion_marker_overlay(
+                                                                cyan,
+                                                            ))
+                                                        })
+                                                        .when(!renaming_this, |this| {
+                                                            this.on_drag(
+                                                                CompositionDrag {
+                                                                    id,
+                                                                    name: name.clone(),
+                                                                    path: path.clone(),
+                                                                },
+                                                                |drag, _, _, cx| {
+                                                                    cx.stop_propagation();
+                                                                    cx.new(|_| drag.clone())
+                                                                },
+                                                            )
+                                                            .external_drag_payload(
+                                                                |drag: &CompositionDrag, _, _| {
+                                                                    drag.path.as_ref().map(|path| {
+                                                                        ExternalDragPayload::Files(
+                                                                            FileDragPaths::new([(
+                                                                                path.clone(),
+                                                                                false,
+                                                                            )]),
+                                                                        )
+                                                                    })
+                                                                },
+                                                            )
+                                                        })
+                                                        .can_drop(|data, _, _| {
+                                                            accepts_composition_drag(data)
+                                                        })
+                                                        .on_drag_move(cx.listener({
+                                                            let key = drop_target.clone();
+                                                            move |this,
+                                                                  event: &DragMoveEvent<
+                                                                CompositionDrag,
+                                                            >,
+                                                                  _,
+                                                                  cx| {
+                                                                if !event
+                                                                    .bounds
+                                                                    .contains(&event.event.position)
+                                                                {
+                                                                    return;
+                                                                }
+                                                                let before = slot_before_from_y(
+                                                                    event.event.position.y,
+                                                                    event.bounds,
+                                                                );
+                                                                let slot = if before {
+                                                                    index
+                                                                } else {
+                                                                    index + 1
+                                                                };
+                                                                this.set_drop_slot(
+                                                                    Some((key.clone(), slot)),
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        }))
+                                                        .on_drop({
+                                                            let explorer = explorer.clone();
+                                                            let target = drop_target;
+                                                            move |drag: &CompositionDrag,
+                                                                  window,
+                                                                  cx| {
+                                                                drop_on_section(
+                                                                    &explorer,
+                                                                    &target,
+                                                                    drag,
+                                                                    section_len,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        })
+                                                        .on_click({
+                                                            let explorer = explorer.clone();
+                                                            move |event: &ClickEvent, window, cx| {
+                                                                if explorer.read(cx).renaming.is_some()
+                                                                {
+                                                                    return;
+                                                                }
+                                                                explorer.update(cx, |this, cx| {
+                                                                    this.selected = Some(id);
+                                                                    cx.notify();
+                                                                });
+                                                                let event = if event.click_count()
+                                                                    >= 2
+                                                                {
+                                                                    ExplorerEvent::OpenTab(id)
+                                                                } else {
+                                                                    ExplorerEvent::Activate(id)
+                                                                };
+                                                                dispatch(
+                                                                    &explorer, event, window, cx,
+                                                                );
+                                                            }
+                                                        })
+                                                        .context_menu({
+                                                            let explorer = explorer.clone();
+                                                            move |menu, _, _| {
+                                                                let mut menu = menu;
+                                                                if let Some(parent_id) = parent_id {
+                                                                    menu = menu.item(
+                                                                        PopupMenuItem::new(
+                                                                            "Reveal Parent",
+                                                                        )
+                                                                        .on_click({
+                                                                            let explorer =
+                                                                                explorer.clone();
+                                                                            move |_, window, cx| {
+                                                                                dispatch(
+                                                                                    &explorer,
+                                                                                    ExplorerEvent::Activate(
+                                                                                        parent_id,
+                                                                                    ),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            }
+                                                                        }),
+                                                                    );
+                                                                }
+                                                                menu.item(
+                                                                    PopupMenuItem::new("Close")
+                                                                        .on_click({
+                                                                            let explorer =
+                                                                                explorer.clone();
+                                                                            move |_, window, cx| {
+                                                                                dispatch(
+                                                                                    &explorer,
+                                                                                    ExplorerEvent::Close(
+                                                                                        id,
+                                                                                    ),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            }
+                                                                        }),
+                                                                )
+                                                            }
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "comp-disclose-{id}"
+                                                                )))
+                                                                .w(px(DISCLOSURE_SLOT))
+                                                                .h(px(DISCLOSURE_SLOT))
+                                                                .flex()
+                                                                .flex_none()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .when(has_children, |this| {
+                                                                    let explorer = explorer.clone();
+                                                                    this.cursor_pointer()
+                                                                        .on_mouse_down(
+                                                                            MouseButton::Left,
+                                                                            |_, _, cx| {
+                                                                                cx.stop_propagation();
+                                                                            },
+                                                                        )
+                                                                        .on_click(move |_, _, cx| {
+                                                                            cx.stop_propagation();
+                                                                            explorer.update(
+                                                                                cx,
+                                                                                |this, cx| {
+                                                                                    this.toggle_parent_collapse(
+                                                                                        id, cx,
+                                                                                    );
+                                                                                },
+                                                                            );
+                                                                        })
+                                                                        .child(
+                                                                            Icon::new(
+                                                                                if parent_open {
+                                                                                    IconName::ChevronDown
+                                                                                } else {
+                                                                                    IconName::ChevronRight
+                                                                                },
+                                                                            )
+                                                                            .xsmall()
+                                                                            .text_color(muted),
+                                                                        )
+                                                                }),
+                                                        )
+                                                        .when(detached, |this| {
+                                                            let explorer = explorer.clone();
+                                                            this.child(
+                                                                div()
+                                                                    .id(SharedString::from(
+                                                                        format!("comp-link-{id}"),
+                                                                    ))
+                                                                    .w(px(DISCLOSURE_SLOT))
+                                                                    .h(px(DISCLOSURE_SLOT))
+                                                                    .flex()
+                                                                    .flex_none()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .cursor_pointer()
+                                                                    .on_mouse_down(
+                                                                        MouseButton::Left,
+                                                                        |_, _, cx| {
+                                                                            cx.stop_propagation();
+                                                                        },
+                                                                    )
+                                                                    .on_click({
+                                                                        let explorer =
+                                                                            explorer.clone();
+                                                                        move |event: &ClickEvent,
+                                                                              window,
+                                                                              cx| {
+                                                                            cx.stop_propagation();
+                                                                            if event
+                                                                                .modifiers()
+                                                                                .shift
+                                                                            {
+                                                                                dispatch(
+                                                                                    &explorer,
+                                                                                    ExplorerEvent::Reattach(
+                                                                                        id,
+                                                                                    ),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            } else if let Some(
+                                                                                parent_id,
+                                                                            ) = parent_id
+                                                                            {
+                                                                                explorer.update(
+                                                                                    cx,
+                                                                                    |this, cx| {
+                                                                                        this.selected =
+                                                                                            Some(
+                                                                                                parent_id,
+                                                                                            );
+                                                                                        cx.notify();
+                                                                                    },
+                                                                                );
+                                                                                dispatch(
+                                                                                    &explorer,
+                                                                                    ExplorerEvent::Activate(
+                                                                                        parent_id,
+                                                                                    ),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            }
+                                                                        }
+                                                                    })
+                                                                    .child(
+                                                                        Icon::new(LinkIcon)
+                                                                            .xsmall()
+                                                                            .text_color(muted),
+                                                                    ),
+                                                            )
+                                                        })
+                                                        .child({
+                                                            if renaming_this {
+                                                                if let Some(input) =
+                                                                    rename_input.clone()
+                                                                {
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .min_w_0()
+                                                                        .child(
+                                                                            Input::new(&input)
+                                                                                .xsmall()
+                                                                                .w_full(),
+                                                                        )
+                                                                        .on_mouse_down(
+                                                                            MouseButton::Left,
+                                                                            |_, _, cx| {
+                                                                                cx.stop_propagation();
+                                                                            },
+                                                                        )
+                                                                        .into_any_element()
+                                                                } else {
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .min_w_0()
+                                                                        .overflow_hidden()
+                                                                        .whitespace_nowrap()
+                                                                        .text_xs()
+                                                                        .when(is_active, |this| {
+                                                                            this.text_color(cyan)
+                                                                        })
+                                                                        .child(name)
+                                                                        .into_any_element()
+                                                                }
+                                                            } else {
+                                                                div()
+                                                                    .flex_1()
+                                                                    .min_w_0()
+                                                                    .overflow_hidden()
+                                                                    .whitespace_nowrap()
+                                                                    .text_xs()
+                                                                    .when(is_active, |this| {
+                                                                        this.text_color(cyan)
+                                                                    })
+                                                                    .child(name)
+                                                                    .into_any_element()
+                                                            }
+                                                        })
+                                                        .child({
+                                                            let explorer = explorer.clone();
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "comp-eol-{id}"
+                                                                )))
+                                                                .w(px(18.))
+                                                                .h(px(18.))
+                                                                .flex()
+                                                                .flex_none()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .on_hover({
+                                                                    let explorer = explorer.clone();
+                                                                    move |hovered: &bool, _, cx| {
+                                                                        explorer.update(
+                                                                            cx,
+                                                                            |this, cx| {
+                                                                                this.hovered_close =
+                                                                                    if *hovered {
+                                                                                        Some(id)
+                                                                                    } else {
+                                                                                        None
+                                                                                    };
+                                                                                cx.notify();
+                                                                            },
+                                                                        );
+                                                                    }
+                                                                })
+                                                                .on_mouse_down(
+                                                                    MouseButton::Left,
+                                                                    |_, _, cx| {
+                                                                        cx.stop_propagation();
+                                                                    },
+                                                                )
+                                                                .on_click({
+                                                                    let explorer = explorer.clone();
+                                                                    move |_, window, cx| {
+                                                                        cx.stop_propagation();
+                                                                        dispatch(
+                                                                            &explorer,
+                                                                            ExplorerEvent::Close(id),
+                                                                            window,
+                                                                            cx,
+                                                                        );
+                                                                    }
+                                                                })
+                                                                .when(show_close, |this| {
+                                                                    this.child(
+                                                                        Button::new(
+                                                                            SharedString::from(
+                                                                                format!(
+                                                                                    "close-comp-{id}"
+                                                                                ),
+                                                                            ),
+                                                                        )
+                                                                        .ghost()
+                                                                        .xsmall()
+                                                                        .icon(IconName::Close)
+                                                                        .tab_stop(false)
+                                                                        .on_click({
+                                                                            let explorer =
+                                                                                explorer.clone();
+                                                                            move |_, window, cx| {
+                                                                                cx.stop_propagation();
+                                                                                dispatch(
+                                                                                    &explorer,
+                                                                                    ExplorerEvent::Close(
+                                                                                        id,
+                                                                                    ),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            }
+                                                                        }),
+                                                                    )
+                                                                })
+                                                                .when(
+                                                                    !show_close && is_modified,
+                                                                    |this| {
+                                                                        this.child(
+                                                                            div()
+                                                                                .size(px(6.))
+                                                                                .rounded_full()
+                                                                                .bg(muted),
+                                                                        )
+                                                                    },
+                                                                )
+                                                        })
+                                                        .into_any_element(),
+                                                );
+                                            }
+                                            let end_marker = show_slot == Some(section_len);
+                                            let drop_target = drop_key.clone();
+                                            let explorer = explorer.clone();
+                                            rows.push(
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "{}-end-gap",
+                                                        drop_key.element_id()
+                                                    )))
+                                                    .relative()
+                                                    .w_full()
+                                                    .flex_none()
+                                                    .h(px(12.))
+                                                    .can_drop(|data, _, _| {
+                                                        accepts_composition_drag(data)
+                                                    })
+                                                    .on_drag_move(cx.listener({
+                                                        let key = drop_target.clone();
+                                                        let len = section_len;
+                                                        move |this,
+                                                              event: &DragMoveEvent<
+                                                            CompositionDrag,
+                                                        >,
+                                                              _,
+                                                              cx| {
+                                                            if !event
+                                                                .bounds
+                                                                .contains(&event.event.position)
+                                                            {
+                                                                return;
+                                                            }
+                                                            this.set_drop_slot(
+                                                                Some((key.clone(), len)),
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }))
+                                                    .on_drop({
+                                                        let target = drop_target;
+                                                        move |drag: &CompositionDrag, window, cx| {
+                                                            drop_on_section(
+                                                                &explorer,
+                                                                &target,
+                                                                drag,
+                                                                section_len,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    })
+                                                    .when(end_marker, |this| {
+                                                        this.child(insertion_marker_overlay(cyan))
+                                                    })
+                                                    .into_any_element(),
+                                            );
+                                            rows
+                                        })
+                                    }))
+                                    .into_any_element(),
+                            );
+
+                            // New-group inline input after the section that owns `after`.
+                            let show_new_after = match &renaming {
+                                Some(RenameTarget::NewGroup { after: None }) => {
+                                    // Append at end — rendered after the loop.
+                                    false
+                                }
+                                Some(RenameTarget::NewGroup {
+                                    after: Some(after_name),
+                                }) => group_name.as_deref() == Some(after_name.as_str()),
+                                _ => false,
+                            };
+                            if show_new_after {
+                                if let Some(input) = rename_input.clone() {
+                                    children.push(new_group_input_row(input, muted, radius));
+                                }
+                            }
+                        }
+
+                        if matches!(
+                            &renaming,
+                            Some(RenameTarget::NewGroup { after: None })
+                        ) {
+                            if let Some(input) = rename_input.clone() {
+                                children.push(new_group_input_row(input, muted, radius));
+                            }
+                        }
+
+                        // End gap for group reorder after the last named section.
+                        if named_count > 0 {
+                            let explorer = explorer.clone();
+                            let end_marker = group_drop_slot == Some(named_count);
+                            children.push(
+                                div()
+                                    .id("composition-groups-end-gap")
+                                    .relative()
+                                    .w_full()
+                                    .flex_none()
+                                    .h(px(12.))
+                                    .can_drop(|data, _, _| accepts_group_drag(data))
+                                    .on_drag_move(cx.listener(move |this,
+                                                                   event: &DragMoveEvent<GroupDrag>,
+                                                                   _,
+                                                                   cx| {
+                                        if !event.bounds.contains(&event.event.position) {
+                                            return;
+                                        }
+                                        this.set_group_drop_slot(Some(named_count), cx);
+                                    }))
+                                    .on_drop(move |drag: &GroupDrag, window, cx| {
+                                        drop_group(&explorer, drag, named_count, window, cx);
+                                    })
                                     .when(end_marker, |this| {
                                         this.child(insertion_marker_overlay(cyan))
                                     })
                                     .into_any_element(),
                             );
-                            rows
-                        })
-                    }))
-            }))
+                        }
+
+                        children
+                    });
+                if active_tool == Some(ExplorerTool::Info) {
+                    let composition_path = match info_focus.as_ref() {
+                        Some((_, Some(path))) => {
+                            let full = path.display().to_string();
+                            let preview = middle_ellipsis(&full, INFO_PATH_CHARS);
+                            div()
+                                .id("explorer-info-path")
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_xs()
+                                .text_color(muted)
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(full.clone()).build(window, cx)
+                                })
+                                .child(preview)
+                                .into_any_element()
+                        }
+                        Some((_, None)) => div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("(unsaved)")
+                            .into_any_element(),
+                        None => div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child("(none)")
+                            .into_any_element(),
+                    };
+                    let info = v_flex()
+                        .id("explorer-info-pane")
+                        .size_full()
+                        .min_h_0()
+                        .border_t_1()
+                        .border_color(border)
+                        .px_1p5()
+                        .py_1()
+                        .gap_1()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .child("Info"),
+                                )
+                                .child(
+                                    Button::new("explorer-info-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Close)
+                                        .tab_stop(false)
+                                        .on_click({
+                                            let explorer = explorer.clone();
+                                            move |_, _, cx| {
+                                                explorer.update(cx, |this, cx| {
+                                                    this.close_tool(cx);
+                                                });
+                                            }
+                                        }),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .flex_none()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .child("Composition"),
+                                )
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .items_start()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .w(px(36.))
+                                                .flex_none()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child("path"),
+                                        )
+                                        .child(composition_path),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .id("explorer-info-media")
+                                .w_full()
+                                .flex_1()
+                                .min_h_0()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .child("Media"),
+                                )
+                                .child(info_media_table(&info_media, muted, border)),
+                        );
+                    div()
+                        .flex_1()
+                        .w_full()
+                        .min_h_0()
+                        .child(
+                            v_resizable("explorer-tool-split")
+                                .child(
+                                    resizable_panel()
+                                        .size_range(px(80.)..Pixels::MAX)
+                                        .child(list),
+                                )
+                                .child(
+                                    resizable_panel()
+                                        .size(px(INFO_PANE_DEFAULT))
+                                        .size_range(px(INFO_PANE_MIN)..px(INFO_PANE_MAX))
+                                        .flex_none()
+                                        .child(info),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    list.into_any_element()
+                }
+            })
+            .child(
+                h_flex()
+                    .id("explorer-toolbar")
+                    .w_full()
+                    .flex_none()
+                    .items_center()
+                    .gap_0p5()
+                    .px_1()
+                    .py_0p5()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(
+                        Button::new("explorer-tool-info")
+                            .ghost()
+                            .xsmall()
+                            .text_color(muted)
+                            .icon(IconName::Info)
+                            .selected(active_tool == Some(ExplorerTool::Info))
+                            .tab_stop(false)
+                            .tooltip("Info")
+                            .on_click({
+                                let explorer = explorer.clone();
+                                move |_, _, cx| {
+                                    explorer.update(cx, |this, cx| {
+                                        this.toggle_info_tool(cx);
+                                    });
+                                }
+                            }),
+                    ),
+            )
     }
+}
+
+fn info_media_table(
+    rows: &[InfoMediaRow],
+    muted: gpui_kit::Hsla,
+    border: gpui_kit::Hsla,
+) -> gpui_kit::AnyElement {
+    let header = info_media_row("#", "Path", "Rate", "Ch", "Len", "Size", muted, true, None);
+    let body: Vec<gpui_kit::AnyElement> = if rows.is_empty() {
+        vec![div()
+            .text_xs()
+            .text_color(muted)
+            .py_0p5()
+            .child("(no media)")
+            .into_any_element()]
+    } else {
+        rows.iter()
+            .enumerate()
+            .map(|(ix, row)| {
+                let full = row.path.clone();
+                let path = middle_ellipsis(&full, INFO_MEDIA_PATH_CHARS);
+                info_media_row(
+                    &format!("{}", ix + 1),
+                    &path,
+                    &row.sample_rate.to_string(),
+                    &row.channel_count.to_string(),
+                    &format_duration_secs(row.duration_secs),
+                    &format_size_bytes(row.size_bytes),
+                    muted,
+                    false,
+                    Some(full),
+                )
+            })
+            .collect()
+    };
+
+    v_flex()
+        .id("explorer-info-media-table")
+        .w_full()
+        .flex_1()
+        .min_h_0()
+        .min_w(px(280.))
+        .child(
+            div()
+                .w_full()
+                .flex_none()
+                .border_b_1()
+                .border_color(border)
+                .child(header),
+        )
+        .child(
+            div()
+                .id("explorer-info-media-rows")
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .overflow_x_scroll()
+                .children(body),
+        )
+        .into_any_element()
+}
+
+fn info_media_row(
+    index: &str,
+    path: &str,
+    rate: &str,
+    channels: &str,
+    length: &str,
+    size: &str,
+    muted: gpui_kit::Hsla,
+    header: bool,
+    path_tooltip: Option<String>,
+) -> gpui_kit::AnyElement {
+    let path_el = div()
+        .id(SharedString::from(format!(
+            "explorer-info-media-path-{}",
+            if header { "hdr" } else { index }
+        )))
+        .flex_1()
+        .min_w(px(80.))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_xs()
+        .when(header, |this| this.font_semibold().text_color(muted))
+        .when_some(path_tooltip, |this, full| {
+            this.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+        })
+        .child(path.to_string());
+
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap_1()
+        .py_0p5()
+        .child(
+            div()
+                .w(px(18.))
+                .flex_none()
+                .text_xs()
+                .when(header, |this| this.font_semibold())
+                .text_color(muted)
+                .child(index.to_string()),
+        )
+        .child(path_el)
+        .child(
+            div()
+                .w(px(48.))
+                .flex_none()
+                .text_xs()
+                .when(header, |this| this.font_semibold())
+                .text_color(muted)
+                .child(rate.to_string()),
+        )
+        .child(
+            div()
+                .w(px(24.))
+                .flex_none()
+                .text_xs()
+                .when(header, |this| this.font_semibold())
+                .text_color(muted)
+                .child(channels.to_string()),
+        )
+        .child(
+            div()
+                .w(px(44.))
+                .flex_none()
+                .text_xs()
+                .when(header, |this| this.font_semibold())
+                .text_color(muted)
+                .child(length.to_string()),
+        )
+        .child(
+            div()
+                .w(px(52.))
+                .flex_none()
+                .text_xs()
+                .when(header, |this| this.font_semibold())
+                .text_color(muted)
+                .child(size.to_string()),
+        )
+        .into_any_element()
+}
+
+fn new_group_input_row(
+    input: Entity<InputState>,
+    muted: gpui_kit::Hsla,
+    radius: Pixels,
+) -> gpui_kit::AnyElement {
+    h_flex()
+        .id("composition-new-group")
+        .w_full()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .px_1p5()
+        .py_0p5()
+        .rounded(radius)
+        .child(Icon::new(IconName::ChevronRight).xsmall().text_color(muted))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Input::new(&input).xsmall().w_full())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                }),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -1050,8 +2120,9 @@ mod tests {
         }
     }
 
-    fn section_names(items: &[ExplorerItem]) -> Vec<(String, Vec<u128>)> {
-        group_sections(items)
+    fn section_names(items: &[ExplorerItem], session_groups: &[&str]) -> Vec<(String, Vec<u128>)> {
+        let groups: Vec<String> = session_groups.iter().map(|s| (*s).to_string()).collect();
+        group_sections(items, &groups)
             .into_iter()
             .map(|section| {
                 let label = section.key.label().to_string();
@@ -1068,7 +2139,10 @@ mod tests {
     #[test]
     fn ungrouped_only_uses_session_section() {
         let items = [item(1, "a.wav", None), item(2, "b.wav", None)];
-        assert_eq!(section_names(&items), vec![("session".into(), vec![1, 2])]);
+        assert_eq!(
+            section_names(&items, &[]),
+            vec![("session".into(), vec![1, 2])]
+        );
     }
 
     #[test]
@@ -1077,11 +2151,14 @@ mod tests {
             item(1, "a.wav", Some("todo")),
             item(2, "b.wav", Some("todo")),
         ];
-        assert_eq!(section_names(&items), vec![("todo".into(), vec![1, 2])]);
+        assert_eq!(
+            section_names(&items, &["todo"]),
+            vec![("todo".into(), vec![1, 2])]
+        );
     }
 
     #[test]
-    fn named_groups_follow_session_in_first_seen_order() {
+    fn named_groups_follow_session_groups_order() {
         let items = [
             item(1, "keep.wav", None),
             item(2, "a.wav", Some("todo")),
@@ -1089,13 +2166,36 @@ mod tests {
             item(4, "c.wav", Some("todo")),
             item(5, "other.wav", None),
         ];
+        // Order comes from session_groups, not first-seen document scan.
         assert_eq!(
-            section_names(&items),
+            section_names(&items, &["done", "todo"]),
             vec![
                 ("session".into(), vec![1, 5]),
-                ("todo".into(), vec![2, 4]),
                 ("done".into(), vec![3]),
+                ("todo".into(), vec![2, 4]),
             ]
+        );
+    }
+
+    #[test]
+    fn empty_named_group_appears_in_sections() {
+        let items = [item(1, "a.wav", None)];
+        assert_eq!(
+            section_names(&items, &["empty", "also"]),
+            vec![
+                ("session".into(), vec![1]),
+                ("empty".into(), vec![]),
+                ("also".into(), vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_named_group_alone_still_listed() {
+        let items: [ExplorerItem; 0] = [];
+        assert_eq!(
+            section_names(&items, &["solo"]),
+            vec![("solo".into(), vec![])]
         );
     }
 
@@ -1105,7 +2205,8 @@ mod tests {
             item(1, "plain.wav", None),
             item(2, "named.wav", Some("session")),
         ];
-        let keys: Vec<_> = group_sections(&items)
+        let groups = vec!["session".to_string()];
+        let keys: Vec<_> = group_sections(&items, &groups)
             .into_iter()
             .map(|section| section.key)
             .collect();
@@ -1143,6 +2244,31 @@ mod tests {
         // End gap (drop_before == len) for a 3-item section.
         assert_eq!(index_in_group_after_remove(3, Some(0)), 2);
         assert_eq!(index_in_group_after_remove(3, Some(2)), 2);
+    }
+
+    #[test]
+    fn middle_ellipsis_keeps_short_strings() {
+        assert_eq!(middle_ellipsis("short", 10), "short");
+    }
+
+    #[test]
+    fn middle_ellipsis_shows_head_and_tail() {
+        let path = "/Users/me/projects/FieldAssist/takes/long-name.facomp";
+        let shown = middle_ellipsis(path, 24);
+        assert!(shown.contains('…'));
+        assert!(shown.len() <= 24 + 3); // ellipsis is one char but may be multi-byte
+        assert!(shown.starts_with("/Users"));
+        assert!(shown.ends_with(".facomp"));
+    }
+
+    #[test]
+    fn format_duration_and_size() {
+        assert_eq!(format_duration_secs(1.234), "1.23s");
+        assert_eq!(format_duration_secs(12.34), "12.3s");
+        assert_eq!(format_duration_secs(120.0), "120s");
+        assert_eq!(format_size_bytes(500), "500 B");
+        assert_eq!(format_size_bytes(1536), "1.5 KB");
+        assert_eq!(format_size_bytes(2 * 1024 * 1024), "2.0 MB");
     }
 
     #[test]

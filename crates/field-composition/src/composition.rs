@@ -62,6 +62,8 @@ pub struct Composition {
     parent: Option<CompositionId>,
     /// True when `id` was minted for a legacy file and must be saved.
     identity_dirty: bool,
+    /// In-memory rename; cleared on save once the path basename matches.
+    display_title: Option<String>,
     sample_rate: u32,
     channel_count: usize,
     tree: ClipTree,
@@ -111,6 +113,23 @@ fn named_regions(collections: &[RegionCollection]) -> Vec<&RegionCollection> {
         .collect()
 }
 
+/// Ensure a user-facing rename becomes a `.facomp` file name.
+pub fn normalize_facomp_file_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "untitled.facomp".into();
+    }
+    let path = Path::new(trimmed);
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("facomp"))
+    {
+        return trimmed.to_string();
+    }
+    format!("{trimmed}.facomp")
+}
+
 impl Composition {
     /// `new`.
     pub fn new(sample_rate: u32, channel_count: usize) -> Self {
@@ -119,6 +138,7 @@ impl Composition {
             id: CompositionId::new(),
             parent: None,
             identity_dirty: false,
+            display_title: None,
             sample_rate,
             channel_count,
             edl: Edl::new(tree.clone()),
@@ -170,6 +190,7 @@ impl Composition {
             id: CompositionId::new(),
             parent: None,
             identity_dirty: false,
+            display_title: None,
             sample_rate,
             channel_count,
             edl: Edl::new(tree.clone()),
@@ -293,13 +314,16 @@ impl Composition {
 
     /// `suggested_facomp_name`.
     pub fn suggested_facomp_name(&self) -> String {
+        if let Some(title) = self.display_title.as_ref() {
+            return normalize_facomp_file_name(title);
+        }
         let stem = self
             .pool()
             .first()
             .and_then(|media| media.path.file_stem())
             .map(|name| name.to_string_lossy().into_owned())
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| self.display_name());
+            .unwrap_or_else(|| self.media_display_name());
         format!("{stem}.facomp")
     }
 
@@ -313,6 +337,7 @@ impl Composition {
     /// `is_modified`.
     pub fn is_modified(&self) -> bool {
         self.identity_dirty
+            || self.display_title.is_some()
             || self.edl.current_id() != self.clean_edit_id
             || self.markers.to_vec() != self.clean_markers
             || named_regions(&self.collections) != named_regions(&self.clean_collections)
@@ -323,6 +348,7 @@ impl Composition {
         self.clean_markers = self.markers.to_vec();
         self.clean_collections = self.collections.clone();
         self.identity_dirty = false;
+        self.display_title = None;
     }
 
     /// `with_spill_dir`.
@@ -391,6 +417,7 @@ impl Composition {
             id: self.id,
             parent: self.parent,
             identity_dirty: false,
+            display_title: None,
             sample_rate: self.sample_rate,
             channel_count: self.channel_count,
             tree: self.tree.clone(),
@@ -419,8 +446,34 @@ impl Composition {
         }
     }
 
+    /// In-memory display title override when the composition was renamed.
+    pub fn display_title(&self) -> Option<&str> {
+        self.display_title.as_deref()
+    }
+
+    /// Set an in-memory display title. Empty clears the override. Dirties the
+    /// composition until the next successful save.
+    pub fn set_display_title(&mut self, name: impl AsRef<str>) {
+        let trimmed = name.as_ref().trim();
+        let next = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        if self.display_title != next {
+            self.display_title = next;
+        }
+    }
+
     /// `display_name`.
     pub fn display_name(&self) -> String {
+        if let Some(title) = self.display_title.as_ref() {
+            return title.clone();
+        }
+        self.media_display_name()
+    }
+
+    fn media_display_name(&self) -> String {
         self.pool()
             .first()
             .and_then(|media| media.path.file_name())
@@ -2449,6 +2502,22 @@ mod tests {
         let comp = Composition::from_media(media).unwrap();
         assert_eq!(comp.suggested_facomp_name(), "take.facomp");
         assert_eq!(comp.display_name(), "take.wav");
+    }
+
+    #[test]
+    fn display_title_dirties_and_feeds_suggested_name() {
+        let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
+        assert!(!comp.is_modified());
+        comp.set_display_title("renamed take");
+        assert!(comp.is_modified());
+        assert_eq!(comp.display_name(), "renamed take");
+        assert_eq!(comp.suggested_facomp_name(), "renamed take.facomp");
+        comp.set_display_title("already.facomp");
+        assert_eq!(comp.suggested_facomp_name(), "already.facomp");
+        let path = std::env::temp_dir().join("snd-composition-display-title.facomp");
+        comp.save_to_path(&path).unwrap();
+        assert!(!comp.is_modified());
+        assert!(comp.display_title().is_none());
     }
 
     #[test]
