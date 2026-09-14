@@ -82,7 +82,7 @@ pub use regions::{
     RegionDeleteHandler, RegionGroup, RegionRow, RegionSelectHandler, RegionsData, RegionsPanel,
 };
 pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
-pub use status_bar::{FileStatus, FileStatusBar, LayoutPicker};
+pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
 pub use waveform::{ToggleZeroCrossing, WaveformDisplay};

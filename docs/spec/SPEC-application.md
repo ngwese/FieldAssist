@@ -213,15 +213,17 @@ sample rate, channels, length, size) for media in that composition’s pool.
 ### Header and status
 
 The header shows playhead, hover sample, and selection. The status bar shows
-sample rate, bit depth (from the first media file), channel count, duration,
-and source size; a layout picker; a control that focuses the Monitor tab;
-Preview; and background job text (opening, building peaks, rendering).
+Preview; sample rate, bit depth, channel count, duration, and source size;
+muted error and warning counts (one control that toggles Messages) to the
+right of that file metadata; a layout picker and Monitor control on the far
+right; and background job text (opening, building peaks, rendering).
 
 ### Script dock
 
 The Script panel is a Lua REPL. `print` goes to the transcript. `app:info`,
 `app:warn`, and `app:error` go to Messages (and colored stdout when attached).
-See [SCRIPT.md](../SCRIPT.md).
+The Messages tab has no badge; totals appear on the status bar. See
+[SCRIPT.md](../SCRIPT.md).
 
 ## Review editor
 

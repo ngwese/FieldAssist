@@ -1,15 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! Status bar chrome for open media and layout controls.
+//! Session status bar chrome: file metadata, message alerts, layout, monitor.
 
 use std::rc::Rc;
 
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
+    h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     status_bar::StatusBar,
-    ActiveTheme as _, Icon, IconNamed, Selectable as _, Sizable as _,
+    ActiveTheme as _, Icon, IconName, IconNamed, Selectable as _, Sizable as _,
 };
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, rems, App, Hsla, IntoElement, ParentElement as _,
@@ -44,9 +45,10 @@ pub struct LayoutPicker {
     pub on_choose: Rc<dyn Fn(&str, &mut Window, &mut App)>,
 }
 
-/// Bottom status bar with file metadata, progress, layout, and monitor toggles.
+/// Bottom status bar with session chrome: file metadata, message alerts,
+/// progress, layout, and monitor toggles.
 #[derive(IntoElement)]
-pub struct FileStatusBar {
+pub struct SessionStatusBar {
     file: Option<FileStatus>,
     progress_message: Option<String>,
     layout: Option<LayoutPicker>,
@@ -54,9 +56,12 @@ pub struct FileStatusBar {
     monitor_selected: bool,
     on_preview: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     preview_selected: bool,
+    error_count: usize,
+    warn_count: usize,
+    on_messages: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
-impl FileStatusBar {
+impl SessionStatusBar {
     /// Create a status bar, optionally showing open-file metadata.
     pub fn new(file: Option<FileStatus>) -> Self {
         Self {
@@ -67,6 +72,9 @@ impl FileStatusBar {
             monitor_selected: false,
             on_preview: None,
             preview_selected: false,
+            error_count: 0,
+            warn_count: 0,
+            on_messages: None,
         }
     }
 
@@ -105,9 +113,22 @@ impl FileStatusBar {
         self.preview_selected = selected;
         self
     }
+
+    /// Show error/warn message counts that toggle the Messages tab.
+    pub fn with_message_alerts(
+        mut self,
+        errors: usize,
+        warns: usize,
+        on_toggle: Rc<dyn Fn(&mut Window, &mut App)>,
+    ) -> Self {
+        self.error_count = errors;
+        self.warn_count = warns;
+        self.on_messages = Some(on_toggle);
+        self
+    }
 }
 
-impl RenderOnce for FileStatusBar {
+impl RenderOnce for SessionStatusBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut bar = StatusBar::new()
             .w_full()
@@ -134,6 +155,14 @@ impl RenderOnce for FileStatusBar {
                         .map(format_bytes)
                         .unwrap_or_else(|| "—".into()),
                 );
+        }
+        if let Some(on_messages) = self.on_messages {
+            bar = bar.left(message_alerts_button(
+                self.error_count,
+                self.warn_count,
+                on_messages,
+                muted,
+            ));
         }
         if let Some(message) = self.progress_message.as_ref() {
             if !has_file {
@@ -169,6 +198,47 @@ impl IconNamed for CirclePlayIcon {
     fn path(self) -> SharedString {
         "icons/circle-play.svg".into()
     }
+}
+
+fn message_alerts_button(
+    errors: usize,
+    warns: usize,
+    on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+    muted: Hsla,
+) -> impl IntoElement {
+    Button::new("status-messages")
+        .ghost()
+        .xsmall()
+        .p_0()
+        .ml_2()
+        .text_color(muted)
+        .tooltip("Messages")
+        .child(
+            h_flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap(px(3.))
+                        .child(Icon::new(IconName::CircleX).xsmall().text_color(muted))
+                        .child(div().text_xs().text_color(muted).child(errors.to_string())),
+                )
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap(px(1.))
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .xsmall()
+                                .text_color(muted),
+                        )
+                        .child(div().text_xs().text_color(muted).child(warns.to_string())),
+                ),
+        )
+        .on_click(move |_, window, cx| {
+            (on_click)(window, cx);
+        })
 }
 
 fn preview_button(

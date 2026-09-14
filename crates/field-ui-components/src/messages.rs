@@ -8,7 +8,7 @@ use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme as _,
 };
 use gpui_kit::{
-    div, px, rems, uniform_list, App, Context, ElementId, EventEmitter, FocusHandle, Focusable,
+    div, rems, uniform_list, App, Context, ElementId, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     UniformListScrollHandle, Window,
 };
@@ -49,10 +49,9 @@ pub struct LogLine {
     pub text: String,
 }
 
-/// Bottom-dock messages panel with an unseen-alert badge.
+/// Bottom-dock messages panel.
 pub struct MessagesPanel {
     entries: Vec<LogLine>,
-    unseen_alerts: usize,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
 }
@@ -62,46 +61,35 @@ impl MessagesPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             entries: Vec::new(),
-            unseen_alerts: 0,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
 
-    /// Append log lines; unseen warn/error counts rise when not visible.
-    pub fn append(&mut self, entries: Vec<LogLine>, visible: bool, cx: &mut Context<Self>) {
+    /// Append log lines.
+    pub fn append(&mut self, entries: Vec<LogLine>, cx: &mut Context<Self>) {
         if entries.is_empty() {
             return;
-        }
-        if !visible {
-            let extra = entries
-                .iter()
-                .filter(|entry| matches!(entry.level, LogLevel::Warn | LogLevel::Error))
-                .count();
-            self.unseen_alerts = self.unseen_alerts.saturating_add(extra);
         }
         self.entries.extend(entries);
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
-    /// Clear the unseen badge when the tab becomes visible.
-    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if visible && self.unseen_alerts > 0 {
-            self.unseen_alerts = 0;
-            cx.notify();
-        }
+    /// Number of error lines currently in the panel.
+    pub fn error_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == LogLevel::Error)
+            .count()
     }
 
-    fn badge_label(&self) -> Option<SharedString> {
-        if self.unseen_alerts == 0 {
-            return None;
-        }
-        if self.unseen_alerts > 99 {
-            Some("99+".into())
-        } else {
-            Some(self.unseen_alerts.to_string().into())
-        }
+    /// Number of warning lines currently in the panel.
+    pub fn warn_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == LogLevel::Warn)
+            .count()
     }
 }
 
@@ -128,23 +116,8 @@ impl BasePanel for MessagesPanel {
 }
 
 impl Panel for MessagesPanel {
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let danger = cx.theme().danger;
-        let danger_fg = cx.theme().danger_foreground;
-        h_flex()
-            .items_center()
-            .gap_1()
-            .child("Messages")
-            .children(self.badge_label().map(|label| {
-                div()
-                    .flex_none()
-                    .px_1()
-                    .rounded(px(8.))
-                    .bg(danger)
-                    .text_xs()
-                    .text_color(danger_fg)
-                    .child(label)
-            }))
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        "Messages"
     }
 
     fn inner_padding(&self, _: &App) -> bool {

@@ -66,7 +66,7 @@ crate types through the application.
 
 - **Tab titles** are host-owned (`dock_titles` in FieldAssist). Pass title
   slices to `tool_dock_min_size` and into panel constructors.
-- **Transport** and **FileStatusBar** take play state / `FileStatus` DTOs and
+- **Transport** and **SessionStatusBar** take play state / `FileStatus` DTOs and
   host-supplied actions or callbacks.
 - Widgets that remain app-shaped (explorer, workspace shell, render sheet,
   workflow bar, Faust→`ParamUiNode` and `EditOp`→card mappers) stay in

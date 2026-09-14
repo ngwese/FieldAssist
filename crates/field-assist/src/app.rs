@@ -72,9 +72,9 @@ use crate::script::{
 };
 use field_ui_components::{
     content_foreground, tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice,
-    CompactDockSkin, ContentForeground, EditsPanel, FileStatusBar, LayoutPicker, LogLevel, LogLine,
-    MarkersPanel, MessagesPanel, MonitorCallbacks, MonitorPanel, MonitorSnapshot, RegionsPanel,
-    ReplOutput, ReplPanel, ToggleZeroCrossing, WaveformDisplay,
+    CompactDockSkin, ContentForeground, EditsPanel, LayoutPicker, LogLevel, LogLine, MarkersPanel,
+    MessagesPanel, MonitorCallbacks, MonitorPanel, MonitorSnapshot, RegionsPanel, ReplOutput,
+    ReplPanel, SessionStatusBar, ToggleZeroCrossing, WaveformDisplay,
 };
 
 struct OpenTarget(Entity<AppView>);
@@ -429,7 +429,6 @@ impl AppView {
                 if matches!(event, DockEvent::LayoutChanged) {
                     this.enforce_tool_dock_min_sizes(window, cx);
                     this.sync_tabs_from_layout(window, cx);
-                    this.sync_messages_visible(cx);
                 }
             },
         )
@@ -1763,7 +1762,6 @@ impl AppView {
             });
         }
         self.repl.focus_handle(cx).focus(window, cx);
-        self.sync_messages_visible(cx);
         if opened {
             self.sync_view_menus(cx);
             cx.notify();
@@ -1780,7 +1778,6 @@ impl AppView {
         self.dock_area.update(cx, |area, cx| {
             area.remove_dock(DockPlacement::Bottom, window, cx);
         });
-        self.sync_messages_visible(cx);
         self.sync_view_menus(cx);
         cx.notify();
     }
@@ -1870,11 +1867,10 @@ impl AppView {
     fn flush_script_logs(&mut self, cx: &mut Context<Self>) {
         let logs = self.script.take_logs();
         if !logs.is_empty() {
-            let visible = self.messages_tab_visible(cx);
             self.messages.update(cx, |panel, cx| {
-                panel.append(to_log_lines(logs), visible, cx);
+                panel.append(to_log_lines(logs), cx);
             });
-            self.dock_area.update(cx, |_, cx| cx.notify());
+            cx.notify();
         }
         self.refresh_workflow_bar(cx);
         self.sync_view_menus(cx);
@@ -1899,11 +1895,10 @@ impl AppView {
                 text: entry.text,
             })
             .collect();
-        let visible = self.messages_tab_visible(cx);
         self.messages.update(cx, |panel, cx| {
-            panel.append(lines, visible, cx);
+            panel.append(lines, cx);
         });
-        self.dock_area.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     pub(crate) fn refresh_workflow_bar(&mut self, cx: &mut Context<Self>) {
@@ -1935,12 +1930,41 @@ impl AppView {
         }
     }
 
-    fn sync_messages_visible(&mut self, cx: &mut Context<Self>) {
-        let visible = self.messages_tab_visible(cx);
-        self.messages.update(cx, |panel, cx| {
-            panel.set_visible(visible, cx);
+    fn toggle_messages_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.messages_tab_visible(cx) {
+            self.hide_script_dock(window, cx);
+            return;
+        }
+        self.show_messages_tab(window, cx);
+    }
+
+    fn show_messages_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel_id = PanelId::from(self.messages.entity_id());
+        let dock_open = self.script_dock_open(cx);
+        if !dock_open {
+            self.show_script_dock(window, cx);
+        }
+        self.dock_area.update(cx, |area, cx| {
+            if let Some((node, ix, active_ix)) =
+                Self::panel_tab_slot(area, DockPlacement::Bottom, panel_id)
+            {
+                if ix != active_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
         });
-        self.dock_area.update(cx, |_, cx| cx.notify());
+        self.messages.focus_handle(cx).focus(window, cx);
+        self.sync_view_menus(cx);
+        cx.notify();
     }
 
     fn choose_channel_layout(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2497,11 +2521,10 @@ impl AppView {
         self.workflow_bar = self.script.toolbar_snapshot();
         let logs = self.script.take_logs();
         if !logs.is_empty() {
-            let visible = self.messages_tab_visible(cx);
             self.messages.update(cx, |panel, cx| {
-                panel.append(to_log_lines(logs), visible, cx);
+                panel.append(to_log_lines(logs), cx);
             });
-            self.dock_area.update(cx, |_, cx| cx.notify());
+            cx.notify();
         }
         self.sync_view_menus(cx);
     }
@@ -4260,6 +4283,20 @@ impl Render for AppView {
                 }
             }) as Rc<dyn Fn(&mut Window, &mut App)>
         });
+        let (error_count, warn_count) = {
+            let panel = self.messages.read(cx);
+            (panel.error_count(), panel.warn_count())
+        };
+        let on_messages = {
+            let app = cx.weak_entity();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |this, cx| {
+                        this.toggle_messages_tab(window, cx);
+                    });
+                }
+            }) as Rc<dyn Fn(&mut Window, &mut App)>
+        };
         let on_preview = {
             let app = cx.weak_entity();
             Rc::new(move |_window: &mut Window, cx: &mut App| {
@@ -4422,10 +4459,15 @@ impl Render for AppView {
                                         this.child(self.workflow_bar_view.clone())
                                     })
                                     .child(
-                                        FileStatusBar::new(file_status)
+                                        SessionStatusBar::new(file_status)
                                             .with_progress_message(progress_message)
                                             .with_preview(Some(on_preview))
                                             .with_preview_selected(self.preview_enabled)
+                                            .with_message_alerts(
+                                                error_count,
+                                                warn_count,
+                                                on_messages,
+                                            )
                                             .with_monitor(on_monitor)
                                             .with_monitor_selected(self.monitor_tab_visible(cx))
                                             .with_layout(layout_picker),
