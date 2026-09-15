@@ -17,6 +17,8 @@ Related:
 
 - [SPEC-application.md](SPEC-application.md) — as-built session, composition,
   monitor, and render
+- [SPEC-analysis.md](SPEC-analysis.md) — future analysis (gather streams /
+  markers / regions; peaks already ship). Not a substitute for processing
 - [SPEC-workflows.md](SPEC-workflows.md) — Lua review/ingest (how files enter
   and move through a session)
 
@@ -38,6 +40,9 @@ Source media  →  composition EDL (clip tree, markers, regions)
                       │
                       ├─ listen ──► monitor chain ──► output device
                       │
+                      ├─ analyze (peaks today; more later)
+                      │         └──► streams / markers / regions
+                      │
                       └─ process (future)
                               │
                               ├─ preview listen ──► monitor chain ──► output device
@@ -48,6 +53,7 @@ Source media  →  composition EDL (clip tree, markers, regions)
 | --- | --- | --- |
 | **Composition EDL** | Non-destructive timeline over source media | Shipping |
 | **Monitor chain** | Map whatever you are hearing (channel count, M/S, FOA, …) onto the playback device | Shipping. Unchanged by this spec |
+| **Analysis** | Gather extra information over the edited timeline | Peaks only; rest future ([SPEC-analysis.md](SPEC-analysis.md)) |
 | **Processing chain** | Ordered operations on a file or region for preview and export | Future |
 | **Render** | Encode the current composition (no chain, no monitor) | Shipping one-shot; batch export is future |
 
@@ -58,6 +64,7 @@ Rules:
   controls.
   They are not processing-chain operations and are not burned into exports
   unless a future UI explicitly offers “render what I hear.”
+- Analysis gathers information; it does not replace the processing chain.
 - File → Render of the active composition stays valid without a chain.
 - Plugin hosting is out of scope for this spec.
 

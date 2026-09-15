@@ -5,8 +5,9 @@ up to the desktop application. Sibling crates in the same layer do not depend
 on each other; traits live in the crate that *consumes* data, and higher layers
 supply adapters.
 
-Product behavior is described in [docs/spec/](spec/). This file covers only
-crate boundaries and composition patterns.
+Product behavior is described in [docs/spec/](spec/) (application, workflows,
+[analysis](spec/SPEC-analysis.md), [processing](spec/SPEC-processing.md)). This
+file covers only crate boundaries and composition patterns.
 
 ## Crate DAG
 
@@ -33,7 +34,7 @@ field-assist (package name FieldAssist)
 | `field-core` | leaf | File URLs, `ProgressHandle` |
 | `field-audio-model` | leaf | `PcmBuffer`, regions, markers, media pool, `BlockPager` / `BlockSource` |
 | `field-audio-io` | leaf | Probe/decode/encode above Symphonia and format encoders |
-| `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops |
+| `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops ([SPEC-analysis.md](spec/SPEC-analysis.md)) |
 | `field-audio-monitor` | mid | Monitor chain Faust DSP, UI schema, lock-free params |
 | `field-audio-playback` | mid | Realtime device I/O, transport, playhead |
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |

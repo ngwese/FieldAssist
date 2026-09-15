@@ -16,6 +16,9 @@ Related:
 
 - [SPEC-workflows.md](SPEC-workflows.md) — Lua scripts, workflows, and session
   grouping
+- [SPEC-analysis.md](SPEC-analysis.md) — future analysis layer (streams,
+  markers, regions). Overview peaks already ship; overlays and spectrum view
+  are future
 - [SPEC-processing.md](SPEC-processing.md) — future processing chains, preview,
   and batch export. Additive to monitor DSP; not a replacement.
 - [SCRIPT.md](../SCRIPT.md) — Lua API reference
@@ -35,8 +38,10 @@ sittings.
 Named **processing chains** and background batch export are a future layer,
 specified in [SPEC-processing.md](SPEC-processing.md). They sit **in addition
 to** the as-built **monitor chain** (playback downmix / listen DSP) and the
-current File → Render of the active composition. Lua workflows (especially
-Review) cover incremental pass-through of a set of files.
+current File → Render of the active composition. **Analysis** beyond overview
+peaks (overlays, spectrum view, silence/transients, …) is specified in
+[SPEC-analysis.md](SPEC-analysis.md). Lua workflows (especially Review) cover
+incremental pass-through of a set of files.
 
 ## Terminology
 
@@ -231,8 +236,11 @@ The Messages tab has no badge; totals appear on the status bar. See
 
 One lane per channel, labeled from the effective layout. Overview paint uses
 peak bins (256 samples per bin) built on a background thread with progress.
-Sample-accurate zoom reads PCM through a block pager. Until peaks are ready,
-overview does not fold PCM on the UI thread.
+That peak gather is the first shipping instance of analysis; a broader catalog
+(overlays, spectrum representation, silence/transients, …) is specified in
+[SPEC-analysis.md](SPEC-analysis.md). Sample-accurate zoom reads PCM through a
+block pager. Until peaks are ready, overview does not fold PCM on the UI
+thread.
 
 Zoom factor 1.25 (minimum 1/50 sample per pixel). Fit-all and Frame (selection
 or caret) are view commands. Horizontal pan uses drag, a scrollbar, or
@@ -407,8 +415,11 @@ application. Do not treat them as missing bugs of the current build:
 - Third-party plugin hosting (VST, AU, CLAP, …)
 - Named processing-chain shelf, default chain, interactive chain preview
 - Background batch over many files or regions with captured chain state
+- Analyze menu, waveform spectrum representation, and analysis stream
+  overlays (RMS, correlation, …) beyond overview peaks
 
-Those last two items are **future additions**, not a redesign of monitor DSP.
-See [SPEC-processing.md](SPEC-processing.md). Incremental review of many
-files is in [SPEC-workflows.md](SPEC-workflows.md) (built-in Review), not a
-collection `review_status` enum.
+Those processing and analysis items are **future additions**, not missing bugs
+of the current build. See [SPEC-processing.md](SPEC-processing.md) and
+[SPEC-analysis.md](SPEC-analysis.md). Incremental review of many files is in
+[SPEC-workflows.md](SPEC-workflows.md) (built-in Review), not a collection
+`review_status` enum.

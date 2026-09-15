@@ -16,6 +16,8 @@ this file is the product contract.
 Related:
 
 - [SPEC-application.md](SPEC-application.md) — session, composition, UI
+- [SPEC-analysis.md](SPEC-analysis.md) — future analysis invoke from Lua (not
+  driven by these workflows today)
 - [SPEC-processing.md](SPEC-processing.md) — future processing chains (not
   driven by these workflows today)
 - [SCRIPT.md](../SCRIPT.md) — API reference
@@ -256,9 +258,10 @@ monitor fields; and log or alert. They cannot register new keymap items,
 close the UI session object, edit a composition that is only referenced by a
 detached `load_session`, or start a second stateful workflow.
 
-## Processing
+## Analysis and processing
 
-Workflows may later *invoke* batch export or assign a processing chain to
-documents (see [SPEC-processing.md](SPEC-processing.md)). Nothing in the
-current host does that. Review’s Output path is stored for scripts; the app
-does not yet render into it automatically.
+Workflows may later *invoke* built-in analysis (`c:analyze`, see
+[SPEC-analysis.md](SPEC-analysis.md)) or assign a processing chain / batch
+export (see [SPEC-processing.md](SPEC-processing.md)). Nothing in the current
+host does that. Review’s Output path is stored for scripts; the app does not
+yet render into it automatically.
