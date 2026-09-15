@@ -1938,6 +1938,13 @@ impl AppView {
         self.show_messages_tab(window, cx);
     }
 
+    fn clear_message_counts(&mut self, cx: &mut Context<Self>) {
+        self.messages.update(cx, |panel, cx| {
+            panel.clear_counts(cx);
+        });
+        cx.notify();
+    }
+
     fn show_messages_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel_id = PanelId::from(self.messages.entity_id());
         let dock_open = self.script_dock_open(cx);
@@ -4289,13 +4296,17 @@ impl Render for AppView {
         };
         let on_messages = {
             let app = cx.weak_entity();
-            Rc::new(move |window: &mut Window, cx: &mut App| {
+            Rc::new(move |shift: bool, window: &mut Window, cx: &mut App| {
                 if let Some(app) = app.upgrade() {
                     app.update(cx, |this, cx| {
-                        this.toggle_messages_tab(window, cx);
+                        if shift {
+                            this.clear_message_counts(cx);
+                        } else {
+                            this.toggle_messages_tab(window, cx);
+                        }
                     });
                 }
-            }) as Rc<dyn Fn(&mut Window, &mut App)>
+            }) as Rc<dyn Fn(bool, &mut Window, &mut App)>
         };
         let on_preview = {
             let app = cx.weak_entity();

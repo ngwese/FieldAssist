@@ -58,7 +58,7 @@ pub struct SessionStatusBar {
     preview_selected: bool,
     error_count: usize,
     warn_count: usize,
-    on_messages: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    on_messages: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
 }
 
 impl SessionStatusBar {
@@ -114,16 +114,18 @@ impl SessionStatusBar {
         self
     }
 
-    /// Show error/warn message counts that toggle the Messages tab.
+    /// Show error/warn message counts. Click toggles the Messages tab;
+    /// Shift-click clears the counters (`on_click` receives `true` when Shift
+    /// was held).
     pub fn with_message_alerts(
         mut self,
         errors: usize,
         warns: usize,
-        on_toggle: Rc<dyn Fn(&mut Window, &mut App)>,
+        on_click: Rc<dyn Fn(bool, &mut Window, &mut App)>,
     ) -> Self {
         self.error_count = errors;
         self.warn_count = warns;
-        self.on_messages = Some(on_toggle);
+        self.on_messages = Some(on_click);
         self
     }
 }
@@ -203,7 +205,7 @@ impl IconNamed for CirclePlayIcon {
 fn message_alerts_button(
     errors: usize,
     warns: usize,
-    on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+    on_click: Rc<dyn Fn(bool, &mut Window, &mut App)>,
     muted: Hsla,
 ) -> impl IntoElement {
     Button::new("status-messages")
@@ -212,7 +214,7 @@ fn message_alerts_button(
         .p_0()
         .ml_2()
         .text_color(muted)
-        .tooltip("Messages")
+        .tooltip("Messages (Shift-click to clear counts)")
         .child(
             h_flex()
                 .items_center()
@@ -236,8 +238,8 @@ fn message_alerts_button(
                         .child(div().text_xs().text_color(muted).child(warns.to_string())),
                 ),
         )
-        .on_click(move |_, window, cx| {
-            (on_click)(window, cx);
+        .on_click(move |event, window, cx| {
+            (on_click)(event.modifiers().shift, window, cx);
         })
 }
 

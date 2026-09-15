@@ -52,6 +52,8 @@ pub struct LogLine {
 /// Bottom-dock messages panel.
 pub struct MessagesPanel {
     entries: Vec<LogLine>,
+    /// Index of the first log line that still counts toward status-bar alerts.
+    acked_until: usize,
     scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
 }
@@ -61,6 +63,7 @@ impl MessagesPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             entries: Vec::new(),
+            acked_until: 0,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
@@ -76,21 +79,30 @@ impl MessagesPanel {
         cx.notify();
     }
 
-    /// Number of error lines currently in the panel.
+    /// Number of unacked error lines (status-bar counter).
     pub fn error_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| entry.level == LogLevel::Error)
-            .count()
+        count_level(&self.entries, self.acked_until, LogLevel::Error)
     }
 
-    /// Number of warning lines currently in the panel.
+    /// Number of unacked warning lines (status-bar counter).
     pub fn warn_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| entry.level == LogLevel::Warn)
-            .count()
+        count_level(&self.entries, self.acked_until, LogLevel::Warn)
     }
+
+    /// Reset status-bar error/warn counters without removing log lines.
+    pub fn clear_counts(&mut self, cx: &mut Context<Self>) {
+        self.acked_until = self.entries.len();
+        cx.notify();
+    }
+}
+
+fn count_level(entries: &[LogLine], acked_until: usize, level: LogLevel) -> usize {
+    entries
+        .get(acked_until..)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|entry| entry.level == level)
+        .count()
 }
 
 impl EventEmitter<PanelEvent> for MessagesPanel {}
@@ -219,4 +231,33 @@ fn column_row(
                 .child(message.into()),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(level: LogLevel) -> LogLine {
+        LogLine {
+            level,
+            topic: "t".into(),
+            text: "m".into(),
+        }
+    }
+
+    #[test]
+    fn counts_unacked_errors_and_warns() {
+        let entries = vec![
+            line(LogLevel::Info),
+            line(LogLevel::Warn),
+            line(LogLevel::Error),
+            line(LogLevel::Error),
+        ];
+        assert_eq!(count_level(&entries, 0, LogLevel::Error), 2);
+        assert_eq!(count_level(&entries, 0, LogLevel::Warn), 1);
+        assert_eq!(count_level(&entries, 3, LogLevel::Error), 1);
+        assert_eq!(count_level(&entries, 3, LogLevel::Warn), 0);
+        assert_eq!(count_level(&entries, 4, LogLevel::Error), 0);
+        assert_eq!(count_level(&entries, 4, LogLevel::Warn), 0);
+    }
 }
