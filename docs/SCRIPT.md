@@ -102,7 +102,7 @@ flowchart TB
 | `composition` | `app.composition`, `app.compositions[i]`, `session:open(path)` |
 | `collection` | `c.selection` or `c:collection(name)` |
 | `region` | `c.regions[i]`, `collection.regions[i]`, `c:add_region(...)` |
-| `marker` | `c.markers[i]`, `c:add_marker(...)`, `c:marker_at(...)` |
+| `marker` | `c.markers[i]`, `c:add_marker(...)`, `c:marker_at(...)`, `c:remove_marker_by_type(...)` |
 | workflow prototype | `app:create_workflow({...})` then `app:declare_workflow(...)` |
 | workflow instance | `app.workflow` while a stateful run is bound |
 
@@ -403,6 +403,7 @@ removed region/marker errors on further field access.
 | `add_marker(...)` | Insert a marker; returns Marker or `nil` if type already at frame. |
 | `marker_at(frame [, type])` | Lookup at sample. |
 | `remove_marker(m)` / `remove_marker_at(frame [, type])` | Delete markers. |
+| `remove_marker_by_type(type)` | Delete all markers of `type`; returns count. Type stays registered. |
 | `undo()` / `redo()` | History; return whether a step ran. |
 | `cut()` / `copy()` / `paste()` | Clipboard over selection spans. |
 | `clear()` / `remove()` / `duplicate()` / `trim()` | Same as Edit menu on selection. |

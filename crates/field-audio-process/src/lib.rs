@@ -5,7 +5,8 @@
 
 //! # field-audio-process
 //!
-//! DSP helpers for FieldAssist: overview peak folding and planar resampling.
+//! DSP helpers for FieldAssist: overview peak folding, analysis ops, and
+//! planar resampling.
 //!
 //! ```
 //! use field_audio_process::{build_peaks, PEAK_BLOCK};
@@ -15,8 +16,13 @@
 //! assert!(!peaks.is_empty() || samples.len() < PEAK_BLOCK);
 //! ```
 
+mod analysis;
 mod peaks;
 mod resample;
 
+pub use analysis::{
+    fold_minmax_bins, AnalysisCtx, AnalysisKind, AnalysisMarker, AnalysisSink, EnvelopePeakOp,
+    TransientDetectOp,
+};
 pub use peaks::{build_peaks, min_max_in_range, PEAK_BLOCK};
 pub use resample::resample_planar;

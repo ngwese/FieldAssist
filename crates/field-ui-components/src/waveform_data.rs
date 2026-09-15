@@ -26,6 +26,28 @@ pub trait WaveformDataProvider: Send + Sync {
     fn peaks_ready(&self) -> bool {
         true
     }
+    /// Request overview min/max analysis when paint needs it (pull-based).
+    fn ensure_minmax_peaks(&self) {}
+    /// Whether the peak-envelope overlay should be drawn.
+    fn envelope_overlay_enabled(&self) -> bool {
+        false
+    }
+    /// Whether envelope-peak bins cover the timeline.
+    fn envelope_ready(&self) -> bool {
+        false
+    }
+    /// Request envelope-peak analysis when the overlay is on and data is missing.
+    fn ensure_envelope_peak(&self) {}
+    /// Fill per-column envelope amplitudes for overlay paint.
+    fn fill_envelope_columns(
+        &self,
+        _channel: usize,
+        _start: f64,
+        _samples_per_pixel: f64,
+        dest: &mut [f32],
+    ) {
+        dest.fill(0.0);
+    }
     /// Fill column min/max pairs for overview painting.
     fn fill_minmax_columns(
         &self,

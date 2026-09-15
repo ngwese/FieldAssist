@@ -236,8 +236,9 @@ The Messages tab has no badge; totals appear on the status bar. See
 
 One lane per channel, labeled from the effective layout. Overview paint uses
 peak bins (256 samples per bin) built on a background thread with progress.
-That peak gather is the first shipping instance of analysis; a broader catalog
-(overlays, spectrum representation, silence/transients, …) is specified in
+That peak gather is the first shipping instance of analysis (pull-based when
+the waveform needs overview bins). Analyze → Envelope → Peak and Detect
+Transients, plus View → Show Envelope Peak, are also shipping; see
 [SPEC-analysis.md](SPEC-analysis.md). Sample-accurate zoom reads PCM through a
 block pager. Until peaks are ready, overview does not fold PCM on the UI
 thread.
@@ -265,10 +266,11 @@ timeline as latch radius.
 
 ### Markers
 
-Built-in types: Blue (default), Yellow, Purple. Custom types (name + color)
-live on the composition. A marker is a type instance at a frame, with an
-optional note. Color is on the type. At most one marker of a given type may
-occupy a frame; different types may share a frame.
+Built-in types: Blue (default), Yellow, Purple, Transient (pink; used by
+Analyze → Mark → Transients). Custom types (name + color) live on the
+composition. A marker is a type instance at a frame, with an optional note.
+Color is on the type. At most one marker of a given type may occupy a frame;
+different types may share a frame.
 
 Add at Hover (Selection menu) uses the sample under the pointer when set;
 otherwise the caret. Delete removes the marker at the target. Types can be
@@ -416,10 +418,11 @@ application. Do not treat them as missing bugs of the current build:
 - Named processing-chain shelf, default chain, interactive chain preview
 - Background batch over many files or regions with captured chain state
 - Analyze menu, waveform spectrum representation, and analysis stream
-  overlays (RMS, correlation, …) beyond overview peaks
+  overlays (RMS, correlation, …) beyond overview peaks and Envelope Peak
 
-Those processing and analysis items are **future additions**, not missing bugs
-of the current build. See [SPEC-processing.md](SPEC-processing.md) and
+Those processing items and remaining analysis catalog entries are **future
+additions**, not missing bugs of the current build. Overview peaks, Envelope
+Peak overlay, and Transient detection are shipping; see
 [SPEC-analysis.md](SPEC-analysis.md). Incremental review of many files is in
 [SPEC-workflows.md](SPEC-workflows.md) (built-in Review), not a collection
 `review_status` enum.

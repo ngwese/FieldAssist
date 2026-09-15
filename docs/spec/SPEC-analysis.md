@@ -7,11 +7,12 @@
 | Revision | Date | Notes |
 | --- | --- | --- |
 | 1 | 2026-09-14 | Initial draft of the analysis layer |
+| 2 | 2026-09-14 | Pull-based streams; Envelope Peak and Transient ops ship |
 
-This is a future product layer. The as-built application already gathers
-**overview peaks** when a file is opened so the waveform can paint. That job is
-the first shipping instance of analysis. The rest of the catalog, menus,
-overlays, and Lua surface described here are not yet implemented.
+Overview **minmax peaks**, **Envelope Peak** (300 ms `dasp_envelope` follower),
+and **Mark → Transients** (pink Transient markers) are implemented. Spectrum
+representation, silence detection, correlation, and the Lua `c:analyze` surface
+remain future work.
 
 Related:
 
@@ -53,7 +54,7 @@ Source media  →  composition EDL (clip tree, markers, regions)
 | --- | --- | --- |
 | **Composition EDL** | Non-destructive timeline over source media | Shipping |
 | **Monitor chain** | Map whatever you are hearing onto the playback device; live Input/Output RMS | Shipping. Unchanged by this spec |
-| **Analysis** | Gather extra information over the edited timeline | Peaks only; rest future |
+| **Analysis** | Gather extra information over the edited timeline | Minmax peaks (pull), Envelope Peak overlay, Transient markers; rest future |
 | **Processing chain** | Ordered operations for preview and export | Future ([SPEC-processing.md](SPEC-processing.md)) |
 | **Render** | Encode the current composition | Shipping one-shot |
 
@@ -117,8 +118,10 @@ For each pass of an operation:
 | **Offline / multi-pass** | Two or more (for example noise-floor scan, then event detect) | Progress per pass; discrete results at the end of a later pass |
 
 **Realtime-capable does not mean the CPAL output callback.** Jobs run on a
-background thread with `ProgressHandle`, the same pattern as peak build. Live
-Input/Output RMS on the Monitor tab remain monitor DSP. Analysis must not
+background thread with `ProgressHandle`, the same pattern as peak build. Enabled
+stream layers **pull** analysis when paint (or Activate) needs data: if the layer
+is on and bins are missing, the waveform requests an eager background job.
+Live Input/Output RMS on the Monitor tab remain monitor DSP. Analysis must not
 allocate or take blocking locks on the device callback.
 
 ### Outputs
@@ -145,10 +148,10 @@ the following as intent; not every row must ship in one release.
 
 | Operation | Kind | Typical output |
 | --- | --- | --- |
-| Gather peaks | Realtime-capable; **already auto-runs on open** | Per-channel `(min, max)` stream |
-| RMS / envelope | Realtime-capable | Per-channel stream; optional overlay |
+| Gather peaks | Realtime-capable; **pull when overview layer needs paint** | Per-channel `(min, max)` stream |
+| Envelope Peak | Realtime-capable; Analyze → Envelope → Peak or View overlay | Per-channel smoothed peak stream (300 ms) |
 | Stereo correlation | Realtime-capable; needs ≥2 channels in scope | Shared stream |
-| Transient detection | Realtime-capable or light extra pass | Markers and/or regions |
+| Transient detection | Realtime-capable; Analyze → Mark → Transients | Pink **Transient** markers |
 | Silence | Often needs a floor estimate (multi-pass) | Named region collection |
 | Speech / sound labeling | Offline; later | Labeled regions (no ML/plugin commitment in v1) |
 | Spectral data | Realtime-capable, heavier | Per-channel spectra; drives spectrum **representation** |
@@ -156,17 +159,26 @@ the following as intent; not every row must ship in one release.
 Parameters are per operation (window, threshold, hop, output collection or
 marker type). Changing a parameter re-runs that job for the current target.
 
-Only **gather peaks** auto-runs on open. Other operations run when the user or
-a script invokes them (or when a view needs missing spectral data; see below).
+**Gather peaks** starts when the waveform needs overview data (document activate
+/ paint pull). **Envelope Peak** and **Transients** run from the Analyze menu
+(or when the envelope overlay is enabled and data is missing).
 
 ## User interface
 
 ### Analyze menu
 
-A new **Analyze** menu runs operations on the active composition. Default
-target and channel scope follow the menu rules above. Each item corresponds to
-a built-in operation (and later, parameters via a sheet or submenu where
-needed).
+A new **Analyze** menu runs operations on the active composition. **Selection
+Only** (toggle at the top of the menu) limits Envelope Peak and Mark →
+Transients to the current selection; overview minmax peaks always cover the
+full timeline. Default channel scope follows the menu rules above. Each item
+corresponds to a built-in operation (and later, parameters via a sheet or
+submenu where needed).
+
+| Item | Behavior |
+| --- | --- |
+| Selection Only | When checked, scoped ops use selection spans only |
+| Envelope → Peak | Peak envelope stream (300 ms) |
+| Mark → Transients | Pink Transient markers |
 
 ### View: representation and overlays
 
@@ -227,7 +239,8 @@ current host does that.
 - Lua that registers custom DSP or reads planar PCM buffers for analysis
 - Running analysis on the CPAL device callback
 - Persisting dense streams in `.facomp` or a sidecar database
-- Auto-running every operation on open (peaks remain the exception)
+- Auto-running every operation on open (peaks remain pull-on-need; Envelope /
+  Transients are menu- or overlay-driven)
 - Folding monitor VU into analysis, or analysis into the processing chain
 - Learned speech / sound models as a shipping requirement (listed only as a
   future example)

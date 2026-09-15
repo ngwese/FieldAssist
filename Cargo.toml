@@ -37,7 +37,7 @@ rusty_vorbis = "0.1"
 ogg = "0.9"
 flacenc = "0.5"
 rubato = { version = "5", features = ["fft_resampler"] }
-dasp = { version = "0.11", features = ["std", "sample", "slice"] }
+dasp = { version = "0.11", features = ["std", "slice", "envelope", "envelope-peak"] }
 thiserror = "2"
 embed-resource = "3"
 

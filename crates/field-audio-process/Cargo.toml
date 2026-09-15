@@ -7,5 +7,6 @@ description = "Audio DSP helpers for FieldAssist (peaks, resample)"
 
 [dependencies]
 anyhow = { workspace = true }
+dasp = { workspace = true }
 field-audio-model = { path = "../field-audio-model" }
 rubato = { workspace = true }

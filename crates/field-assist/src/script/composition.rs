@@ -397,6 +397,13 @@ impl UserData for LuaComposition {
                 Ok(removed)
             },
         );
+        methods.add_method("remove_marker_by_type", |lua, this, marker_type: String| {
+            let removed = with_document(lua, this.id, |doc| {
+                Ok(doc.remove_marker_by_type(&marker_type))
+            })?;
+            after_edit(lua, this.id)?;
+            Ok(removed)
+        });
         methods.add_method(
             "marker_at",
             |lua, this, (frame, marker_type): (i64, Option<String>)| {

@@ -11,27 +11,33 @@ use field_audio_io::{probe_file, probe_header, ProbedFile, SymphoniaBlockSource}
 use field_audio_model::{
     BlockPager, BlockSource, ChannelScope, Marker, MarkerId, MarkerList, MarkerType, MediaId,
     MediaPool, MediaRef, RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES,
-    SELECTION_COLLECTION,
+    MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
 };
-use field_audio_process::PEAK_BLOCK;
+use field_audio_process::{
+    fold_minmax_bins, AnalysisKind, AnalysisSink, EnvelopePeakOp, TransientDetectOp, PEAK_BLOCK,
+};
 use field_core::{encode_file_url, ProgressHandle};
 
+use super::analysis_store::AnalysisStreams;
 use super::clip::{Clip, ClipId, ClipSpan};
 use super::edit_ranges::{map_inclusive_through_inverse, map_inclusive_through_op};
 use super::edl::{CompositionId, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
 use super::tree::ClipTree;
 use super::{map_point_if_kept, map_point_if_kept_inverse};
 
-/// Result of folding one pager-sized peak chunk into a live composition.
+/// Result of folding one pager-sized analysis chunk into a live composition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeakBlockOutcome {
-    /// Bins were appended and at least one clip still needs overview data.
+pub enum AnalysisBlockOutcome {
+    /// Work progressed and more blocks remain.
     Progress,
-    /// Every sourced clip has overview bins covering its length.
+    /// The analysis pass finished.
     Complete,
     /// The job epoch was cancelled before or during this block.
     Cancelled,
 }
+
+/// Historical name for [`AnalysisBlockOutcome`] (overview peaks).
+pub type PeakBlockOutcome = AnalysisBlockOutcome;
 
 #[derive(Debug, Clone, Default)]
 /// Clipboard.
@@ -85,6 +91,25 @@ pub struct Composition {
     clean_collections: Vec<RegionCollection>,
     monitor_chain: Option<String>,
     playback_channels: Option<Vec<usize>>,
+    /// In-memory derived streams (envelope, …); not saved to `.facomp`.
+    analysis_streams: AnalysisStreams,
+    /// Scratch peak-envelope detector kept across pager blocks of one job.
+    envelope_op: Option<EnvelopePeakOp>,
+    /// Scratch transient detector kept across pager blocks of one job.
+    transient_op: Option<TransientDetectOp>,
+    /// Half-open timeline ranges for the active envelope/transient job.
+    /// Empty with [`Self::analysis_target_configured`] means no samples.
+    analysis_target_ranges: Vec<(u64, u64)>,
+    /// Absolute timeline frame of the next sample to process in the job.
+    analysis_read_pos: u64,
+    /// Total frames across [`Self::analysis_target_ranges`] (or full length).
+    analysis_target_total: u64,
+    /// Frames consumed so far in the active job.
+    analysis_target_done: u64,
+    /// True once `begin_analysis_target` has been applied for this job.
+    analysis_job_started: bool,
+    /// True after [`Self::begin_analysis_target`] until the job finishes/clears.
+    analysis_target_configured: bool,
 }
 
 fn normalize_playback_channels(
@@ -164,6 +189,15 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: None,
             playback_channels: None,
+            analysis_streams: AnalysisStreams::default(),
+            envelope_op: None,
+            transient_op: None,
+            analysis_target_ranges: Vec::new(),
+            analysis_read_pos: 0,
+            analysis_target_total: 0,
+            analysis_target_done: 0,
+            analysis_job_started: false,
+            analysis_target_configured: false,
         };
         composition.mark_clean();
         composition
@@ -218,6 +252,15 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: None,
             playback_channels: None,
+            analysis_streams: AnalysisStreams::default(),
+            envelope_op: None,
+            transient_op: None,
+            analysis_target_ranges: Vec::new(),
+            analysis_read_pos: 0,
+            analysis_target_total: 0,
+            analysis_target_done: 0,
+            analysis_job_started: false,
+            analysis_target_configured: false,
         };
         let peaked = composed
             .pool
@@ -443,6 +486,15 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: self.monitor_chain.clone(),
             playback_channels: self.playback_channels.clone(),
+            analysis_streams: AnalysisStreams::default(),
+            envelope_op: None,
+            transient_op: None,
+            analysis_target_ranges: Vec::new(),
+            analysis_read_pos: 0,
+            analysis_target_total: 0,
+            analysis_target_done: 0,
+            analysis_job_started: false,
+            analysis_target_configured: false,
         }
     }
 
@@ -539,6 +591,13 @@ impl Composition {
     /// `remove_marker_at_type`.
     pub fn remove_marker_at_type(&mut self, frame: u64, marker_type: &str) -> bool {
         self.markers.remove_at_type(frame, marker_type)
+    }
+
+    /// Remove every marker whose type name matches `marker_type`.
+    ///
+    /// Returns how many markers were removed. The type registry entry is kept.
+    pub fn remove_marker_by_type(&mut self, marker_type: &str) -> usize {
+        self.markers.remove_type(marker_type)
     }
 
     /// `marker_types`.
@@ -815,6 +874,7 @@ impl Composition {
         self.remap_collections_op(&op);
         self.tree = tree;
         self.edl.push(op, self.tree.clone());
+        self.clear_analysis_scratch();
     }
 
     /// `undo`.
@@ -828,6 +888,7 @@ impl Composition {
                 .remap(|frame| map_point_if_kept_inverse(frame, &op));
             self.remap_collections_inverse(&op);
             self.adopt_tree(tree);
+            self.clear_analysis_scratch();
             true
         } else {
             false
@@ -844,6 +905,7 @@ impl Composition {
             self.markers.remap(|frame| map_point_if_kept(frame, &op));
             self.remap_collections_op(&op);
             self.adopt_tree(tree);
+            self.clear_analysis_scratch();
             true
         } else {
             false
@@ -858,10 +920,50 @@ impl Composition {
             self.remap_markers_between(from, to);
             self.remap_collections_between(from, to);
             self.adopt_tree(tree);
+            self.clear_analysis_scratch();
             true
         } else {
             false
         }
+    }
+
+    fn clear_analysis_scratch(&mut self) {
+        self.analysis_streams.clear();
+        self.envelope_op = None;
+        self.transient_op = None;
+        self.analysis_target_ranges.clear();
+        self.analysis_read_pos = 0;
+        self.analysis_target_total = 0;
+        self.analysis_target_done = 0;
+        self.analysis_job_started = false;
+        self.analysis_target_configured = false;
+    }
+
+    /// Configure the next envelope/transient job.
+    ///
+    /// `ranges` are half-open `[start, end)` spans. `None` means the whole
+    /// timeline. `Some([])` means no samples (Selection Only with an empty
+    /// selection).
+    pub fn begin_analysis_target(&mut self, ranges: Option<Vec<(u64, u64)>>) {
+        let frames = self.frames();
+        let ranges = match ranges {
+            None => vec![(0, frames)],
+            Some(r) if r.is_empty() => Vec::new(),
+            Some(r) => normalize_half_open_ranges(r, frames),
+        };
+        let total: u64 = ranges.iter().map(|(s, e)| e.saturating_sub(*s)).sum();
+        self.analysis_target_ranges = ranges;
+        self.analysis_read_pos = self
+            .analysis_target_ranges
+            .first()
+            .map(|(s, _)| *s)
+            .unwrap_or(0);
+        self.analysis_target_total = total;
+        self.analysis_target_done = 0;
+        self.analysis_job_started = false;
+        self.analysis_target_configured = true;
+        self.envelope_op = None;
+        self.transient_op = None;
     }
 
     fn remap_markers_between(&mut self, from: usize, to: usize) {
@@ -1644,7 +1746,7 @@ impl Composition {
                     self.read_clip(span.clip.as_ref(), pos, take as u64, &mut dests, 0)?;
                 }
                 for (ch, dest) in planar.iter().enumerate() {
-                    fold_peak_bins(dest, &mut peaks[ch], &mut min, &mut max);
+                    fold_minmax_bins(dest, &mut peaks[ch], &mut min, &mut max);
                     done += take as u64;
                 }
                 if let Some(progress) = progress {
@@ -1674,9 +1776,35 @@ impl Composition {
         composition: &RwLock<Self>,
         progress: Option<&ProgressHandle>,
         epoch: u64,
-    ) -> Result<PeakBlockOutcome> {
+    ) -> Result<AnalysisBlockOutcome> {
+        Self::build_next_analysis_block(composition, AnalysisKind::MinMax, progress, epoch)
+    }
+
+    /// Run one pager-sized step of `kind` against `composition`.
+    pub fn build_next_analysis_block(
+        composition: &RwLock<Self>,
+        kind: AnalysisKind,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<AnalysisBlockOutcome> {
+        match kind {
+            AnalysisKind::MinMax => Self::build_next_minmax_block(composition, progress, epoch),
+            AnalysisKind::EnvelopePeak => {
+                Self::build_next_envelope_block(composition, progress, epoch)
+            }
+            AnalysisKind::Transients => {
+                Self::build_next_transient_block(composition, progress, epoch)
+            }
+        }
+    }
+
+    fn build_next_minmax_block(
+        composition: &RwLock<Self>,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<AnalysisBlockOutcome> {
         if progress.is_some_and(|p| !p.is_epoch(epoch)) {
-            return Ok(PeakBlockOutcome::Cancelled);
+            return Ok(AnalysisBlockOutcome::Cancelled);
         }
         let (clip, channel_count, pos, total_samples) = {
             let this = composition.read().unwrap();
@@ -1702,7 +1830,7 @@ impl Composition {
                 if let Some(progress) = progress {
                     progress.set_fraction(epoch, 1.0);
                 }
-                return Ok(PeakBlockOutcome::Complete);
+                return Ok(AnalysisBlockOutcome::Complete);
             };
             if let Some(progress) = progress {
                 progress.set_ratio(epoch, covered, total.max(1));
@@ -1710,10 +1838,10 @@ impl Composition {
             (clip, channel_count, pos, total)
         };
         if pos >= clip.len {
-            return Ok(PeakBlockOutcome::Complete);
+            return Ok(AnalysisBlockOutcome::Complete);
         }
         if progress.is_some_and(|p| !p.is_epoch(epoch)) {
-            return Ok(PeakBlockOutcome::Cancelled);
+            return Ok(AnalysisBlockOutcome::Cancelled);
         }
         let take = ((clip.len - pos) as usize).min(BLOCK_FRAMES as usize);
         let mut bins = vec![Vec::new(); channel_count];
@@ -1728,13 +1856,13 @@ impl Composition {
                 this.read_clip(clip.as_ref(), pos, take as u64, &mut dests, 0)?;
             }
             for (ch, dest) in planar.iter().enumerate() {
-                fold_peak_bins(dest, &mut bins[ch], &mut min, &mut max);
+                fold_minmax_bins(dest, &mut bins[ch], &mut min, &mut max);
             }
         }
         {
             let mut this = composition.write().unwrap();
             if progress.is_some_and(|p| !p.is_epoch(epoch)) {
-                return Ok(PeakBlockOutcome::Cancelled);
+                return Ok(AnalysisBlockOutcome::Cancelled);
             }
             this.append_peak_chunk(&clip, bins, min, max);
             if let Some(progress) = progress {
@@ -1752,12 +1880,12 @@ impl Composition {
                 progress.set_ratio(epoch, covered, total_samples.max(1));
             }
             if this.needs_peak_build() {
-                Ok(PeakBlockOutcome::Progress)
+                Ok(AnalysisBlockOutcome::Progress)
             } else {
                 if let Some(progress) = progress {
                     progress.set_fraction(epoch, 1.0);
                 }
-                Ok(PeakBlockOutcome::Complete)
+                Ok(AnalysisBlockOutcome::Complete)
             }
         }
     }
@@ -1768,12 +1896,428 @@ impl Composition {
         composition: &RwLock<Self>,
         progress: Option<&ProgressHandle>,
         epoch: u64,
-    ) -> Result<PeakBlockOutcome> {
+    ) -> Result<AnalysisBlockOutcome> {
         loop {
             match Self::build_next_peak_block(composition, progress, epoch)? {
-                PeakBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Progress => {}
                 other => return Ok(other),
             }
+        }
+    }
+
+    /// Whether envelope-peak analysis covers the full timeline.
+    pub fn needs_envelope_peak_build(&self) -> bool {
+        !self
+            .analysis_streams
+            .envelope_peak_ready(self.frames(), self.channel_count)
+    }
+
+    /// Access in-memory analysis streams.
+    pub fn analysis_streams(&self) -> &AnalysisStreams {
+        &self.analysis_streams
+    }
+
+    /// Mutable access to in-memory analysis streams.
+    pub fn analysis_streams_mut(&mut self) -> &mut AnalysisStreams {
+        &mut self.analysis_streams
+    }
+
+    /// Fill overview columns from the envelope-peak stream when present.
+    pub fn fill_envelope_columns(
+        &self,
+        channel: usize,
+        start: f64,
+        samples_per_pixel: f64,
+        dest: &mut [f32],
+    ) {
+        let Some(series) = self.analysis_streams.float(AnalysisKind::EnvelopePeak) else {
+            dest.fill(0.0);
+            return;
+        };
+        if channel >= series.channels.len() {
+            dest.fill(0.0);
+            return;
+        }
+        let bins = &series.channels[channel];
+        let hop = series.hop.max(1) as f64;
+        for (i, slot) in dest.iter_mut().enumerate() {
+            let a = start + i as f64 * samples_per_pixel;
+            let b = a + samples_per_pixel;
+            let start_bin = (a / hop).floor().max(0.0) as usize;
+            let end_bin = ((b / hop).ceil() as usize).min(bins.len());
+            if start_bin >= end_bin || bins.is_empty() {
+                *slot = 0.0;
+                continue;
+            }
+            let mut max = 0.0f32;
+            for &v in &bins[start_bin..end_bin] {
+                max = max.max(v);
+            }
+            *slot = max;
+        }
+    }
+
+    fn build_next_envelope_block(
+        composition: &RwLock<Self>,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<AnalysisBlockOutcome> {
+        if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+            return Ok(AnalysisBlockOutcome::Cancelled);
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if !this.analysis_job_started {
+                if !this.analysis_target_configured {
+                    this.begin_analysis_target(None);
+                }
+                let sample_rate = this.sample_rate;
+                let channel_count = this.channel_count;
+                let frames = this.frames();
+                let hop = AnalysisStreams::envelope_hop();
+                let series = this.analysis_streams.ensure_float(
+                    AnalysisKind::EnvelopePeak,
+                    channel_count,
+                    hop,
+                );
+                let bins_needed = if frames == 0 {
+                    0
+                } else {
+                    ((frames as usize) + hop - 1) / hop
+                };
+                for ch in &mut series.channels {
+                    ch.clear();
+                    ch.resize(bins_needed, 0.0);
+                }
+                series.covered_frames = 0;
+                this.envelope_op = Some(EnvelopePeakOp::new(sample_rate, channel_count));
+                this.analysis_job_started = true;
+            }
+        }
+        let (channel_count, total, done, read_pos, take, range_start) = {
+            let this = composition.read().unwrap();
+            if this.analysis_target_done >= this.analysis_target_total {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_done,
+                    0u64,
+                    0usize,
+                    0u64,
+                )
+            } else if let Some((start, end, pos)) = next_chunk_in_ranges(
+                &this.analysis_target_ranges,
+                this.analysis_read_pos,
+                BLOCK_FRAMES,
+            ) {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_done,
+                    pos,
+                    (end - pos) as usize,
+                    start,
+                )
+            } else {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_total,
+                    0u64,
+                    0usize,
+                    0u64,
+                )
+            }
+        };
+        if take == 0 {
+            let mut this = composition.write().unwrap();
+            this.envelope_op = None;
+            let frames = this.frames();
+            if let Some(series) = this.analysis_streams.float_mut(AnalysisKind::EnvelopePeak) {
+                series.covered_frames = frames;
+            }
+            this.analysis_job_started = false;
+            this.analysis_target_configured = false;
+            if let Some(progress) = progress {
+                progress.set_fraction(epoch, 1.0);
+            }
+            return Ok(AnalysisBlockOutcome::Complete);
+        }
+        if let Some(progress) = progress {
+            progress.set_ratio(epoch, done, total.max(1));
+        }
+        let mut planar = vec![vec![0.0; take]; channel_count];
+        {
+            let this = composition.read().unwrap();
+            let mut dests: Vec<&mut [f32]> =
+                planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+            this.read_planar(read_pos, take as u64, &mut dests)?;
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+                return Ok(AnalysisBlockOutcome::Cancelled);
+            }
+            let sample_rate = this.sample_rate;
+            if read_pos == range_start {
+                this.envelope_op = Some(EnvelopePeakOp::new(sample_rate, channel_count));
+            }
+            let hop = AnalysisStreams::envelope_hop();
+            let mut hop_bins = vec![Vec::new(); channel_count];
+            let range_end = this
+                .analysis_target_ranges
+                .iter()
+                .find(|(s, e)| read_pos >= *s && read_pos < *e)
+                .map(|(_, e)| *e)
+                .unwrap_or(read_pos + take as u64);
+            {
+                let op = this
+                    .envelope_op
+                    .get_or_insert_with(|| EnvelopePeakOp::new(sample_rate, channel_count));
+                for (ch, plane) in planar.iter().enumerate() {
+                    op.consume_channel(ch, plane, &mut hop_bins[ch]);
+                }
+                if read_pos + take as u64 >= range_end {
+                    for (ch, bins) in hop_bins.iter_mut().enumerate() {
+                        op.flush_channel(ch, bins);
+                    }
+                }
+            }
+            let next_pos = advance_read_pos(&this.analysis_target_ranges, read_pos + take as u64);
+            let frames = this.frames();
+            this.analysis_target_done += take as u64;
+            this.analysis_read_pos = next_pos;
+            let done_now = this.analysis_target_done;
+            let complete = done_now >= this.analysis_target_total;
+            {
+                let series = this.analysis_streams.ensure_float(
+                    AnalysisKind::EnvelopePeak,
+                    channel_count,
+                    hop,
+                );
+                let base_hop = (read_pos as usize) / hop;
+                for (ch, bins) in hop_bins.iter().enumerate() {
+                    for (i, &value) in bins.iter().enumerate() {
+                        let idx = base_hop + i;
+                        if idx < series.channels[ch].len() {
+                            series.channels[ch][idx] = value;
+                        }
+                    }
+                }
+                if complete {
+                    series.covered_frames = frames;
+                }
+            }
+            if let Some(progress) = progress {
+                progress.set_ratio(epoch, done_now, total.max(1));
+            }
+            if complete {
+                this.envelope_op = None;
+                this.analysis_job_started = false;
+                this.analysis_target_configured = false;
+                if let Some(progress) = progress {
+                    progress.set_fraction(epoch, 1.0);
+                }
+                Ok(AnalysisBlockOutcome::Complete)
+            } else {
+                Ok(AnalysisBlockOutcome::Progress)
+            }
+        }
+    }
+
+    fn build_next_transient_block(
+        composition: &RwLock<Self>,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<AnalysisBlockOutcome> {
+        if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+            let mut this = composition.write().unwrap();
+            this.abandon_analysis_job_scratch();
+            return Ok(AnalysisBlockOutcome::Cancelled);
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if !this.analysis_job_started {
+                if !this.analysis_target_configured {
+                    this.begin_analysis_target(None);
+                }
+                this.ensure_transient_marker_type();
+                // Do not remove existing Transient markers until the job
+                // completes successfully — a cancelled pass must not wipe them.
+                this.transient_op = None;
+                this.analysis_job_started = true;
+            }
+        }
+        let (channel_count, total, done, read_pos, take, range_start) = {
+            let this = composition.read().unwrap();
+            if this.analysis_target_done >= this.analysis_target_total {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_done,
+                    0u64,
+                    0usize,
+                    0u64,
+                )
+            } else if let Some((start, end, pos)) = next_chunk_in_ranges(
+                &this.analysis_target_ranges,
+                this.analysis_read_pos,
+                BLOCK_FRAMES,
+            ) {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_done,
+                    pos,
+                    (end - pos) as usize,
+                    start,
+                )
+            } else {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_total,
+                    0u64,
+                    0usize,
+                    0u64,
+                )
+            }
+        };
+        if take == 0 {
+            let mut this = composition.write().unwrap();
+            let mut sink = AnalysisSink::default();
+            if let Some(mut op) = this.transient_op.take() {
+                op.finish(&mut sink);
+            }
+            this.apply_transient_markers(sink.markers);
+            this.analysis_job_started = false;
+            this.analysis_target_configured = false;
+            if let Some(progress) = progress {
+                progress.set_fraction(epoch, 1.0);
+            }
+            return Ok(AnalysisBlockOutcome::Complete);
+        }
+        if let Some(progress) = progress {
+            progress.set_ratio(epoch, done, total.max(1));
+        }
+        let sample_rate = {
+            let this = composition.read().unwrap();
+            this.sample_rate
+        };
+        // Pre-roll before a mid-timeline range so peak followers are settled
+        // (Selection Only would otherwise miss onsets at the range start).
+        let warmup = if read_pos == range_start && read_pos > 0 {
+            TransientDetectOp::warmup_frames(sample_rate).min(read_pos)
+        } else {
+            0
+        };
+        let mut warm_planar = if warmup > 0 {
+            let mut planes = vec![vec![0.0; warmup as usize]; channel_count];
+            let this = composition.read().unwrap();
+            let mut dests: Vec<&mut [f32]> =
+                planes.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+            this.read_planar(read_pos - warmup, warmup, &mut dests)?;
+            Some(planes)
+        } else {
+            None
+        };
+        let mut planar = vec![vec![0.0; take]; channel_count];
+        {
+            let this = composition.read().unwrap();
+            let mut dests: Vec<&mut [f32]> =
+                planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+            this.read_planar(read_pos, take as u64, &mut dests)?;
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+                this.abandon_analysis_job_scratch();
+                return Ok(AnalysisBlockOutcome::Cancelled);
+            }
+            if read_pos == range_start {
+                this.transient_op = Some(TransientDetectOp::new(sample_rate, channel_count));
+                if let Some(op) = this.transient_op.as_mut() {
+                    if let Some(warm) = warm_planar.take() {
+                        op.begin(read_pos - warmup);
+                        op.consume_planar(&warm);
+                    }
+                    // Keep follower state from pre-roll; drop pre-roll hits.
+                    op.begin(read_pos);
+                }
+            }
+            if let Some(op) = this.transient_op.as_mut() {
+                op.consume_planar(&planar);
+            }
+            this.analysis_target_done += take as u64;
+            this.analysis_read_pos =
+                advance_read_pos(&this.analysis_target_ranges, read_pos + take as u64);
+            if let Some(progress) = progress {
+                progress.set_ratio(epoch, this.analysis_target_done, total.max(1));
+            }
+            if this.analysis_target_done >= this.analysis_target_total {
+                let mut sink = AnalysisSink::default();
+                if let Some(mut op) = this.transient_op.take() {
+                    op.finish(&mut sink);
+                }
+                this.apply_transient_markers(sink.markers);
+                this.analysis_job_started = false;
+                this.analysis_target_configured = false;
+                if let Some(progress) = progress {
+                    progress.set_fraction(epoch, 1.0);
+                }
+                Ok(AnalysisBlockOutcome::Complete)
+            } else {
+                Ok(AnalysisBlockOutcome::Progress)
+            }
+        }
+    }
+
+    /// Replace Transient markers in the active analysis target with `markers`.
+    fn apply_transient_markers(&mut self, markers: Vec<field_audio_process::AnalysisMarker>) {
+        let ranges = self.analysis_target_ranges.clone();
+        for &(start, end) in &ranges {
+            if end > start {
+                self.remove_markers_of_type_in_range(
+                    start,
+                    end.saturating_sub(1),
+                    MARKER_TYPE_TRANSIENT,
+                );
+            }
+        }
+        for marker in markers {
+            self.add_marker(marker.frame, marker.marker_type, marker.note);
+        }
+    }
+
+    /// Drop in-flight op scratch when a job is superseded. Leaves target
+    /// ranges alone so a newer `begin_analysis_target` is not wiped.
+    fn abandon_analysis_job_scratch(&mut self) {
+        self.envelope_op = None;
+        self.transient_op = None;
+        self.analysis_job_started = false;
+    }
+
+    fn ensure_transient_marker_type(&mut self) {
+        if self.marker_type_color(MARKER_TYPE_TRANSIENT).is_none() {
+            let color = field_audio_model::marker_type_color(MARKER_TYPE_TRANSIENT).unwrap_or([
+                0xec as f32 / 255.0,
+                0x48 as f32 / 255.0,
+                0x99 as f32 / 255.0,
+                1.0,
+            ]);
+            let _ = self.add_marker_type(MARKER_TYPE_TRANSIENT, color);
+        }
+    }
+
+    fn remove_markers_of_type_in_range(&mut self, start: u64, end: u64, marker_type: &str) {
+        let ids: Vec<_> = self
+            .markers
+            .iter()
+            .filter(|m| m.marker_type == marker_type && m.frame >= start && m.frame <= end)
+            .map(|m| m.id)
+            .collect();
+        for id in ids {
+            self.remove_marker(id);
         }
     }
 
@@ -2009,22 +2553,58 @@ impl Composition {
     }
 }
 
-fn fold_peak_bins(samples: &[f32], peaks: &mut Vec<(f32, f32)>, min: &mut f32, max: &mut f32) {
-    for chunk in samples.chunks(PEAK_BLOCK) {
-        let mut pmin = f32::MAX;
-        let mut pmax = f32::MIN;
-        for &s in chunk {
-            pmin = pmin.min(s);
-            pmax = pmax.max(s);
-            *min = (*min).min(s);
-            *max = (*max).max(s);
+fn normalize_half_open_ranges(ranges: Vec<(u64, u64)>, frames: u64) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = ranges
+        .into_iter()
+        .filter_map(|(start, end)| {
+            let start = start.min(frames);
+            let end = end.min(frames);
+            (end > start).then_some((start, end))
+        })
+        .collect();
+    out.sort_by_key(|(start, _)| *start);
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (start, end) in out {
+        if let Some((_, last_end)) = merged.last_mut() {
+            if start <= *last_end {
+                *last_end = (*last_end).max(end);
+                continue;
+            }
         }
-        peaks.push(if pmin <= pmax {
-            (pmin, pmax)
-        } else {
-            (0.0, 0.0)
-        });
+        merged.push((start, end));
     }
+    merged
+}
+
+/// Next chunk inside target ranges: `(range_start, chunk_end, read_pos)`.
+fn next_chunk_in_ranges(
+    ranges: &[(u64, u64)],
+    read_pos: u64,
+    max_frames: u64,
+) -> Option<(u64, u64, u64)> {
+    for &(start, end) in ranges {
+        let pos = if read_pos < start {
+            start
+        } else if read_pos < end {
+            read_pos
+        } else {
+            continue;
+        };
+        let chunk_end = pos.saturating_add(max_frames).min(end);
+        if chunk_end > pos {
+            return Some((start, chunk_end, pos));
+        }
+    }
+    None
+}
+
+fn advance_read_pos(ranges: &[(u64, u64)], after: u64) -> u64 {
+    for &(start, end) in ranges {
+        if after < end {
+            return after.max(start);
+        }
+    }
+    after
 }
 
 fn peak_covered_samples(clip: &Clip) -> u64 {
@@ -2929,7 +3509,10 @@ mod tests {
         }"#;
         let restored = Composition::from_json(json).unwrap();
         assert!(restored.collections().is_empty());
-        assert_eq!(restored.marker_types().len(), 3);
+        assert_eq!(
+            restored.marker_types().len(),
+            field_audio_model::DEFAULT_MARKER_TYPES.len()
+        );
         assert_eq!(restored.sample_rate(), 44100);
     }
 
@@ -2956,6 +3539,140 @@ mod tests {
         assert_eq!(silent.regions[0].label.as_deref(), Some("gap"));
         assert_eq!(silent.regions[0].start, 2);
         assert_eq!(silent.regions[0].end, 5);
+    }
+
+    #[test]
+    fn transient_analysis_respects_target_ranges() {
+        use crate::MARKER_TYPE_TRANSIENT;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = 8_000usize;
+        let click_at = 5_000usize;
+        let mut samples = vec![0.0f32; frames];
+        for s in &mut samples[click_at..click_at + 40] {
+            *s = 1.0;
+        }
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        {
+            let mut comp = lock.write().unwrap();
+            // Selection-only window that includes the click, not the whole file.
+            comp.begin_analysis_target(Some(vec![(4_000, 6_000)]));
+        }
+        loop {
+            match Composition::build_next_analysis_block(&lock, AnalysisKind::Transients, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+        let markers: Vec<u64> = lock
+            .read()
+            .unwrap()
+            .markers()
+            .iter()
+            .filter(|m| m.marker_type == MARKER_TYPE_TRANSIENT)
+            .map(|m| m.frame)
+            .collect();
+        assert!(
+            !markers.is_empty(),
+            "expected transient markers inside the selection"
+        );
+        assert!(
+            markers.iter().all(|f| (4_000..6_000).contains(f)),
+            "markers should stay inside the target range: {markers:?}"
+        );
+    }
+
+    #[test]
+    fn transient_analysis_detects_onset_at_range_start() {
+        use crate::MARKER_TYPE_TRANSIENT;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = 8_000usize;
+        let click_at = 4_000usize;
+        let mut samples = vec![0.0f32; frames];
+        for s in &mut samples[click_at..click_at + 40] {
+            *s = 1.0;
+        }
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        {
+            let mut comp = lock.write().unwrap();
+            // Range starts on the click; pre-roll silence lives outside the target.
+            comp.begin_analysis_target(Some(vec![(4_000, 6_000)]));
+        }
+        loop {
+            match Composition::build_next_analysis_block(&lock, AnalysisKind::Transients, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+        let markers: Vec<u64> = lock
+            .read()
+            .unwrap()
+            .markers()
+            .iter()
+            .filter(|m| m.marker_type == MARKER_TYPE_TRANSIENT)
+            .map(|m| m.frame)
+            .collect();
+        assert!(
+            !markers.is_empty(),
+            "expected a transient at the selection start"
+        );
+    }
+
+    #[test]
+    fn transient_analysis_replaces_only_target_range_on_complete() {
+        use crate::MARKER_TYPE_TRANSIENT;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = 8_000usize;
+        let mut samples = vec![0.0f32; frames];
+        for s in &mut samples[5_000..5_040] {
+            *s = 1.0;
+        }
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        {
+            let mut comp = lock.write().unwrap();
+            comp.add_marker(100, MARKER_TYPE_TRANSIENT, None).unwrap();
+            comp.add_marker(5_010, MARKER_TYPE_TRANSIENT, None).unwrap();
+            comp.begin_analysis_target(Some(vec![(4_000, 6_000)]));
+        }
+        loop {
+            match Composition::build_next_analysis_block(&lock, AnalysisKind::Transients, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+        let markers: Vec<u64> = lock
+            .read()
+            .unwrap()
+            .markers()
+            .iter()
+            .filter(|m| m.marker_type == MARKER_TYPE_TRANSIENT)
+            .map(|m| m.frame)
+            .collect();
+        assert!(
+            markers.contains(&100),
+            "markers outside the target must survive: {markers:?}"
+        );
+        assert!(
+            markers.iter().any(|f| (4_000..6_000).contains(f)),
+            "expected a detection inside the target: {markers:?}"
+        );
     }
 
     #[test]

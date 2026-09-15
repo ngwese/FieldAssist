@@ -12,6 +12,8 @@ pub const MARKER_TYPE_BLUE: &str = "Blue";
 pub const MARKER_TYPE_YELLOW: &str = "Yellow";
 /// Built-in purple marker type name.
 pub const MARKER_TYPE_PURPLE: &str = "Purple";
+/// Built-in transient marker type name (pink).
+pub const MARKER_TYPE_TRANSIENT: &str = "Transient";
 
 /// Built-in marker types and their default RGBA colors.
 pub const DEFAULT_MARKER_TYPES: &[(&str, [f32; 4])] = &[
@@ -39,6 +41,15 @@ pub const DEFAULT_MARKER_TYPES: &[(&str, [f32; 4])] = &[
             0xa8 as f32 / 255.0,
             0x55 as f32 / 255.0,
             0xf7 as f32 / 255.0,
+            1.0,
+        ],
+    ),
+    (
+        MARKER_TYPE_TRANSIENT,
+        [
+            0xec as f32 / 255.0,
+            0x48 as f32 / 255.0,
+            0x99 as f32 / 255.0,
             1.0,
         ],
     ),

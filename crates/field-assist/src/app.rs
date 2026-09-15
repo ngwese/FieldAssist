@@ -28,15 +28,16 @@ use gpui_kit::{
 
 use crate::assets::AppAssets;
 use crate::commands::{
-    install_keybindings, About, AddMarker, AddMarkerAtHover, CancelWorkflow, Close, DeleteMarker,
-    EditBreakOut, EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove,
-    EditTrim, EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open,
-    Quit, Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
+    install_keybindings, About, AddMarker, AddMarkerAtHover, AnalyzeEnvelopePeak,
+    AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, DeleteMarker, EditBreakOut,
+    EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim,
+    EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
+    Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
     SetActiveMarkerType, Settings, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
     TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
     TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
-    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewScript, ViewShowDetail,
-    ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
+    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
+    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
@@ -52,8 +53,8 @@ use crate::dock_titles::{
 };
 use crate::lineage::{ExplorerLineageFlags, LineageNode, LineageTree};
 use crate::model::composition::{
-    default_marker_type, Composition, EditId, PeakBlockOutcome, DEFAULT_MARKER_TYPES,
-    MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    default_marker_type, AnalysisBlockOutcome, AnalysisKind, Composition, EditId,
+    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 use crate::model::{
     is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, MarkerId,
@@ -163,7 +164,7 @@ pub struct AppView {
         >,
     >,
     pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
-    pending_peaks: Arc<Mutex<Vec<DocumentId>>>,
+    pending_analysis: Arc<Mutex<Vec<DocumentId>>>,
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
     render_sheet: Entity<RenderSheet>,
     render_sheet_open: bool,
@@ -212,7 +213,8 @@ impl AppView {
                     this.drain_pending_opens(window, cx);
                     this.drain_pending_load(window, cx);
                     this.drain_pending_render(window, cx);
-                    this.drain_pending_peaks(window, cx);
+                    this.drain_pending_analysis(window, cx);
+                    this.drain_analysis_requests(cx);
                     this.flush_playback_faults(cx);
                     if let Some(views) = this.active_views() {
                         views.document.update(cx, |doc, cx| {
@@ -456,7 +458,7 @@ impl AppView {
             pending_opens,
             pending_load: Arc::new(Mutex::new(Vec::new())),
             pending_render: Arc::new(Mutex::new(Vec::new())),
-            pending_peaks: Arc::new(Mutex::new(Vec::new())),
+            pending_analysis: Arc::new(Mutex::new(Vec::new())),
             pending_loaded_scripts: Vec::new(),
             render_sheet,
             render_sheet_open: false,
@@ -491,7 +493,7 @@ impl AppView {
         }
         this.refresh_explorer(cx);
         if let Some(id) = this.session.active() {
-            this.spawn_peak_build(id, cx);
+            this.request_analysis(id, AnalysisKind::MinMax, cx);
         }
         this
     }
@@ -509,7 +511,11 @@ impl AppView {
                 entity.update(cx, |doc, _| {
                     this.playback.sync_from_document(doc);
                 });
-                this.spawn_peak_build(id, cx);
+                // Skip while an analysis/render job owns progress — re-entering
+                // MinMax from paint notifies raced Transient Selection Only jobs.
+                if entity.read(cx).progress.snapshot().is_none() {
+                    this.request_analysis(id, AnalysisKind::MinMax, cx);
+                }
             }
         })
         .detach();
@@ -938,7 +944,7 @@ impl AppView {
 
     fn apply_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.drain_pending_load(window, cx);
-        self.drain_pending_peaks(window, cx);
+        self.drain_pending_analysis(window, cx);
         if let Some(views) = self.active_views() {
             self.playback.bind_composition(views.composition.clone());
             views.document.update(cx, |doc, _| {
@@ -956,7 +962,7 @@ impl AppView {
                 );
             });
             if let Some(id) = self.session.active() {
-                self.spawn_peak_build(id, cx);
+                self.request_analysis(id, AnalysisKind::MinMax, cx);
             }
             views.waveform.update(cx, |view, cx| {
                 view.bump_paint_epoch(cx);
@@ -1595,7 +1601,7 @@ impl AppView {
         }
         views.document.read(cx).progress.cancel();
         if self.session.active() == Some(id) {
-            self.spawn_peak_build(id, cx);
+            self.request_analysis(id, AnalysisKind::MinMax, cx);
         }
         views
             .document
@@ -1710,28 +1716,34 @@ impl AppView {
     }
 
     fn app_menu_state(&self, cx: &App) -> AppMenuState {
-        let (snap_to_marker, marker_types, snap_disabled) = if let Some(views) = self.active_views()
-        {
-            let doc = views.document.read(cx);
-            (
-                doc.snap_to_marker,
-                doc.marker_types().into_iter().map(|ty| ty.name).collect(),
-                doc.snap_marker_disabled.clone(),
-            )
-        } else {
-            (
-                false,
-                DEFAULT_MARKER_TYPES
-                    .iter()
-                    .map(|(name, _)| (*name).to_string())
-                    .collect(),
-                HashSet::new(),
-            )
-        };
+        let (snap_to_marker, marker_types, snap_disabled, envelope_overlay, analyze_selection_only) =
+            if let Some(views) = self.active_views() {
+                let doc = views.document.read(cx);
+                (
+                    doc.snap_to_marker,
+                    doc.marker_types().into_iter().map(|ty| ty.name).collect(),
+                    doc.snap_marker_disabled.clone(),
+                    doc.show_envelope_peak,
+                    doc.analyze_selection_only,
+                )
+            } else {
+                (
+                    false,
+                    DEFAULT_MARKER_TYPES
+                        .iter()
+                        .map(|(name, _)| (*name).to_string())
+                        .collect(),
+                    HashSet::new(),
+                    false,
+                    false,
+                )
+            };
         AppMenuState {
             explorer: self.explorer_dock_open(cx),
             detail: self.detail_dock_open(cx),
             script: self.script_dock_open(cx),
+            envelope_overlay,
+            analyze_selection_only,
             marker_type: self.active_marker_type.clone(),
             add_at_hover: self.add_marker_at_hover,
             snap_to_marker,
@@ -2693,7 +2705,7 @@ impl AppView {
             }
         }
         self.refresh_explorer(cx);
-        self.spawn_peak_build(id, cx);
+        self.request_analysis(id, AnalysisKind::MinMax, cx);
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
         cx.notify();
@@ -2781,6 +2793,10 @@ impl AppView {
             "view.show-script" => self.show_script_dock(window, cx),
             "view.hide-script" => self.hide_script_dock(window, cx),
             "view.toggle-script" => self.toggle_script_dock(window, cx),
+            "view.overlay_envelope_peak" => self.toggle_envelope_overlay(window, cx),
+            "analyze.selection_only" => self.toggle_analyze_selection_only(cx),
+            "analyze.envelope_peak" => self.run_analyze_envelope_peak(window, cx),
+            "analyze.transients" => self.run_analyze_transients(window, cx),
             "edit.undo" => self.run_edit(cx, |doc| {
                 doc.edit_undo();
             }),
@@ -2843,7 +2859,7 @@ impl AppView {
             cx.notify();
         });
         self.refresh_explorer(cx);
-        self.spawn_peak_build(id, cx);
+        self.request_analysis(id, AnalysisKind::MinMax, cx);
     }
 
     fn update_active_document(
@@ -2884,52 +2900,102 @@ impl AppView {
             .map(|pos| pos.sample)
     }
 
-    fn cancel_inactive_peak_jobs(&self, except: DocumentId, cx: &App) {
+    fn cancel_inactive_analysis_jobs(&self, except: DocumentId, cx: &App) {
         for (id, views) in &self.views {
             if *id == except {
                 continue;
             }
             let progress = views.document.read(cx).progress.clone();
-            if progress
-                .snapshot()
-                .is_some_and(|state| state.label == "building peaks")
-            {
+            if progress.snapshot().is_some() {
                 progress.cancel();
             }
         }
     }
 
-    fn spawn_peak_build(&self, id: DocumentId, cx: &mut Context<Self>) {
+    fn drain_analysis_requests(&mut self, cx: &mut Context<Self>) {
+        let mut jobs = Vec::new();
+        for (id, views) in &self.views {
+            let requests = views.document.read(cx).take_analysis_requests();
+            for kind in requests {
+                jobs.push((*id, kind));
+            }
+        }
+        for (id, kind) in jobs {
+            self.spawn_analysis_build(id, kind, cx);
+        }
+    }
+
+    fn request_analysis(&self, id: DocumentId, kind: AnalysisKind, cx: &mut Context<Self>) {
+        // Spawn immediately when possible so progress shows without waiting
+        // for the next timer tick. Only queue when a job is already running
+        // (see spawn_analysis_build); pre-queueing here re-ran Transients
+        // after every successful spawn and flashed progress twice.
+        self.spawn_analysis_build(id, kind, cx);
+    }
+
+    fn spawn_analysis_build(&self, id: DocumentId, kind: AnalysisKind, cx: &mut Context<Self>) {
         let Some(views) = self.views.get(&id) else {
             return;
         };
         let composition = views.composition.clone();
-        if !composition.read().unwrap().needs_peak_build() {
+        let needed = match kind {
+            AnalysisKind::MinMax => composition.read().unwrap().needs_peak_build(),
+            AnalysisKind::EnvelopePeak => composition.read().unwrap().needs_envelope_peak_build(),
+            AnalysisKind::Transients => true,
+        };
+        if !needed {
             return;
         }
         if views.document.read(cx).progress.snapshot().is_some() {
+            // Re-queue so a later tick can start this kind after the current job.
+            views.document.read(cx).request_analysis(kind);
             return;
         }
-        self.cancel_inactive_peak_jobs(id, cx);
+        if matches!(kind, AnalysisKind::EnvelopePeak | AnalysisKind::Transients) {
+            let ranges = match views.document.read(cx).take_pending_analysis_target() {
+                Some(snapshotted) => snapshotted,
+                None if views.document.read(cx).analyze_selection_only => {
+                    let spans = views.document.read(cx).selection_spans();
+                    Some(
+                        spans
+                            .into_iter()
+                            .map(|(start, len)| (start, start.saturating_add(len)))
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                None => None,
+            };
+            // Selection Only with an empty selection: nothing to analyze.
+            if matches!(ranges.as_ref(), Some(r) if r.is_empty()) {
+                return;
+            }
+            composition.write().unwrap().begin_analysis_target(ranges);
+        }
+        self.cancel_inactive_analysis_jobs(id, cx);
         let progress = views.document.read(cx).progress.clone();
-        let epoch = progress.begin("building peaks");
+        let epoch = progress.begin(kind.progress_label());
         views.waveform.update(cx, |view, cx| {
             view.bump_paint_epoch(cx);
         });
-        let pending = self.pending_peaks.clone();
+        let pending = self.pending_analysis.clone();
         std::thread::spawn(move || {
             loop {
-                match Composition::build_next_peak_block(&composition, Some(&progress), epoch) {
-                    Ok(PeakBlockOutcome::Progress) => {
+                match Composition::build_next_analysis_block(
+                    &composition,
+                    kind,
+                    Some(&progress),
+                    epoch,
+                ) {
+                    Ok(AnalysisBlockOutcome::Progress) => {
                         pending.lock().unwrap().push(id);
                     }
-                    Ok(PeakBlockOutcome::Complete) => {
+                    Ok(AnalysisBlockOutcome::Complete) => {
                         pending.lock().unwrap().push(id);
                         break;
                     }
-                    Ok(PeakBlockOutcome::Cancelled) => break,
+                    Ok(AnalysisBlockOutcome::Cancelled) => break,
                     Err(err) => {
-                        eprintln!("failed to build peaks: {err:#}");
+                        eprintln!("failed to run {}: {err:#}", kind.progress_label());
                         break;
                     }
                 }
@@ -2939,8 +3005,8 @@ impl AppView {
         });
     }
 
-    fn drain_pending_peaks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let completed = std::mem::take(&mut *self.pending_peaks.lock().unwrap());
+    fn drain_pending_analysis(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let completed = std::mem::take(&mut *self.pending_analysis.lock().unwrap());
         if completed.is_empty() {
             return;
         }
@@ -2953,6 +3019,78 @@ impl AppView {
                 view.bump_paint_epoch(cx);
             });
         }
+        window.refresh();
+    }
+
+    fn run_analyze_envelope_peak(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.session.active() else {
+            return;
+        };
+        if let Some(views) = self.views.get(&id) {
+            if !views.document.read(cx).snapshot_analysis_target() {
+                return;
+            }
+            views.document.update(cx, |doc, cx| {
+                doc.show_envelope_peak = true;
+                cx.notify();
+            });
+            // Clear prior stream so Analyze re-runs.
+            views
+                .composition
+                .write()
+                .unwrap()
+                .analysis_streams_mut()
+                .clear();
+        }
+        self.request_analysis(id, AnalysisKind::EnvelopePeak, cx);
+        self.sync_view_menus(cx);
+        window.refresh();
+    }
+
+    fn run_analyze_transients(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.session.active() else {
+            return;
+        };
+        if let Some(views) = self.views.get(&id) {
+            if !views.document.read(cx).snapshot_analysis_target() {
+                return;
+            }
+        }
+        self.request_analysis(id, AnalysisKind::Transients, cx);
+    }
+
+    fn toggle_analyze_selection_only(&mut self, cx: &mut Context<Self>) {
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        views.document.update(cx, |doc, cx| {
+            doc.analyze_selection_only = !doc.analyze_selection_only;
+            cx.notify();
+        });
+        self.sync_view_menus(cx);
+    }
+
+    fn toggle_envelope_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.session.active() else {
+            return;
+        };
+        let enabled = if let Some(views) = self.views.get(&id) {
+            views.document.update(cx, |doc, cx| {
+                doc.show_envelope_peak = !doc.show_envelope_peak;
+                let on = doc.show_envelope_peak;
+                cx.notify();
+                on
+            })
+        } else {
+            false
+        };
+        if enabled {
+            if let Some(views) = self.views.get(&id) {
+                let _ = views.document.read(cx).snapshot_analysis_target();
+            }
+            self.request_analysis(id, AnalysisKind::EnvelopePeak, cx);
+        }
+        self.sync_view_menus(cx);
         window.refresh();
     }
 
@@ -4680,6 +4818,22 @@ fn view_hide_script(_: &ViewHideScript, cx: &mut App) {
     let _ = crate::commands::dispatch("view.hide-script", cx);
 }
 
+fn view_overlay_envelope_peak(_: &ViewOverlayEnvelopePeak, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.overlay_envelope_peak", cx);
+}
+
+fn analyze_envelope_peak(_: &AnalyzeEnvelopePeak, cx: &mut App) {
+    let _ = crate::commands::dispatch("analyze.envelope_peak", cx);
+}
+
+fn analyze_selection_only(_: &AnalyzeSelectionOnly, cx: &mut App) {
+    let _ = crate::commands::dispatch("analyze.selection_only", cx);
+}
+
+fn analyze_transients(_: &AnalyzeTransients, cx: &mut App) {
+    let _ = crate::commands::dispatch("analyze.transients", cx);
+}
+
 fn edit_undo(_: &EditUndo, cx: &mut App) {
     let _ = crate::commands::dispatch("edit.undo", cx);
 }
@@ -4792,6 +4946,8 @@ struct AppMenuState {
     explorer: bool,
     detail: bool,
     script: bool,
+    envelope_overlay: bool,
+    analyze_selection_only: bool,
     marker_type: String,
     add_at_hover: bool,
     snap_to_marker: bool,
@@ -4900,15 +5056,33 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         MenuItem::action("Add Marker", AddMarker),
         MenuItem::action("Delete Marker", DeleteMarker),
     ]));
-    menus.push(Menu::new("View").items([
-        MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
-        MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
-        MenuItem::action("Show Script", ViewScript).checked(state.script),
-        MenuItem::separator(),
-        MenuItem::action("Zoom In", ViewZoomIn),
-        MenuItem::action("Zoom Out", ViewZoomOut),
-        MenuItem::action("Reset View", ViewFitAll),
-    ]));
+    menus.push(
+        Menu::new("View").items([
+            MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
+            MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
+            MenuItem::action("Show Script", ViewScript).checked(state.script),
+            MenuItem::separator(),
+            MenuItem::action("Show Envelope Peak", ViewOverlayEnvelopePeak)
+                .checked(state.envelope_overlay),
+            MenuItem::separator(),
+            MenuItem::action("Zoom In", ViewZoomIn),
+            MenuItem::action("Zoom Out", ViewZoomOut),
+            MenuItem::action("Reset View", ViewFitAll),
+        ]),
+    );
+    menus.push(
+        Menu::new("Analyze").items([
+            MenuItem::action("Selection Only", AnalyzeSelectionOnly)
+                .checked(state.analyze_selection_only),
+            MenuItem::separator(),
+            MenuItem::submenu(
+                Menu::new("Envelope").items([MenuItem::action("Peak", AnalyzeEnvelopePeak)]),
+            ),
+            MenuItem::submenu(
+                Menu::new("Mark").items([MenuItem::action("Transients", AnalyzeTransients)]),
+            ),
+        ]),
+    );
     menus.push(workflow_menu(state));
     if !cfg!(target_os = "macos") {
         menus.push(Menu::new("Help").items([MenuItem::action("About...", About)]));
@@ -4985,6 +5159,10 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(view_script);
     cx.on_action(view_show_script);
     cx.on_action(view_hide_script);
+    cx.on_action(view_overlay_envelope_peak);
+    cx.on_action(analyze_selection_only);
+    cx.on_action(analyze_envelope_peak);
+    cx.on_action(analyze_transients);
     cx.on_action(edit_undo);
     cx.on_action(edit_redo);
     cx.on_action(edit_cut);
@@ -5015,6 +5193,8 @@ fn install_app_menu(cx: &mut App) {
             explorer: false,
             detail: false,
             script: false,
+            envelope_overlay: false,
+            analyze_selection_only: false,
             marker_type: default_marker_type().to_string(),
             add_at_hover: true,
             snap_to_marker: false,

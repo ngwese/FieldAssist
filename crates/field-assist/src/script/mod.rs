@@ -148,7 +148,7 @@ mod tests {
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(out.result.as_deref(), Some("sel\tgap\t4\t1\t3\t0"));
+        assert_eq!(out.result.as_deref(), Some("sel\tgap\t5\t1\t4\t0"));
         let world = world.borrow();
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
@@ -189,6 +189,36 @@ mod tests {
     }
 
     #[test]
+    fn remove_marker_by_type_clears_matching_markers() {
+        let (mut host, world) = test_host();
+        let out = host.eval(
+            r#"
+            local c = app.composition
+            c:add_marker(10, "Blue")
+            c:add_marker(20, "Blue")
+            c:add_marker(30, "Yellow")
+            local n = c:remove_marker_by_type("Blue")
+            local still_has_blue = false
+            for _, ty in ipairs(c.marker_types) do
+              if ty.name == "Blue" then still_has_blue = true end
+            end
+            return n, #c.markers, c.markers[1].type, still_has_blue
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("2\t1\tYellow\ttrue"));
+        let world = world.borrow();
+        let id = world.active.unwrap();
+        let doc = world.docs.get(&id).unwrap();
+        let composition = doc.composition.read().unwrap();
+        assert_eq!(composition.markers().len(), 1);
+        assert!(composition
+            .marker_types()
+            .iter()
+            .any(|ty| ty.name == "Blue"));
+    }
+
+    #[test]
     fn add_marker_color_registers_unknown_type() {
         let (mut host, world) = test_host();
         let out = host.eval(
@@ -199,7 +229,7 @@ mod tests {
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(out.result.as_deref(), Some("Red\t1.0\t0.0\t0.0\t4"));
+        assert_eq!(out.result.as_deref(), Some("Red\t1.0\t0.0\t0.0\t5"));
         let world = world.borrow();
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();

@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use super::buffer::{Buffer, ChannelScope, RegionId};
 use super::composition::{
     map_inclusive_through_inverse, map_inclusive_through_op, map_point_through_inverse,
-    map_point_through_op, Composition, EditId, EditOp, MarkerId, MarkerType,
+    map_point_through_op, AnalysisKind, Composition, EditId, EditOp, MarkerId, MarkerType,
 };
 use super::regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 use super::selection::SamplePosition;
@@ -34,6 +34,18 @@ pub struct BufferDocument {
     pub monitor_params_pinned: bool,
     pub pinned_monitor_params: HashMap<MonitorChain, HashMap<String, f32>>,
     pub progress: ProgressHandle,
+    /// Pull-based analysis requests drained by the app job loop.
+    pub analysis_requests: Arc<Mutex<Vec<AnalysisKind>>>,
+    /// View → Show Envelope Peak overlay.
+    pub show_envelope_peak: bool,
+    /// Analyze → Selection Only: limit envelope/transient jobs to the selection.
+    pub analyze_selection_only: bool,
+    /// Snapshot of analysis target ranges for the next envelope/transient job.
+    ///
+    /// `None` means the spawn path should derive the target. `Some(None)` means
+    /// whole timeline. `Some(Some(ranges))` means half-open selection spans
+    /// captured when the command ran (so a later menu click cannot clear them).
+    pub pending_analysis_target: Mutex<Option<Option<Vec<(u64, u64)>>>>,
     region_drag_anchor: Option<usize>,
     region_drag_id: Option<RegionId>,
     latched_marker: Option<usize>,
@@ -64,6 +76,10 @@ impl BufferDocument {
             monitor_params_pinned: false,
             pinned_monitor_params: HashMap::new(),
             progress: ProgressHandle::new(),
+            analysis_requests: Arc::new(Mutex::new(Vec::new())),
+            show_envelope_peak: false,
+            analyze_selection_only: false,
+            pending_analysis_target: Mutex::new(None),
             region_drag_anchor: None,
             region_drag_id: None,
             latched_marker: None,
@@ -77,6 +93,19 @@ impl BufferDocument {
 
     pub fn sample_rate(&self) -> u32 {
         self.composition.read().unwrap().sample_rate()
+    }
+
+    /// Queue `kind` for the app analysis job loop (deduped).
+    pub fn request_analysis(&self, kind: AnalysisKind) {
+        let mut queue = self.analysis_requests.lock().unwrap();
+        if !queue.contains(&kind) {
+            queue.push(kind);
+        }
+    }
+
+    /// Take and clear pending analysis requests.
+    pub fn take_analysis_requests(&self) -> Vec<AnalysisKind> {
+        std::mem::take(&mut *self.analysis_requests.lock().unwrap())
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -541,6 +570,13 @@ impl BufferDocument {
             .remove_marker_at_type(sample as u64, marker_type)
     }
 
+    pub fn remove_marker_by_type(&mut self, marker_type: &str) -> usize {
+        self.composition
+            .write()
+            .unwrap()
+            .remove_marker_by_type(marker_type)
+    }
+
     pub fn selection_position_sample(&self) -> Option<usize> {
         self.current_position.as_ref().map(|pos| pos.sample)
     }
@@ -571,6 +607,33 @@ impl BufferDocument {
 
     pub fn selection_spans(&self) -> Vec<(u64, u64)> {
         self.selection.edit_spans()
+    }
+
+    /// Capture the target for the next envelope/transient analysis job.
+    ///
+    /// Returns `false` when Selection Only is on and the selection is empty.
+    pub fn snapshot_analysis_target(&self) -> bool {
+        let target = if self.analyze_selection_only {
+            let spans = self.selection_spans();
+            if spans.is_empty() {
+                return false;
+            }
+            Some(
+                spans
+                    .into_iter()
+                    .map(|(start, len)| (start, start.saturating_add(len)))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        *self.pending_analysis_target.lock().unwrap() = Some(target);
+        true
+    }
+
+    /// Take a previously snapshotted analysis target, if any.
+    pub fn take_pending_analysis_target(&self) -> Option<Option<Vec<(u64, u64)>>> {
+        self.pending_analysis_target.lock().unwrap().take()
     }
 
     pub fn caret_frame(&self) -> u64 {
@@ -891,6 +954,42 @@ impl WaveformDataProvider for BufferDocument {
 
     fn peaks_ready(&self) -> bool {
         self.composition.read().unwrap().can_paint_overview()
+    }
+
+    fn ensure_minmax_peaks(&self) {
+        if self.composition.read().unwrap().needs_peak_build() {
+            self.request_analysis(AnalysisKind::MinMax);
+        }
+    }
+
+    fn envelope_overlay_enabled(&self) -> bool {
+        self.show_envelope_peak
+    }
+
+    fn envelope_ready(&self) -> bool {
+        let composition = self.composition.read().unwrap();
+        !composition.needs_envelope_peak_build()
+    }
+
+    fn ensure_envelope_peak(&self) {
+        if self.composition.read().unwrap().needs_envelope_peak_build() {
+            self.request_analysis(AnalysisKind::EnvelopePeak);
+        }
+    }
+
+    fn fill_envelope_columns(
+        &self,
+        channel: usize,
+        start: f64,
+        samples_per_pixel: f64,
+        dest: &mut [f32],
+    ) {
+        self.composition.read().unwrap().fill_envelope_columns(
+            channel,
+            start,
+            samples_per_pixel,
+            dest,
+        );
     }
 
     fn fill_minmax_columns(
@@ -1226,6 +1325,20 @@ mod tests {
         assert_eq!(doc.snap_sample(&ChannelScope::all(), 105, 10), 100);
         assert_eq!(doc.snap_sample(&ChannelScope::all(), 200, 10), 200);
         assert_eq!(doc.latched_marker, None);
+    }
+
+    #[test]
+    fn snapshot_analysis_target_captures_selection_only_spans() {
+        let mut doc = test_document(1000);
+        doc.analyze_selection_only = true;
+        assert!(!doc.snapshot_analysis_target());
+        doc.select_range(100, 199, ChannelScope::all());
+        assert!(doc.snapshot_analysis_target());
+        let target = doc.take_pending_analysis_target();
+        assert_eq!(target, Some(Some(vec![(100, 200)])));
+        doc.analyze_selection_only = false;
+        assert!(doc.snapshot_analysis_target());
+        assert_eq!(doc.take_pending_analysis_target(), Some(None));
     }
 
     #[test]
