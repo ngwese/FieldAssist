@@ -92,7 +92,7 @@ pub fn fold_minmax_bins(
     }
 }
 
-/// Peak-envelope follower: 300 ms attack/release, hop-downsampled bins.
+/// Peak-envelope follower: 5 ms attack / 300 ms release, hop-downsampled bins.
 #[derive(Debug)]
 pub struct EnvelopePeakOp {
     detectors: Vec<Detector<[f32; 1], Peak>>,
@@ -103,14 +103,17 @@ pub struct EnvelopePeakOp {
 }
 
 impl EnvelopePeakOp {
-    /// Attack/release window in seconds.
-    pub const WINDOW_SECS: f32 = 0.3;
+    /// Attack window in seconds.
+    pub const ATTACK_SECS: f32 = 0.005;
+    /// Release window in seconds.
+    pub const RELEASE_SECS: f32 = 0.3;
 
     /// Create detectors for `channel_count` channels at `sample_rate`.
     pub fn new(sample_rate: u32, channel_count: usize) -> Self {
-        let frames = (Self::WINDOW_SECS * sample_rate as f32).max(1.0);
+        let attack = (Self::ATTACK_SECS * sample_rate as f32).max(1.0);
+        let release = (Self::RELEASE_SECS * sample_rate as f32).max(1.0);
         let detectors = (0..channel_count)
-            .map(|_| Detector::peak(frames, frames))
+            .map(|_| Detector::peak(attack, release))
             .collect();
         Self {
             detectors,

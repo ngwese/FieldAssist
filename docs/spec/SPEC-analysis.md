@@ -9,7 +9,8 @@
 | 1 | 2026-09-14 | Initial draft of the analysis layer |
 | 2 | 2026-09-14 | Pull-based streams; Envelope Peak and Transient ops ship |
 
-Overview **minmax peaks**, **Envelope Peak** (300 ms `dasp_envelope` follower),
+Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
+`dasp_envelope` follower),
 and **Mark → Transients** (pink Transient markers) are implemented. Spectrum
 representation, silence detection, correlation, and the Lua `c:analyze` surface
 remain future work.
@@ -149,7 +150,7 @@ the following as intent; not every row must ship in one release.
 | Operation | Kind | Typical output |
 | --- | --- | --- |
 | Gather peaks | Realtime-capable; **pull when overview layer needs paint** | Per-channel `(min, max)` stream |
-| Envelope Peak | Realtime-capable; Analyze → Envelope → Peak or View overlay | Per-channel smoothed peak stream (300 ms) |
+| Envelope Peak | Realtime-capable; Analyze → Envelope → Peak or View overlay | Per-channel smoothed peak stream (5 ms attack / 300 ms release) |
 | Stereo correlation | Realtime-capable; needs ≥2 channels in scope | Shared stream |
 | Transient detection | Realtime-capable; Analyze → Mark → Transients | Pink **Transient** markers |
 | Silence | Often needs a floor estimate (multi-pass) | Named region collection |
@@ -177,7 +178,7 @@ submenu where needed).
 | Item | Behavior |
 | --- | --- |
 | Selection Only | When checked, scoped ops use selection spans only |
-| Envelope → Peak | Peak envelope stream (300 ms) |
+| Envelope → Peak | Peak envelope stream (5 ms attack / 300 ms release) |
 | Mark → Transients | Pink Transient markers |
 
 ### View: representation and overlays
