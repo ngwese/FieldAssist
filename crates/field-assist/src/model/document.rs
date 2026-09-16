@@ -16,7 +16,7 @@ use crate::monitor::MonitorChain;
 use crate::progress::ProgressHandle;
 use field_ui_components::{
     LaneScope, MarkerRow, MarkersData, PaintRegion, PeakStatus, RegionGroup, RegionRow,
-    RegionsData, WaveformDataProvider, WaveformEditor,
+    RegionsData, WaveformDataProvider, WaveformEditor, WaveformRepresentation,
 };
 
 const DRAG_THRESHOLD_SAMPLES: usize = 0;
@@ -38,6 +38,8 @@ pub struct BufferDocument {
     pub analysis_requests: Arc<Mutex<Vec<AnalysisKind>>>,
     /// View → Show Envelope Peak overlay.
     pub show_envelope_peak: bool,
+    /// View → Peaks / Spectrum representation.
+    pub waveform_representation: WaveformRepresentation,
     /// Analyze → Selection Only: limit envelope/transient jobs to the selection.
     pub analyze_selection_only: bool,
     /// Snapshot of analysis target ranges for the next envelope/transient job.
@@ -78,6 +80,7 @@ impl BufferDocument {
             progress: ProgressHandle::new(),
             analysis_requests: Arc::new(Mutex::new(Vec::new())),
             show_envelope_peak: false,
+            waveform_representation: WaveformRepresentation::Peaks,
             analyze_selection_only: false,
             pending_analysis_target: Mutex::new(None),
             region_drag_anchor: None,
@@ -956,10 +959,18 @@ impl WaveformDataProvider for BufferDocument {
         self.composition.read().unwrap().can_paint_overview()
     }
 
+    fn peaks_complete(&self) -> bool {
+        !self.composition.read().unwrap().needs_peak_build()
+    }
+
     fn ensure_minmax_peaks(&self) {
         if self.composition.read().unwrap().needs_peak_build() {
             self.request_analysis(AnalysisKind::MinMax);
         }
+    }
+
+    fn waveform_representation(&self) -> WaveformRepresentation {
+        self.waveform_representation
     }
 
     fn envelope_overlay_enabled(&self) -> bool {
@@ -967,8 +978,11 @@ impl WaveformDataProvider for BufferDocument {
     }
 
     fn envelope_ready(&self) -> bool {
-        let composition = self.composition.read().unwrap();
-        !composition.needs_envelope_peak_build()
+        self.composition.read().unwrap().envelope_peak_has_data()
+    }
+
+    fn envelope_complete(&self) -> bool {
+        !self.composition.read().unwrap().needs_envelope_peak_build()
     }
 
     fn ensure_envelope_peak(&self) {
@@ -985,6 +999,53 @@ impl WaveformDataProvider for BufferDocument {
         dest: &mut [f32],
     ) {
         self.composition.read().unwrap().fill_envelope_columns(
+            channel,
+            start,
+            samples_per_pixel,
+            dest,
+        );
+    }
+
+    fn spectral_ready(&self) -> bool {
+        self.composition.read().unwrap().spectral_has_data()
+    }
+
+    fn spectral_complete(&self) -> bool {
+        !self.composition.read().unwrap().needs_spectral_build()
+    }
+
+    fn spectral_coverage_frames(&self) -> u64 {
+        self.composition
+            .read()
+            .unwrap()
+            .analysis_streams()
+            .spectral()
+            .map(|s| s.covered_frames)
+            .unwrap_or(0)
+    }
+
+    fn ensure_spectral(&self) {
+        if self.composition.read().unwrap().needs_spectral_build() {
+            self.request_analysis(AnalysisKind::Spectral);
+        }
+    }
+
+    fn spectral_band_count(&self) -> usize {
+        crate::audio::SPECTRAL_BAND_COUNT
+    }
+
+    fn spectral_db_floor(&self) -> f32 {
+        crate::audio::SPECTRAL_DB_FLOOR
+    }
+
+    fn fill_spectral_columns(
+        &self,
+        channel: usize,
+        start: f64,
+        samples_per_pixel: f64,
+        dest: &mut [f32],
+    ) {
+        self.composition.read().unwrap().fill_spectral_columns(
             channel,
             start,
             samples_per_pixel,

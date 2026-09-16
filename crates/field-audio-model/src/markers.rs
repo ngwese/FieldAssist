@@ -112,6 +112,34 @@ impl MarkerType {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MarkerId(pub u64);
 
+/// Proposed marker without an assigned id (analysis / script emission).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct NewMarker {
+    /// Timeline frame.
+    pub frame: u64,
+    /// Marker type name.
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
+    pub marker_type: String,
+    /// Optional note text.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub note: Option<String>,
+}
+
+impl NewMarker {
+    /// Build a proposed marker.
+    pub fn new(frame: u64, marker_type: impl Into<String>, note: Option<String>) -> Self {
+        Self {
+            frame,
+            marker_type: marker_type.into(),
+            note,
+        }
+    }
+}
+
 /// Marker placed at a timeline frame.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -145,6 +173,11 @@ impl Marker {
             marker_type: marker_type.into(),
             note,
         }
+    }
+
+    /// Assign `id` to a proposed marker.
+    pub fn from_new(id: MarkerId, new: NewMarker) -> Self {
+        Self::new(id, new.frame, new.marker_type, new.note)
     }
 }
 
@@ -378,6 +411,18 @@ impl MarkerList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_new_assigns_id() {
+        let marker = Marker::from_new(
+            MarkerId(9),
+            NewMarker::new(42, MARKER_TYPE_YELLOW, Some("cue".into())),
+        );
+        assert_eq!(marker.id, MarkerId(9));
+        assert_eq!(marker.frame, 42);
+        assert_eq!(marker.marker_type, MARKER_TYPE_YELLOW);
+        assert_eq!(marker.note.as_deref(), Some("cue"));
+    }
 
     #[test]
     fn insert_delete_and_lookup_are_ordered() {

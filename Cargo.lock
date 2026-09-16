@@ -2147,6 +2147,7 @@ dependencies = [
  "anyhow",
  "dasp",
  "field-audio-model",
+ "realfft",
  "rubato",
 ]
 
@@ -2199,6 +2200,8 @@ name = "field-ui-components"
 version = "0.7.2"
 dependencies = [
  "gpui-kit",
+ "image",
+ "smallvec",
 ]
 
 [[package]]

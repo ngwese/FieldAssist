@@ -13,4 +13,6 @@ pub use field_audio_io::{
     SymphoniaBlockSource,
 };
 #[allow(unused_imports)] // compatibility re-exports for app call sites
-pub use field_audio_process::{build_peaks, min_max_in_range, PEAK_BLOCK};
+pub use field_audio_process::{
+    build_peaks, min_max_in_range, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+};

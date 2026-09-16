@@ -351,6 +351,20 @@ fn invert_intervals(covered: &[(usize, usize)], last: usize) -> Vec<(usize, usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::NewRegion;
+
+    #[test]
+    fn from_new_assigns_id_and_label() {
+        let region = Region::from_new(
+            RegionId(3),
+            NewRegion::new(20, 10, ChannelScope::single(1)).with_label("take"),
+        );
+        assert_eq!(region.id, RegionId(3));
+        assert_eq!(region.start, 10);
+        assert_eq!(region.end, 20);
+        assert_eq!(region.channels, ChannelScope::single(1));
+        assert_eq!(region.label.as_deref(), Some("take"));
+    }
 
     fn next() -> u64 {
         1

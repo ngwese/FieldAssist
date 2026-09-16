@@ -37,7 +37,8 @@ use crate::commands::{
     TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
     TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
     ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
-    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowScript, ViewZoomIn, ViewZoomOut,
+    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowScript, ViewWaveformPeaks,
+    ViewWaveformSpectrum, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
@@ -1716,33 +1717,42 @@ impl AppView {
     }
 
     fn app_menu_state(&self, cx: &App) -> AppMenuState {
-        let (snap_to_marker, marker_types, snap_disabled, envelope_overlay, analyze_selection_only) =
-            if let Some(views) = self.active_views() {
-                let doc = views.document.read(cx);
-                (
-                    doc.snap_to_marker,
-                    doc.marker_types().into_iter().map(|ty| ty.name).collect(),
-                    doc.snap_marker_disabled.clone(),
-                    doc.show_envelope_peak,
-                    doc.analyze_selection_only,
-                )
-            } else {
-                (
-                    false,
-                    DEFAULT_MARKER_TYPES
-                        .iter()
-                        .map(|(name, _)| (*name).to_string())
-                        .collect(),
-                    HashSet::new(),
-                    false,
-                    false,
-                )
-            };
+        let (
+            snap_to_marker,
+            marker_types,
+            snap_disabled,
+            envelope_overlay,
+            waveform_representation,
+            analyze_selection_only,
+        ) = if let Some(views) = self.active_views() {
+            let doc = views.document.read(cx);
+            (
+                doc.snap_to_marker,
+                doc.marker_types().into_iter().map(|ty| ty.name).collect(),
+                doc.snap_marker_disabled.clone(),
+                doc.show_envelope_peak,
+                doc.waveform_representation,
+                doc.analyze_selection_only,
+            )
+        } else {
+            (
+                false,
+                DEFAULT_MARKER_TYPES
+                    .iter()
+                    .map(|(name, _)| (*name).to_string())
+                    .collect(),
+                HashSet::new(),
+                false,
+                field_ui_components::WaveformRepresentation::Peaks,
+                false,
+            )
+        };
         AppMenuState {
             explorer: self.explorer_dock_open(cx),
             detail: self.detail_dock_open(cx),
             script: self.script_dock_open(cx),
             envelope_overlay,
+            waveform_representation,
             analyze_selection_only,
             marker_type: self.active_marker_type.clone(),
             add_at_hover: self.add_marker_at_hover,
@@ -2794,6 +2804,16 @@ impl AppView {
             "view.hide-script" => self.hide_script_dock(window, cx),
             "view.toggle-script" => self.toggle_script_dock(window, cx),
             "view.overlay_envelope_peak" => self.toggle_envelope_overlay(window, cx),
+            "view.waveform_peaks" => self.set_waveform_representation(
+                field_ui_components::WaveformRepresentation::Peaks,
+                window,
+                cx,
+            ),
+            "view.waveform_spectrum" => self.set_waveform_representation(
+                field_ui_components::WaveformRepresentation::Spectrum,
+                window,
+                cx,
+            ),
             "analyze.selection_only" => self.toggle_analyze_selection_only(cx),
             "analyze.envelope_peak" => self.run_analyze_envelope_peak(window, cx),
             "analyze.transients" => self.run_analyze_transients(window, cx),
@@ -2941,6 +2961,7 @@ impl AppView {
         let needed = match kind {
             AnalysisKind::MinMax => composition.read().unwrap().needs_peak_build(),
             AnalysisKind::EnvelopePeak => composition.read().unwrap().needs_envelope_peak_build(),
+            AnalysisKind::Spectral => composition.read().unwrap().needs_spectral_build(),
             AnalysisKind::Transients => true,
         };
         if !needed {
@@ -3089,6 +3110,39 @@ impl AppView {
                 let _ = views.document.read(cx).snapshot_analysis_target();
             }
             self.request_analysis(id, AnalysisKind::EnvelopePeak, cx);
+        }
+        self.sync_view_menus(cx);
+        window.refresh();
+    }
+
+    fn set_waveform_representation(
+        &mut self,
+        representation: field_ui_components::WaveformRepresentation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.session.active() else {
+            return;
+        };
+        let switched = if let Some(views) = self.views.get(&id) {
+            views.document.update(cx, |doc, cx| {
+                let changed = doc.waveform_representation != representation;
+                doc.waveform_representation = representation;
+                cx.notify();
+                changed
+            })
+        } else {
+            false
+        };
+        if switched {
+            if let Some(views) = self.views.get(&id) {
+                views.waveform.update(cx, |view, cx| {
+                    view.bump_paint_epoch(cx);
+                });
+            }
+            if representation == field_ui_components::WaveformRepresentation::Spectrum {
+                self.request_analysis(id, AnalysisKind::Spectral, cx);
+            }
         }
         self.sync_view_menus(cx);
         window.refresh();
@@ -4822,6 +4876,14 @@ fn view_overlay_envelope_peak(_: &ViewOverlayEnvelopePeak, cx: &mut App) {
     let _ = crate::commands::dispatch("view.overlay_envelope_peak", cx);
 }
 
+fn view_waveform_peaks(_: &ViewWaveformPeaks, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.waveform_peaks", cx);
+}
+
+fn view_waveform_spectrum(_: &ViewWaveformSpectrum, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.waveform_spectrum", cx);
+}
+
 fn analyze_envelope_peak(_: &AnalyzeEnvelopePeak, cx: &mut App) {
     let _ = crate::commands::dispatch("analyze.envelope_peak", cx);
 }
@@ -4947,6 +5009,7 @@ struct AppMenuState {
     detail: bool,
     script: bool,
     envelope_overlay: bool,
+    waveform_representation: field_ui_components::WaveformRepresentation,
     analyze_selection_only: bool,
     marker_type: String,
     add_at_hover: bool,
@@ -5062,6 +5125,14 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
             MenuItem::action("Show Script", ViewScript).checked(state.script),
             MenuItem::separator(),
+            MenuItem::action("Peaks", ViewWaveformPeaks).checked(matches!(
+                state.waveform_representation,
+                field_ui_components::WaveformRepresentation::Peaks
+            )),
+            MenuItem::action("Spectrum", ViewWaveformSpectrum).checked(matches!(
+                state.waveform_representation,
+                field_ui_components::WaveformRepresentation::Spectrum
+            )),
             MenuItem::action("Show Envelope Peak", ViewOverlayEnvelopePeak)
                 .checked(state.envelope_overlay),
             MenuItem::separator(),
@@ -5160,6 +5231,8 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(view_show_script);
     cx.on_action(view_hide_script);
     cx.on_action(view_overlay_envelope_peak);
+    cx.on_action(view_waveform_peaks);
+    cx.on_action(view_waveform_spectrum);
     cx.on_action(analyze_selection_only);
     cx.on_action(analyze_envelope_peak);
     cx.on_action(analyze_transients);
@@ -5194,6 +5267,7 @@ fn install_app_menu(cx: &mut App) {
             detail: false,
             script: false,
             envelope_overlay: false,
+            waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
             analyze_selection_only: false,
             marker_type: default_marker_type().to_string(),
             add_at_hover: true,

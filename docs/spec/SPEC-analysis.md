@@ -8,12 +8,14 @@
 | --- | --- | --- |
 | 1 | 2026-09-14 | Initial draft of the analysis layer |
 | 2 | 2026-09-14 | Pull-based streams; Envelope Peak and Transient ops ship |
+| 3 | 2026-09-15 | Spectral stream + Spectrum waveform representation |
+| 4 | 2026-09-15 | Progressive stream coverage; spectrum tile textures |
 
 Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
-`dasp_envelope` follower),
-and **Mark → Transients** (pink Transient markers) are implemented. Spectrum
-representation, silence detection, correlation, and the Lua `c:analyze` surface
-remain future work.
+`dasp_envelope` follower), **Mark → Transients** (pink Transient markers), and
+**Spectrum** representation (pull-based spectral stream) are implemented.
+Silence detection, correlation, and the Lua `c:analyze` surface remain future
+work.
 
 Related:
 
@@ -55,7 +57,7 @@ Source media  →  composition EDL (clip tree, markers, regions)
 | --- | --- | --- |
 | **Composition EDL** | Non-destructive timeline over source media | Shipping |
 | **Monitor chain** | Map whatever you are hearing onto the playback device; live Input/Output RMS | Shipping. Unchanged by this spec |
-| **Analysis** | Gather extra information over the edited timeline | Minmax peaks (pull), Envelope Peak overlay, Transient markers; rest future |
+| **Analysis** | Gather extra information over the edited timeline | Minmax peaks (pull), Envelope Peak overlay, Transient markers, Spectral stream / Spectrum view; rest future |
 | **Processing chain** | Ordered operations for preview and export | Future ([SPEC-processing.md](SPEC-processing.md)) |
 | **Render** | Encode the current composition | Shipping one-shot |
 
@@ -155,14 +157,37 @@ the following as intent; not every row must ship in one release.
 | Transient detection | Realtime-capable; Analyze → Mark → Transients | Pink **Transient** markers |
 | Silence | Often needs a floor estimate (multi-pass) | Named region collection |
 | Speech / sound labeling | Offline; later | Labeled regions (no ML/plugin commitment in v1) |
-| Spectral data | Realtime-capable, heavier | Per-channel spectra; drives spectrum **representation** |
+| Spectral data | Realtime-capable, heavier | Per-channel log-band spectrogram; drives Spectrum **representation** |
 
 Parameters are per operation (window, threshold, hop, output collection or
 marker type). Changing a parameter re-runs that job for the current target.
 
 **Gather peaks** starts when the waveform needs overview data (document activate
-/ paint pull). **Envelope Peak** and **Transients** run from the Analyze menu
-(or when the envelope overlay is enabled and data is missing).
+/ paint pull) and paints as soon as the first chunk has bins (`can_paint_overview`).
+**Envelope Peak** and **Transients** run from the Analyze menu (or when the
+envelope overlay is enabled and data is missing). **Spectral** runs when the
+Spectrum representation is selected and bins are missing (full timeline, all
+channels — Selection Only does not apply).
+
+Stream ops advance `covered_frames` after each pager block so the UI can
+**progressively consume** partial results: paint gates use “has data” while
+`ensure_*` keeps requesting work until coverage is complete.
+
+### Spectral defaults
+
+Full-timeline float STFTs at overview hop would be multi‑GB per hour, so the
+shipping spectral stream is a compact spectrogram:
+
+| Parameter | Value |
+| --- | --- |
+| Window / FFT | Hann, **N = 1024** |
+| Hop | **256** (`PEAK_BLOCK`, time-aligned with peaks) |
+| Bands | **64 log-spaced** magnitude bands from ~20 Hz to Nyquist (average linear FFT bins into each band) |
+| Value | Magnitude → **dB**, clamped (−80…0 dBFS) as `f32` |
+| Scope | Full timeline, all channels |
+
+Streams are not written to `.facomp`. Sample-changing edits clear them with
+other analysis streams.
 
 ## User interface
 
@@ -188,7 +213,7 @@ submenu where needed).
 | Mode | Behavior |
 | --- | --- |
 | **Peaks** (default) | As-built overview: peak bins; sample-accurate zoom still reads PCM |
-| **Spectrum** | Lanes show spectral analysis. Missing spectral streams trigger that analysis job |
+| **Spectrum** | Lanes show a time × frequency heatmap from the spectral stream. Missing data triggers the Spectral job. Zoomed sample-accurate PCM paint is Peaks-only |
 
 **Overlays** (View menu): independent toggles for extra streams (RMS,
 correlation, and similar). Region and marker results use the existing lane

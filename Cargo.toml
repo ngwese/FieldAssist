@@ -37,8 +37,10 @@ rusty_vorbis = "0.1"
 ogg = "0.9"
 flacenc = "0.5"
 rubato = { version = "5", features = ["fft_resampler"] }
+realfft = "3"
 dasp = { version = "0.11", features = ["std", "slice", "envelope", "envelope-peak"] }
 thiserror = "2"
+image = { version = "0.25", default-features = false }
 embed-resource = "3"
 
 [profile.dev.package]

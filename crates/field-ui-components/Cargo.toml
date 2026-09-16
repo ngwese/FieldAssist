@@ -7,3 +7,5 @@ description = "Reusable GPUI chrome, waveform display, and host data traits for 
 
 [dependencies]
 gpui-kit = { workspace = true }
+image = { workspace = true }
+smallvec = "1"

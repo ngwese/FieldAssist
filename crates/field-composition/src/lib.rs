@@ -28,7 +28,7 @@ mod edit_ranges;
 mod edl;
 mod tree;
 
-pub use analysis_store::{AnalysisStreams, FloatStreamSeries};
+pub use analysis_store::{AnalysisStreams, FloatStreamSeries, SpectralStreamSeries};
 pub use clip::{Clip, ClipCache, ClipId, ClipMarker, ClipMarkerId, ClipSource, ClipSpan};
 pub use composition::{
     is_facomp_path, normalize_facomp_file_name, AnalysisBlockOutcome, Clipboard, Composition,

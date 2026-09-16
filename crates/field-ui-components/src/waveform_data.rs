@@ -3,10 +3,24 @@
 
 //! Waveform paint/read provider trait (UI-facing, gpui-free).
 
+/// Which body the waveform lanes paint (View menu representation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WaveformRepresentation {
+    /// Min/max peak columns (and sample-accurate zoom).
+    #[default]
+    Peaks,
+    /// Time × frequency heatmap from the spectral stream.
+    Spectrum,
+}
+
 /// Sample access for waveform overview and zoomed paints.
 ///
 /// Leaf UI widgets depend on this trait; applications implement it for their
 /// document or buffer types.
+///
+/// Progressive analysis: `*_has_data` means bins exist to paint now;
+/// `ensure_*` / `needs` jobs fill coverage while the UI consumes partial
+/// results. Full-timeline readiness is only required to stop requesting work.
 pub trait WaveformDataProvider: Send + Sync {
     /// Sample rate in Hz.
     fn sample_rate(&self) -> u32;
@@ -22,19 +36,31 @@ pub trait WaveformDataProvider: Send + Sync {
     fn read_channel(&self, channel: usize, start: usize, dest: &mut [f32]);
     /// Min/max amplitude in `[start, end)`.
     fn min_max_in_range(&self, channel: usize, start: f64, end: f64) -> (f32, f32);
-    /// Overview paint needs peak bins; sample-accurate zoom still reads PCM.
+    /// Whether any overview peak bins are available to paint (may be partial).
     fn peaks_ready(&self) -> bool {
         true
     }
+    /// Whether overview peak analysis still needs work.
+    fn peaks_complete(&self) -> bool {
+        self.peaks_ready()
+    }
     /// Request overview min/max analysis when paint needs it (pull-based).
     fn ensure_minmax_peaks(&self) {}
+    /// Active waveform body representation (Peaks vs Spectrum).
+    fn waveform_representation(&self) -> WaveformRepresentation {
+        WaveformRepresentation::Peaks
+    }
     /// Whether the peak-envelope overlay should be drawn.
     fn envelope_overlay_enabled(&self) -> bool {
         false
     }
-    /// Whether envelope-peak bins cover the timeline.
+    /// Whether any envelope-peak bins are available to paint (may be partial).
     fn envelope_ready(&self) -> bool {
         false
+    }
+    /// Whether envelope-peak analysis still needs work.
+    fn envelope_complete(&self) -> bool {
+        self.envelope_ready()
     }
     /// Request envelope-peak analysis when the overlay is on and data is missing.
     fn ensure_envelope_peak(&self) {}
@@ -47,6 +73,38 @@ pub trait WaveformDataProvider: Send + Sync {
         dest: &mut [f32],
     ) {
         dest.fill(0.0);
+    }
+    /// Whether any spectral hops are available to paint (may be partial).
+    fn spectral_ready(&self) -> bool {
+        false
+    }
+    /// Whether spectral analysis still needs work.
+    fn spectral_complete(&self) -> bool {
+        self.spectral_ready()
+    }
+    /// Monotonic coverage fingerprint for spectrum cache keys (e.g. covered frames).
+    fn spectral_coverage_frames(&self) -> u64 {
+        0
+    }
+    /// Request spectral analysis when Spectrum representation needs data.
+    fn ensure_spectral(&self) {}
+    /// Log bands per spectral hop (must match analysis stream packing).
+    fn spectral_band_count(&self) -> usize {
+        64
+    }
+    /// dB floor used when a spectral cell has no data.
+    fn spectral_db_floor(&self) -> f32 {
+        -80.0
+    }
+    /// Fill packed `width * band_count` dB columns for Spectrum paint.
+    fn fill_spectral_columns(
+        &self,
+        _channel: usize,
+        _start: f64,
+        _samples_per_pixel: f64,
+        dest: &mut [f32],
+    ) {
+        dest.fill(self.spectral_db_floor());
     }
     /// Fill column min/max pairs for overview painting.
     fn fill_minmax_columns(

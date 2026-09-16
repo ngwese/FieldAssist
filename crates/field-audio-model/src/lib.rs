@@ -27,11 +27,11 @@ mod regions;
 mod selection;
 mod snap;
 
-pub use buffer::{Buffer, BufferSource, ChannelScope, Region, RegionId};
+pub use buffer::{Buffer, BufferSource, ChannelScope, NewRegion, Region, RegionId};
 pub use markers::{
-    default_marker_type, marker_type_color, Marker, MarkerId, MarkerList, MarkerType, StoredMarker,
-    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT,
-    MARKER_TYPE_YELLOW,
+    default_marker_type, marker_type_color, Marker, MarkerId, MarkerList, MarkerType, NewMarker,
+    StoredMarker, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
+    MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
 };
 pub use media::{MediaId, MediaPool, MediaRef};
 pub use pager::{

@@ -14,7 +14,8 @@ use field_audio_model::{
     MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
 };
 use field_audio_process::{
-    fold_minmax_bins, AnalysisKind, AnalysisSink, EnvelopePeakOp, TransientDetectOp, PEAK_BLOCK,
+    fold_minmax_bins, AnalysisKind, AnalysisSink, EnvelopePeakOp, SpectralOp, TransientDetectOp,
+    PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
 };
 use field_core::{encode_file_url, ProgressHandle};
 
@@ -95,6 +96,8 @@ pub struct Composition {
     analysis_streams: AnalysisStreams,
     /// Scratch peak-envelope detector kept across pager blocks of one job.
     envelope_op: Option<EnvelopePeakOp>,
+    /// Scratch STFT kept across pager blocks of one spectral job.
+    spectral_op: Option<SpectralOp>,
     /// Scratch transient detector kept across pager blocks of one job.
     transient_op: Option<TransientDetectOp>,
     /// Half-open timeline ranges for the active envelope/transient job.
@@ -191,6 +194,7 @@ impl Composition {
             playback_channels: None,
             analysis_streams: AnalysisStreams::default(),
             envelope_op: None,
+            spectral_op: None,
             transient_op: None,
             analysis_target_ranges: Vec::new(),
             analysis_read_pos: 0,
@@ -254,6 +258,7 @@ impl Composition {
             playback_channels: None,
             analysis_streams: AnalysisStreams::default(),
             envelope_op: None,
+            spectral_op: None,
             transient_op: None,
             analysis_target_ranges: Vec::new(),
             analysis_read_pos: 0,
@@ -488,6 +493,7 @@ impl Composition {
             playback_channels: self.playback_channels.clone(),
             analysis_streams: AnalysisStreams::default(),
             envelope_op: None,
+            spectral_op: None,
             transient_op: None,
             analysis_target_ranges: Vec::new(),
             analysis_read_pos: 0,
@@ -930,6 +936,7 @@ impl Composition {
     fn clear_analysis_scratch(&mut self) {
         self.analysis_streams.clear();
         self.envelope_op = None;
+        self.spectral_op = None;
         self.transient_op = None;
         self.analysis_target_ranges.clear();
         self.analysis_read_pos = 0;
@@ -963,6 +970,7 @@ impl Composition {
         self.analysis_job_started = false;
         self.analysis_target_configured = true;
         self.envelope_op = None;
+        self.spectral_op = None;
         self.transient_op = None;
     }
 
@@ -1792,6 +1800,7 @@ impl Composition {
             AnalysisKind::EnvelopePeak => {
                 Self::build_next_envelope_block(composition, progress, epoch)
             }
+            AnalysisKind::Spectral => Self::build_next_spectral_block(composition, progress, epoch),
             AnalysisKind::Transients => {
                 Self::build_next_transient_block(composition, progress, epoch)
             }
@@ -1912,6 +1921,24 @@ impl Composition {
             .envelope_peak_ready(self.frames(), self.channel_count)
     }
 
+    /// Whether any envelope-peak bins are available for progressive paint.
+    pub fn envelope_peak_has_data(&self) -> bool {
+        self.analysis_streams
+            .envelope_peak_has_data(self.channel_count)
+    }
+
+    /// Whether spectral analysis covers the full timeline.
+    pub fn needs_spectral_build(&self) -> bool {
+        !self
+            .analysis_streams
+            .spectral_ready(self.frames(), self.channel_count)
+    }
+
+    /// Whether any spectral hops are available for progressive paint.
+    pub fn spectral_has_data(&self) -> bool {
+        self.analysis_streams.spectral_has_data(self.channel_count)
+    }
+
     /// Access in-memory analysis streams.
     pub fn analysis_streams(&self) -> &AnalysisStreams {
         &self.analysis_streams
@@ -1940,12 +1967,13 @@ impl Composition {
         }
         let bins = &series.channels[channel];
         let hop = series.hop.max(1) as f64;
+        let covered = series.covered_hops().min(bins.len());
         for (i, slot) in dest.iter_mut().enumerate() {
             let a = start + i as f64 * samples_per_pixel;
             let b = a + samples_per_pixel;
             let start_bin = (a / hop).floor().max(0.0) as usize;
-            let end_bin = ((b / hop).ceil() as usize).min(bins.len());
-            if start_bin >= end_bin || bins.is_empty() {
+            let end_bin = ((b / hop).ceil() as usize).min(covered);
+            if start_bin >= end_bin || covered == 0 {
                 *slot = 0.0;
                 continue;
             }
@@ -1954,6 +1982,54 @@ impl Composition {
                 max = max.max(v);
             }
             *slot = max;
+        }
+    }
+
+    /// Fill packed `width * band_count` dB columns from the spectral stream.
+    ///
+    /// `dest.len()` must be a multiple of [`SPECTRAL_BAND_COUNT`]. Each pixel
+    /// column stores low→high bands; overlapping hops contribute their max.
+    pub fn fill_spectral_columns(
+        &self,
+        channel: usize,
+        start: f64,
+        samples_per_pixel: f64,
+        dest: &mut [f32],
+    ) {
+        let band_count = SPECTRAL_BAND_COUNT;
+        if band_count == 0 || dest.len() % band_count != 0 {
+            dest.fill(SPECTRAL_DB_FLOOR);
+            return;
+        }
+        let width = dest.len() / band_count;
+        dest.fill(SPECTRAL_DB_FLOOR);
+        let Some(series) = self.analysis_streams.spectral() else {
+            return;
+        };
+        if channel >= series.channels.len() || series.band_count != band_count {
+            return;
+        }
+        let data = &series.channels[channel];
+        let hop = series.hop.max(1) as f64;
+        let hop_count = series.hop_count(channel).min(series.covered_hops());
+        if hop_count == 0 {
+            return;
+        }
+        for i in 0..width {
+            let a = start + i as f64 * samples_per_pixel;
+            let b = a + samples_per_pixel;
+            let start_hop = (a / hop).floor().max(0.0) as usize;
+            let end_hop = ((b / hop).ceil() as usize).min(hop_count);
+            if start_hop >= end_hop {
+                continue;
+            }
+            let col = &mut dest[i * band_count..(i + 1) * band_count];
+            for h in start_hop..end_hop {
+                let frame = &data[h * band_count..(h + 1) * band_count];
+                for (band, slot) in col.iter_mut().enumerate() {
+                    *slot = slot.max(frame[band]);
+                }
+            }
         }
     }
 
@@ -2106,6 +2182,13 @@ impl Composition {
                 }
                 if complete {
                     series.covered_frames = frames;
+                } else {
+                    // Progressive consume: expose hops written so far.
+                    series.covered_frames = series.covered_frames.max(
+                        ((base_hop + hop_bins.iter().map(|b| b.len()).max().unwrap_or(0)) * hop)
+                            as u64,
+                    );
+                    series.covered_frames = series.covered_frames.min(frames);
                 }
             }
             if let Some(progress) = progress {
@@ -2113,6 +2196,183 @@ impl Composition {
             }
             if complete {
                 this.envelope_op = None;
+                this.analysis_job_started = false;
+                this.analysis_target_configured = false;
+                if let Some(progress) = progress {
+                    progress.set_fraction(epoch, 1.0);
+                }
+                Ok(AnalysisBlockOutcome::Complete)
+            } else {
+                Ok(AnalysisBlockOutcome::Progress)
+            }
+        }
+    }
+
+    fn build_next_spectral_block(
+        composition: &RwLock<Self>,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<AnalysisBlockOutcome> {
+        if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+            return Ok(AnalysisBlockOutcome::Cancelled);
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if !this.analysis_job_started {
+                // Spectral always covers the full timeline (like MinMax).
+                this.begin_analysis_target(None);
+                let sample_rate = this.sample_rate;
+                let channel_count = this.channel_count;
+                let frames = this.frames();
+                let hop = AnalysisStreams::spectral_hop();
+                let band_count = SPECTRAL_BAND_COUNT;
+                let series = this.analysis_streams.ensure_spectral(channel_count);
+                let hops_needed = if frames == 0 {
+                    0
+                } else {
+                    ((frames as usize) + hop - 1) / hop
+                };
+                for ch in &mut series.channels {
+                    ch.clear();
+                    ch.resize(hops_needed * band_count, SPECTRAL_DB_FLOOR);
+                }
+                series.covered_frames = 0;
+                series.hop = hop;
+                series.band_count = band_count;
+                this.spectral_op = Some(SpectralOp::new(sample_rate, channel_count));
+                this.analysis_job_started = true;
+            }
+        }
+        let (channel_count, total, done, read_pos, take, range_start) = {
+            let this = composition.read().unwrap();
+            if this.analysis_target_done >= this.analysis_target_total {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_done,
+                    0u64,
+                    0usize,
+                    0u64,
+                )
+            } else if let Some((start, end, pos)) = next_chunk_in_ranges(
+                &this.analysis_target_ranges,
+                this.analysis_read_pos,
+                BLOCK_FRAMES,
+            ) {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_done,
+                    pos,
+                    (end - pos) as usize,
+                    start,
+                )
+            } else {
+                (
+                    this.channel_count,
+                    this.analysis_target_total,
+                    this.analysis_target_total,
+                    0u64,
+                    0usize,
+                    0u64,
+                )
+            }
+        };
+        if take == 0 {
+            let mut this = composition.write().unwrap();
+            this.spectral_op = None;
+            let frames = this.frames();
+            if let Some(series) = this.analysis_streams.spectral_mut() {
+                series.covered_frames = frames;
+            }
+            this.analysis_job_started = false;
+            this.analysis_target_configured = false;
+            if let Some(progress) = progress {
+                progress.set_fraction(epoch, 1.0);
+            }
+            return Ok(AnalysisBlockOutcome::Complete);
+        }
+        if let Some(progress) = progress {
+            progress.set_ratio(epoch, done, total.max(1));
+        }
+        let mut planar = vec![vec![0.0; take]; channel_count];
+        {
+            let this = composition.read().unwrap();
+            let mut dests: Vec<&mut [f32]> =
+                planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+            this.read_planar(read_pos, take as u64, &mut dests)?;
+        }
+        {
+            let mut this = composition.write().unwrap();
+            if progress.is_some_and(|p| !p.is_epoch(epoch)) {
+                return Ok(AnalysisBlockOutcome::Cancelled);
+            }
+            let sample_rate = this.sample_rate;
+            if read_pos == range_start {
+                this.spectral_op = Some(SpectralOp::new(sample_rate, channel_count));
+            }
+            let hop = AnalysisStreams::spectral_hop();
+            let band_count = SPECTRAL_BAND_COUNT;
+            let mut hop_frames = vec![Vec::new(); channel_count];
+            let range_end = this
+                .analysis_target_ranges
+                .iter()
+                .find(|(s, e)| read_pos >= *s && read_pos < *e)
+                .map(|(_, e)| *e)
+                .unwrap_or(read_pos + take as u64);
+            {
+                let op = this
+                    .spectral_op
+                    .get_or_insert_with(|| SpectralOp::new(sample_rate, channel_count));
+                for (ch, plane) in planar.iter().enumerate() {
+                    op.consume_channel(ch, plane, &mut hop_frames[ch]);
+                }
+                if read_pos + take as u64 >= range_end {
+                    for (ch, bins) in hop_frames.iter_mut().enumerate() {
+                        op.flush_channel(ch, bins);
+                    }
+                }
+            }
+            let next_pos = advance_read_pos(&this.analysis_target_ranges, read_pos + take as u64);
+            let frames = this.frames();
+            this.analysis_target_done += take as u64;
+            this.analysis_read_pos = next_pos;
+            let done_now = this.analysis_target_done;
+            let complete = done_now >= this.analysis_target_total;
+            {
+                let series = this.analysis_streams.ensure_spectral(channel_count);
+                let base_hop = (read_pos as usize) / hop;
+                for (ch, packed) in hop_frames.iter().enumerate() {
+                    let emitted = packed.len() / band_count;
+                    for i in 0..emitted {
+                        let dest_hop = base_hop + i;
+                        let dest_base = dest_hop * band_count;
+                        let src_base = i * band_count;
+                        if dest_base + band_count <= series.channels[ch].len() {
+                            series.channels[ch][dest_base..dest_base + band_count]
+                                .copy_from_slice(&packed[src_base..src_base + band_count]);
+                        }
+                    }
+                }
+                if complete {
+                    series.covered_frames = frames;
+                } else {
+                    let emitted = hop_frames
+                        .iter()
+                        .map(|p| p.len() / band_count)
+                        .max()
+                        .unwrap_or(0);
+                    series.covered_frames = series
+                        .covered_frames
+                        .max(((base_hop + emitted) * hop) as u64)
+                        .min(frames);
+                }
+            }
+            if let Some(progress) = progress {
+                progress.set_ratio(epoch, done_now, total.max(1));
+            }
+            if complete {
+                this.spectral_op = None;
                 this.analysis_job_started = false;
                 this.analysis_target_configured = false;
                 if let Some(progress) = progress {
@@ -2273,7 +2533,7 @@ impl Composition {
     }
 
     /// Replace Transient markers in the active analysis target with `markers`.
-    fn apply_transient_markers(&mut self, markers: Vec<field_audio_process::AnalysisMarker>) {
+    fn apply_transient_markers(&mut self, markers: Vec<field_audio_model::NewMarker>) {
         let ranges = self.analysis_target_ranges.clone();
         for &(start, end) in &ranges {
             if end > start {
@@ -2293,6 +2553,7 @@ impl Composition {
     /// ranges alone so a newer `begin_analysis_target` is not wiped.
     fn abandon_analysis_job_scratch(&mut self) {
         self.envelope_op = None;
+        self.spectral_op = None;
         self.transient_op = None;
         self.analysis_job_started = false;
     }
@@ -3673,6 +3934,58 @@ mod tests {
             markers.iter().any(|f| (4_000..6_000).contains(f)),
             "expected a detection inside the target: {markers:?}"
         );
+    }
+
+    #[test]
+    fn spectral_analysis_covers_timeline_and_is_non_flat() {
+        use field_audio_process::SPECTRAL_BAND_COUNT;
+        use std::f32::consts::PI;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = BLOCK_FRAMES + 1_024;
+        let freq = 1_000.0f32;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (2.0 * PI * freq * i as f32 / rate as f32).sin())
+            .collect();
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        assert!(lock.read().unwrap().needs_spectral_build());
+        let first =
+            Composition::build_next_analysis_block(&lock, AnalysisKind::Spectral, None, 0).unwrap();
+        assert_eq!(first, AnalysisBlockOutcome::Progress);
+        {
+            let comp = lock.read().unwrap();
+            assert!(
+                comp.spectral_has_data(),
+                "first block should expose progressive coverage"
+            );
+            assert!(comp.needs_spectral_build());
+        }
+        loop {
+            match Composition::build_next_analysis_block(&lock, AnalysisKind::Spectral, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+        let comp = lock.read().unwrap();
+        assert!(!comp.needs_spectral_build());
+        let series = comp.analysis_streams().spectral().expect("spectral series");
+        assert_eq!(series.band_count, SPECTRAL_BAND_COUNT);
+        assert!(series.hop_count(0) > 0);
+        let data = &series.channels[0];
+        let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let min = data.iter().copied().fold(f32::INFINITY, f32::min);
+        assert!(
+            max > min + 1.0,
+            "expected spectral contrast, min={min} max={max}"
+        );
+        let mut columns = vec![0.0f32; 8 * SPECTRAL_BAND_COUNT];
+        comp.fill_spectral_columns(0, 0.0, 256.0, &mut columns);
+        assert!(columns.iter().any(|&v| v > SPECTRAL_DB_FLOOR + 1.0));
     }
 
     #[test]

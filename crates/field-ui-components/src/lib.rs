@@ -86,5 +86,5 @@ pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
 pub use waveform::{ToggleZeroCrossing, WaveformDisplay};
-pub use waveform_data::WaveformDataProvider;
+pub use waveform_data::{WaveformDataProvider, WaveformRepresentation};
 pub use waveform_editor::{LaneScope, PaintRegion, PeakStatus, WaveformEditor};

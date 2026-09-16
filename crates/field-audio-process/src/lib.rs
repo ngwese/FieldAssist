@@ -21,8 +21,9 @@ mod peaks;
 mod resample;
 
 pub use analysis::{
-    fold_minmax_bins, AnalysisCtx, AnalysisKind, AnalysisMarker, AnalysisSink, EnvelopePeakOp,
-    TransientDetectOp,
+    fold_minmax_bins, spectral_band_for_freq, AnalysisCtx, AnalysisKind, AnalysisSink,
+    EnvelopePeakOp, SpectralOp, TransientDetectOp, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+    SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ,
 };
 pub use peaks::{build_peaks, min_max_in_range, PEAK_BLOCK};
 pub use resample::resample_planar;

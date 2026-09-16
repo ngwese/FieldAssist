@@ -107,6 +107,42 @@ pub struct BufferSource {
     pub codec: String,
 }
 
+/// Proposed region without an assigned id (analysis / script emission).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct NewRegion {
+    /// Inclusive start sample.
+    pub start: usize,
+    /// Inclusive end sample.
+    pub end: usize,
+    /// Channels this region covers.
+    pub channels: ChannelScope,
+    /// Optional display label.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub label: Option<String>,
+}
+
+impl NewRegion {
+    /// Build a proposed region (endpoints are normalized when assigned an id).
+    pub fn new(start: usize, end: usize, channels: ChannelScope) -> Self {
+        Self {
+            start,
+            end,
+            channels,
+            label: None,
+        }
+    }
+
+    /// Attach a display label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+}
+
 /// Inclusive sample span with channel scope and optional label.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -144,6 +180,13 @@ impl Region {
             channels,
             label: None,
         }
+    }
+
+    /// Assign `id` to a proposed region (swaps endpoints if needed).
+    pub fn from_new(id: RegionId, new: NewRegion) -> Self {
+        let mut region = Self::new(id, new.start, new.end, new.channels);
+        region.label = new.label;
+        region
     }
 
     /// Attach a display label.
