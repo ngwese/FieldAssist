@@ -12,6 +12,7 @@
 | 4 | 2026-09-15 | Progressive stream coverage; spectrum tile textures |
 | 5 | 2026-09-15 | MinMaxOp; analysis ops split into per-file module |
 | 6 | 2026-09-15 | Peaks + Spectrum combined representation |
+| 7 | 2026-09-16 | Waveform representation is app-global |
 
 Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
 `dasp_envelope` follower), **Mark → Transients** (pink Transient markers), and
@@ -222,9 +223,10 @@ submenu where needed).
 correlation, and similar). Region and marker results use the existing lane
 overlays and the Detail Regions / Markers panels.
 
-Overlay and representation state are **per-document UI**, not fields in
-`.facomp`. They may later ride along with session `capture_ui` the same way
-dock visibility does.
+**Representation** (Peaks / Spectrum / Peaks + Spectrum) is **app-global UI**
+so switching compositions keeps the same waveform body. **Overlay** toggles
+remain **per-document UI**. Neither is stored in `.facomp`; they may later
+ride along with session `capture_ui` the same way dock visibility does.
 
 Analysis does **not** add a fourth dock. Streams are visual unless a later UI
 lists them; markers and regions appear where they already do.

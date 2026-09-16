@@ -188,6 +188,8 @@ pub struct AppView {
     workflow_bar: Option<(String, Vec<ToolbarItem>)>,
     workflow_bar_view: Entity<WorkflowBar>,
     restoring_session: bool,
+    /// View → Peaks / Spectrum / Peaks + Spectrum (app-wide, not per document).
+    waveform_representation: field_ui_components::WaveformRepresentation,
 }
 
 impl AppView {
@@ -263,7 +265,14 @@ impl AppView {
         let mut views = HashMap::new();
         let first_workspace = if has_initial {
             let first_id = session.push(source_path);
-            let first = Self::make_views(first_id, composition, buffer, app.clone(), cx);
+            let first = Self::make_views(
+                first_id,
+                composition,
+                buffer,
+                field_ui_components::WaveformRepresentation::Peaks,
+                app.clone(),
+                cx,
+            );
             let workspace = first.workspace.clone();
             views.insert(first_id, first);
             Some(workspace)
@@ -481,6 +490,7 @@ impl AppView {
             workflow_bar: None,
             workflow_bar_view,
             restoring_session: false,
+            waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
         };
         this.load_init_lua(window, cx);
         this.refresh_output_devices_cache();
@@ -503,10 +513,15 @@ impl AppView {
         id: DocumentId,
         composition: Arc<RwLock<Composition>>,
         buffer: Arc<RwLock<Buffer>>,
+        waveform_representation: field_ui_components::WaveformRepresentation,
         app: WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> DocumentViews {
-        let document = cx.new(|_| BufferDocument::with_shared(composition.clone(), buffer.clone()));
+        let document = cx.new(|_| {
+            let mut doc = BufferDocument::with_shared(composition.clone(), buffer.clone());
+            doc.waveform_representation = waveform_representation;
+            doc
+        });
         cx.observe(&document, move |this, entity, cx| {
             if this.session.active() == Some(id) {
                 entity.update(cx, |doc, _| {
@@ -1500,7 +1515,14 @@ impl AppView {
         self.commit_active_monitor_params(cx);
         let app = cx.weak_entity();
         let id = self.session.push(source_path);
-        let views = Self::make_views(id, composition, buffer, app, cx);
+        let views = Self::make_views(
+            id,
+            composition,
+            buffer,
+            self.waveform_representation,
+            app,
+            cx,
+        );
         let workspace = views.workspace.clone();
         self.views.insert(id, views);
         self.dock_area.update(cx, |area, cx| {
@@ -1717,42 +1739,34 @@ impl AppView {
     }
 
     fn app_menu_state(&self, cx: &App) -> AppMenuState {
-        let (
-            snap_to_marker,
-            marker_types,
-            snap_disabled,
-            envelope_overlay,
-            waveform_representation,
-            analyze_selection_only,
-        ) = if let Some(views) = self.active_views() {
-            let doc = views.document.read(cx);
-            (
-                doc.snap_to_marker,
-                doc.marker_types().into_iter().map(|ty| ty.name).collect(),
-                doc.snap_marker_disabled.clone(),
-                doc.show_envelope_peak,
-                doc.waveform_representation,
-                doc.analyze_selection_only,
-            )
-        } else {
-            (
-                false,
-                DEFAULT_MARKER_TYPES
-                    .iter()
-                    .map(|(name, _)| (*name).to_string())
-                    .collect(),
-                HashSet::new(),
-                false,
-                field_ui_components::WaveformRepresentation::Peaks,
-                false,
-            )
-        };
+        let (snap_to_marker, marker_types, snap_disabled, envelope_overlay, analyze_selection_only) =
+            if let Some(views) = self.active_views() {
+                let doc = views.document.read(cx);
+                (
+                    doc.snap_to_marker,
+                    doc.marker_types().into_iter().map(|ty| ty.name).collect(),
+                    doc.snap_marker_disabled.clone(),
+                    doc.show_envelope_peak,
+                    doc.analyze_selection_only,
+                )
+            } else {
+                (
+                    false,
+                    DEFAULT_MARKER_TYPES
+                        .iter()
+                        .map(|(name, _)| (*name).to_string())
+                        .collect(),
+                    HashSet::new(),
+                    false,
+                    false,
+                )
+            };
         AppMenuState {
             explorer: self.explorer_dock_open(cx),
             detail: self.detail_dock_open(cx),
             script: self.script_dock_open(cx),
             envelope_overlay,
-            waveform_representation,
+            waveform_representation: self.waveform_representation,
             analyze_selection_only,
             marker_type: self.active_marker_type.clone(),
             add_at_hover: self.add_marker_at_hover,
@@ -3126,31 +3140,28 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.session.active() else {
-            return;
-        };
-        let switched = if let Some(views) = self.views.get(&id) {
-            views.document.update(cx, |doc, cx| {
-                let changed = doc.waveform_representation != representation;
-                doc.waveform_representation = representation;
-                cx.notify();
-                changed
-            })
-        } else {
-            false
-        };
-        if switched {
-            if let Some(views) = self.views.get(&id) {
+        let changed = self.waveform_representation != representation;
+        self.waveform_representation = representation;
+        if changed {
+            let ids: Vec<_> = self.views.keys().copied().collect();
+            for id in ids {
+                let Some(views) = self.views.get(&id).cloned() else {
+                    continue;
+                };
+                views.document.update(cx, |doc, cx| {
+                    doc.waveform_representation = representation;
+                    cx.notify();
+                });
                 views.waveform.update(cx, |view, cx| {
                     view.bump_paint_epoch(cx);
                 });
-            }
-            if matches!(
-                representation,
-                field_ui_components::WaveformRepresentation::Spectrum
-                    | field_ui_components::WaveformRepresentation::PeaksSpectrum
-            ) {
-                self.request_analysis(id, AnalysisKind::Spectral, cx);
+                if matches!(
+                    representation,
+                    field_ui_components::WaveformRepresentation::Spectrum
+                        | field_ui_components::WaveformRepresentation::PeaksSpectrum
+                ) {
+                    self.request_analysis(id, AnalysisKind::Spectral, cx);
+                }
             }
         }
         self.sync_view_menus(cx);
@@ -4179,7 +4190,14 @@ impl AppView {
         let composition = Arc::new(RwLock::new(Composition::new(44100, 2)));
         let buffer = Arc::new(RwLock::new(Buffer::empty()));
         let app = cx.weak_entity();
-        let views = Self::make_views(id, composition, buffer, app, cx);
+        let views = Self::make_views(
+            id,
+            composition,
+            buffer,
+            self.waveform_representation,
+            app,
+            cx,
+        );
         let workspace = views.workspace.clone();
         self.views.insert(id, views);
         if doc.tab_open {
@@ -5033,7 +5051,7 @@ struct AppMenuState {
     menu_workflows: Vec<(String, String)>,
 }
 
-/// View → Peaks / Spectrum / Peaks + Spectrum: exclusive radio marks.
+/// View → Peaks / Spectrum / Peaks + Spectrum: exclusive radio marks (app-global).
 ///
 /// Windows/Linux paint a Lucide `dot` in the PopupMenu gutter via
 /// [`AppMenuBar`]. On macOS, `.checked(true)` still drives the state column;

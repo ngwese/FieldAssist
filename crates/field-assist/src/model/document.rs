@@ -38,7 +38,7 @@ pub struct BufferDocument {
     pub analysis_requests: Arc<Mutex<Vec<AnalysisKind>>>,
     /// View → Show Envelope Peak overlay.
     pub show_envelope_peak: bool,
-    /// View → Peaks / Spectrum representation.
+    /// Active waveform body; mirrored from the app-global View menu choice.
     pub waveform_representation: WaveformRepresentation,
     /// Shared peaks-pane height fraction for Peaks + Spectrum (0.15..=0.85).
     pub peaks_spectrum_split: f32,
