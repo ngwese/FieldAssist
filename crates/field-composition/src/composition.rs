@@ -14,14 +14,16 @@ use field_audio_model::{
     MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
 };
 use field_audio_process::{
-    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, SpectralOp, TransientDetectOp,
-    PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, SpectralOp,
+    TransientDetectOp, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
 };
 use field_core::{encode_file_url, ProgressHandle};
 
 use super::analysis_store::AnalysisStreams;
 use super::clip::{Clip, ClipId, ClipSpan};
-use super::edit_ranges::{map_inclusive_through_inverse, map_inclusive_through_op};
+use super::edit_ranges::{
+    analysis_inverse_op, map_inclusive_through_inverse, map_inclusive_through_op,
+};
 use super::edl::{CompositionId, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile};
 use super::tree::ClipTree;
 use super::{map_point_if_kept, map_point_if_kept_inverse};
@@ -883,9 +885,12 @@ impl Composition {
     fn commit(&mut self, op: EditOp, tree: ClipTree) {
         self.markers.remap(|frame| map_point_if_kept(frame, &op));
         self.remap_collections_op(&op);
+        let post_frames = tree.frames();
+        let pre_tree = self.tree.clone();
+        self.invalidate_analysis_streams(&op, &pre_tree, post_frames);
         self.tree = tree;
         self.edl.push(op, self.tree.clone());
-        self.clear_analysis_scratch();
+        self.reset_analysis_job_scratch();
     }
 
     /// `undo`.
@@ -898,8 +903,16 @@ impl Composition {
             self.markers
                 .remap(|frame| map_point_if_kept_inverse(frame, &op));
             self.remap_collections_inverse(&op);
+            let post_frames = tree.frames();
+            let pre_tree = self.tree.clone();
+            match analysis_inverse_op(&op) {
+                Some(inv) => self.invalidate_analysis_streams(&inv, &pre_tree, post_frames),
+                None => {
+                    self.analysis_streams.clear();
+                }
+            }
             self.adopt_tree(tree);
-            self.clear_analysis_scratch();
+            self.reset_analysis_job_scratch();
             true
         } else {
             false
@@ -915,8 +928,11 @@ impl Composition {
         if let Some(tree) = self.edl.redo() {
             self.markers.remap(|frame| map_point_if_kept(frame, &op));
             self.remap_collections_op(&op);
+            let post_frames = tree.frames();
+            let pre_tree = self.tree.clone();
+            self.invalidate_analysis_streams(&op, &pre_tree, post_frames);
             self.adopt_tree(tree);
-            self.clear_analysis_scratch();
+            self.reset_analysis_job_scratch();
             true
         } else {
             false
@@ -930,16 +946,92 @@ impl Composition {
             let to = self.edl.cursor();
             self.remap_markers_between(from, to);
             self.remap_collections_between(from, to);
+            self.invalidate_analysis_streams_between(from, to, tree.frames());
             self.adopt_tree(tree);
-            self.clear_analysis_scratch();
+            self.reset_analysis_job_scratch();
             true
         } else {
             false
         }
     }
 
-    fn clear_analysis_scratch(&mut self) {
-        self.analysis_streams.clear();
+    /// Splice regional analysis streams through `op`; drop job scratch.
+    fn invalidate_analysis_streams(&mut self, op: &EditOp, pre_tree: &ClipTree, post_frames: u64) {
+        let sample_rate = self.sample_rate;
+        self.analysis_streams
+            .invalidate_through_op(op, pre_tree, post_frames, sample_rate);
+    }
+
+    /// Remap streams across a multi-edit jump by splicing each step.
+    ///
+    /// Uses EDL snapshots for intermediate tree lengths / Roll landing. Clears
+    /// when an inverse cannot be expressed (e.g. undoing Trim) or the hop
+    /// buffer length no longer matches the destination timeline.
+    fn invalidate_analysis_streams_between(&mut self, from: usize, to: usize, post_frames: u64) {
+        if from == to {
+            return;
+        }
+        let sample_rate = self.sample_rate;
+        let hop = AnalysisStreams::spectral_hop();
+        let edits: Vec<(EditOp, ClipTree, u64)> = self
+            .edl
+            .edits()
+            .iter()
+            .map(|edit| {
+                (
+                    edit.op.clone(),
+                    edit.snapshot.clone(),
+                    edit.snapshot.frames(),
+                )
+            })
+            .collect();
+
+        if to > from {
+            for i in (from + 1)..=to {
+                let (ref op, _, step_post) = edits[i];
+                let pre_tree = &edits[i - 1].1;
+                self.analysis_streams
+                    .invalidate_through_op(op, pre_tree, step_post, sample_rate);
+            }
+        } else {
+            for i in (to + 1..=from).rev() {
+                let (ref op, ref post_forward_tree, _) = edits[i];
+                let step_post = edits[i - 1].2;
+                match analysis_inverse_op(op) {
+                    Some(inv) => self.analysis_streams.invalidate_through_op(
+                        &inv,
+                        post_forward_tree,
+                        step_post,
+                        sample_rate,
+                    ),
+                    None => {
+                        self.analysis_streams.clear();
+                        return;
+                    }
+                }
+            }
+        }
+
+        let expected_hops = if post_frames == 0 || hop == 0 {
+            0
+        } else {
+            ((post_frames as usize) + hop - 1) / hop
+        };
+        if let Some(series) = self.analysis_streams.spectral() {
+            if series.has_data() && series.hop_count(0) != expected_hops {
+                self.analysis_streams.clear();
+                return;
+            }
+        }
+        if let Some(series) = self.analysis_streams.float(AnalysisKind::EnvelopePeak) {
+            let bins = series.channels.first().map(|ch| ch.len()).unwrap_or(0);
+            if series.has_data() && bins != expected_hops {
+                self.analysis_streams.clear();
+            }
+        }
+    }
+
+    fn reset_analysis_job_scratch(&mut self) {
         self.minmax_op = None;
         self.envelope_op = None;
         self.spectral_op = None;
@@ -1973,6 +2065,11 @@ impl Composition {
         &mut self.analysis_streams
     }
 
+    /// Frames remaining in the active analysis job target (for progress / tests).
+    pub fn analysis_target_total(&self) -> u64 {
+        self.analysis_target_total
+    }
+
     /// Fill overview columns from the envelope-peak stream when present.
     pub fn fill_envelope_columns(
         &self,
@@ -1991,6 +2088,7 @@ impl Composition {
         }
         let bins = &series.channels[channel];
         let hop = series.hop.max(1) as f64;
+        let hop_usize = series.hop.max(1);
         let covered = series.covered_hops().min(bins.len());
         for (i, slot) in dest.iter_mut().enumerate() {
             let a = start + i as f64 * samples_per_pixel;
@@ -2002,10 +2100,16 @@ impl Composition {
                 continue;
             }
             let mut max = 0.0f32;
-            for &v in &bins[start_bin..end_bin] {
-                max = max.max(v);
+            let mut any = false;
+            for bin in start_bin..end_bin {
+                let frame = bin as u64 * hop_usize as u64;
+                if series.is_dirty_frame(frame) {
+                    continue;
+                }
+                max = max.max(bins[bin]);
+                any = true;
             }
-            *slot = max;
+            *slot = if any { max } else { 0.0 };
         }
     }
 
@@ -2013,6 +2117,7 @@ impl Composition {
     ///
     /// `dest.len()` must be a multiple of [`SPECTRAL_BAND_COUNT`]. Each pixel
     /// column stores low→high bands; overlapping hops contribute their max.
+    /// Dirty (not yet recomputed) hops are skipped so they paint as the floor.
     pub fn fill_spectral_columns(
         &self,
         channel: usize,
@@ -2035,6 +2140,7 @@ impl Composition {
         }
         let data = &series.channels[channel];
         let hop = series.hop.max(1) as f64;
+        let hop_usize = series.hop.max(1);
         let hop_count = series.hop_count(channel).min(series.covered_hops());
         if hop_count == 0 {
             return;
@@ -2049,9 +2155,13 @@ impl Composition {
             }
             let col = &mut dest[i * band_count..(i + 1) * band_count];
             for h in start_hop..end_hop {
-                let frame = &data[h * band_count..(h + 1) * band_count];
+                let frame = h as u64 * hop_usize as u64;
+                if series.is_dirty_frame(frame) {
+                    continue;
+                }
+                let frame_data = &data[h * band_count..(h + 1) * band_count];
                 for (band, slot) in col.iter_mut().enumerate() {
-                    *slot = slot.max(frame[band]);
+                    *slot = slot.max(frame_data[band]);
                 }
             }
         }
@@ -2068,32 +2178,60 @@ impl Composition {
         {
             let mut this = composition.write().unwrap();
             if !this.analysis_job_started {
-                if !this.analysis_target_configured {
-                    this.begin_analysis_target(None);
-                }
                 let sample_rate = this.sample_rate;
                 let channel_count = this.channel_count;
                 let frames = this.frames();
                 let hop = AnalysisStreams::envelope_hop();
-                let series = this.analysis_streams.ensure_float(
-                    AnalysisKind::EnvelopePeak,
-                    channel_count,
-                    hop,
-                );
                 let bins_needed = if frames == 0 {
                     0
                 } else {
                     ((frames as usize) + hop - 1) / hop
                 };
-                for ch in &mut series.channels {
-                    ch.clear();
-                    ch.resize(bins_needed, 0.0);
+                let use_dirty_target = {
+                    let series = this.analysis_streams.ensure_float(
+                        AnalysisKind::EnvelopePeak,
+                        channel_count,
+                        hop,
+                    );
+                    let regional_rebuild = !series.dirty_ranges.is_empty()
+                        && series.channels.iter().all(|ch| ch.len() == bins_needed);
+                    if regional_rebuild {
+                        Some(series.dirty_ranges.clone())
+                    } else {
+                        for ch in &mut series.channels {
+                            ch.clear();
+                            ch.resize(bins_needed, 0.0);
+                        }
+                        series.covered_frames = frames;
+                        series.dirty_ranges.clear();
+                        None
+                    }
+                };
+                if let Some(dirty) = use_dirty_target {
+                    if !this.analysis_target_configured {
+                        this.begin_analysis_target(Some(dirty));
+                    }
+                } else if !this.analysis_target_configured {
+                    this.begin_analysis_target(None);
                 }
-                series.covered_frames = 0;
+                // Align dirty holes with the job target (full, selection, or edit).
+                let targets = this.analysis_target_ranges.clone();
+                if let Some(series) = this.analysis_streams.float_mut(AnalysisKind::EnvelopePeak) {
+                    if series.dirty_ranges.is_empty() {
+                        series.dirty_ranges = targets;
+                    }
+                }
                 this.envelope_op = Some(EnvelopePeakOp::new(sample_rate, channel_count));
                 this.analysis_job_started = true;
             }
         }
+        let warmup_frames = {
+            let this = composition.read().unwrap();
+            match AnalysisKind::EnvelopePeak.recompute_scope(this.sample_rate) {
+                RecomputeScope::Regional(r) => r.warmup_frames,
+                RecomputeScope::FullTimeline => 0,
+            }
+        };
         let (channel_count, total, done, read_pos, take, range_start) = {
             let this = composition.read().unwrap();
             if this.analysis_target_done >= this.analysis_target_total {
@@ -2146,6 +2284,22 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_ratio(epoch, done, total.max(1));
         }
+
+        // Warmup lookback at the start of each target range.
+        let mut prime_planar: Option<Vec<Vec<f32>>> = None;
+        if read_pos == range_start && warmup_frames > 0 && range_start > 0 {
+            let prime_start = range_start.saturating_sub(warmup_frames);
+            let prime_len = (range_start - prime_start) as usize;
+            let mut planar = vec![vec![0.0; prime_len]; channel_count];
+            {
+                let this = composition.read().unwrap();
+                let mut dests: Vec<&mut [f32]> =
+                    planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+                this.read_planar(prime_start, prime_len as u64, &mut dests)?;
+            }
+            prime_planar = Some(planar);
+        }
+
         let mut planar = vec![vec![0.0; take]; channel_count];
         {
             let this = composition.read().unwrap();
@@ -2161,6 +2315,12 @@ impl Composition {
             let sample_rate = this.sample_rate;
             if read_pos == range_start {
                 this.envelope_op = Some(EnvelopePeakOp::new(sample_rate, channel_count));
+                if let Some(prime) = prime_planar.as_ref() {
+                    let op = this.envelope_op.as_mut().expect("just created");
+                    for (ch, plane) in prime.iter().enumerate() {
+                        op.prime_channel(ch, plane);
+                    }
+                }
             }
             let hop = AnalysisStreams::envelope_hop();
             let mut hop_bins = vec![Vec::new(); channel_count];
@@ -2204,16 +2364,9 @@ impl Composition {
                         }
                     }
                 }
-                if complete {
-                    series.covered_frames = frames;
-                } else {
-                    // Progressive consume: expose hops written so far.
-                    series.covered_frames = series.covered_frames.max(
-                        ((base_hop + hop_bins.iter().map(|b| b.len()).max().unwrap_or(0)) * hop)
-                            as u64,
-                    );
-                    series.covered_frames = series.covered_frames.min(frames);
-                }
+                let written_end = read_pos + take as u64;
+                series.clear_dirty_completed(read_pos, written_end.min(range_end));
+                series.covered_frames = frames;
             }
             if let Some(progress) = progress {
                 progress.set_ratio(epoch, done_now, total.max(1));
@@ -2243,30 +2396,52 @@ impl Composition {
         {
             let mut this = composition.write().unwrap();
             if !this.analysis_job_started {
-                // Spectral always covers the full timeline (like MinMax).
-                this.begin_analysis_target(None);
                 let sample_rate = this.sample_rate;
                 let channel_count = this.channel_count;
                 let frames = this.frames();
                 let hop = AnalysisStreams::spectral_hop();
                 let band_count = SPECTRAL_BAND_COUNT;
-                let series = this.analysis_streams.ensure_spectral(channel_count);
                 let hops_needed = if frames == 0 {
                     0
                 } else {
                     ((frames as usize) + hop - 1) / hop
                 };
-                for ch in &mut series.channels {
-                    ch.clear();
-                    ch.resize(hops_needed * band_count, SPECTRAL_DB_FLOOR);
-                }
-                series.covered_frames = 0;
-                series.hop = hop;
-                series.band_count = band_count;
+                let target_ranges = {
+                    let series = this.analysis_streams.ensure_spectral(channel_count);
+                    let regional_rebuild = !series.dirty_ranges.is_empty()
+                        && series.hop_count(0) == hops_needed
+                        && series.band_count == band_count;
+                    if regional_rebuild {
+                        series.dirty_ranges.clone()
+                    } else {
+                        for ch in &mut series.channels {
+                            ch.clear();
+                            ch.resize(hops_needed * band_count, SPECTRAL_DB_FLOOR);
+                        }
+                        series.covered_frames = frames;
+                        series.hop = hop;
+                        series.band_count = band_count;
+                        series.fft_size = field_audio_process::SPECTRAL_FFT_SIZE;
+                        series.dirty_ranges = if frames == 0 {
+                            Vec::new()
+                        } else {
+                            vec![(0, frames)]
+                        };
+                        series.dirty_ranges.clone()
+                    }
+                };
+                this.begin_analysis_target(Some(target_ranges));
                 this.spectral_op = Some(SpectralOp::new(sample_rate, channel_count));
                 this.analysis_job_started = true;
             }
         }
+        let warmup_frames = {
+            let this = composition.read().unwrap();
+            match AnalysisKind::Spectral.recompute_scope(this.sample_rate) {
+                RecomputeScope::Regional(r) => r.warmup_frames,
+                RecomputeScope::FullTimeline => 0,
+            }
+        };
         let (channel_count, total, done, read_pos, take, range_start) = {
             let this = composition.read().unwrap();
             if this.analysis_target_done >= this.analysis_target_total {
@@ -2319,6 +2494,21 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_ratio(epoch, done, total.max(1));
         }
+
+        let mut prime_planar: Option<Vec<Vec<f32>>> = None;
+        if read_pos == range_start && warmup_frames > 0 && range_start > 0 {
+            let prime_start = range_start.saturating_sub(warmup_frames);
+            let prime_len = (range_start - prime_start) as usize;
+            let mut planar = vec![vec![0.0; prime_len]; channel_count];
+            {
+                let this = composition.read().unwrap();
+                let mut dests: Vec<&mut [f32]> =
+                    planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+                this.read_planar(prime_start, prime_len as u64, &mut dests)?;
+            }
+            prime_planar = Some(planar);
+        }
+
         let mut planar = vec![vec![0.0; take]; channel_count];
         {
             let this = composition.read().unwrap();
@@ -2334,6 +2524,12 @@ impl Composition {
             let sample_rate = this.sample_rate;
             if read_pos == range_start {
                 this.spectral_op = Some(SpectralOp::new(sample_rate, channel_count));
+                if let Some(prime) = prime_planar.as_ref() {
+                    let op = this.spectral_op.as_mut().expect("just created");
+                    for (ch, plane) in prime.iter().enumerate() {
+                        op.prime_channel(ch, plane);
+                    }
+                }
             }
             let hop = AnalysisStreams::spectral_hop();
             let band_count = SPECTRAL_BAND_COUNT;
@@ -2378,19 +2574,9 @@ impl Composition {
                         }
                     }
                 }
-                if complete {
-                    series.covered_frames = frames;
-                } else {
-                    let emitted = hop_frames
-                        .iter()
-                        .map(|p| p.len() / band_count)
-                        .max()
-                        .unwrap_or(0);
-                    series.covered_frames = series
-                        .covered_frames
-                        .max(((base_hop + emitted) * hop) as u64)
-                        .min(frames);
-                }
+                let written_end = read_pos + take as u64;
+                series.clear_dirty_completed(read_pos, written_end.min(range_end));
+                series.covered_frames = frames;
             }
             if let Some(progress) = progress {
                 progress.set_ratio(epoch, done_now, total.max(1));
@@ -4011,6 +4197,293 @@ mod tests {
         let mut columns = vec![0.0f32; 8 * SPECTRAL_BAND_COUNT];
         comp.fill_spectral_columns(0, 0.0, 256.0, &mut columns);
         assert!(columns.iter().any(|&v| v > SPECTRAL_DB_FLOOR + 1.0));
+    }
+
+    fn run_spectral_to_complete(lock: &std::sync::RwLock<Composition>) {
+        loop {
+            match Composition::build_next_analysis_block(lock, AnalysisKind::Spectral, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+    }
+
+    #[test]
+    fn spectral_delete_keeps_distant_hops_and_scopes_rebuild() {
+        use field_audio_process::{SPECTRAL_BAND_COUNT, SPECTRAL_FFT_SIZE};
+        use std::f32::consts::PI;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = (BLOCK_FRAMES as usize) * 2 + 4_096;
+        let freq = 1_000.0f32;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (2.0 * PI * freq * i as f32 / rate as f32).sin())
+            .collect();
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        run_spectral_to_complete(&lock);
+
+        let hop = PEAK_BLOCK;
+        let bands = SPECTRAL_BAND_COUNT;
+        let far_hop = 2usize;
+        let far_value = {
+            let series = lock
+                .read()
+                .unwrap()
+                .analysis_streams()
+                .spectral()
+                .unwrap()
+                .clone();
+            series.channels[0][far_hop * bands]
+        };
+
+        let delete_start = frames as u64 / 2;
+        let delete_len = 500u64;
+        {
+            let mut comp = lock.write().unwrap();
+            comp.delete(delete_start, delete_len);
+            assert!(
+                comp.spectral_has_data(),
+                "edit must not wipe spectral stream"
+            );
+            assert!(comp.needs_spectral_build());
+            let series = comp.analysis_streams().spectral().unwrap();
+            assert_eq!(series.channels[0][far_hop * bands], far_value);
+            let radius = (SPECTRAL_FFT_SIZE - PEAK_BLOCK) as u64;
+            let dirty_total: u64 = series
+                .dirty_ranges
+                .iter()
+                .map(|(s, e)| e.saturating_sub(*s))
+                .sum();
+            let expected_max = delete_len + 2 * radius + hop as u64 * 2;
+            assert!(
+                dirty_total <= expected_max,
+                "dirty {dirty_total} should be edit-sized (≤ {expected_max})"
+            );
+        }
+
+        // First job block configures the target from dirty ranges.
+        let first =
+            Composition::build_next_analysis_block(&lock, AnalysisKind::Spectral, None, 0).unwrap();
+        assert_ne!(first, AnalysisBlockOutcome::Cancelled);
+        {
+            let comp = lock.read().unwrap();
+            let radius = (SPECTRAL_FFT_SIZE - PEAK_BLOCK) as u64;
+            let expected_max = delete_len + 2 * radius + hop as u64 * 4;
+            assert!(
+                comp.analysis_target_total() <= expected_max,
+                "target {} should be edit-sized (≤ {})",
+                comp.analysis_target_total(),
+                expected_max
+            );
+            assert!(
+                comp.analysis_target_total() < frames as u64 / 2,
+                "must not rescan the whole composition"
+            );
+        }
+        run_spectral_to_complete(&lock);
+        let comp = lock.read().unwrap();
+        assert!(!comp.needs_spectral_build());
+        let series = comp.analysis_streams().spectral().unwrap();
+        assert_eq!(series.channels[0][far_hop * bands], far_value);
+    }
+
+    #[test]
+    fn spectral_cut_keeps_data_and_marks_join_dirty() {
+        use field_audio_process::SPECTRAL_BAND_COUNT;
+        use std::f32::consts::PI;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = (BLOCK_FRAMES as usize) + 8_192;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / rate as f32).sin())
+            .collect();
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        run_spectral_to_complete(&lock);
+
+        let bands = SPECTRAL_BAND_COUNT;
+        let far_hop = 1usize;
+        let far_value = lock
+            .read()
+            .unwrap()
+            .analysis_streams()
+            .spectral()
+            .unwrap()
+            .channels[0][far_hop * bands];
+
+        {
+            let mut comp = lock.write().unwrap();
+            // Unaligned cut mid-timeline.
+            comp.cut(3_100, 800);
+            assert!(comp.spectral_has_data());
+            assert!(comp.needs_spectral_build());
+            let series = comp.analysis_streams().spectral().unwrap();
+            assert_eq!(series.channels[0][far_hop * bands], far_value);
+            assert!(!series.dirty_ranges.is_empty());
+        }
+        run_spectral_to_complete(&lock);
+        assert!(!lock.read().unwrap().needs_spectral_build());
+    }
+
+    #[test]
+    fn spectral_paste_inserts_dirty_hole() {
+        use std::f32::consts::PI;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = (BLOCK_FRAMES as usize) + 4_096;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (2.0 * PI * 880.0 * i as f32 / rate as f32).sin())
+            .collect();
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        run_spectral_to_complete(&lock);
+
+        {
+            let mut comp = lock.write().unwrap();
+            comp.copy(0, 1_024);
+            let before = comp.frames();
+            comp.paste(before / 2).unwrap();
+            assert!(comp.frames() > before);
+            assert!(comp.spectral_has_data());
+            assert!(comp.needs_spectral_build());
+            let series = comp.analysis_streams().spectral().unwrap();
+            let dirty: u64 = series
+                .dirty_ranges
+                .iter()
+                .map(|(s, e)| e.saturating_sub(*s))
+                .sum();
+            assert!(dirty > 0);
+            assert!(
+                dirty < before,
+                "paste dirty should not cover the whole file"
+            );
+        }
+        run_spectral_to_complete(&lock);
+        assert!(!lock.read().unwrap().needs_spectral_build());
+    }
+
+    #[test]
+    fn spectral_jump_to_earlier_edit_keeps_distant_hops() {
+        use field_audio_process::SPECTRAL_BAND_COUNT;
+        use std::f32::consts::PI;
+        use std::sync::RwLock;
+
+        let rate = 8_000u32;
+        let frames = (BLOCK_FRAMES as usize) * 2 + 4_096;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (2.0 * PI * 660.0 * i as f32 / rate as f32).sin())
+            .collect();
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        run_spectral_to_complete(&lock);
+
+        let bands = SPECTRAL_BAND_COUNT;
+        let far_hop = 2usize;
+        let (init_id, far_value) = {
+            let comp = lock.read().unwrap();
+            let init = comp.edits()[0].id;
+            let far = comp.analysis_streams().spectral().unwrap().channels[0][far_hop * bands];
+            (init, far)
+        };
+
+        {
+            let mut comp = lock.write().unwrap();
+            let mid = comp.frames() / 2;
+            comp.delete(mid, 400);
+        }
+        run_spectral_to_complete(&lock);
+        {
+            let mut comp = lock.write().unwrap();
+            let mid2 = comp.frames() / 2;
+            comp.delete(mid2 + 2_000, 300);
+        }
+        run_spectral_to_complete(&lock);
+
+        {
+            let mut comp = lock.write().unwrap();
+            assert!(comp.jump_to_edit(init_id));
+            assert_eq!(comp.frames(), frames as u64);
+            assert!(
+                comp.spectral_has_data(),
+                "history jump must not wipe the spectral stream"
+            );
+            let series = comp.analysis_streams().spectral().unwrap();
+            assert_eq!(series.channels[0][far_hop * bands], far_value);
+            // Inverse deletes re-dirty the restored neighborhoods; rebuild is
+            // still regional, not a full-timeline wipe.
+            assert!(comp.needs_spectral_build());
+            let dirty: u64 = series
+                .dirty_ranges
+                .iter()
+                .map(|(s, e)| e.saturating_sub(*s))
+                .sum();
+            assert!(
+                dirty < frames as u64 / 2,
+                "jump dirty {dirty} should stay well below half the timeline"
+            );
+        }
+        run_spectral_to_complete(&lock);
+        assert!(!lock.read().unwrap().needs_spectral_build());
+    }
+
+    #[test]
+    fn envelope_delete_keeps_distant_bins() {
+        use std::sync::RwLock;
+
+        let rate = 1_000u32;
+        let frames = 8_000usize;
+        let mut samples = vec![0.0f32; frames];
+        samples[100] = 1.0;
+        samples[4_000] = 1.0;
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let lock = RwLock::new(Composition::from_media(media).unwrap());
+        loop {
+            match Composition::build_next_analysis_block(&lock, AnalysisKind::EnvelopePeak, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+        let far_bin = 0usize;
+        let far_value = lock
+            .read()
+            .unwrap()
+            .analysis_streams()
+            .float(AnalysisKind::EnvelopePeak)
+            .unwrap()
+            .channels[0][far_bin];
+
+        {
+            let mut comp = lock.write().unwrap();
+            comp.delete(3_500, 200);
+            assert!(comp.envelope_peak_has_data());
+            assert!(comp.needs_envelope_peak_build());
+            let series = comp
+                .analysis_streams()
+                .float(AnalysisKind::EnvelopePeak)
+                .unwrap();
+            assert_eq!(series.channels[0][far_bin], far_value);
+            assert!(!series.dirty_ranges.is_empty());
+        }
+        loop {
+            match Composition::build_next_analysis_block(&lock, AnalysisKind::EnvelopePeak, None, 0)
+                .unwrap()
+            {
+                AnalysisBlockOutcome::Progress => {}
+                AnalysisBlockOutcome::Complete => break,
+                AnalysisBlockOutcome::Cancelled => panic!("unexpected cancel"),
+            }
+        }
+        assert!(!lock.read().unwrap().needs_envelope_peak_build());
     }
 
     #[test]

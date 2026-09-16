@@ -2992,17 +2992,11 @@ impl AppView {
             return;
         }
         if matches!(kind, AnalysisKind::EnvelopePeak | AnalysisKind::Transients) {
+            // Menu Analyze snapshots the target (honoring Selection Only). Pull
+            // rebuilds after edits leave this unset so the job can use dirty
+            // neighborhoods (or the full timeline) instead of the selection.
             let ranges = match views.document.read(cx).take_pending_analysis_target() {
                 Some(snapshotted) => snapshotted,
-                None if views.document.read(cx).analyze_selection_only => {
-                    let spans = views.document.read(cx).selection_spans();
-                    Some(
-                        spans
-                            .into_iter()
-                            .map(|(start, len)| (start, start.saturating_add(len)))
-                            .collect::<Vec<_>>(),
-                    )
-                }
                 None => None,
             };
             // Selection Only with an empty selection: nothing to analyze.

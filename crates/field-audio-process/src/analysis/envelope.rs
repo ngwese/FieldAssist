@@ -50,6 +50,16 @@ impl EnvelopePeakOp {
         self.sample_rate
     }
 
+    /// Settle the follower without emitting bins (regional job lookback).
+    pub fn prime_channel(&mut self, channel: usize, samples: &[f32]) {
+        let detector = &mut self.detectors[channel];
+        for &sample in samples {
+            let _ = detector.next([sample]);
+        }
+        self.hop_acc[channel] = 0.0;
+        self.hop_count[channel] = 0;
+    }
+
     /// Consume planar channel samples and append hop bins to `out`.
     pub fn consume_channel(&mut self, channel: usize, samples: &[f32], out: &mut Vec<f32>) {
         let detector = &mut self.detectors[channel];

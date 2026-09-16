@@ -18,6 +18,24 @@ pub use transient::TransientDetectOp;
 
 use field_audio_model::NewMarker;
 
+/// How far beyond an edited range an op must rewrite for continuity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionalRecompute {
+    /// Output frames on each side of the edited range that must be rewritten.
+    pub radius_frames: u64,
+    /// Extra input frames consumed before the first rewritten hop (not emitted).
+    pub warmup_frames: u64,
+}
+
+/// Whether an analysis op needs a full-timeline pass or only dirty neighborhoods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecomputeScope {
+    /// Drop the stream and rebuild the whole timeline (or leave markers alone).
+    FullTimeline,
+    /// Splice hop streams and rebuild radius-padded dirty ranges only.
+    Regional(RegionalRecompute),
+}
+
 /// Stable id for a built-in analysis operation / stream kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnalysisKind {
@@ -49,6 +67,31 @@ impl AnalysisKind {
             Self::EnvelopePeak => "building envelope",
             Self::Transients => "detecting transients",
             Self::Spectral => "building spectrum",
+        }
+    }
+
+    /// How this op invalidates and rebuilds after sample-changing edits.
+    pub fn recompute_scope(self, sample_rate: u32) -> RecomputeScope {
+        match self {
+            Self::MinMax => RecomputeScope::Regional(RegionalRecompute {
+                radius_frames: 0,
+                warmup_frames: 0,
+            }),
+            Self::EnvelopePeak => {
+                let warmup = ((EnvelopePeakOp::RELEASE_SECS * sample_rate as f32) as u64).max(1);
+                RecomputeScope::Regional(RegionalRecompute {
+                    radius_frames: warmup,
+                    warmup_frames: warmup,
+                })
+            }
+            Self::Transients => RecomputeScope::FullTimeline,
+            Self::Spectral => {
+                let lookback = (SPECTRAL_FFT_SIZE.saturating_sub(PEAK_BLOCK)) as u64;
+                RecomputeScope::Regional(RegionalRecompute {
+                    radius_frames: lookback,
+                    warmup_frames: lookback,
+                })
+            }
         }
     }
 }

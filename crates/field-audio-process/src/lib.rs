@@ -22,8 +22,9 @@ mod synth;
 
 pub use analysis::{
     build_peaks, fold_minmax_bins, min_max_in_range, spectral_band_for_freq, AnalysisCtx,
-    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, SpectralOp, TransientDetectOp,
-    PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ,
+    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, RegionalRecompute,
+    SpectralOp, TransientDetectOp, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+    SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ,
 };
 pub use resample::resample_planar;
 pub use synth::{

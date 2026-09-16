@@ -105,6 +105,29 @@ impl SpectralOp {
         self.sample_rate
     }
 
+    /// Frames of lookback needed before a hop-aligned mid-timeline consume.
+    ///
+    /// Equals `fft_size - hop` so the first emitted hop after priming matches a
+    /// full left-to-right pass at that timeline position.
+    pub fn warmup_frames(&self) -> usize {
+        self.fft_size.saturating_sub(self.hop)
+    }
+
+    /// Fill the STFT ring without emitting frames (regional job lookback).
+    ///
+    /// Prefer a hop-aligned prime length so `hop_fill == 0` when consume starts.
+    pub fn prime_channel(&mut self, channel: usize, samples: &[f32]) {
+        for &sample in samples {
+            let ch = &mut self.channels[channel];
+            ch.ring[ch.ring_pos] = sample;
+            ch.ring_pos = (ch.ring_pos + 1) % self.fft_size;
+            ch.hop_fill += 1;
+            if ch.hop_fill >= self.hop {
+                ch.hop_fill = 0;
+            }
+        }
+    }
+
     /// Consume channel samples and append packed hop×band dB values to `out`.
     pub fn consume_channel(&mut self, channel: usize, samples: &[f32], out: &mut Vec<f32>) {
         for &sample in samples {
@@ -236,5 +259,51 @@ mod tests {
             (peak_band as i32 - expected as i32).abs() <= 2,
             "peak band {peak_band} expected near {expected}; frame={frame:?}"
         );
+    }
+
+    #[test]
+    fn prime_then_consume_matches_full_pass_at_midpoint() {
+        let sr = 8_000u32;
+        let freq = 1_000.0f32;
+        let frames = SPECTRAL_FFT_SIZE * 8;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (2.0 * PI * freq * i as f32 / sr as f32).sin())
+            .collect();
+
+        let mut full = SpectralOp::new(sr, 1);
+        let mut full_out = Vec::new();
+        full.consume_channel(0, &samples, &mut full_out);
+        full.flush_channel(0, &mut full_out);
+
+        let hop = PEAK_BLOCK;
+        let warmup = SPECTRAL_FFT_SIZE - hop;
+        // Hop-aligned mid-timeline start after enough lookback.
+        let dirty_start = ((warmup + hop - 1) / hop) * hop + hop * 4;
+        let dirty_end = dirty_start + hop * 8;
+        assert!(dirty_end <= frames);
+
+        let mut regional = SpectralOp::new(sr, 1);
+        regional.prime_channel(0, &samples[dirty_start - warmup..dirty_start]);
+        let mut regional_out = Vec::new();
+        regional.consume_channel(0, &samples[dirty_start..dirty_end], &mut regional_out);
+
+        let start_hop = dirty_start / hop;
+        let end_hop = dirty_end / hop;
+        let expected_hops = end_hop - start_hop;
+        assert_eq!(regional_out.len() / SPECTRAL_BAND_COUNT, expected_hops);
+
+        for i in 0..expected_hops {
+            let full_base = (start_hop + i) * SPECTRAL_BAND_COUNT;
+            let reg_base = i * SPECTRAL_BAND_COUNT;
+            let full_frame = &full_out[full_base..full_base + SPECTRAL_BAND_COUNT];
+            let reg_frame = &regional_out[reg_base..reg_base + SPECTRAL_BAND_COUNT];
+            assert_eq!(
+                full_frame,
+                reg_frame,
+                "hop {} (timeline hop {}) mismatch",
+                i,
+                start_hop + i
+            );
+        }
     }
 }

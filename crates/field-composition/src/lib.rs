@@ -28,15 +28,18 @@ mod edit_ranges;
 mod edl;
 mod tree;
 
-pub use analysis_store::{AnalysisStreams, FloatStreamSeries, SpectralStreamSeries};
+pub use analysis_store::{
+    analysis_dirty_seeds, expand_frame_ranges, hop_align_frame_ranges, merge_frame_ranges,
+    subtract_frame_range, AnalysisStreams, FloatStreamSeries, FrameRange, SpectralStreamSeries,
+};
 pub use clip::{Clip, ClipCache, ClipId, ClipMarker, ClipMarkerId, ClipSource, ClipSpan};
 pub use composition::{
     is_facomp_path, normalize_facomp_file_name, AnalysisBlockOutcome, Clipboard, Composition,
     FramesIter, PeakBlockOutcome,
 };
 pub use edit_ranges::{
-    map_inclusive_through_inverse, map_inclusive_through_op, map_point_if_kept,
-    map_point_if_kept_inverse, map_point_through_inverse, map_point_through_op,
+    analysis_inverse_op, map_inclusive_through_inverse, map_inclusive_through_op,
+    map_point_if_kept, map_point_if_kept_inverse, map_point_through_inverse, map_point_through_op,
 };
 pub use edl::{
     CompositionId, Edit, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile,

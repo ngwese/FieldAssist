@@ -13,6 +13,8 @@
 | 5 | 2026-09-15 | MinMaxOp; analysis ops split into per-file module |
 | 6 | 2026-09-15 | Peaks + Spectrum combined representation |
 | 7 | 2026-09-16 | Waveform representation is app-global |
+| 8 | 2026-09-16 | Regional stream invalidation; op-declared recompute radius |
+| 9 | 2026-09-16 | History jumps splice streams via EDL snapshots |
 
 Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
 `dasp_envelope` follower), **Mark → Transients** (pink Transient markers), and
@@ -143,9 +145,40 @@ An operation may produce any mix of the following:
 Peaks today live on in-memory `ClipCache` and split with clips. That is the
 shipping **stream cache** for overview paint, not a second on-disk format.
 
-**Invalidation:** timeline edits that change samples in an analyzed range drop
-derived streams (rebuild peaks as today). Analysis-owned markers and regions
-are **not** auto-rewritten; the user (or a script) re-runs the operation.
+**Invalidation:** sample-changing edits splice hop-aligned composition streams
+(envelope, spectral) through the edit and mark a **radius-padded dirty
+neighborhood** that the next pull job rebuilds. Ops declare a
+`RecomputeScope`: regional ops (Spectral, Envelope Peak, MinMax) keep valid
+hops outside the hole; full-timeline ops drop their stream. Peaks remain
+clip-local (split/reuse on the clip tree; no composition-stream splice).
+Analysis-owned markers and regions are **not** auto-rewritten; the user (or a
+script) re-runs the operation. Multi-edit history jumps splice streams through
+each EDL step (using per-edit snapshots for intermediate lengths); they clear
+only when an inverse cannot be expressed (for example undoing Trim) or the hop
+buffer shape no longer matches the destination timeline.
+
+### Regional recompute
+
+Each built-in op exposes how far beyond an edited range it must rewrite for
+continuity with a previous pass:
+
+| Kind | Scope | Radius / warmup |
+| --- | --- | --- |
+| MinMax | Regional (clip caches) | 0 — non-overlapping fold |
+| Spectral | Regional | `FFT − hop` (768 frames) lookback and output pad |
+| Envelope Peak | Regional | ~300 ms release window at the composition rate |
+| Transients | FullTimeline (no auto rewrite) | — |
+
+Dirty seeds come from the edit’s landing/join ranges; the job reads
+`warmup_frames` of lookback to prime op state, then rewrites only the padded
+output spans. Unaligned hop splices reuse suffix bins with at most one hop of
+phase error (same tradeoff as clip peak caches).
+
+Stream ops advance coverage so the UI can **progressively consume** partial
+results: first builds expose a shrinking dirty prefix; later edits leave holes
+without resetting `covered_frames` to zero. Paint skips dirty hops (floor /
+zero) while valid hops outside the hole stay painted. `ensure_*` keeps
+requesting work until dirty ranges are empty.
 
 ## Built-in operations
 
@@ -170,11 +203,13 @@ marker type). Changing a parameter re-runs that job for the current target.
 **Envelope Peak** and **Transients** run from the Analyze menu (or when the
 envelope overlay is enabled and data is missing). **Spectral** runs when the
 Spectrum representation is selected and bins are missing (full timeline, all
-channels — Selection Only does not apply).
+channels — Selection Only does not apply). After an edit, Spectral and Envelope
+Peak rebuild only the radius-padded dirty neighborhood when a prior stream
+exists.
 
-Stream ops advance `covered_frames` after each pager block so the UI can
+Stream ops clear dirty ranges as pager blocks complete so the UI can
 **progressively consume** partial results: paint gates use “has data” while
-`ensure_*` keeps requesting work until coverage is complete.
+`ensure_*` keeps requesting work until dirty holes are gone.
 
 ### Spectral defaults
 
@@ -188,9 +223,10 @@ shipping spectral stream is a compact spectrogram:
 | Bands | **64 log-spaced** magnitude bands from ~20 Hz to Nyquist (average linear FFT bins into each band) |
 | Value | Magnitude → **dB**, clamped (−80…0 dBFS) as `f32` |
 | Scope | Full timeline, all channels |
+| Regional recompute | Continuity radius = `FFT − hop` (768); unaligned splice ≤1 hop |
 
-Streams are not written to `.facomp`. Sample-changing edits clear them with
-other analysis streams.
+Streams are not written to `.facomp`. Sample-changing edits splice them and
+mark dirty neighborhoods rather than wiping the whole series.
 
 ## User interface
 

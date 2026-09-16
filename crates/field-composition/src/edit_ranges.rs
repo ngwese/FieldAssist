@@ -150,6 +150,26 @@ fn invert_op(op: &EditOp) -> Option<EditOp> {
     }
 }
 
+/// Inverse edit for analysis stream splicing on undo.
+///
+/// Returns `None` when the stream must be cleared (e.g. undoing trim restores
+/// audio the hop cache no longer holds). Length-preserving ops
+/// ([`EditOp::Delete`], [`EditOp::Roll`]) are self-inverse for stream geometry.
+pub fn analysis_inverse_op(op: &EditOp) -> Option<EditOp> {
+    match op {
+        EditOp::Trim { .. } => None,
+        EditOp::Delete { start, len } => Some(EditOp::Delete {
+            start: *start,
+            len: *len,
+        }),
+        EditOp::Roll { at, delta } => Some(EditOp::Roll {
+            at: *at,
+            delta: -*delta,
+        }),
+        other => Some(invert_op(other).unwrap_or_else(|| other.clone())),
+    }
+}
+
 fn hole_for_op(op: &EditOp) -> Option<u64> {
     match op {
         EditOp::Cut { start, .. } | EditOp::Remove { start, .. } => Some(*start),
