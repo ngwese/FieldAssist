@@ -10,6 +10,7 @@
 | 2 | 2026-09-14 | Pull-based streams; Envelope Peak and Transient ops ship |
 | 3 | 2026-09-15 | Spectral stream + Spectrum waveform representation |
 | 4 | 2026-09-15 | Progressive stream coverage; spectrum tile textures |
+| 5 | 2026-09-15 | MinMaxOp; analysis ops split into per-file module |
 
 Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
 `dasp_envelope` follower), **Mark → Transients** (pink Transient markers), and

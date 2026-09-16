@@ -625,6 +625,7 @@ fn paint_region_endpoint(
     start_sample: f64,
     samples_per_pixel: f64,
     base_color: gpui_kit::Hsla,
+    edge_alpha: f32,
     window: &mut Window,
 ) {
     if !channels.applies_to(channel) {
@@ -643,7 +644,7 @@ fn paint_region_endpoint(
             origin: point(px(x), px(origin_y)),
             size: size(px(1.0), px(height)),
         },
-        region_tint(base_color, 0.2),
+        region_tint(base_color, edge_alpha),
     ));
 }
 
@@ -654,6 +655,8 @@ fn paint_region_overlay(
     start_sample: f64,
     samples_per_pixel: f64,
     base_color: gpui_kit::Hsla,
+    fill_alpha: f32,
+    edge_alpha: f32,
     window: &mut Window,
 ) {
     if !region.channels.applies_to(channel) {
@@ -676,7 +679,7 @@ fn paint_region_overlay(
             origin: point(px(left), px(origin_y)),
             size: size(px(width), px(height)),
         },
-        region_tint(base_color, 0.1),
+        region_tint(base_color, fill_alpha),
     ));
     paint_region_endpoint(
         bounds,
@@ -686,6 +689,7 @@ fn paint_region_overlay(
         start_sample,
         samples_per_pixel,
         base_color,
+        edge_alpha,
         window,
     );
     paint_region_endpoint(
@@ -696,6 +700,7 @@ fn paint_region_overlay(
         start_sample,
         samples_per_pixel,
         base_color,
+        edge_alpha,
         window,
     );
 }
@@ -917,6 +922,7 @@ fn paint_lane(
     start_sample: f64,
     samples_per_pixel: f64,
     color: gpui_kit::Hsla,
+    region_color: gpui_kit::Hsla,
     zero_color: gpui_kit::Hsla,
     hover_sample: Option<usize>,
     modified_ranges: &[(u64, u64)],
@@ -929,29 +935,6 @@ fn paint_lane(
     let height = bounds.size.height.as_f32();
     if width < 1.0 || height < 1.0 || channel >= WaveformDataProvider::channel_count(provider) {
         return;
-    }
-
-    for region in WaveformEditor::named_regions(provider) {
-        paint_region_overlay(
-            bounds,
-            &region,
-            channel,
-            start_sample,
-            samples_per_pixel,
-            color.opacity(0.55),
-            window,
-        );
-    }
-    for region in WaveformEditor::selection_regions(provider) {
-        paint_region_overlay(
-            bounds,
-            &region,
-            channel,
-            start_sample,
-            samples_per_pixel,
-            color,
-            window,
-        );
     }
 
     let origin_x = bounds.origin.x.as_f32();
@@ -1085,6 +1068,40 @@ fn paint_lane(
                 window,
             );
         }
+    }
+
+    // Regions after the body so opaque Spectrum tiles do not cover them.
+    let (region_fill_alpha, region_edge_alpha) =
+        if representation == WaveformRepresentation::Spectrum {
+            (0.2, 0.3)
+        } else {
+            (0.1, 0.2)
+        };
+    for region in WaveformEditor::named_regions(provider) {
+        paint_region_overlay(
+            bounds,
+            &region,
+            channel,
+            start_sample,
+            samples_per_pixel,
+            region_color.opacity(0.55),
+            region_fill_alpha,
+            region_edge_alpha,
+            window,
+        );
+    }
+    for region in WaveformEditor::selection_regions(provider) {
+        paint_region_overlay(
+            bounds,
+            &region,
+            channel,
+            start_sample,
+            samples_per_pixel,
+            region_color,
+            region_fill_alpha,
+            region_edge_alpha,
+            window,
+        );
     }
 
     paint_range_overlays(
@@ -1492,6 +1509,7 @@ where
                                     let document = document.clone();
                                     let entity = entity.clone();
                                     let color = channel_color(&theme, ch);
+                                    let region_color = channel_color(&theme, 0);
                                     let zero = theme.border;
                                     let channel_label =
                                         WaveformDataProvider::channel_label(document.read(cx), ch);
@@ -1626,6 +1644,7 @@ where
                                                                             start_sample,
                                                                             samples_per_pixel,
                                                                             color,
+                                                                            region_color,
                                                                             zero,
                                                                             hover_sample,
                                                                             &modified_ranges,

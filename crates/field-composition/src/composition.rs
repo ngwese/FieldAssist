@@ -14,7 +14,7 @@ use field_audio_model::{
     MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
 };
 use field_audio_process::{
-    fold_minmax_bins, AnalysisKind, AnalysisSink, EnvelopePeakOp, SpectralOp, TransientDetectOp,
+    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, SpectralOp, TransientDetectOp,
     PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
 };
 use field_core::{encode_file_url, ProgressHandle};
@@ -94,6 +94,8 @@ pub struct Composition {
     playback_channels: Option<Vec<usize>>,
     /// In-memory derived streams (envelope, …); not saved to `.facomp`.
     analysis_streams: AnalysisStreams,
+    /// Scratch min/max fold kept across pager blocks of one clip.
+    minmax_op: Option<MinMaxOp>,
     /// Scratch peak-envelope detector kept across pager blocks of one job.
     envelope_op: Option<EnvelopePeakOp>,
     /// Scratch STFT kept across pager blocks of one spectral job.
@@ -193,6 +195,7 @@ impl Composition {
             monitor_chain: None,
             playback_channels: None,
             analysis_streams: AnalysisStreams::default(),
+            minmax_op: None,
             envelope_op: None,
             spectral_op: None,
             transient_op: None,
@@ -257,6 +260,7 @@ impl Composition {
             monitor_chain: None,
             playback_channels: None,
             analysis_streams: AnalysisStreams::default(),
+            minmax_op: None,
             envelope_op: None,
             spectral_op: None,
             transient_op: None,
@@ -492,6 +496,7 @@ impl Composition {
             monitor_chain: self.monitor_chain.clone(),
             playback_channels: self.playback_channels.clone(),
             analysis_streams: AnalysisStreams::default(),
+            minmax_op: None,
             envelope_op: None,
             spectral_op: None,
             transient_op: None,
@@ -935,6 +940,7 @@ impl Composition {
 
     fn clear_analysis_scratch(&mut self) {
         self.analysis_streams.clear();
+        self.minmax_op = None;
         self.envelope_op = None;
         self.spectral_op = None;
         self.transient_op = None;
@@ -969,6 +975,7 @@ impl Composition {
         self.analysis_target_done = 0;
         self.analysis_job_started = false;
         self.analysis_target_configured = true;
+        self.minmax_op = None;
         self.envelope_op = None;
         self.spectral_op = None;
         self.transient_op = None;
@@ -1739,8 +1746,7 @@ impl Composition {
                 continue;
             }
             let mut peaks = vec![Vec::new(); self.channel_count];
-            let mut min = f32::MAX;
-            let mut max = f32::MIN;
+            let mut op = MinMaxOp::new(self.channel_count);
             let mut pos = 0u64;
             while pos < span.clip.len {
                 if progress.is_some_and(|p| !p.is_epoch(epoch)) {
@@ -1754,7 +1760,7 @@ impl Composition {
                     self.read_clip(span.clip.as_ref(), pos, take as u64, &mut dests, 0)?;
                 }
                 for (ch, dest) in planar.iter().enumerate() {
-                    fold_minmax_bins(dest, &mut peaks[ch], &mut min, &mut max);
+                    op.consume_channel(ch, dest, &mut peaks[ch]);
                     done += take as u64;
                 }
                 if let Some(progress) = progress {
@@ -1762,6 +1768,10 @@ impl Composition {
                 }
                 pos += take as u64;
             }
+            for (ch, bins) in peaks.iter_mut().enumerate() {
+                op.flush_channel(ch, bins);
+            }
+            let (min, max) = op.combined_global_min_max();
             let mut clip = (*span.clip).clone();
             clip.cache = super::clip::ClipCache {
                 min: if min <= max { Some(min) } else { None },
@@ -1854,24 +1864,38 @@ impl Composition {
         }
         let take = ((clip.len - pos) as usize).min(BLOCK_FRAMES as usize);
         let mut bins = vec![Vec::new(); channel_count];
-        let mut min = f32::MAX;
-        let mut max = f32::MIN;
+        let mut planar = vec![vec![0.0; take]; channel_count];
         {
             let this = composition.read().unwrap();
-            let mut planar = vec![vec![0.0; take]; channel_count];
-            {
-                let mut dests: Vec<&mut [f32]> =
-                    planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
-                this.read_clip(clip.as_ref(), pos, take as u64, &mut dests, 0)?;
-            }
-            for (ch, dest) in planar.iter().enumerate() {
-                fold_minmax_bins(dest, &mut bins[ch], &mut min, &mut max);
-            }
+            let mut dests: Vec<&mut [f32]> =
+                planar.iter_mut().map(|ch| ch.as_mut_slice()).collect();
+            this.read_clip(clip.as_ref(), pos, take as u64, &mut dests, 0)?;
         }
         {
             let mut this = composition.write().unwrap();
             if progress.is_some_and(|p| !p.is_epoch(epoch)) {
                 return Ok(AnalysisBlockOutcome::Cancelled);
+            }
+            let clip_done = pos + take as u64 >= clip.len;
+            if pos == 0 {
+                this.minmax_op = Some(MinMaxOp::new(channel_count));
+            }
+            let (min, max) = {
+                let op = this
+                    .minmax_op
+                    .get_or_insert_with(|| MinMaxOp::new(channel_count));
+                for (ch, dest) in planar.iter().enumerate() {
+                    op.consume_channel(ch, dest, &mut bins[ch]);
+                }
+                if clip_done {
+                    for (ch, out) in bins.iter_mut().enumerate() {
+                        op.flush_channel(ch, out);
+                    }
+                }
+                op.combined_global_min_max()
+            };
+            if clip_done {
+                this.minmax_op = None;
             }
             this.append_peak_chunk(&clip, bins, min, max);
             if let Some(progress) = progress {
@@ -2552,6 +2576,7 @@ impl Composition {
     /// Drop in-flight op scratch when a job is superseded. Leaves target
     /// ranges alone so a newer `begin_analysis_target` is not wiped.
     fn abandon_analysis_job_scratch(&mut self) {
+        self.minmax_op = None;
         self.envelope_op = None;
         self.spectral_op = None;
         self.transient_op = None;

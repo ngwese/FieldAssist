@@ -5,8 +5,8 @@
 
 //! # field-audio-process
 //!
-//! DSP helpers for FieldAssist: overview peak folding, analysis ops, and
-//! planar resampling.
+//! DSP helpers for FieldAssist: analysis ops (minmax peaks, envelope,
+//! transients, spectral) and planar resampling.
 //!
 //! ```
 //! use field_audio_process::{build_peaks, PEAK_BLOCK};
@@ -17,13 +17,11 @@
 //! ```
 
 mod analysis;
-mod peaks;
 mod resample;
 
 pub use analysis::{
-    fold_minmax_bins, spectral_band_for_freq, AnalysisCtx, AnalysisKind, AnalysisSink,
-    EnvelopePeakOp, SpectralOp, TransientDetectOp, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
-    SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ,
+    build_peaks, fold_minmax_bins, min_max_in_range, spectral_band_for_freq, AnalysisCtx,
+    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, SpectralOp, TransientDetectOp,
+    PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ,
 };
-pub use peaks::{build_peaks, min_max_in_range, PEAK_BLOCK};
 pub use resample::resample_planar;
