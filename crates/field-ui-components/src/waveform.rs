@@ -111,6 +111,10 @@ struct SpectrumTileKey {
 struct SpectrumTileCache {
     key: SpectrumTileKey,
     image: Arc<RenderImage>,
+    /// Raster width in pixels (always a full tile).
+    width_px: u32,
+    /// Raster height in pixels at cache time.
+    height_px: u32,
 }
 
 /// Multi-lane waveform display driven by host document traits.
@@ -1087,9 +1091,9 @@ fn paint_lane(
             WaveformDataProvider::ensure_spectral(provider);
         }
         if WaveformDataProvider::spectral_ready(provider) {
-            // While dragging the shared splitter, stretch existing tiles to
-            // the live pane height (same cheap path as a window resize paint
-            // with a warm cache) instead of rasterizing every mouse move.
+            // While dragging the shared splitter, reuse tiles and stretch them
+            // vertically to the live pane height. Horizontal size stays 1:1 and
+            // the pane bounds clip width so dock/window shrinks do not squash.
             paint_spectrum_body(
                 spectrum,
                 provider,
@@ -1341,8 +1345,7 @@ fn paint_spectrum_body<D>(
 
     for tile in 0..tile_count as u32 {
         let col0 = tile as usize * tile_w;
-        let tile_cols = (cols - col0).min(tile_w);
-        if tile_cols == 0 {
+        if col0 >= cols {
             continue;
         }
         let key = SpectrumTileKey {
@@ -1355,71 +1358,107 @@ fn paint_spectrum_body<D>(
             band_count,
         };
         let cache_key = (channel, tile);
-        let image = if let Some(hit) = tiles.get(&cache_key).filter(|c| c.key == key) {
-            hit.image.clone()
-        } else if stretch_height {
-            // Reuse a same-content tile and let paint_image scale it. Do not
-            // insert a height-mismatched entry so mouse-up can rebuild crisp.
-            if let Some(hit) = tiles
-                .get(&cache_key)
-                .filter(|c| spectrum_key_same_content(&c.key, &key))
-            {
-                hit.image.clone()
+        // Always rasterize a full tile width. Paint width 1:1 and let the
+        // spectrum pane `bounds` clip overflow so horizontal shrinks crop
+        // like peaks instead of squashing the last tile.
+        let (image, img_w, img_h) =
+            if let Some(hit) = tiles.get(&cache_key).filter(|c| c.key == key) {
+                (hit.image.clone(), hit.width_px, hit.height_px)
+            } else if stretch_height {
+                // Reuse same-content tiles while the peaks/spectrum splitter
+                // moves; do not cache a height-mismatched entry so mouse-up
+                // rebuilds crisp.
+                if let Some(hit) = tiles
+                    .get(&cache_key)
+                    .filter(|c| spectrum_key_same_content(&c.key, &key))
+                {
+                    (hit.image.clone(), hit.width_px, hit.height_px)
+                } else {
+                    let (image, img_w, img_h) = rasterize_full_spectrum_tile(
+                        provider,
+                        channel,
+                        start_sample,
+                        samples_per_pixel,
+                        col0,
+                        tile_w,
+                        band_count,
+                        height_u,
+                        db_floor,
+                    );
+                    tiles.insert(
+                        cache_key,
+                        SpectrumTileCache {
+                            key,
+                            image: image.clone(),
+                            width_px: img_w,
+                            height_px: img_h,
+                        },
+                    );
+                    (image, img_w, img_h)
+                }
             } else {
-                // Cold cache (e.g. drag before first paint): one raster is fine.
-                let mut packed = vec![db_floor; tile_cols * band_count];
-                let tile_start = start_sample + col0 as f64 * samples_per_pixel;
-                WaveformDataProvider::fill_spectral_columns(
+                let (image, img_w, img_h) = rasterize_full_spectrum_tile(
                     provider,
                     channel,
-                    tile_start,
+                    start_sample,
                     samples_per_pixel,
-                    &mut packed,
+                    col0,
+                    tile_w,
+                    band_count,
+                    height_u,
+                    db_floor,
                 );
-                let image =
-                    rasterize_spectrum_tile(&packed, tile_cols, band_count, height_u, db_floor);
                 tiles.insert(
                     cache_key,
                     SpectrumTileCache {
                         key,
                         image: image.clone(),
+                        width_px: img_w,
+                        height_px: img_h,
                     },
                 );
-                image
-            }
+                (image, img_w, img_h)
+            };
+        // Keep width at native tile pixels; only stretch height while the
+        // combined-view splitter is dragging.
+        let dest_h = if stretch_height {
+            height_u as f32
         } else {
-            let mut packed = vec![db_floor; tile_cols * band_count];
-            let tile_start = start_sample + col0 as f64 * samples_per_pixel;
-            WaveformDataProvider::fill_spectral_columns(
-                provider,
-                channel,
-                tile_start,
-                samples_per_pixel,
-                &mut packed,
-            );
-            let image = rasterize_spectrum_tile(&packed, tile_cols, band_count, height_u, db_floor);
-            tiles.insert(
-                cache_key,
-                SpectrumTileCache {
-                    key,
-                    image: image.clone(),
-                },
-            );
-            image
+            img_h as f32
         };
-        let tile_bounds = Bounds {
+        let image_bounds = Bounds {
             origin: point(px(origin_x + col0 as f32), px(origin_y)),
-            size: size(px(tile_cols as f32), px(height_u as f32)),
+            size: size(px(img_w as f32), px(dest_h)),
         };
-        let _ = window.paint_image(
-            tile_bounds,
-            tile_bounds,
-            Corners::default(),
-            image,
-            0,
-            false,
-        );
+        let _ = window.paint_image(bounds, image_bounds, Corners::default(), image, 0, false);
     }
+}
+
+fn rasterize_full_spectrum_tile<D>(
+    provider: &D,
+    channel: usize,
+    start_sample: f64,
+    samples_per_pixel: f64,
+    col0: usize,
+    tile_w: usize,
+    band_count: usize,
+    height_u: u32,
+    db_floor: f32,
+) -> (Arc<RenderImage>, u32, u32)
+where
+    D: WaveformDataProvider + WaveformEditor + ?Sized,
+{
+    let mut packed = vec![db_floor; tile_w * band_count];
+    let tile_start = start_sample + col0 as f64 * samples_per_pixel;
+    WaveformDataProvider::fill_spectral_columns(
+        provider,
+        channel,
+        tile_start,
+        samples_per_pixel,
+        &mut packed,
+    );
+    let image = rasterize_spectrum_tile(&packed, tile_w, band_count, height_u, db_floor);
+    (image, tile_w as u32, height_u)
 }
 
 fn spectrum_key_same_content(a: &SpectrumTileKey, b: &SpectrumTileKey) -> bool {
