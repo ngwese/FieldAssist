@@ -18,6 +18,7 @@
 
 mod analysis;
 mod resample;
+mod synth;
 
 pub use analysis::{
     build_peaks, fold_minmax_bins, min_max_in_range, spectral_band_for_freq, AnalysisCtx,
@@ -25,3 +26,7 @@ pub use analysis::{
     PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ,
 };
 pub use resample::resample_planar;
+pub use synth::{
+    chirp, dc, goertzel_power, impulse, left_impulse, max_abs_err, nyquist_square, rms, silence,
+    sine, sine_planar, sine_snr_db, tone_to_image_db, two_tone,
+};

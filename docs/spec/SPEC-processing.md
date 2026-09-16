@@ -7,6 +7,7 @@
 | Revision | Date | Notes |
 | --- | --- | --- |
 | 1 | 2026-09-11 | Initial draft of the processing layer |
+| 2 | 2026-09-16 | Playback prefetch SRC is bandlimited (not drop-sample) |
 
 This is a future product layer. The as-built application already has
 **monitor chains** (playback listen DSP) and **File → Render** (one-shot
@@ -52,7 +53,7 @@ Source media  →  composition EDL (clip tree, markers, regions)
 | Layer | Role | Today |
 | --- | --- | --- |
 | **Composition EDL** | Non-destructive timeline over source media | Shipping |
-| **Monitor chain** | Map whatever you are hearing (channel count, M/S, FOA, …) onto the playback device | Shipping. Unchanged by this spec |
+| **Monitor chain** | Map whatever you are hearing (channel count, M/S, FOA, …) onto the playback device. Direct bypasses Faust; bandlimited SRC still runs on the prefetch thread when source and device rates differ | Shipping. Unchanged by this spec |
 | **Analysis** | Gather extra information over the edited timeline | Peaks only; rest future ([SPEC-analysis.md](SPEC-analysis.md)) |
 | **Processing chain** | Ordered operations on a file or region for preview and export | Future |
 | **Render** | Encode the current composition (no chain, no monitor) | Shipping one-shot; batch export is future |

@@ -11,10 +11,12 @@
 //! - take **no** blocking locks (no waiting `Mutex` / `RwLock`)
 //! - perform **no** file I/O or decode
 //!
-//! Provider reads and sample-rate conversion run on the dedicated prefetch
-//! thread, which pushes **pre-monitor** device-rate interleaved source frames
-//! into a lock-free [`PrefetchRing`]. The callback pops those frames, runs
-//! monitor DSP, and writes the device buffer. See the crate-level `AGENTS.md`.
+//! Provider reads and **bandlimited** sample-rate conversion run on the
+//! dedicated prefetch thread, which pushes **pre-monitor** device-rate
+//! interleaved source frames into a lock-free [`PrefetchRing`]. Matched rates
+//! copy bit-exactly (no resampler). The callback pops those frames, runs
+//! monitor DSP (or Direct channel mapping), and writes the device buffer. See
+//! the crate-level `AGENTS.md`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -31,6 +33,7 @@ use super::faults::PlaybackFaults;
 use super::monitor::{map_direct, MonitorProcess};
 use super::prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 use super::provider::PlaybackDataProvider;
+use super::src_convert::StreamingSrc;
 use super::transport::TransportState;
 
 /// Faust `Meter/Input*` bargraphs floor at −90 dB; treat near-floor as quiet.
@@ -140,8 +143,12 @@ pub struct PlaybackShared {
 struct PrefetchScratch {
     read_buf: Vec<f32>,
     gathered: Vec<f32>,
+    /// Fractional source cursor used only on the matched-rate copy path.
     fill_pos_f: f64,
+    /// Integer source cursor advanced by the bandlimited SRC path.
+    fill_pos: usize,
     local_epoch: usize,
+    src: Option<StreamingSrc>,
 }
 
 impl PrefetchScratch {
@@ -150,8 +157,18 @@ impl PrefetchScratch {
             read_buf: Vec::new(),
             gathered: Vec::new(),
             fill_pos_f: 0.0,
+            fill_pos: 0,
             // Force the first chunk to sync from the public playhead.
             local_epoch: usize::MAX,
+            src: None,
+        }
+    }
+
+    fn sync_from_playhead(&mut self, sample: usize) {
+        self.fill_pos_f = sample as f64;
+        self.fill_pos = sample;
+        if let Some(src) = self.src.as_mut() {
+            src.reset();
         }
     }
 }
@@ -417,10 +434,15 @@ impl PlaybackShared {
     pub fn set_output_layout(&self, sample_rate: u32, channels: usize) {
         let sample_rate = sample_rate.max(1);
         let channels = channels.max(1);
+        let rate_changed = self.output_rate() != sample_rate;
         self.output_rate.store(sample_rate, Ordering::SeqCst);
         self.output_channels.store(channels, Ordering::SeqCst);
         // Ring carries pre-monitor source channels, not device channels.
         self.ensure_ring_and_scratch_for_source(self.provider.channel_count());
+        if rate_changed {
+            // Drop device-rate frames produced at the previous ratio.
+            self.bump_epoch();
+        }
         if let Some(monitor) = self.monitor_process() {
             monitor.set_output_sample_rate(sample_rate);
         }
@@ -493,7 +515,7 @@ impl PlaybackShared {
         let epoch = self.epoch.load(Ordering::SeqCst);
         if scratch.local_epoch != epoch {
             scratch.local_epoch = epoch;
-            scratch.fill_pos_f = self.position.load(Ordering::SeqCst) as f64;
+            scratch.sync_from_playhead(self.position.load(Ordering::SeqCst));
             self.ring.load_full().discard_unread();
             self.timeline_ended.store(false, Ordering::SeqCst);
         }
@@ -524,6 +546,44 @@ impl PlaybackShared {
         let looping = self.looping.load(Ordering::SeqCst);
         let src_rate = self.provider.sample_rate().max(1);
         let out_rate = self.output_rate().max(1);
+
+        if src_rate == out_rate {
+            self.prefetch_matched_rate(
+                scratch,
+                &ring,
+                src_ch,
+                end,
+                start_bound,
+                looping,
+                src_rate,
+                out_rate,
+            )
+        } else {
+            self.prefetch_resampled(
+                scratch,
+                &ring,
+                src_ch,
+                end,
+                start_bound,
+                looping,
+                src_rate,
+                out_rate,
+            )
+        }
+    }
+
+    fn prefetch_matched_rate(
+        &self,
+        scratch: &mut PrefetchScratch,
+        ring: &PrefetchRing,
+        src_ch: usize,
+        end: usize,
+        start_bound: usize,
+        looping: bool,
+        src_rate: u32,
+        out_rate: u32,
+    ) -> bool {
+        scratch.src = None;
         let step = src_rate as f64 / f64::from(out_rate);
 
         let need_gather = PREFETCH_CHUNK_FRAMES * src_ch;
@@ -541,6 +601,7 @@ impl PlaybackShared {
             if source_pos > end {
                 if looping && end > start_bound {
                     scratch.fill_pos_f = start_bound as f64;
+                    scratch.fill_pos = start_bound;
                     buf_frames = 0;
                     continue;
                 }
@@ -584,6 +645,7 @@ impl PlaybackShared {
             }
             produced += 1;
             scratch.fill_pos_f += step;
+            scratch.fill_pos = scratch.fill_pos_f as usize;
         }
 
         if produced == 0 {
@@ -602,6 +664,149 @@ impl PlaybackShared {
 
         if reached_end && !looping {
             self.timeline_ended.store(true, Ordering::SeqCst);
+        }
+        pushed > 0
+    }
+
+    fn prefetch_resampled(
+        &self,
+        scratch: &mut PrefetchScratch,
+        ring: &PrefetchRing,
+        src_ch: usize,
+        end: usize,
+        start_bound: usize,
+        looping: bool,
+        src_rate: u32,
+        out_rate: u32,
+    ) -> bool {
+        let needs_new = scratch
+            .src
+            .as_ref()
+            .map(|s| !s.matches(src_rate, out_rate, src_ch))
+            .unwrap_or(true);
+        if needs_new {
+            match StreamingSrc::new(src_rate, out_rate, src_ch) {
+                Ok(src) => scratch.src = Some(src),
+                Err(err) => {
+                    eprintln!("playback SRC init failed: {err:#}");
+                    return false;
+                }
+            }
+        }
+
+        // If the cursor is already past the end, wrap or finish before reading.
+        if scratch.fill_pos > end {
+            if looping && end > start_bound {
+                scratch.sync_from_playhead(start_bound);
+            } else {
+                self.timeline_ended.store(true, Ordering::SeqCst);
+                return false;
+            }
+        }
+
+        let need_in = scratch
+            .src
+            .as_ref()
+            .map(|s| s.input_frames_next())
+            .unwrap_or(0);
+        let out_next = scratch
+            .src
+            .as_ref()
+            .map(|s| s.output_frames_next())
+            .unwrap_or(0);
+        if out_next == 0 {
+            return false;
+        }
+
+        let need_in_samples = need_in.saturating_mul(src_ch);
+        if need_in_samples > 0 {
+            if scratch.read_buf.len() < need_in_samples {
+                scratch.read_buf.resize(need_in_samples, 0.0);
+            }
+            scratch.read_buf[..need_in_samples].fill(0.0);
+        }
+
+        let mut reached_end = false;
+        let mut frames_read = 0usize;
+        let mut source_pos = scratch.fill_pos;
+
+        while frames_read < need_in {
+            if source_pos > end {
+                reached_end = true;
+                break;
+            }
+            let remaining = end.saturating_add(1).saturating_sub(source_pos);
+            let take = remaining
+                .min(need_in - frames_read)
+                .min(PLAYBACK_READ_FRAMES)
+                .max(1);
+            let dest = frames_read * src_ch;
+            let n = take * src_ch;
+            let read_started = Instant::now();
+            self.provider
+                .read_interleaved(source_pos, take, &mut scratch.read_buf[dest..dest + n]);
+            let read_ns = read_started.elapsed().as_nanos() as u64;
+            self.provider_reads.fetch_add(1, Ordering::Relaxed);
+            self.total_provider_read_ns
+                .fetch_add(read_ns, Ordering::Relaxed);
+            self.max_provider_read_ns
+                .fetch_max(read_ns, Ordering::Relaxed);
+            frames_read += take;
+            source_pos = source_pos.saturating_add(take);
+        }
+
+        // Always present `need_in` frames to the resampler (zero-pad at EOF).
+        // When need_in is 0, process still runs to flush buffered device frames.
+        let feed_frames = need_in;
+
+        let need_gather = PREFETCH_CHUNK_FRAMES.saturating_mul(src_ch);
+        if scratch.gathered.len() < need_gather {
+            scratch.gathered.resize(need_gather, 0.0);
+        }
+
+        let (consumed, written) = {
+            let Some(src) = scratch.src.as_mut() else {
+                return false;
+            };
+            match src.process(&scratch.read_buf, feed_frames, &mut scratch.gathered) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    eprintln!("playback SRC failed: {err:#}");
+                    return false;
+                }
+            }
+        };
+
+        // Advance by what the resampler consumed from real source (not EOF pad).
+        let advanced = consumed.min(frames_read);
+        scratch.fill_pos = scratch.fill_pos.saturating_add(advanced);
+        if scratch.fill_pos > end.saturating_add(1) {
+            scratch.fill_pos = end.saturating_add(1);
+        }
+        scratch.fill_pos_f = scratch.fill_pos as f64;
+
+        if written == 0 {
+            if reached_end && !looping {
+                self.timeline_ended.store(true, Ordering::SeqCst);
+            } else if reached_end && looping && end > start_bound {
+                scratch.sync_from_playhead(start_bound);
+            }
+            return false;
+        }
+
+        let gather_len = written * src_ch;
+        let pushed = ring.push_interleaved(&scratch.gathered[..gather_len]);
+        let depth = ring.frames_available() as u64;
+        self.prefetch_depth_frames.store(depth, Ordering::Relaxed);
+        self.max_prefetch_depth_frames
+            .fetch_max(depth, Ordering::Relaxed);
+
+        if reached_end && scratch.fill_pos > end {
+            if looping && end > start_bound {
+                scratch.sync_from_playhead(start_bound);
+            } else {
+                self.timeline_ended.store(true, Ordering::SeqCst);
+            }
         }
         pushed > 0
     }
@@ -756,7 +961,7 @@ impl PlaybackShared {
 fn prefetch_loop(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) {
     let mut scratch = PrefetchScratch::new();
     scratch.local_epoch = shared.epoch.load(Ordering::SeqCst);
-    scratch.fill_pos_f = shared.position.load(Ordering::SeqCst) as f64;
+    scratch.sync_from_playhead(shared.position.load(Ordering::SeqCst));
     while !stop.load(Ordering::Relaxed) {
         match shared.transport() {
             TransportState::Playing => {
@@ -1037,6 +1242,96 @@ mod tests {
         shared.fill_output(out);
     }
 
+    /// Drain Direct playback into an interleaved device-rate buffer.
+    fn capture_direct(shared: &PlaybackShared, out_frames: usize) -> Vec<f32> {
+        let out_ch = shared.output_channels.load(Ordering::SeqCst).max(1);
+        let mut all = Vec::with_capacity(out_frames * out_ch);
+        shared.bump_epoch();
+        shared.set_transport(TransportState::Playing);
+        let mut idle_rounds = 0u32;
+        while all.len() / out_ch < out_frames {
+            for _ in 0..64 {
+                if shared.ring.load_full().frames_free() < PREFETCH_CHUNK_FRAMES {
+                    break;
+                }
+                if !shared.prefetch_chunk() {
+                    break;
+                }
+            }
+            let avail = shared.ring.load_full().frames_available();
+            if avail == 0 {
+                idle_rounds += 1;
+                if idle_rounds > 8 {
+                    break;
+                }
+                continue;
+            }
+            idle_rounds = 0;
+            let chunk = 256.min(out_frames - all.len() / out_ch).min(avail);
+            let mut out = vec![0.0f32; chunk * out_ch];
+            shared.fill_output(&mut out);
+            all.extend_from_slice(&out);
+            if shared.transport() != TransportState::Playing
+                && shared.ring.load_full().frames_available() == 0
+            {
+                break;
+            }
+        }
+        all.truncate(out_frames * out_ch);
+        all
+    }
+
+    fn goertzel_power(samples: &[f32], sample_rate: u32, freq_hz: f32) -> f32 {
+        let n = samples.len();
+        if n == 0 || sample_rate == 0 {
+            return 0.0;
+        }
+        let k = (0.5 + n as f32 * freq_hz / sample_rate as f32).floor();
+        let w = std::f32::consts::TAU * k / n as f32;
+        let coeff = 2.0 * w.cos();
+        let mut s1 = 0.0f32;
+        let mut s2 = 0.0f32;
+        for &x in samples {
+            let s0 = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        let real = s1 - s2 * w.cos();
+        let imag = s2 * w.sin();
+        real * real + imag * imag
+    }
+
+    fn tone_to_image_db(samples: &[f32], sample_rate: u32, signal_hz: f32, image_hz: f32) -> f32 {
+        let signal = goertzel_power(samples, sample_rate, signal_hz).max(1e-20);
+        let image = goertzel_power(samples, sample_rate, image_hz).max(1e-20);
+        10.0 * (signal / image).log10()
+    }
+
+    fn sine(frames: usize, sample_rate: u32, freq_hz: f32, amplitude: f32) -> Vec<f32> {
+        let rate = sample_rate.max(1) as f32;
+        (0..frames)
+            .map(|i| (i as f32 / rate * freq_hz * std::f32::consts::TAU).sin() * amplitude)
+            .collect()
+    }
+
+    fn two_tone(
+        frames: usize,
+        sample_rate: u32,
+        freq_a: f32,
+        freq_b: f32,
+        amplitude: f32,
+    ) -> Vec<f32> {
+        let rate = sample_rate.max(1) as f32;
+        let half = amplitude * 0.5;
+        (0..frames)
+            .map(|i| {
+                let t = i as f32 / rate;
+                (t * freq_a * std::f32::consts::TAU).sin() * half
+                    + (t * freq_b * std::f32::consts::TAU).sin() * half
+            })
+            .collect()
+    }
+
     #[test]
     fn set_output_layout_updates_rate_and_channels() {
         let shared = shared(20);
@@ -1295,5 +1590,156 @@ mod tests {
         let faults = shared.take_faults().expect("after reset");
         assert_eq!(faults.stream_errors, 1);
         assert_eq!(faults.last_stream_error.as_deref(), Some("again"));
+    }
+
+    #[test]
+    fn matched_rate_direct_is_sample_identity() {
+        let samples: Vec<f32> = (0..512).map(|i| (i as f32 * 0.001).sin()).collect();
+        let shared = PlaybackShared::new(
+            Arc::new(PlanarAudio {
+                sample_rate: 48_000,
+                channels: vec![samples.clone()],
+            }),
+            48_000,
+        );
+        let out = capture_direct(&shared, 400);
+        for (i, (&got, &want)) in out.iter().zip(samples.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "frame {i}: got {got} want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn stereo_left_impulse_stays_isolated_on_direct() {
+        let mut left = vec![0.0f32; 64];
+        left[0] = 1.0;
+        let right = vec![0.0f32; 64];
+        let shared = PlaybackShared::with_output_layout(
+            Arc::new(PlanarAudio {
+                sample_rate: 48_000,
+                channels: vec![left, right],
+            }),
+            48_000,
+            2,
+        );
+        let out = capture_direct(&shared, 32);
+        assert!((out[0] - 1.0).abs() < 1e-6);
+        assert!(out[1].abs() < 1e-6);
+        for frame in 1..32 {
+            assert!(out[frame * 2].abs() < 1e-6);
+            assert!(out[frame * 2 + 1].abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn rate_change_44100_to_48000_rejects_drop_sample_images() {
+        // Near-Nyquist at 44.1 kHz. Drop-sample SRC produces strong images;
+        // bandlimited FFT SRC must keep the tone and suppress the 1 kHz
+        // two-tone difference product from a 19+20 kHz probe.
+        let frames = 44_100;
+        let probe = two_tone(frames, 44_100, 19_000.0, 20_000.0, 0.8);
+        let shared = PlaybackShared::new(
+            Arc::new(PlanarAudio {
+                sample_rate: 44_100,
+                channels: vec![probe],
+            }),
+            48_000,
+        );
+        let out = capture_direct(&shared, 48_000);
+        // Skip resampler startup delay / fade-in region.
+        let skip = 2048.min(out.len() / 4);
+        let body = &out[skip..out.len().saturating_sub(skip)];
+        assert!(body.len() > 8192, "need enough settled frames");
+
+        let at_19 = goertzel_power(body, 48_000, 19_000.0);
+        let at_20 = goertzel_power(body, 48_000, 20_000.0);
+        let at_diff = goertzel_power(body, 48_000, 1_000.0);
+        let tone = at_19.max(at_20).max(1e-20);
+        let rejection_db = 10.0 * (tone / at_diff.max(1e-20)).log10();
+        assert!(
+            rejection_db > 40.0,
+            "two-tone difference product too strong ({rejection_db:.1} dB); \
+             drop-sample / poor SRC aliases HF into the audible band \
+             (19k={at_19:.3e} 20k={at_20:.3e} 1k={at_diff:.3e})"
+        );
+
+        // Single 18 kHz tone: image near |48000 - 2*18000| = 12000 Hz must
+        // stay well below the fundamental.
+        let tone18 = sine(frames, 44_100, 18_000.0, 0.5);
+        let shared = PlaybackShared::new(
+            Arc::new(PlanarAudio {
+                sample_rate: 44_100,
+                channels: vec![tone18],
+            }),
+            48_000,
+        );
+        let out = capture_direct(&shared, 48_000);
+        let body = &out[skip..out.len().saturating_sub(skip)];
+        let ratio = tone_to_image_db(body, 48_000, 18_000.0, 12_000.0);
+        assert!(
+            ratio > 40.0,
+            "18 kHz→12 kHz image rejection too low ({ratio:.1} dB)"
+        );
+    }
+
+    #[test]
+    fn midband_sine_snr_after_44100_to_48000() {
+        let frames = 44_100;
+        let tone = sine(frames, 44_100, 1_000.0, 0.5);
+        let shared = PlaybackShared::new(
+            Arc::new(PlanarAudio {
+                sample_rate: 44_100,
+                channels: vec![tone],
+            }),
+            48_000,
+        );
+        let out = capture_direct(&shared, 48_000);
+        let abspeak = out.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        assert!(abspeak > 0.2, "expected audible tone, peak={abspeak}");
+        // Skip resampler delay; use a short settled window (long windows pick up
+        // tiny streaming-SRC phase wander that tanks correlation SNR).
+        let start = 8192.min(out.len() / 4);
+        let end = (start + 4096).min(out.len());
+        let body = &out[start..end];
+        assert!(
+            body.len() >= 4096,
+            "need settled window, got {}",
+            body.len()
+        );
+        let rate = 48_000f32;
+        let mut sum_c = 0.0f32;
+        let mut sum_s = 0.0f32;
+        let mut sum_cc = 0.0f32;
+        let mut sum_ss = 0.0f32;
+        let mut sum_cs = 0.0f32;
+        for (i, &x) in body.iter().enumerate() {
+            let phase = i as f32 / rate * 1000.0 * std::f32::consts::TAU;
+            let c = phase.cos();
+            let s = phase.sin();
+            sum_c += x * c;
+            sum_s += x * s;
+            sum_cc += c * c;
+            sum_ss += s * s;
+            sum_cs += c * s;
+        }
+        let det = sum_cc * sum_ss - sum_cs * sum_cs;
+        let a = (sum_c * sum_ss - sum_s * sum_cs) / det;
+        let b = (sum_s * sum_cc - sum_c * sum_cs) / det;
+        let mut err = 0.0f32;
+        let mut sig = 0.0f32;
+        for (i, &x) in body.iter().enumerate() {
+            let phase = i as f32 / rate * 1000.0 * std::f32::consts::TAU;
+            let y = a * phase.cos() + b * phase.sin();
+            let d = x - y;
+            err += d * d;
+            sig += y * y;
+        }
+        let snr = 10.0 * (sig / err.max(1e-20)).log10();
+        assert!(
+            snr > 80.0,
+            "midband SNR after SRC too low ({snr:.1} dB, peak={abspeak:.3})"
+        );
     }
 }

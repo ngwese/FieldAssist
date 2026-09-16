@@ -9,3 +9,4 @@ description = "Audio playback engine and transport for FieldAssist"
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 cpal = { workspace = true }
+rubato = { workspace = true }

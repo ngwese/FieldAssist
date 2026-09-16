@@ -15,12 +15,17 @@
 //! ## Realtime path
 //!
 //! [`PlaybackEngine`] starts a dedicated **prefetch** thread that may allocate,
-//! lock the composition pager, and decode media. The CPAL callback only drains
-//! a lock-free [`PrefetchRing`] — see the crate `AGENTS.md` for the quality
-//! gates (zero heap allocation, zero blocking lock contention on the callback).
-//! Hosts drain underruns and CPAL stream errors with
-//! [`PlaybackShared::take_faults`] (and optional [`PlaybackFaultFlusher`]
-//! coalescing) on a non-realtime thread.
+//! lock the composition pager, decode media, and run **bandlimited sample-rate
+//! conversion** when the source rate differs from the device rate. Matched-rate
+//! Direct playback copies frames bit-exactly. The CPAL callback only drains a
+//! lock-free [`PrefetchRing`] and applies Direct channel mapping or a
+//! [`MonitorProcess`] — see the crate `AGENTS.md` for the quality gates (zero
+//! heap allocation, zero blocking lock contention on the callback). Hosts drain
+//! underruns and CPAL stream errors with [`PlaybackShared::take_faults`] (and
+//! optional [`PlaybackFaultFlusher`] coalescing) on a non-realtime thread.
+//!
+//! Direct / no-monitor means Faust is bypassed; rate conversion still runs on
+//! the prefetch thread whenever source and device rates differ.
 //!
 //! `dasp::ring_buffer` is intentionally **not** used for this boundary: its
 //! `Fixed`/`Bounded` types require `&mut self` for push/pop and cannot be shared
@@ -50,6 +55,7 @@ mod monitor;
 mod playhead;
 mod prefetch;
 mod provider;
+mod src_convert;
 mod transport;
 
 pub use device::{

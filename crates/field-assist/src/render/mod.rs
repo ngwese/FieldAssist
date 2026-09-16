@@ -343,4 +343,98 @@ mod tests {
         assert!(delta <= expected / 10 + 64);
         assert_eq!(planar_frames(&out), out[0].len());
     }
+
+    #[test]
+    fn wav_f32_same_rate_render_is_sample_identity() {
+        use field_audio_process::{max_abs_err, sine};
+        let rate = 48_000u32;
+        let frames = 2048usize;
+        let samples = sine(frames, rate, 440.0, 0.5);
+        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples.clone()]);
+        let comp = Composition::from_media(media).unwrap();
+        let dest = std::env::temp_dir().join("fa-identity-render.wav");
+        render_to_path(
+            &comp,
+            &RenderJob {
+                encoder_id: "wav".into(),
+                spec: EncodeSpec {
+                    sample_rate: rate,
+                    sample_format: Some(PcmFormat::F32),
+                    channel_count: 1,
+                },
+                channel_indices: vec![0],
+                dest: dest.clone(),
+            },
+            None,
+            0,
+        )
+        .unwrap();
+        let decoded = decode_path(&dest);
+        let _ = std::fs::remove_file(&dest);
+        assert_eq!(decoded.sample_rate, rate);
+        let got = &decoded.channels[0];
+        let n = frames.min(got.len());
+        let err = max_abs_err(&got[..n], &samples[..n]);
+        assert!(err < 1e-6, "same-rate f32 render err {err}");
+    }
+
+    #[test]
+    fn wav_f32_stereo_left_impulse_stays_isolated() {
+        let mut left = vec![0.0f32; 128];
+        left[0] = 1.0;
+        let right = vec![0.0f32; 128];
+        let media = MediaRef::from_memory(MediaId(0), 48_000, vec![left, right]);
+        let comp = Composition::from_media(media).unwrap();
+        let dest = std::env::temp_dir().join("fa-identity-stereo.wav");
+        render_to_path(
+            &comp,
+            &RenderJob {
+                encoder_id: "wav".into(),
+                spec: EncodeSpec {
+                    sample_rate: 48_000,
+                    sample_format: Some(PcmFormat::F32),
+                    channel_count: 2,
+                },
+                channel_indices: vec![0, 1],
+                dest: dest.clone(),
+            },
+            None,
+            0,
+        )
+        .unwrap();
+        let decoded = decode_path(&dest);
+        let _ = std::fs::remove_file(&dest);
+        assert!((decoded.channels[0][0] - 1.0).abs() < 1e-6);
+        assert!(decoded.channels[1][0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn decode_wav_f32_round_trips_synthetic_sine() {
+        use field_audio_io::{encoder, EncodeSpec, PcmFormat};
+        use field_audio_process::{max_abs_err, sine};
+        let rate = 44_100u32;
+        let samples = sine(1024, rate, 1000.0, 0.25);
+        let dest = std::env::temp_dir().join("fa-decode-identity.wav");
+        {
+            let enc = encoder("wav").expect("wav");
+            let file = std::fs::File::create(&dest).unwrap();
+            let mut writer = std::io::BufWriter::new(file);
+            enc.encode(
+                &EncodeSpec {
+                    sample_rate: rate,
+                    sample_format: Some(PcmFormat::F32),
+                    channel_count: 1,
+                },
+                &[samples.clone()],
+                &mut writer,
+            )
+            .unwrap();
+            writer.flush().unwrap();
+        }
+        let decoded = crate::audio::decode(&dest).unwrap();
+        let _ = std::fs::remove_file(&dest);
+        let n = samples.len().min(decoded.channels[0].len());
+        let err = max_abs_err(&decoded.channels[0][..n], &samples[..n]);
+        assert!(err < 1e-6, "decode round-trip err {err}");
+    }
 }

@@ -29,7 +29,7 @@ Use [`PrefetchRing`](src/prefetch.rs) (atomic SPSC) instead.
 | Work | Thread |
 | --- | --- |
 | `PlaybackDataProvider::read_interleaved` | prefetch |
-| SRC gather into device-rate source frames | prefetch |
+| Bandlimited SRC (or matched-rate copy) into device-rate frames | prefetch |
 | Ring `push_interleaved` (pre-monitor source) | prefetch |
 | Ring `pop_interleaved` + silence underruns | **callback** |
 | Monitor `process_gathered` / meters | **callback** |

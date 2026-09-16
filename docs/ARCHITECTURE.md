@@ -99,11 +99,14 @@ The CPAL output callback must stay realtime-safe. Quality gates (also in
 
 `PlaybackEngine` runs a dedicated `fa-prefetch` thread that may allocate, lock
 the composition pager, and decode FLAC/etc. It pushes **pre-monitor**
-device-rate interleaved source frames into the SPSC ring. The CPAL callback
-pops those frames, runs monitor DSP (Faust), and writes the device buffer so
+device-rate interleaved source frames into the SPSC ring, using **bandlimited
+FFT sample-rate conversion** when the source rate differs from the device rate
+(matched rates copy bit-exactly). The CPAL callback pops those frames, runs
+monitor DSP (Faust) or Direct channel mapping, and writes the device buffer so
 live parameters track the audible playhead (not ring depth). Composition
 `read_interleaved` uses planar pager fills (one lock per request) on that
-prefetch thread.
+prefetch thread. Direct bypasses Faust only — rate conversion still applies
+whenever source and device rates differ.
 
 ## Future binaries
 

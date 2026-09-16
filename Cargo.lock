@@ -2142,6 +2142,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "cpal",
+ "rubato",
 ]
 
 [[package]]
