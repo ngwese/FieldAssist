@@ -86,5 +86,8 @@ pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
 pub use waveform::{ToggleZeroCrossing, WaveformDisplay};
-pub use waveform_data::{WaveformDataProvider, WaveformRepresentation};
+pub use waveform_data::{
+    clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
+    DEFAULT_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
+};
 pub use waveform_editor::{LaneScope, PaintRegion, PeakStatus, WaveformEditor};

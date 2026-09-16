@@ -11,6 +11,20 @@ pub enum WaveformRepresentation {
     Peaks,
     /// Time × frequency heatmap from the spectral stream.
     Spectrum,
+    /// Peaks on top of each lane, spectrum below, with a shared splitter.
+    PeaksSpectrum,
+}
+
+/// Default peaks-pane height fraction for [`WaveformRepresentation::PeaksSpectrum`].
+pub const DEFAULT_PEAKS_SPECTRUM_SPLIT: f32 = 0.2;
+/// Minimum peaks-pane height fraction when dragging the shared splitter.
+pub const MIN_PEAKS_SPECTRUM_SPLIT: f32 = 0.15;
+/// Maximum peaks-pane height fraction when dragging the shared splitter.
+pub const MAX_PEAKS_SPECTRUM_SPLIT: f32 = 0.85;
+
+/// Clamp a peaks/spectrum lane split fraction into the allowed range.
+pub fn clamp_peaks_spectrum_split(fraction: f32) -> f32 {
+    fraction.clamp(MIN_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT)
 }
 
 /// Sample access for waveform overview and zoomed paints.
@@ -49,6 +63,10 @@ pub trait WaveformDataProvider: Send + Sync {
     /// Active waveform body representation (Peaks vs Spectrum).
     fn waveform_representation(&self) -> WaveformRepresentation {
         WaveformRepresentation::Peaks
+    }
+    /// Shared peaks-pane height fraction for [`WaveformRepresentation::PeaksSpectrum`].
+    fn peaks_spectrum_split(&self) -> f32 {
+        DEFAULT_PEAKS_SPECTRUM_SPLIT
     }
     /// Whether the peak-envelope overlay should be drawn.
     fn envelope_overlay_enabled(&self) -> bool {

@@ -6,14 +6,15 @@ use gpui_kit::component::{
     h_flex,
     kbd::Kbd,
     menu::{PopupMenu, PopupMenuItem},
-    ActiveTheme as _, GlobalState, InteractiveElementExt as _, Selectable as _, Sizable as _,
+    ActiveTheme as _, GlobalState, Icon, IconNamed, InteractiveElementExt as _, Selectable as _,
+    Sizable as _,
 };
 use gpui_kit::{
-    anchored, deferred, div, prelude::FluentBuilder as _, px, transparent_white, App,
+    anchored, deferred, div, prelude::FluentBuilder as _, px, size, transparent_white, Action, App,
     AppContext as _, ClickEvent, Context, DismissEvent, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, MouseButton, OwnedMenu, OwnedMenuItem,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window,
+    Subscription, Transformation, Window,
 };
 
 /// Application menu bar for Windows and Linux, painted in muted chrome colors.
@@ -268,27 +269,46 @@ fn append_muted_items(
                 let action = action.boxed_clone();
                 let key_action = action.boxed_clone();
                 let key_context = action_context.clone();
-                menu.item(
-                    PopupMenuItem::element(move |window, _| {
-                        let key = key_context
-                            .as_ref()
-                            .and_then(|handle| {
-                                Kbd::binding_for_action_in(key_action.as_ref(), handle, window)
-                            })
-                            .or_else(|| Kbd::binding_for_action(key_action.as_ref(), None, window))
-                            .map(|kbd| kbd.p_0().flex_nowrap().border_0().bg(transparent_white()));
-                        h_flex()
-                            .w_full()
-                            .gap_3()
-                            .items_center()
-                            .justify_between()
-                            .child(div().text_color(muted).child(label.clone()))
-                            .children(key)
-                    })
-                    .checked(*checked)
-                    .disabled(*disabled)
-                    .action(action),
-                )
+                let radio = is_waveform_representation_action(action.as_ref());
+                let mut popup_item = PopupMenuItem::element(move |window, _| {
+                    let key = key_context
+                        .as_ref()
+                        .and_then(|handle| {
+                            Kbd::binding_for_action_in(key_action.as_ref(), handle, window)
+                        })
+                        .or_else(|| Kbd::binding_for_action(key_action.as_ref(), None, window))
+                        .map(|kbd| kbd.p_0().flex_nowrap().border_0().bg(transparent_white()));
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_color(muted).child(label.clone()))
+                        .children(key)
+                })
+                .disabled(*disabled)
+                .action(action);
+                if radio {
+                    // Lucide `dot` as a radio-style mark for exclusive Peaks /
+                    // Spectrum / Peaks + Spectrum modes. Not in the default kit
+                    // icon subset, so AppAssets embeds it; muted to match chrome.
+                    popup_item = if *checked {
+                        popup_item
+                            .icon(
+                                Icon::new(RadioSelectedIcon)
+                                    .text_color(muted)
+                                    // PopupMenu forces xsmall; scale up 50% for a
+                                    // clearer radio mark.
+                                    .transform(Transformation::scale(size(1.5, 1.5))),
+                            )
+                            .checked(false)
+                    } else {
+                        popup_item.icon(Icon::empty()).checked(false)
+                    };
+                } else {
+                    popup_item = popup_item.checked(*checked);
+                }
+                menu.item(popup_item)
             }
             OwnedMenuItem::Submenu(submenu) => {
                 let name = submenu.name.clone();
@@ -302,4 +322,20 @@ fn append_muted_items(
         };
     }
     menu
+}
+
+/// Lucide `dot` — solid disc for radio-selected waveform modes.
+struct RadioSelectedIcon;
+
+impl IconNamed for RadioSelectedIcon {
+    fn path(self) -> SharedString {
+        "icons/dot.svg".into()
+    }
+}
+
+fn is_waveform_representation_action(action: &dyn Action) -> bool {
+    let name = action.name();
+    name.ends_with("ViewWaveformPeaks")
+        || name.ends_with("ViewWaveformSpectrum")
+        || name.ends_with("ViewWaveformPeaksSpectrum")
 }

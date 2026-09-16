@@ -25,7 +25,10 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::waveform_data::{WaveformDataProvider, WaveformRepresentation};
+use crate::waveform_data::{
+    clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
+    MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
+};
 use crate::waveform_editor::{LaneScope, PaintRegion, WaveformEditor};
 
 #[allow(missing_docs)]
@@ -49,16 +52,21 @@ const ZOOM_FACTOR: f64 = 1.25;
 const MIN_SAMPLES_PER_PIXEL: f64 = 1.0 / 50.0;
 const FRAME_PADDING: f64 = 0.1;
 const MIN_LANE_HEIGHT: f32 = 96.0;
+const MIN_LANE_HEIGHT_COMBINED: f32 = 128.0;
 const MIN_THUMB: f32 = 24.0;
 const SCROLLBAR_HEIGHT: f32 = 14.0;
 const DRAG_MOVE_THRESHOLD_PX: f32 = 3.0;
+/// Painted thickness of the peaks/spectrum separator (layout gap matches).
+const SPLITTER_PX: f32 = 1.0;
+/// Hit-test half-height around the shared peaks/spectrum splitter.
+const SPLITTER_HIT_PX: f32 = 4.0;
 const POSITION_BAR_COLOR: gpui_kit::Hsla = hsla(0.0, 0.72, 0.55, 1.0);
 const GHOST_BAR_COLOR: gpui_kit::Hsla = hsla(0.0, 0.72, 0.55, 0.35);
 const MODIFIED_BAR_HEIGHT: f32 = 3.0;
 const MODIFIED_BAR_GAP: f32 = 1.0;
 const MODIFIED_BAR_COLOR: gpui_kit::Hsla = hsla(0.08, 0.90, 0.55, 1.0);
 const MODIFIED_HOVER_FILL: gpui_kit::Hsla = hsla(0.08, 0.90, 0.55, 0.18);
-const ENVELOPE_OVERLAY_COLOR: gpui_kit::Hsla = hsla(0.55, 0.75, 0.55, 0.85);
+const ENVELOPE_OVERLAY_COLOR: gpui_kit::Hsla = hsla(0.0, 0.75, 0.55, 0.85);
 /// Horizontal tile width (pixels) for cached spectrum textures.
 const SPECTRUM_TILE_PX: u32 = 256;
 const MARKER_BAR_OPACITY: f32 = 0.35;
@@ -81,6 +89,11 @@ enum Drag {
     },
     Scrollbar {
         grab_offset: f32,
+    },
+    /// Shared peaks/spectrum vertical split (any lane updates the document ratio).
+    LaneSplit {
+        lane_top: f32,
+        lane_height: f32,
     },
 }
 
@@ -122,6 +135,11 @@ where
     paint_epoch: u64,
     /// Cached spectrum tiles keyed by `(channel, tile_index)`.
     spectrum_tiles: HashMap<(usize, u32), SpectrumTileCache>,
+    /// Latest canvas `(origin_y, height)` per channel for splitter hit-testing.
+    lane_canvas: HashMap<usize, (f32, f32)>,
+    /// In-progress peaks/spectrum split (avoids document notify + spectrum
+    /// rebuilds on every mouse move while dragging the shared splitter).
+    live_peaks_spectrum_split: Option<f32>,
 }
 
 impl<D> WaveformDisplay<D>
@@ -154,6 +172,8 @@ where
             focus_handle: cx.focus_handle(),
             paint_epoch: 0,
             spectrum_tiles: HashMap::new(),
+            lane_canvas: HashMap::new(),
+            live_peaks_spectrum_split: None,
         }
     }
 
@@ -295,6 +315,7 @@ where
         self.drag = None;
         self.hover_sample = None;
         self.hovered_edit = None;
+        self.live_peaks_spectrum_split = None;
         self.start_sample = 0.0;
         let frames = self.frames(cx);
         self.samples_per_pixel = if frames == 0 {
@@ -444,6 +465,37 @@ where
         }
     }
 
+    fn remember_lane_canvas(&mut self, channel: usize, bounds: Bounds<Pixels>) {
+        self.lane_canvas.insert(
+            channel,
+            (bounds.origin.y.as_f32(), bounds.size.height.as_f32()),
+        );
+    }
+
+    fn try_begin_lane_split(&mut self, channel: usize, y: f32, cx: &App) -> bool {
+        let representation = WaveformDataProvider::waveform_representation(self.document.read(cx));
+        if representation != WaveformRepresentation::PeaksSpectrum {
+            return false;
+        }
+        let Some(&(lane_top, lane_height)) = self.lane_canvas.get(&channel) else {
+            return false;
+        };
+        if lane_height < 1.0 {
+            return false;
+        }
+        let fraction = WaveformDataProvider::peaks_spectrum_split(self.document.read(cx));
+        let split_y = lane_top + lane_height * clamp_peaks_spectrum_split(fraction);
+        if (y - split_y).abs() > SPLITTER_HIT_PX {
+            return false;
+        }
+        self.drag = Some(Drag::LaneSplit {
+            lane_top,
+            lane_height,
+        });
+        self.live_peaks_spectrum_split = Some(clamp_peaks_spectrum_split(fraction));
+        true
+    }
+
     fn remember_scrollbar(&mut self, bounds: Bounds<Pixels>) {
         self.scrollbar_width = bounds.size.width.as_f32();
         self.scrollbar_origin_x = bounds.origin.x.as_f32();
@@ -457,7 +509,7 @@ where
             .max(0.0) as usize
     }
 
-    fn handle_drag_move(&mut self, x: f32, cx: &mut Context<Self>) {
+    fn handle_drag_move(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
         let drag = self.drag.take();
         self.drag = match drag {
             Some(Drag::SelectRegion {
@@ -496,6 +548,24 @@ where
                 cx.notify();
                 Some(Drag::Scrollbar { grab_offset })
             }
+            Some(Drag::LaneSplit {
+                lane_top,
+                lane_height,
+            }) => {
+                let fraction = ((y - lane_top) / lane_height.max(1.0))
+                    .clamp(MIN_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT);
+                // Pixel-quantize so sub-pixel moves do not thrash paints.
+                let quantized = ((fraction * lane_height).round() / lane_height.max(1.0))
+                    .clamp(MIN_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT);
+                if self.live_peaks_spectrum_split != Some(quantized) {
+                    self.live_peaks_spectrum_split = Some(quantized);
+                    cx.notify();
+                }
+                Some(Drag::LaneSplit {
+                    lane_top,
+                    lane_height,
+                })
+            }
             None => None,
         };
     }
@@ -531,7 +601,18 @@ where
                     cx.notify();
                 });
             }
-            _ => {}
+            Drag::LaneSplit { .. } => {
+                if let Some(fraction) = self.live_peaks_spectrum_split.take() {
+                    self.document.update(cx, |doc, cx| {
+                        WaveformEditor::set_peaks_spectrum_split(doc, fraction);
+                        cx.notify();
+                    });
+                }
+                // Rebuild spectrum tiles at the committed pane height once.
+                self.spectrum_tiles.clear();
+                self.paint_epoch = self.paint_epoch.wrapping_add(1);
+            }
+            Drag::Scrollbar { .. } => {}
         }
         cx.notify();
     }
@@ -549,7 +630,7 @@ where
             }
             entity.update(cx, |this, cx| {
                 if this.drag.is_some() {
-                    this.handle_drag_move(event.position.x.as_f32(), cx);
+                    this.handle_drag_move(event.position.x.as_f32(), event.position.y.as_f32(), cx);
                 }
                 this.set_hover_at(event.position.x.as_f32(), event.position.y.as_f32(), cx);
             });
@@ -929,6 +1010,7 @@ fn paint_lane(
     hover_ranges: &[(u64, u64)],
     markers: &[(u64, [f32; 4])],
     spectrum_tiles: &mut HashMap<(usize, u32), SpectrumTileCache>,
+    live_peaks_spectrum_split: Option<f32>,
     window: &mut Window,
 ) {
     let width = bounds.size.width.as_f32();
@@ -939,144 +1021,104 @@ fn paint_lane(
 
     let origin_x = bounds.origin.x.as_f32();
     let origin_y = bounds.origin.y.as_f32();
-    let y_scale = ScaleLinear::new(vec![-1.0_f64, 1.0], vec![origin_y + height, origin_y]);
+    let frames = WaveformDataProvider::frames(provider);
+    let representation = WaveformDataProvider::waveform_representation(provider);
+    let split = clamp_peaks_spectrum_split(
+        live_peaks_spectrum_split
+            .unwrap_or_else(|| WaveformDataProvider::peaks_spectrum_split(provider)),
+    );
+    let splitting = live_peaks_spectrum_split.is_some();
 
-    if let Some(mid) = y_scale.tick(&0.0) {
-        let mut builder = PathBuilder::stroke(px(1.0));
-        builder.move_to(point(px(origin_x), px(mid)));
-        builder.line_to(point(px(origin_x + width), px(mid)));
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, zero_color);
+    let (peaks_bounds, spectrum_bounds) = match representation {
+        WaveformRepresentation::Peaks => (Some(bounds), None),
+        WaveformRepresentation::Spectrum => (None, Some(bounds)),
+        WaveformRepresentation::PeaksSpectrum => {
+            let peaks_h = (height * split).max(1.0).min(height - SPLITTER_PX - 1.0);
+            let spec_top = origin_y + peaks_h + SPLITTER_PX;
+            let spec_h = (origin_y + height - spec_top).max(1.0);
+            let peaks = Bounds {
+                origin: point(px(origin_x), px(origin_y)),
+                size: size(px(width), px(peaks_h)),
+            };
+            let spectrum = Bounds {
+                origin: point(px(origin_x), px(spec_top)),
+                size: size(px(width), px(spec_h)),
+            };
+            (Some(peaks), Some(spectrum))
+        }
+    };
+
+    if let Some(peaks) = peaks_bounds {
+        paint_peaks_body(
+            peaks,
+            provider,
+            channel,
+            start_sample,
+            samples_per_pixel,
+            color,
+            zero_color,
+            frames,
+            window,
+        );
+        if WaveformDataProvider::envelope_overlay_enabled(provider) {
+            if !WaveformDataProvider::envelope_complete(provider) {
+                WaveformDataProvider::ensure_envelope_peak(provider);
+            }
+            if WaveformDataProvider::envelope_ready(provider) {
+                let p_origin_y = peaks.origin.y.as_f32();
+                let p_height = peaks.size.height.as_f32();
+                let y_scale =
+                    ScaleLinear::new(vec![-1.0_f64, 1.0], vec![p_origin_y + p_height, p_origin_y]);
+                paint_envelope_overlay(
+                    peaks,
+                    provider,
+                    channel,
+                    start_sample,
+                    samples_per_pixel,
+                    &y_scale,
+                    window,
+                );
+            }
         }
     }
 
-    let frames = WaveformDataProvider::frames(provider);
-    let cols = width.ceil() as usize;
-    let peak_block = WaveformDataProvider::peak_block(provider);
-    let representation = WaveformDataProvider::waveform_representation(provider);
-
-    if representation == WaveformRepresentation::Spectrum {
+    if let Some(spectrum) = spectrum_bounds {
         if !WaveformDataProvider::spectral_complete(provider) {
             WaveformDataProvider::ensure_spectral(provider);
         }
         if WaveformDataProvider::spectral_ready(provider) {
+            // While dragging the shared splitter, stretch existing tiles to
+            // the live pane height (same cheap path as a window resize paint
+            // with a warm cache) instead of rasterizing every mouse move.
             paint_spectrum_body(
-                bounds,
+                spectrum,
                 provider,
                 channel,
                 start_sample,
                 samples_per_pixel,
                 spectrum_tiles,
+                splitting,
                 window,
             );
-        }
-    } else {
-        if !WaveformDataProvider::peaks_complete(provider) {
-            WaveformDataProvider::ensure_minmax_peaks(provider);
-        }
-        if WaveformDataProvider::peaks_ready(provider) {
-            if samples_per_pixel < 1.0 {
-                let mut builder = PathBuilder::stroke(px(1.2));
-                let mut started = false;
-                let first = start_sample.max(0.0).floor() as usize;
-                let last = ((start_sample + width as f64 * samples_per_pixel).ceil() as usize)
-                    .min(frames.saturating_sub(1));
-                if first <= last && frames > 0 {
-                    let mut samples = vec![0.0; last - first + 1];
-                    WaveformDataProvider::read_channel(provider, channel, first, &mut samples);
-                    for (offset, sample) in samples.iter().enumerate() {
-                        let i = first + offset;
-                        let x = origin_x + ((i as f64 - start_sample) / samples_per_pixel) as f32;
-                        let y = y_scale
-                            .tick(&(*sample as f64))
-                            .unwrap_or(origin_y + height * 0.5);
-                        if !started {
-                            builder.move_to(point(px(x), px(y)));
-                            started = true;
-                        } else {
-                            builder.line_to(point(px(x), px(y)));
-                        }
-                    }
-                }
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, color);
-                }
-            } else {
-                let first = start_sample.max(0.0).floor() as usize;
-                let last =
-                    ((start_sample + cols as f64 * samples_per_pixel).ceil() as usize).min(frames);
-                let visible = last.saturating_sub(first);
-                let fold_from_samples = samples_per_pixel < peak_block as f64
-                    && visible > 0
-                    && visible <= cols.saturating_mul(64);
-
-                if fold_from_samples {
-                    let mut samples = vec![0.0; visible];
-                    WaveformDataProvider::read_channel(provider, channel, first, &mut samples);
-                    for col in 0..cols {
-                        let bin_start = start_sample + col as f64 * samples_per_pixel;
-                        let bin_end = bin_start + samples_per_pixel;
-                        if bin_start >= frames as f64 {
-                            break;
-                        }
-                        let a = (bin_start.floor() as usize)
-                            .saturating_sub(first)
-                            .min(samples.len());
-                        let b = (bin_end.ceil() as usize)
-                            .saturating_sub(first)
-                            .clamp(a, samples.len());
-                        let (min, max) = min_max_of(&samples[a..b]);
-                        paint_column(
-                            origin_x, col, min, max, &y_scale, origin_y, height, color, window,
-                        );
-                    }
-                } else {
-                    let mut columns = vec![(0.0f32, 0.0f32); cols];
-                    WaveformDataProvider::fill_minmax_columns(
-                        provider,
-                        channel,
-                        start_sample,
-                        samples_per_pixel,
-                        &mut columns,
-                    );
-                    for (col, &(min, max)) in columns.iter().enumerate() {
-                        let bin_start = start_sample + col as f64 * samples_per_pixel;
-                        if bin_start >= frames as f64 {
-                            break;
-                        }
-                        paint_column(
-                            origin_x, col, min, max, &y_scale, origin_y, height, color, window,
-                        );
-                    }
-                }
-            }
         }
     }
 
-    if WaveformDataProvider::envelope_overlay_enabled(provider) {
-        if !WaveformDataProvider::envelope_complete(provider) {
-            WaveformDataProvider::ensure_envelope_peak(provider);
-        }
-        if WaveformDataProvider::envelope_ready(provider) {
-            paint_envelope_overlay(
-                bounds,
-                provider,
-                channel,
-                start_sample,
-                samples_per_pixel,
-                &y_scale,
-                window,
-            );
-        }
+    if representation == WaveformRepresentation::PeaksSpectrum {
+        let peaks_h = (height * split).max(1.0).min(height - SPLITTER_PX - 1.0);
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(px(origin_x), px(origin_y + peaks_h)),
+                size: size(px(width), px(SPLITTER_PX)),
+            },
+            zero_color,
+        ));
     }
 
     // Regions after the body so opaque Spectrum tiles do not cover them.
-    let (region_fill_alpha, region_edge_alpha) =
-        if representation == WaveformRepresentation::Spectrum {
-            (0.2, 0.3)
-        } else {
-            (0.1, 0.2)
-        };
+    let (region_fill_alpha, region_edge_alpha) = match representation {
+        WaveformRepresentation::Spectrum | WaveformRepresentation::PeaksSpectrum => (0.2, 0.3),
+        WaveformRepresentation::Peaks => (0.1, 0.2),
+    };
     for region in WaveformEditor::named_regions(provider) {
         paint_region_overlay(
             bounds,
@@ -1153,6 +1195,121 @@ fn paint_lane(
     }
 }
 
+fn paint_peaks_body(
+    bounds: Bounds<Pixels>,
+    provider: &(impl WaveformDataProvider + WaveformEditor),
+    channel: usize,
+    start_sample: f64,
+    samples_per_pixel: f64,
+    color: gpui_kit::Hsla,
+    zero_color: gpui_kit::Hsla,
+    frames: usize,
+    window: &mut Window,
+) {
+    let width = bounds.size.width.as_f32();
+    let height = bounds.size.height.as_f32();
+    if width < 1.0 || height < 1.0 {
+        return;
+    }
+    let origin_x = bounds.origin.x.as_f32();
+    let origin_y = bounds.origin.y.as_f32();
+    let y_scale = ScaleLinear::new(vec![-1.0_f64, 1.0], vec![origin_y + height, origin_y]);
+
+    if let Some(mid) = y_scale.tick(&0.0) {
+        let mut builder = PathBuilder::stroke(px(1.0));
+        builder.move_to(point(px(origin_x), px(mid)));
+        builder.line_to(point(px(origin_x + width), px(mid)));
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, zero_color);
+        }
+    }
+
+    if !WaveformDataProvider::peaks_complete(provider) {
+        WaveformDataProvider::ensure_minmax_peaks(provider);
+    }
+    if !WaveformDataProvider::peaks_ready(provider) {
+        return;
+    }
+
+    let cols = width.ceil() as usize;
+    let peak_block = WaveformDataProvider::peak_block(provider);
+
+    if samples_per_pixel < 1.0 {
+        let mut builder = PathBuilder::stroke(px(1.2));
+        let mut started = false;
+        let first = start_sample.max(0.0).floor() as usize;
+        let last = ((start_sample + width as f64 * samples_per_pixel).ceil() as usize)
+            .min(frames.saturating_sub(1));
+        if first <= last && frames > 0 {
+            let mut samples = vec![0.0; last - first + 1];
+            WaveformDataProvider::read_channel(provider, channel, first, &mut samples);
+            for (offset, sample) in samples.iter().enumerate() {
+                let i = first + offset;
+                let x = origin_x + ((i as f64 - start_sample) / samples_per_pixel) as f32;
+                let y = y_scale
+                    .tick(&(*sample as f64))
+                    .unwrap_or(origin_y + height * 0.5);
+                if !started {
+                    builder.move_to(point(px(x), px(y)));
+                    started = true;
+                } else {
+                    builder.line_to(point(px(x), px(y)));
+                }
+            }
+        }
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, color);
+        }
+        return;
+    }
+
+    let first = start_sample.max(0.0).floor() as usize;
+    let last = ((start_sample + cols as f64 * samples_per_pixel).ceil() as usize).min(frames);
+    let visible = last.saturating_sub(first);
+    let fold_from_samples =
+        samples_per_pixel < peak_block as f64 && visible > 0 && visible <= cols.saturating_mul(64);
+
+    if fold_from_samples {
+        let mut samples = vec![0.0; visible];
+        WaveformDataProvider::read_channel(provider, channel, first, &mut samples);
+        for col in 0..cols {
+            let bin_start = start_sample + col as f64 * samples_per_pixel;
+            let bin_end = bin_start + samples_per_pixel;
+            if bin_start >= frames as f64 {
+                break;
+            }
+            let a = (bin_start.floor() as usize)
+                .saturating_sub(first)
+                .min(samples.len());
+            let b = (bin_end.ceil() as usize)
+                .saturating_sub(first)
+                .clamp(a, samples.len());
+            let (min, max) = min_max_of(&samples[a..b]);
+            paint_column(
+                origin_x, col, min, max, &y_scale, origin_y, height, color, window,
+            );
+        }
+    } else {
+        let mut columns = vec![(0.0f32, 0.0f32); cols];
+        WaveformDataProvider::fill_minmax_columns(
+            provider,
+            channel,
+            start_sample,
+            samples_per_pixel,
+            &mut columns,
+        );
+        for (col, &(min, max)) in columns.iter().enumerate() {
+            let bin_start = start_sample + col as f64 * samples_per_pixel;
+            if bin_start >= frames as f64 {
+                break;
+            }
+            paint_column(
+                origin_x, col, min, max, &y_scale, origin_y, height, color, window,
+            );
+        }
+    }
+}
+
 fn paint_spectrum_body<D>(
     bounds: Bounds<Pixels>,
     provider: &D,
@@ -1160,6 +1317,7 @@ fn paint_spectrum_body<D>(
     start_sample: f64,
     samples_per_pixel: f64,
     tiles: &mut HashMap<(usize, u32), SpectrumTileCache>,
+    stretch_height: bool,
     window: &mut Window,
 ) where
     D: WaveformDataProvider + WaveformEditor + ?Sized,
@@ -1199,6 +1357,36 @@ fn paint_spectrum_body<D>(
         let cache_key = (channel, tile);
         let image = if let Some(hit) = tiles.get(&cache_key).filter(|c| c.key == key) {
             hit.image.clone()
+        } else if stretch_height {
+            // Reuse a same-content tile and let paint_image scale it. Do not
+            // insert a height-mismatched entry so mouse-up can rebuild crisp.
+            if let Some(hit) = tiles
+                .get(&cache_key)
+                .filter(|c| spectrum_key_same_content(&c.key, &key))
+            {
+                hit.image.clone()
+            } else {
+                // Cold cache (e.g. drag before first paint): one raster is fine.
+                let mut packed = vec![db_floor; tile_cols * band_count];
+                let tile_start = start_sample + col0 as f64 * samples_per_pixel;
+                WaveformDataProvider::fill_spectral_columns(
+                    provider,
+                    channel,
+                    tile_start,
+                    samples_per_pixel,
+                    &mut packed,
+                );
+                let image =
+                    rasterize_spectrum_tile(&packed, tile_cols, band_count, height_u, db_floor);
+                tiles.insert(
+                    cache_key,
+                    SpectrumTileCache {
+                        key,
+                        image: image.clone(),
+                    },
+                );
+                image
+            }
         } else {
             let mut packed = vec![db_floor; tile_cols * band_count];
             let tile_start = start_sample + col0 as f64 * samples_per_pixel;
@@ -1232,6 +1420,15 @@ fn paint_spectrum_body<D>(
             false,
         );
     }
+}
+
+fn spectrum_key_same_content(a: &SpectrumTileKey, b: &SpectrumTileKey) -> bool {
+    a.channel == b.channel
+        && a.tile == b.tile
+        && a.start_sample_bits == b.start_sample_bits
+        && a.spp_bits == b.spp_bits
+        && a.coverage == b.coverage
+        && a.band_count == b.band_count
 }
 
 fn rasterize_spectrum_tile(
@@ -1511,13 +1708,23 @@ where
                                     let color = channel_color(&theme, ch);
                                     let region_color = channel_color(&theme, 0);
                                     let zero = theme.border;
+                                    let representation = WaveformDataProvider::waveform_representation(
+                                        document.read(cx),
+                                    );
+                                    let lane_min_h = if representation
+                                        == WaveformRepresentation::PeaksSpectrum
+                                    {
+                                        MIN_LANE_HEIGHT_COMBINED
+                                    } else {
+                                        MIN_LANE_HEIGHT
+                                    };
                                     let channel_label =
                                         WaveformDataProvider::channel_label(document.read(cx), ch);
                                     h_flex()
                                     .id(SharedString::from(format!("lane-{ch}")))
                                     .w_full()
                                     .flex_1()
-                                    .min_h(px(MIN_LANE_HEIGHT))
+                                    .min_h(px(lane_min_h))
                                     .border_b_1()
                                     .border_color(theme.border)
                                     .child(
@@ -1543,6 +1750,11 @@ where
                                                 cx.listener(
                                                     move |this, event: &MouseDownEvent, _, cx| {
                                                         let x = event.position.x.as_f32();
+                                                        let y = event.position.y.as_f32();
+                                                        if this.try_begin_lane_split(ch, y, cx) {
+                                                            cx.notify();
+                                                            return;
+                                                        }
                                                         let sample =
                                                             this.sample_at_x(x).round() as usize;
                                                         if event.modifiers.shift {
@@ -1621,6 +1833,9 @@ where
                                                                             ch == 0,
                                                                             cx,
                                                                         );
+                                                                        this.remember_lane_canvas(
+                                                                            ch, bounds,
+                                                                        );
                                                                     });
                                                                     bounds
                                                                 }
@@ -1651,6 +1866,7 @@ where
                                                                             &hover_ranges,
                                                                             &markers,
                                                                             &mut this.spectrum_tiles,
+                                                                            this.live_peaks_spectrum_split,
                                                                             window,
                                                                         );
                                                                     });

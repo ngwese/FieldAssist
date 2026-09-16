@@ -116,4 +116,7 @@ pub trait WaveformEditor: Send + Sync {
 
     /// Zoom-anchor sample (typically the playhead), if any.
     fn selection_position_sample(&self) -> Option<usize>;
+
+    /// Update the shared peaks/spectrum lane split fraction.
+    fn set_peaks_spectrum_split(&mut self, _fraction: f32) {}
 }

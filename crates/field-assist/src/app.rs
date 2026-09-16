@@ -38,7 +38,7 @@ use crate::commands::{
     TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
     ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
     ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowScript, ViewWaveformPeaks,
-    ViewWaveformSpectrum, ViewZoomIn, ViewZoomOut,
+    ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
@@ -2814,6 +2814,11 @@ impl AppView {
                 window,
                 cx,
             ),
+            "view.waveform_peaks_spectrum" => self.set_waveform_representation(
+                field_ui_components::WaveformRepresentation::PeaksSpectrum,
+                window,
+                cx,
+            ),
             "analyze.selection_only" => self.toggle_analyze_selection_only(cx),
             "analyze.envelope_peak" => self.run_analyze_envelope_peak(window, cx),
             "analyze.transients" => self.run_analyze_transients(window, cx),
@@ -3140,7 +3145,11 @@ impl AppView {
                     view.bump_paint_epoch(cx);
                 });
             }
-            if representation == field_ui_components::WaveformRepresentation::Spectrum {
+            if matches!(
+                representation,
+                field_ui_components::WaveformRepresentation::Spectrum
+                    | field_ui_components::WaveformRepresentation::PeaksSpectrum
+            ) {
                 self.request_analysis(id, AnalysisKind::Spectral, cx);
             }
         }
@@ -4884,6 +4893,10 @@ fn view_waveform_spectrum(_: &ViewWaveformSpectrum, cx: &mut App) {
     let _ = crate::commands::dispatch("view.waveform_spectrum", cx);
 }
 
+fn view_waveform_peaks_spectrum(_: &ViewWaveformPeaksSpectrum, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.waveform_peaks_spectrum", cx);
+}
+
 fn analyze_envelope_peak(_: &AnalyzeEnvelopePeak, cx: &mut App) {
     let _ = crate::commands::dispatch("analyze.envelope_peak", cx);
 }
@@ -5133,8 +5146,18 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
                 state.waveform_representation,
                 field_ui_components::WaveformRepresentation::Spectrum
             )),
-            MenuItem::action("Show Envelope Peak", ViewOverlayEnvelopePeak)
-                .checked(state.envelope_overlay),
+            MenuItem::action("Peaks + Spectrum", ViewWaveformPeaksSpectrum).checked(matches!(
+                state.waveform_representation,
+                field_ui_components::WaveformRepresentation::PeaksSpectrum
+            )),
+            MenuItem::separator(),
+            MenuItem::submenu(
+                Menu::new("Overlay").items([MenuItem::action(
+                    "Envelope Peak",
+                    ViewOverlayEnvelopePeak,
+                )
+                .checked(state.envelope_overlay)]),
+            ),
             MenuItem::separator(),
             MenuItem::action("Zoom In", ViewZoomIn),
             MenuItem::action("Zoom Out", ViewZoomOut),
@@ -5233,6 +5256,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(view_overlay_envelope_peak);
     cx.on_action(view_waveform_peaks);
     cx.on_action(view_waveform_spectrum);
+    cx.on_action(view_waveform_peaks_spectrum);
     cx.on_action(analyze_selection_only);
     cx.on_action(analyze_envelope_peak);
     cx.on_action(analyze_transients);

@@ -40,6 +40,8 @@ pub struct BufferDocument {
     pub show_envelope_peak: bool,
     /// View → Peaks / Spectrum representation.
     pub waveform_representation: WaveformRepresentation,
+    /// Shared peaks-pane height fraction for Peaks + Spectrum (0.15..=0.85).
+    pub peaks_spectrum_split: f32,
     /// Analyze → Selection Only: limit envelope/transient jobs to the selection.
     pub analyze_selection_only: bool,
     /// Snapshot of analysis target ranges for the next envelope/transient job.
@@ -81,6 +83,7 @@ impl BufferDocument {
             analysis_requests: Arc::new(Mutex::new(Vec::new())),
             show_envelope_peak: false,
             waveform_representation: WaveformRepresentation::Peaks,
+            peaks_spectrum_split: field_ui_components::DEFAULT_PEAKS_SPECTRUM_SPLIT,
             analyze_selection_only: false,
             pending_analysis_target: Mutex::new(None),
             region_drag_anchor: None,
@@ -973,6 +976,10 @@ impl WaveformDataProvider for BufferDocument {
         self.waveform_representation
     }
 
+    fn peaks_spectrum_split(&self) -> f32 {
+        self.peaks_spectrum_split
+    }
+
     fn envelope_overlay_enabled(&self) -> bool {
         self.show_envelope_peak
     }
@@ -1186,6 +1193,10 @@ impl WaveformEditor for BufferDocument {
 
     fn selection_position_sample(&self) -> Option<usize> {
         BufferDocument::selection_position_sample(self)
+    }
+
+    fn set_peaks_spectrum_split(&mut self, fraction: f32) {
+        self.peaks_spectrum_split = field_ui_components::clamp_peaks_spectrum_split(fraction);
     }
 }
 

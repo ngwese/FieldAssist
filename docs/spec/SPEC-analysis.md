@@ -11,6 +11,7 @@
 | 3 | 2026-09-15 | Spectral stream + Spectrum waveform representation |
 | 4 | 2026-09-15 | Progressive stream coverage; spectrum tile textures |
 | 5 | 2026-09-15 | MinMaxOp; analysis ops split into per-file module |
+| 6 | 2026-09-15 | Peaks + Spectrum combined representation |
 
 Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
 `dasp_envelope` follower), **Mark → Transients** (pink Transient markers), and
@@ -153,7 +154,7 @@ the following as intent; not every row must ship in one release.
 | Operation | Kind | Typical output |
 | --- | --- | --- |
 | Gather peaks | Realtime-capable; **pull when overview layer needs paint** | Per-channel `(min, max)` stream |
-| Envelope Peak | Realtime-capable; Analyze → Envelope → Peak or View overlay | Per-channel smoothed peak stream (5 ms attack / 300 ms release) |
+| Envelope Peak | Realtime-capable; Analyze → Envelope → Peak or View → Overlay → Envelope Peak | Per-channel smoothed peak stream (5 ms attack / 300 ms release) |
 | Stereo correlation | Realtime-capable; needs ≥2 channels in scope | Shared stream |
 | Transient detection | Realtime-capable; Analyze → Mark → Transients | Pink **Transient** markers |
 | Silence | Often needs a floor estimate (multi-pass) | Named region collection |
@@ -215,8 +216,9 @@ submenu where needed).
 | --- | --- |
 | **Peaks** (default) | As-built overview: peak bins; sample-accurate zoom still reads PCM |
 | **Spectrum** | Lanes show a time × frequency heatmap from the spectral stream. Missing data triggers the Spectral job. Zoomed sample-accurate PCM paint is Peaks-only |
+| **Peaks + Spectrum** | Each lane is split vertically: peaks on top, spectrum below. A shared drag handle sets the peaks/spectrum height ratio for all lanes (default 20% / 80%). Missing spectral data triggers the Spectral job |
 
-**Overlays** (View menu): independent toggles for extra streams (RMS,
+**Overlays** (View → Overlay): independent toggles for extra streams (RMS,
 correlation, and similar). Region and marker results use the existing lane
 overlays and the Detail Regions / Markers panels.
 
