@@ -7,6 +7,7 @@ name = "FieldAssist"
 version = "0.7.2"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "clap",
  "cpal",
  "embed-resource",
@@ -23,6 +24,9 @@ dependencies = [
  "gpui-kit",
  "hound",
  "mlua",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "ogg",
  "rubato",
  "rusty_vorbis",

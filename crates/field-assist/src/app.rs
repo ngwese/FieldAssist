@@ -5033,6 +5033,20 @@ struct AppMenuState {
     menu_workflows: Vec<(String, String)>,
 }
 
+/// View → Peaks / Spectrum / Peaks + Spectrum: exclusive radio marks.
+///
+/// Windows/Linux paint a Lucide `dot` in the PopupMenu gutter via
+/// [`AppMenuBar`]. On macOS, `.checked(true)` still drives the state column;
+/// [`macos_menu::apply_waveform_radio_marks`] replaces the system checkmark
+/// with a filled-circle so labels stay aligned with other View items.
+fn waveform_representation_item(
+    label: &'static str,
+    action: impl gpui_kit::Action,
+    selected: bool,
+) -> MenuItem {
+    MenuItem::action(label, action).checked(selected)
+}
+
 fn marker_type_menu_item(name: &str, active: &str) -> MenuItem {
     let checked = active == name;
     match name {
@@ -5138,18 +5152,30 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
             MenuItem::action("Show Script", ViewScript).checked(state.script),
             MenuItem::separator(),
-            MenuItem::action("Peaks", ViewWaveformPeaks).checked(matches!(
-                state.waveform_representation,
-                field_ui_components::WaveformRepresentation::Peaks
-            )),
-            MenuItem::action("Spectrum", ViewWaveformSpectrum).checked(matches!(
-                state.waveform_representation,
-                field_ui_components::WaveformRepresentation::Spectrum
-            )),
-            MenuItem::action("Peaks + Spectrum", ViewWaveformPeaksSpectrum).checked(matches!(
-                state.waveform_representation,
-                field_ui_components::WaveformRepresentation::PeaksSpectrum
-            )),
+            waveform_representation_item(
+                "Peaks",
+                ViewWaveformPeaks,
+                matches!(
+                    state.waveform_representation,
+                    field_ui_components::WaveformRepresentation::Peaks
+                ),
+            ),
+            waveform_representation_item(
+                "Spectrum",
+                ViewWaveformSpectrum,
+                matches!(
+                    state.waveform_representation,
+                    field_ui_components::WaveformRepresentation::Spectrum
+                ),
+            ),
+            waveform_representation_item(
+                "Peaks + Spectrum",
+                ViewWaveformPeaksSpectrum,
+                matches!(
+                    state.waveform_representation,
+                    field_ui_components::WaveformRepresentation::PeaksSpectrum
+                ),
+            ),
             MenuItem::separator(),
             MenuItem::submenu(
                 Menu::new("Overlay").items([MenuItem::action(
@@ -5213,6 +5239,8 @@ fn apply_muted_chrome(cx: &mut App) {
 
 fn apply_app_menus(state: &AppMenuState, cx: &mut App) {
     cx.set_menus(app_menus(state));
+    #[cfg(target_os = "macos")]
+    crate::macos_menu::apply_waveform_radio_marks();
     let owned = app_menus(state)
         .into_iter()
         .map(|menu| menu.owned())

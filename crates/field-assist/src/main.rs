@@ -45,6 +45,8 @@ mod commands;
 mod components;
 mod dock_titles;
 mod lineage;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 mod model;
 mod monitor;
 mod monitor_schema;
