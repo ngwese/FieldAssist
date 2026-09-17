@@ -4616,20 +4616,29 @@ impl Render for AppView {
                     .size_full()
                     .bg(theme.background)
                     .text_color(content_fg)
-                    .child(
-                        TitleBar::new().child(
-                            h_flex()
-                                .id("app-title-bar-leading")
-                                .h_full()
-                                .items_center()
-                                .gap_2()
-                                .when(!cfg!(target_os = "macos"), |this| {
-                                    this.child(img("icons/app-mark.svg").size(px(16.)).flex_none())
-                                })
-                                .when_some(self.app_menu_bar.clone(), |this, menu_bar| {
-                                    this.child(menu_bar)
-                                }),
-                        ),
+                    .when(
+                        // Custom TitleBar reserves traffic-light height even when
+                        // AppKit hides the system chrome in fullscreen — omit it.
+                        !window.is_fullscreen() && !window.is_simple_fullscreen(),
+                        |this| {
+                            this.child(
+                                TitleBar::new().child(
+                                    h_flex()
+                                        .id("app-title-bar-leading")
+                                        .h_full()
+                                        .items_center()
+                                        .gap_2()
+                                        .when(!cfg!(target_os = "macos"), |this| {
+                                            this.child(
+                                                img("icons/app-mark.svg").size(px(16.)).flex_none(),
+                                            )
+                                        })
+                                        .when_some(self.app_menu_bar.clone(), |this, menu_bar| {
+                                            this.child(menu_bar)
+                                        }),
+                                ),
+                            )
+                        },
                     )
                     .child(
                         div()
