@@ -15,6 +15,7 @@
 | 7 | 2026-09-16 | Waveform representation is app-global |
 | 8 | 2026-09-16 | Regional stream invalidation; op-declared recompute radius |
 | 9 | 2026-09-16 | History jumps splice streams via EDL snapshots |
+| 10 | 2026-09-17 | Shared multi-kind analysis pass (one planar read, many ops) |
 
 Overview **minmax peaks**, **Envelope Peak** (5 ms attack / 300 ms release
 `dasp_envelope` follower), **Mark → Transients** (pink Transient markers), and
@@ -111,6 +112,29 @@ Analysis generalizes the already-shipping peak loop
 it, append a typed output block, and let the UI paint while later blocks
 decode.
 
+When several kinds are needed at once (Peaks + Spectrum paint, or a timer
+drain that coalesced queued `ensure_*` requests), the host runs a **shared
+analysis pass**:
+
+1. **Plan** — collect each kind’s needed ranges (dirty neighborhood, uncovered
+   peak spans, selection target, or full timeline), expand each by that kind’s
+   `RecomputeScope` radius/warmup, then **merge** into one non-overlapping
+   target using the **maximum** radius across participating kinds
+2. **For each pager-sized chunk** — `read_planar` **once**, then fan the same
+   PCM into every participating op (`MinMaxOp`, `SpectralOp`, …)
+3. **Finish** — flush ops, clear dirty holes, update progress
+
+Single-kind jobs keep the prior per-kind steppers. Mid-pass new kinds are
+**re-queued** for the next pass (the live plan is not mutated). Progress labels
+combine when multiple kinds run together (for example
+`building peaks + spectrum`).
+
+Disk decode is expected to dominate cold builds; pass timings
+(`AnalysisPassStats`, or `FIELDASSIST_ANALYSIS_TIMING=1`) report read vs
+consume vs pager decode. If consume saturates a core after shared I/O lands, a
+follow-up may partition channel/hop work over the filled planar buffer on a
+worker pool — without parallelizing pager fills.
+
 For each pass of an operation:
 
 1. **Begin pass** — allocate scratch, reset per-pass state
@@ -202,10 +226,11 @@ marker type). Changing a parameter re-runs that job for the current target.
 / paint pull) and paints as soon as the first chunk has bins (`can_paint_overview`).
 **Envelope Peak** and **Transients** run from the Analyze menu (or when the
 envelope overlay is enabled and data is missing). **Spectral** runs when the
-Spectrum representation is selected and bins are missing (full timeline, all
-channels — Selection Only does not apply). After an edit, Spectral and Envelope
-Peak rebuild only the radius-padded dirty neighborhood when a prior stream
-exists.
+Spectrum or Peaks + Spectrum representation is selected and bins are missing
+(full timeline, all channels — Selection Only does not apply). Peaks + Spectrum
+coalesces MinMax and Spectral into one shared pass. After an edit, Spectral and
+Envelope Peak rebuild only the radius-padded dirty neighborhood when a prior
+stream exists (a shared pass uses the max radius across kinds).
 
 Stream ops clear dirty ranges as pager blocks complete so the UI can
 **progressively consume** partial results: paint gates use “has data” while
@@ -253,7 +278,7 @@ submenu where needed).
 | --- | --- |
 | **Peaks** (default) | As-built overview: peak bins; sample-accurate zoom still reads PCM |
 | **Spectrum** | Lanes show a time × frequency heatmap from the spectral stream. Missing data triggers the Spectral job. Zoomed sample-accurate PCM paint is Peaks-only |
-| **Peaks + Spectrum** | Each lane is split vertically: peaks on top, spectrum below. A shared drag handle sets the peaks/spectrum height ratio for all lanes (default 20% / 80%). Missing spectral data triggers the Spectral job |
+| **Peaks + Spectrum** | Each lane is split vertically: peaks on top, spectrum below. A shared drag handle sets the peaks/spectrum height ratio for all lanes (default 20% / 80%). Missing data queues MinMax and Spectral together so one shared pass feeds both |
 
 **Overlays** (View → Overlay): independent toggles for extra streams (RMS,
 correlation, and similar). Region and marker results use the existing lane

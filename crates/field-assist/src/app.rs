@@ -199,6 +199,8 @@ pub struct AppView {
     >,
     pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
     pending_analysis: Arc<Mutex<Vec<DocumentId>>>,
+    /// Info lines produced by analysis workers (drained onto the Messages panel).
+    pending_analysis_logs: Arc<Mutex<Vec<LogLine>>>,
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
     render_sheet: Entity<RenderSheet>,
     render_sheet_open: bool,
@@ -502,6 +504,7 @@ impl AppView {
             pending_load: Arc::new(Mutex::new(Vec::new())),
             pending_render: Arc::new(Mutex::new(Vec::new())),
             pending_analysis: Arc::new(Mutex::new(Vec::new())),
+            pending_analysis_logs: Arc::new(Mutex::new(Vec::new())),
             pending_loaded_scripts: Vec::new(),
             render_sheet,
             render_sheet_open: false,
@@ -549,7 +552,7 @@ impl AppView {
         }
         this.refresh_explorer(cx);
         if let Some(id) = this.session.active() {
-            this.request_analysis(id, AnalysisKind::MinMax, cx);
+            this.request_waveform_analysis(id, cx);
         }
         this
     }
@@ -573,9 +576,10 @@ impl AppView {
                     this.playback.sync_from_document(doc);
                 });
                 // Skip while an analysis/render job owns progress — re-entering
-                // MinMax from paint notifies raced Transient Selection Only jobs.
+                // overview analysis from paint notifies raced Transient Selection
+                // Only jobs.
                 if entity.read(cx).progress.snapshot().is_none() {
-                    this.request_analysis(id, AnalysisKind::MinMax, cx);
+                    this.request_waveform_analysis(id, cx);
                 }
             }
         })
@@ -1023,7 +1027,7 @@ impl AppView {
                 );
             });
             if let Some(id) = self.session.active() {
-                self.request_analysis(id, AnalysisKind::MinMax, cx);
+                self.request_waveform_analysis(id, cx);
             }
             views.waveform.update(cx, |view, cx| {
                 view.bump_paint_epoch(cx);
@@ -1669,7 +1673,7 @@ impl AppView {
         }
         views.document.read(cx).progress.cancel();
         if self.session.active() == Some(id) {
-            self.request_analysis(id, AnalysisKind::MinMax, cx);
+            self.request_waveform_analysis(id, cx);
         }
         views
             .document
@@ -2789,7 +2793,7 @@ impl AppView {
             }
         }
         self.refresh_explorer(cx);
-        self.request_analysis(id, AnalysisKind::MinMax, cx);
+        self.request_waveform_analysis(id, cx);
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
         cx.notify();
@@ -2958,7 +2962,7 @@ impl AppView {
             cx.notify();
         });
         self.refresh_explorer(cx);
-        self.request_analysis(id, AnalysisKind::MinMax, cx);
+        self.request_waveform_analysis(id, cx);
     }
 
     fn update_active_document(
@@ -3005,53 +3009,141 @@ impl AppView {
                 continue;
             }
             let progress = views.document.read(cx).progress.clone();
-            if progress.snapshot().is_some() {
+            // Never cancel document loads — progress is shared with analysis, and
+            // batch-open under Peaks+Spectrum used to abort earlier "opening"
+            // epochs so tabs stayed on empty placeholders ("FieldAssist").
+            if progress
+                .snapshot()
+                .is_some_and(|state| state.label != "opening")
+            {
                 progress.cancel();
             }
         }
     }
 
     fn drain_analysis_requests(&mut self, cx: &mut Context<Self>) {
-        let mut jobs = Vec::new();
+        let mut jobs: Vec<(DocumentId, Vec<AnalysisKind>)> = Vec::new();
         for (id, views) in &self.views {
             let requests = views.document.read(cx).take_analysis_requests();
-            for kind in requests {
-                jobs.push((*id, kind));
+            if !requests.is_empty() {
+                jobs.push((*id, requests));
             }
         }
-        for (id, kind) in jobs {
-            self.spawn_analysis_build(id, kind, cx);
+        for (id, kinds) in jobs {
+            self.spawn_analysis_pass(id, kinds, cx);
         }
+    }
+
+    /// Queue analysis for whatever the current waveform representation needs.
+    ///
+    /// Peaks + Spectrum always starts MinMax and Spectral together so one
+    /// shared pass feeds both panes (no double progress / peaks-then-spectrum).
+    fn request_waveform_analysis(&self, id: DocumentId, cx: &mut Context<Self>) {
+        let Some(views) = self.views.get(&id) else {
+            return;
+        };
+        // Empty placeholders (open_path before load finishes) must not start
+        // analysis — Spectrum/Peaks+Spectrum would otherwise claim progress and
+        // race batch loads via cancel_inactive_analysis_jobs.
+        if views.composition.read().unwrap().frames() == 0 {
+            return;
+        }
+        if views
+            .document
+            .read(cx)
+            .progress
+            .snapshot()
+            .is_some_and(|state| state.label == "opening")
+        {
+            return;
+        }
+        let rep = views.document.read(cx).waveform_representation;
+        let kinds: &[AnalysisKind] = match rep {
+            field_ui_components::WaveformRepresentation::PeaksSpectrum => {
+                &[AnalysisKind::MinMax, AnalysisKind::Spectral]
+            }
+            field_ui_components::WaveformRepresentation::Spectrum => &[AnalysisKind::Spectral],
+            field_ui_components::WaveformRepresentation::Peaks => &[AnalysisKind::MinMax],
+        };
+        self.request_analysis_kinds(id, kinds, cx);
     }
 
     fn request_analysis(&self, id: DocumentId, kind: AnalysisKind, cx: &mut Context<Self>) {
-        // Spawn immediately when possible so progress shows without waiting
-        // for the next timer tick. Only queue when a job is already running
-        // (see spawn_analysis_build); pre-queueing here re-ran Transients
-        // after every successful spawn and flashed progress twice.
-        self.spawn_analysis_build(id, kind, cx);
+        self.request_analysis_kinds(id, &[kind], cx);
     }
 
-    fn spawn_analysis_build(&self, id: DocumentId, kind: AnalysisKind, cx: &mut Context<Self>) {
+    fn request_analysis_kinds(
+        &self,
+        id: DocumentId,
+        kinds: &[AnalysisKind],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(views) = self.views.get(&id) else {
+            return;
+        };
+        // Queue first so concurrent ensure_* / menu requests coalesce into one
+        // shared pass. If a job is already running, kinds stay queued for the
+        // next timer drain.
+        for &kind in kinds {
+            views.document.read(cx).request_analysis(kind);
+        }
+        let queued = views.document.read(cx).take_analysis_requests();
+        if queued.is_empty() {
+            return;
+        }
+        self.spawn_analysis_pass(id, queued, cx);
+    }
+
+    fn spawn_analysis_pass(
+        &self,
+        id: DocumentId,
+        mut kinds: Vec<AnalysisKind>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(views) = self.views.get(&id) else {
             return;
         };
         let composition = views.composition.clone();
-        let needed = match kind {
+        let rep = views.document.read(cx).waveform_representation;
+        // Expand to representation siblings before filtering so an early
+        // MinMax-only open under Peaks+Spectrum still starts a shared pass.
+        if matches!(
+            rep,
+            field_ui_components::WaveformRepresentation::PeaksSpectrum
+        ) {
+            kinds.push(AnalysisKind::MinMax);
+            kinds.push(AnalysisKind::Spectral);
+        } else if matches!(rep, field_ui_components::WaveformRepresentation::Spectrum) {
+            kinds.push(AnalysisKind::Spectral);
+        }
+        kinds.sort_by_key(|k| k.id());
+        kinds.dedup();
+        kinds.retain(|kind| match kind {
             AnalysisKind::MinMax => composition.read().unwrap().needs_peak_build(),
             AnalysisKind::EnvelopePeak => composition.read().unwrap().needs_envelope_peak_build(),
             AnalysisKind::Spectral => composition.read().unwrap().needs_spectral_build(),
             AnalysisKind::Transients => true,
-        };
-        if !needed {
+        });
+        if kinds.is_empty() {
             return;
         }
         if views.document.read(cx).progress.snapshot().is_some() {
-            // Re-queue so a later tick can start this kind after the current job.
-            views.document.read(cx).request_analysis(kind);
-            return;
+            // A single-kind job may already be running (e.g. MinMax from
+            // activate). Cancel it so we can start the shared pass now rather
+            // than finishing peaks first and spectrum later.
+            if kinds.len() > 1 {
+                views.document.read(cx).progress.cancel();
+            } else {
+                for kind in kinds {
+                    views.document.read(cx).request_analysis(kind);
+                }
+                return;
+            }
         }
-        if matches!(kind, AnalysisKind::EnvelopePeak | AnalysisKind::Transients) {
+        if kinds
+            .iter()
+            .any(|k| matches!(k, AnalysisKind::EnvelopePeak | AnalysisKind::Transients))
+        {
             // Menu Analyze snapshots the target (honoring Selection Only). Pull
             // rebuilds after edits leave this unset so the job can use dirty
             // neighborhoods (or the full timeline) instead of the selection.
@@ -3059,7 +3151,6 @@ impl AppView {
                 Some(snapshotted) => snapshotted,
                 None => None,
             };
-            // Selection Only with an empty selection: nothing to analyze.
             if matches!(ranges.as_ref(), Some(r) if r.is_empty()) {
                 return;
             }
@@ -3067,16 +3158,18 @@ impl AppView {
         }
         self.cancel_inactive_analysis_jobs(id, cx);
         let progress = views.document.read(cx).progress.clone();
-        let epoch = progress.begin(kind.progress_label());
+        let label = AnalysisKind::progress_label_for_kinds(&kinds);
+        let epoch = progress.begin(label);
         views.waveform.update(cx, |view, cx| {
             view.bump_paint_epoch(cx);
         });
         let pending = self.pending_analysis.clone();
+        let pending_logs = self.pending_analysis_logs.clone();
         std::thread::spawn(move || {
             loop {
-                match Composition::build_next_analysis_block(
+                match Composition::build_next_analysis_kinds(
                     &composition,
-                    kind,
+                    &kinds,
                     Some(&progress),
                     epoch,
                 ) {
@@ -3084,12 +3177,23 @@ impl AppView {
                         pending.lock().unwrap().push(id);
                     }
                     Ok(AnalysisBlockOutcome::Complete) => {
+                        let stats = composition.read().unwrap().analysis_pass_stats();
+                        // Push the log before notifying the UI so the next
+                        // drain_pending_analysis cannot race past an empty queue.
+                        pending_logs.lock().unwrap().push(LogLine {
+                            level: LogLevel::Info,
+                            topic: "analysis".into(),
+                            text: stats.info_message(&kinds),
+                        });
                         pending.lock().unwrap().push(id);
                         break;
                     }
                     Ok(AnalysisBlockOutcome::Cancelled) => break,
                     Err(err) => {
-                        eprintln!("failed to run {}: {err:#}", kind.progress_label());
+                        eprintln!(
+                            "failed to run {}: {err:#}",
+                            AnalysisKind::progress_label_for_kinds(&kinds)
+                        );
                         break;
                     }
                 }
@@ -3100,9 +3204,15 @@ impl AppView {
     }
 
     fn drain_pending_analysis(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let logs = std::mem::take(&mut *self.pending_analysis_logs.lock().unwrap());
         let completed = std::mem::take(&mut *self.pending_analysis.lock().unwrap());
-        if completed.is_empty() {
+        if logs.is_empty() && completed.is_empty() {
             return;
+        }
+        if !logs.is_empty() {
+            self.messages.update(cx, |panel, cx| {
+                panel.append(logs, cx);
+            });
         }
         for id in completed {
             let Some(views) = self.views.get(&id) else {
@@ -3214,7 +3324,15 @@ impl AppView {
                     field_ui_components::WaveformRepresentation::Spectrum
                         | field_ui_components::WaveformRepresentation::PeaksSpectrum
                 ) {
-                    self.request_analysis(id, AnalysisKind::Spectral, cx);
+                    let mut kinds = Vec::new();
+                    if matches!(
+                        representation,
+                        field_ui_components::WaveformRepresentation::PeaksSpectrum
+                    ) {
+                        kinds.push(AnalysisKind::MinMax);
+                    }
+                    kinds.push(AnalysisKind::Spectral);
+                    self.request_analysis_kinds(id, &kinds, cx);
                 }
             }
         }

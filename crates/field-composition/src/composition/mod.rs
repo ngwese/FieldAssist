@@ -117,7 +117,17 @@ pub struct Composition {
     analysis_job_started: bool,
     /// True after [`Self::begin_analysis_target`] until the job finishes/clears.
     analysis_target_configured: bool,
+    /// Kinds participating in the active shared analysis pass.
+    analysis_pass_kinds: Vec<AnalysisKind>,
+    /// Clip currently feeding [`Self::minmax_op`] during a shared pass.
+    analysis_minmax_clip: Option<ClipId>,
+    /// Wall-time counters for the active / last shared pass.
+    analysis_pass_stats: AnalysisPassStats,
 }
+
+mod analysis_pass;
+
+pub use analysis_pass::AnalysisPassStats;
 
 fn normalize_playback_channels(
     channels: Option<Vec<usize>>,
@@ -207,6 +217,9 @@ impl Composition {
             analysis_target_done: 0,
             analysis_job_started: false,
             analysis_target_configured: false,
+            analysis_pass_kinds: Vec::new(),
+            analysis_minmax_clip: None,
+            analysis_pass_stats: AnalysisPassStats::default(),
         };
         composition.mark_clean();
         composition
@@ -272,6 +285,9 @@ impl Composition {
             analysis_target_done: 0,
             analysis_job_started: false,
             analysis_target_configured: false,
+            analysis_pass_kinds: Vec::new(),
+            analysis_minmax_clip: None,
+            analysis_pass_stats: AnalysisPassStats::default(),
         };
         let peaked = composed
             .pool
@@ -508,6 +524,9 @@ impl Composition {
             analysis_target_done: 0,
             analysis_job_started: false,
             analysis_target_configured: false,
+            analysis_pass_kinds: Vec::new(),
+            analysis_minmax_clip: None,
+            analysis_pass_stats: AnalysisPassStats::default(),
         }
     }
 
@@ -1042,6 +1061,8 @@ impl Composition {
         self.analysis_target_done = 0;
         self.analysis_job_started = false;
         self.analysis_target_configured = false;
+        self.analysis_pass_kinds.clear();
+        self.analysis_minmax_clip = None;
     }
 
     /// Configure the next envelope/transient job.
@@ -1071,6 +1092,8 @@ impl Composition {
         self.envelope_op = None;
         self.spectral_op = None;
         self.transient_op = None;
+        self.analysis_pass_kinds.clear();
+        self.analysis_minmax_clip = None;
     }
 
     fn remap_markers_between(&mut self, from: usize, to: usize) {
@@ -1909,6 +1932,16 @@ impl Composition {
         }
     }
 
+    /// Run one pager-sized step of a multi-kind pass (see [`Self::build_next_analysis_pass_block`]).
+    pub fn build_next_analysis_kinds(
+        composition: &RwLock<Self>,
+        kinds: &[AnalysisKind],
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+    ) -> Result<AnalysisBlockOutcome> {
+        Self::build_next_analysis_pass_block(composition, kinds, progress, epoch)
+    }
+
     fn build_next_minmax_block(
         composition: &RwLock<Self>,
         progress: Option<&ProgressHandle>,
@@ -2032,9 +2065,11 @@ impl Composition {
 
     /// Whether envelope-peak analysis covers the full timeline.
     pub fn needs_envelope_peak_build(&self) -> bool {
-        !self
-            .analysis_streams
-            .envelope_peak_ready(self.frames(), self.channel_count)
+        let frames = self.frames();
+        frames > 0
+            && !self
+                .analysis_streams
+                .envelope_peak_ready(frames, self.channel_count)
     }
 
     /// Whether any envelope-peak bins are available for progressive paint.
@@ -2045,9 +2080,11 @@ impl Composition {
 
     /// Whether spectral analysis covers the full timeline.
     pub fn needs_spectral_build(&self) -> bool {
-        !self
-            .analysis_streams
-            .spectral_ready(self.frames(), self.channel_count)
+        let frames = self.frames();
+        frames > 0
+            && !self
+                .analysis_streams
+                .spectral_ready(frames, self.channel_count)
     }
 
     /// Whether any spectral hops are available for progressive paint.
@@ -2767,6 +2804,8 @@ impl Composition {
         self.spectral_op = None;
         self.transient_op = None;
         self.analysis_job_started = false;
+        self.analysis_pass_kinds.clear();
+        self.analysis_minmax_clip = None;
     }
 
     fn ensure_transient_marker_type(&mut self) {
@@ -3049,7 +3088,7 @@ fn normalize_half_open_ranges(ranges: Vec<(u64, u64)>, frames: u64) -> Vec<(u64,
 }
 
 /// Next chunk inside target ranges: `(range_start, chunk_end, read_pos)`.
-fn next_chunk_in_ranges(
+pub(crate) fn next_chunk_in_ranges(
     ranges: &[(u64, u64)],
     read_pos: u64,
     max_frames: u64,
@@ -3070,7 +3109,7 @@ fn next_chunk_in_ranges(
     None
 }
 
-fn advance_read_pos(ranges: &[(u64, u64)], after: u64) -> u64 {
+pub(crate) fn advance_read_pos(ranges: &[(u64, u64)], after: u64) -> u64 {
     for &(start, end) in ranges {
         if after < end {
             return after.max(start);
@@ -3079,7 +3118,7 @@ fn advance_read_pos(ranges: &[(u64, u64)], after: u64) -> u64 {
     after
 }
 
-fn peak_covered_samples(clip: &Clip) -> u64 {
+pub(crate) fn peak_covered_samples(clip: &Clip) -> u64 {
     clip.cache
         .peaks
         .first()
@@ -3230,6 +3269,15 @@ impl Iterator for FramesIter<'_> {
 mod tests {
     use super::*;
     use crate::MARKER_TYPE_BLUE;
+
+    #[test]
+    fn empty_composition_does_not_need_spectral_or_envelope() {
+        let comp = Composition::new(44_100, 2);
+        assert_eq!(comp.frames(), 0);
+        assert!(!comp.needs_spectral_build());
+        assert!(!comp.needs_envelope_peak_build());
+        assert!(!comp.needs_peak_build());
+    }
 
     fn sine_media(frames: usize, channels: usize, rate: u32) -> MediaRef {
         let samples = (0..channels)

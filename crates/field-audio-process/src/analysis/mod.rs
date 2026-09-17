@@ -70,6 +70,23 @@ impl AnalysisKind {
         }
     }
 
+    /// Progress label for a multi-kind analysis pass (stable order).
+    pub fn progress_label_for_kinds(kinds: &[Self]) -> String {
+        let mut ordered = kinds.to_vec();
+        ordered.sort_by_key(|k| k.id());
+        ordered.dedup();
+        match ordered.as_slice() {
+            [] => "analyzing".into(),
+            [one] => one.progress_label().into(),
+            [Self::MinMax, Self::Spectral] => "building peaks + spectrum".into(),
+            many => many
+                .iter()
+                .map(|k| k.progress_label())
+                .collect::<Vec<_>>()
+                .join(" + "),
+        }
+    }
+
     /// How this op invalidates and rebuilds after sample-changing edits.
     pub fn recompute_scope(self, sample_rate: u32) -> RecomputeScope {
         match self {
