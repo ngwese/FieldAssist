@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::Result;
 use cpal::Device;
+use field_audio_playback::OUTPUT_OPEN_TIMEOUT;
 
 use crate::model::buffer::ChannelScope;
 use crate::model::composition::Composition;
@@ -28,19 +30,68 @@ pub struct PlaybackSession {
     monitor: Arc<MonitorHost>,
     anchors: Vec<usize>,
     active_region: Option<(usize, usize)>,
+    /// Why output is inactive, if [`Self::output_active`] is false after open.
+    output_fault: Option<String>,
 }
 
 impl PlaybackSession {
+    /// Open playback on `device`, or start with output disabled if the device
+    /// cannot be started within [`OUTPUT_OPEN_TIMEOUT`].
     pub fn open(device: &Device, composition: Arc<RwLock<Composition>>) -> Result<Self> {
+        Self::open_with_timeout(device, composition, OUTPUT_OPEN_TIMEOUT)
+    }
+
+    /// Like [`Self::open`] with an explicit timeout.
+    pub fn open_with_timeout(
+        device: &Device,
+        composition: Arc<RwLock<Composition>>,
+        timeout: Duration,
+    ) -> Result<Self> {
         let provider = Arc::new(SharedCompositionProvider::new(composition));
         let playhead = Playhead::new(provider.clone());
-        let engine = PlaybackEngine::open(device, provider.clone())?;
+        let (engine, fault) =
+            match PlaybackEngine::open_with_timeout(device, provider.clone(), timeout) {
+                Ok(engine) => (engine, None),
+                Err(err) => {
+                    let fault = format!(
+                        "Audio output unavailable ({err}). Select a working device in Monitor \
+                         to enable playback."
+                    );
+                    eprintln!("FieldAssist: {fault}");
+                    (PlaybackEngine::disabled(provider.clone())?, Some(fault))
+                }
+            };
+        Ok(Self::from_parts(provider, playhead, engine, fault))
+    }
+
+    /// Session with no CPAL stream (silent until [`Self::set_output_device`]).
+    pub fn disabled(composition: Arc<RwLock<Composition>>) -> Result<Self> {
+        let provider = Arc::new(SharedCompositionProvider::new(composition));
+        let playhead = Playhead::new(provider.clone());
+        let engine = PlaybackEngine::disabled(provider.clone())?;
+        Ok(Self::from_parts(
+            provider,
+            playhead,
+            engine,
+            Some(
+                "Audio output unavailable. Select a working device in Monitor to enable playback."
+                    .into(),
+            ),
+        ))
+    }
+
+    fn from_parts(
+        provider: Arc<SharedCompositionProvider>,
+        playhead: Playhead,
+        engine: PlaybackEngine,
+        output_fault: Option<String>,
+    ) -> Self {
         let monitor = Arc::new(MonitorHost::new(engine.shared.output_rate()));
         let process = Arc::new(MonitorHostProcess::new(monitor.clone()));
         engine
             .shared
             .set_monitor_process(Some(process as Arc<dyn super::MonitorProcess>));
-        Ok(Self {
+        Self {
             provider,
             playhead,
             transport: Transport::new(),
@@ -48,12 +99,24 @@ impl PlaybackSession {
             monitor,
             anchors: Vec::new(),
             active_region: None,
-        })
+            output_fault,
+        }
+    }
+
+    /// Whether a live output stream is attached.
+    pub fn output_active(&self) -> bool {
+        self.engine.output_active()
+    }
+
+    /// Human-readable reason output is inactive, if any.
+    pub fn output_fault(&self) -> Option<&str> {
+        self.output_fault.as_deref()
     }
 
     pub fn set_output_device(&mut self, device: &Device) -> Result<()> {
         self.stop();
         self.engine.reopen(device)?;
+        self.output_fault = None;
         self.apply_to_engine();
         Ok(())
     }
