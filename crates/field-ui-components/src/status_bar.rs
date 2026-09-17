@@ -54,6 +54,8 @@ pub struct SessionStatusBar {
     layout: Option<LayoutPicker>,
     on_monitor: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     monitor_selected: bool,
+    /// True when audio output failed to open — icon drawn in danger color.
+    monitor_faulted: bool,
     on_preview: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     preview_selected: bool,
     error_count: usize,
@@ -70,6 +72,7 @@ impl SessionStatusBar {
             layout: None,
             on_monitor: None,
             monitor_selected: false,
+            monitor_faulted: false,
             on_preview: None,
             preview_selected: false,
             error_count: 0,
@@ -99,6 +102,12 @@ impl SessionStatusBar {
     /// Whether the monitor toggle appears selected.
     pub fn with_monitor_selected(mut self, selected: bool) -> Self {
         self.monitor_selected = selected;
+        self
+    }
+
+    /// Draw the monitor icon in the danger color (output device unavailable).
+    pub fn with_monitor_faulted(mut self, faulted: bool) -> Self {
+        self.monitor_faulted = faulted;
         self
     }
 
@@ -177,7 +186,13 @@ impl RenderOnce for SessionStatusBar {
                 bar = bar.right(layout_dropdown(layout, muted));
             }
             if let Some(on_monitor) = self.on_monitor {
-                bar = bar.right(monitor_button(on_monitor, muted, self.monitor_selected));
+                bar = bar.right(monitor_button(
+                    on_monitor,
+                    muted,
+                    self.monitor_selected,
+                    self.monitor_faulted,
+                    cx,
+                ));
             }
         } else if self.progress_message.is_some() {
             bar = bar.right("");
@@ -272,14 +287,24 @@ fn monitor_button(
     on_click: Rc<dyn Fn(&mut Window, &mut App)>,
     muted: Hsla,
     selected: bool,
+    faulted: bool,
+    cx: &App,
 ) -> impl IntoElement {
+    let theme = cx.theme();
+    let color = if faulted { theme.danger } else { muted };
     Button::new("monitor-tab")
         .ghost()
         .size(MONITOR_ICON_SIZE)
         .p_0()
-        .text_color(muted)
-        .child(Icon::new(MonitorSpeakerIcon).with_size(MONITOR_ICON_SIZE))
-        .tooltip(if selected {
+        .text_color(color)
+        .child(
+            Icon::new(MonitorSpeakerIcon)
+                .with_size(MONITOR_ICON_SIZE)
+                .text_color(color),
+        )
+        .tooltip(if faulted {
+            "Audio output unavailable — show Monitor"
+        } else if selected {
             "Hide Monitor"
         } else {
             "Show Monitor"
