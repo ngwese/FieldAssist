@@ -62,7 +62,9 @@ pub use device::{
     list_output_devices, output_device_name, print_output_devices, resolve_output_device,
     OutputDeviceInfo,
 };
-pub use engine::{PlaybackEngine, PlaybackShared, PlaybackStats, PLAYBACK_READ_FRAMES};
+pub use engine::{
+    PlaybackEngine, PlaybackShared, PlaybackStats, OUTPUT_OPEN_TIMEOUT, PLAYBACK_READ_FRAMES,
+};
 pub use faults::{
     PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackFaultMessage, PlaybackFaults,
     PLAYBACK_FAULT_LOG_INTERVAL,

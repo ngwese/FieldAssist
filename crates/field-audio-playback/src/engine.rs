@@ -980,25 +980,84 @@ fn prefetch_loop(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) {
 
 /// Owns the CPAL output stream, shared playback state, and prefetch worker.
 pub struct PlaybackEngine {
-    _stream: Stream,
+    _stream: Option<Stream>,
     /// Shared callback state.
     pub shared: Arc<PlaybackShared>,
     prefetch_stop: Arc<AtomicBool>,
     prefetch_join: Option<JoinHandle<()>>,
 }
 
+/// How long [`PlaybackEngine::open_with_timeout`] waits for CPAL before giving up.
+pub const OUTPUT_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+
 impl PlaybackEngine {
     /// Open an output stream on `device` for `provider` and start prefetch.
+    ///
+    /// Blocks until CPAL finishes building and starting the stream. Prefer
+    /// [`Self::open_with_timeout`] from UI startup so a stuck device cannot
+    /// hang the application.
     pub fn open(device: &Device, provider: Arc<dyn PlaybackDataProvider>) -> Result<Self> {
         let (stream, shared) = open_output_stream(device, provider)?;
         let prefetch_stop = Arc::new(AtomicBool::new(false));
         let prefetch_join = Some(spawn_prefetch(shared.clone(), prefetch_stop.clone())?);
         Ok(Self {
-            _stream: stream,
+            _stream: Some(stream),
             shared,
             prefetch_stop,
             prefetch_join,
         })
+    }
+
+    /// Like [`Self::open`], but abandons the attempt after [`OUTPUT_OPEN_TIMEOUT`]
+    /// (or `timeout`) and returns an error so the host can start without audio.
+    ///
+    /// The open runs on a helper thread. If the timeout fires while CPAL is
+    /// still blocked, that thread is left to finish or stall on its own.
+    pub fn open_with_timeout(
+        device: &Device,
+        provider: Arc<dyn PlaybackDataProvider>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let device = device.clone();
+        let provider_thread = provider.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::Builder::new()
+            .name("fa-open-output".into())
+            .spawn(move || {
+                let _ = tx.send(Self::open(&device, provider_thread));
+            })
+            .context("spawn output-open thread")?;
+        match rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                anyhow::bail!(
+                    "opening output device timed out after {} ms",
+                    timeout.as_millis()
+                )
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("output-open thread exited without a result")
+            }
+        }
+    }
+
+    /// Prefetch + shared state with no CPAL stream (playback silent until
+    /// [`Self::reopen`]).
+    pub fn disabled(provider: Arc<dyn PlaybackDataProvider>) -> Result<Self> {
+        let shared = Arc::new(PlaybackShared::with_output_layout(provider, 44_100, 2));
+        let prefetch_stop = Arc::new(AtomicBool::new(false));
+        let prefetch_join = Some(spawn_prefetch(shared.clone(), prefetch_stop.clone())?);
+        Ok(Self {
+            _stream: None,
+            shared,
+            prefetch_stop,
+            prefetch_join,
+        })
+    }
+
+    /// Whether a live CPAL output stream is attached.
+    pub fn output_active(&self) -> bool {
+        self._stream.is_some()
     }
 
     /// Reopen the stream on a new device, preserving shared state.
@@ -1006,7 +1065,7 @@ impl PlaybackEngine {
         self.shared.bump_epoch();
         let (stream, output_rate, output_channels) =
             build_playing_stream(device, self.shared.clone())?;
-        self._stream = stream;
+        self._stream = Some(stream);
         self.shared.set_output_layout(output_rate, output_channels);
         Ok(())
     }
