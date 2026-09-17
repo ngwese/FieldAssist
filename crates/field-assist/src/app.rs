@@ -523,6 +523,18 @@ impl AppView {
         };
         this.load_init_lua(window, cx);
         this.refresh_output_devices_cache();
+        if let Some(fault) = this.playback.output_fault().map(str::to_string) {
+            this.messages.update(cx, |panel, cx| {
+                panel.append(
+                    vec![LogLine {
+                        level: LogLevel::Error,
+                        topic: "output".into(),
+                        text: fault.into(),
+                    }],
+                    cx,
+                );
+            });
+        }
         if let Some(path) = session_path {
             if let Err(err) = this.replace_session_from_path(&path, window, cx) {
                 this.show_load_error(&err, window, cx);
@@ -2101,6 +2113,20 @@ impl AppView {
             self.script
                 .log(ScriptLogLevel::Error, "output".into(), err.clone());
             self.flush_script_logs(cx);
+            self.messages.update(cx, |panel, cx| {
+                panel.append(
+                    vec![LogLine {
+                        level: LogLevel::Error,
+                        topic: "output".into(),
+                        text: format!(
+                            "Failed to open audio output ({err}). Select another device in Monitor."
+                        )
+                        .into(),
+                    }],
+                    cx,
+                );
+            });
+            cx.notify();
         }
     }
 
@@ -4685,6 +4711,7 @@ impl Render for AppView {
                                             )
                                             .with_monitor(on_monitor)
                                             .with_monitor_selected(self.monitor_tab_visible(cx))
+                                            .with_monitor_faulted(!self.playback.output_active())
                                             .with_layout(layout_picker),
                                     ),
                             )
@@ -4890,9 +4917,19 @@ fn open_main_window_seeded(cx: &mut App, mut paths: Vec<PathBuf>, seed: MainWind
             launch.pending_opens.clone(),
         )
     };
-    let device = resolve_output_device(output_spec.as_deref())
-        .expect("failed to resolve output audio device");
-    let output_device = output_spec.as_ref().map(|_| output_device_name(&device));
+    let (device, output_device) = match resolve_output_device(output_spec.as_deref()) {
+        Ok(device) => {
+            let name = output_spec.as_ref().map(|_| output_device_name(&device));
+            (Some(device), name)
+        }
+        Err(err) => {
+            eprintln!(
+                "FieldAssist: failed to resolve output audio device ({err}); \
+                 continuing with playback disabled"
+            );
+            (None, None)
+        }
+    };
 
     let (composition, source_path, load_elapsed, session_path) = match seed {
         MainWindowSeed::Empty => (Composition::new(44100, 2), None, None, None),
@@ -4909,8 +4946,17 @@ fn open_main_window_seeded(cx: &mut App, mut paths: Vec<PathBuf>, seed: MainWind
     let title = AppView::composition_title(&composition);
     let shared_composition = Arc::new(RwLock::new(composition));
     let shared_buffer = Arc::new(RwLock::new(Buffer::empty()));
-    let playback = PlaybackSession::open(&device, shared_composition.clone())
-        .expect("failed to open audio playback device");
+    let playback = match &device {
+        Some(device) => PlaybackSession::open(device, shared_composition.clone()),
+        None => PlaybackSession::disabled(shared_composition.clone()),
+    };
+    let playback = match playback {
+        Ok(playback) => playback,
+        Err(err) => {
+            eprintln!("FieldAssist: failed to create playback session: {err}");
+            return;
+        }
+    };
 
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions {
