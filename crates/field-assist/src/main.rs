@@ -47,6 +47,8 @@ mod dock_titles;
 mod lineage;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+#[cfg(target_os = "macos")]
+mod macos_open;
 mod model;
 mod monitor;
 mod monitor_schema;
@@ -94,7 +96,16 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (composition, load_elapsed, session_path) = match &args.file {
+    // Finder may pass `-psn_…` as argv[1] on older macOS; ignore it as a file.
+    let cli_file = args.file.filter(|path| {
+        !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("-psn_"))
+            && !path.to_string_lossy().starts_with("-psn_")
+    });
+
+    let (composition, load_elapsed, session_path) = match &cli_file {
         Some(path) if model::is_fasession_path(path) => (None, None, Some(path.clone())),
         Some(path) => {
             let started = Instant::now();

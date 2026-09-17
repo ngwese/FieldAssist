@@ -89,6 +89,10 @@ impl Global for OpenTarget {}
 struct AppLaunchState {
     pending_opens: Arc<Mutex<Vec<PathBuf>>>,
     output_device_spec: Option<String>,
+    /// Set after the deferred first-window open finishes. Until then, Dock /
+    /// Finder `on_reopen` must not create an empty editor (it races document
+    /// opens at cold launch and drops the CLI preload seed).
+    launch_ui_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Global for AppLaunchState {}
@@ -3899,6 +3903,8 @@ impl AppView {
     fn drain_pending_opens(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = std::mem::take(&mut *self.pending_opens.lock().unwrap());
         for path in paths {
+            #[cfg(target_os = "macos")]
+            crate::macos_open::log_open(&format!("AppView::open_path {}", path.display()));
             self.open_path(path, window, cx);
         }
     }
@@ -4794,13 +4800,10 @@ fn living_editor_window(cx: &mut App) -> Option<(Entity<AppView>, AnyWindowHandl
     let view = cx.try_global::<OpenTarget>().map(|target| target.0.clone());
     let handle = cx.try_global::<EditorWindow>().map(|editor| editor.0);
     match (view, handle) {
-        (Some(view), Some(handle)) if window_is_open(cx, handle) => Some((view, handle)),
+        (Some(view), Some(handle)) => Some((view, handle)),
         (None, None) => None,
-        _ => {
-            // Stale globals after the editor closed — not a transient update borrow.
-            clear_editor_globals(cx);
-            None
-        }
+        // Partial pair: leave globals alone. Teardown is `on_app_window_closed`.
+        _ => None,
     }
 }
 
@@ -4887,35 +4890,104 @@ fn take_pending_open_paths(cx: &App) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+fn push_pending_open_paths(cx: &App, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
+    if let Some(launch) = cx.try_global::<AppLaunchState>() {
+        launch.pending_opens.lock().unwrap().extend(paths);
+    }
+}
+
+fn flush_pending_opens_into_editor(cx: &mut App) {
+    if living_editor_window(cx).is_none() {
+        let ready = cx.try_global::<AppLaunchState>().is_some_and(|launch| {
+            launch
+                .launch_ui_ready
+                .load(std::sync::atomic::Ordering::SeqCst)
+        });
+        if !ready {
+            #[cfg(target_os = "macos")]
+            crate::macos_open::log_open(
+                "flush: skip (no editor yet, launch not ready — leave pending)",
+            );
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        crate::macos_open::log_open("flush: no editor but launch ready → open_main_window");
+        open_main_window(cx, vec![]);
+        return;
+    }
+
+    let paths = take_pending_open_paths(cx);
+    if paths.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    crate::macos_open::log_open(&format!(
+        "flush_pending_opens_into_editor {} path(s)",
+        paths.len()
+    ));
+    let Some((view, handle)) = living_editor_window(cx) else {
+        push_pending_open_paths(cx, paths);
+        return;
+    };
+    let paths_for_retry = paths.clone();
+    match handle.update(cx, |_, window, cx| {
+        view.update(cx, |this, cx| {
+            for path in paths {
+                #[cfg(target_os = "macos")]
+                crate::macos_open::log_open(&format!("flush→open_path {}", path.display()));
+                this.open_path(path, window, cx);
+            }
+        });
+    }) {
+        Ok(()) => {}
+        Err(err) => {
+            #[cfg(target_os = "macos")]
+            crate::macos_open::log_open(&format!("flush: handle.update failed ({err}); re-queue"));
+            push_pending_open_paths(cx, paths_for_retry);
+        }
+    }
+}
+
+fn mark_launch_ui_ready(cx: &mut App) {
+    if let Some(launch) = cx.try_global::<AppLaunchState>() {
+        launch
+            .launch_ui_ready
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn open_main_window(cx: &mut App, paths: Vec<PathBuf>) {
     open_main_window_seeded(cx, paths, MainWindowSeed::Empty);
 }
 
-fn open_main_window_seeded(cx: &mut App, mut paths: Vec<PathBuf>, seed: MainWindowSeed) {
-    paths.extend(take_pending_open_paths(cx));
+fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSeed) {
+    // Keep Finder / Dock paths in the shared pending queue. Taking them into a
+    // local vec and only opening via `handle.update` after `open_window` was
+    // dropping cold-launch opens when that update did not stick; AppView's
+    // drain (and an explicit flush below) are the reliable delivery path.
+    push_pending_open_paths(cx, paths);
 
-    if let Some((view, handle)) = living_editor_window(cx) {
+    if let Some((_, handle)) = living_editor_window(cx) {
         cx.defer(move |cx| {
-            let _ = handle.update(cx, |_, window, cx| {
+            let _ = handle.update(cx, |_, window, _| {
                 window.activate_window();
-                if !paths.is_empty() {
-                    view.update(cx, |this, cx| {
-                        for path in paths {
-                            this.open_path(path, window, cx);
-                        }
-                    });
-                }
             });
+            flush_pending_opens_into_editor(cx);
         });
         return;
     }
 
-    let (output_spec, pending_opens) = {
-        let launch = cx.global::<AppLaunchState>();
+    let Some((output_spec, pending_opens)) = cx.try_global::<AppLaunchState>().map(|launch| {
         (
             launch.output_device_spec.clone(),
             launch.pending_opens.clone(),
         )
+    }) else {
+        // Launch callback has not stored AppLaunchState yet (e.g. early reopen).
+        return;
     };
     let (device, output_device) = match resolve_output_device(output_spec.as_deref()) {
         Ok(device) => {
@@ -4972,70 +5044,85 @@ fn open_main_window_seeded(cx: &mut App, mut paths: Vec<PathBuf>, seed: MainWind
         ..TitleBar::window_options()
     };
 
-    let handle = cx
-        .open_window(options, move |window, cx| {
-            let view = cx.new(|cx| {
-                AppView::new(
-                    shared_composition.clone(),
-                    shared_buffer.clone(),
-                    source_path.clone(),
-                    load_elapsed,
-                    playback,
-                    output_device,
-                    pending_opens.clone(),
-                    session_path.clone(),
-                    window,
-                    cx,
-                )
-            });
-            cx.set_global(OpenTarget(view.clone()));
-            let closer = view.clone();
-            let pinner = view.clone();
-            let pinned = view.clone();
-            let close_all = view.clone();
-            let close_saved = view.clone();
-            cx.set_global(CenterTabBarHandler {
-                close: Rc::new(move |panel_id, window, cx| {
-                    closer.update(cx, |this, cx| {
-                        this.close_center_panel(panel_id, window, cx);
-                    });
-                }),
-                pin: Rc::new(move |panel_id, _, cx| {
-                    pinner.update(cx, |this, cx| {
-                        this.pin_center_panel(panel_id, cx);
-                    });
-                }),
-                is_pinned: Rc::new(move |panel_id, cx| pinned.read(cx).panel_is_pinned(panel_id)),
-                close_all: Rc::new(move |window, cx| {
-                    close_all.update(cx, |this, cx| {
-                        this.close_all_tabs(window, cx);
-                    });
-                }),
-                close_saved: Rc::new(move |window, cx| {
-                    close_saved.update(cx, |this, cx| {
-                        this.close_saved_tabs(window, cx);
-                    });
-                }),
-            });
-            window.focus(&view.focus_handle(cx), cx);
-            cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
-        })
-        .expect("failed to open window");
+    let handle = match cx.open_window(options, move |window, cx| {
+        let view = cx.new(|cx| {
+            AppView::new(
+                shared_composition.clone(),
+                shared_buffer.clone(),
+                source_path.clone(),
+                load_elapsed,
+                playback,
+                output_device,
+                pending_opens.clone(),
+                session_path.clone(),
+                window,
+                cx,
+            )
+        });
+        cx.set_global(OpenTarget(view.clone()));
+        let closer = view.clone();
+        let pinner = view.clone();
+        let pinned = view.clone();
+        let close_all = view.clone();
+        let close_saved = view.clone();
+        cx.set_global(CenterTabBarHandler {
+            close: Rc::new(move |panel_id, window, cx| {
+                closer.update(cx, |this, cx| {
+                    this.close_center_panel(panel_id, window, cx);
+                });
+            }),
+            pin: Rc::new(move |panel_id, _, cx| {
+                pinner.update(cx, |this, cx| {
+                    this.pin_center_panel(panel_id, cx);
+                });
+            }),
+            is_pinned: Rc::new(move |panel_id, cx| pinned.read(cx).panel_is_pinned(panel_id)),
+            close_all: Rc::new(move |window, cx| {
+                close_all.update(cx, |this, cx| {
+                    this.close_all_tabs(window, cx);
+                });
+            }),
+            close_saved: Rc::new(move |window, cx| {
+                close_saved.update(cx, |this, cx| {
+                    this.close_saved_tabs(window, cx);
+                });
+            }),
+        });
+        // Pull any straggler macos_open queue into the shared pending Arc, then
+        // open inside this callback while `window` + `AppView` are live.
+        #[cfg(target_os = "macos")]
+        {
+            pending_opens
+                .lock()
+                .unwrap()
+                .extend(crate::macos_open::take_queued_paths());
+        }
+        let pending_count = pending_opens.lock().unwrap().len();
+        #[cfg(target_os = "macos")]
+        crate::macos_open::log_open(&format!(
+            "open_window build: draining {pending_count} pending path(s)"
+        ));
+        view.update(cx, |this, cx| {
+            this.drain_pending_opens(window, cx);
+        });
+        window.focus(&view.focus_handle(cx), cx);
+        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+    }) {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("failed to open window: {err}");
+            return;
+        }
+    };
 
     cx.set_global(EditorWindow(handle.into()));
     refresh_menus_for_editor_presence(cx);
 
-    if !paths.is_empty() {
-        if let Some(view) = cx.try_global::<OpenTarget>().map(|target| target.0.clone()) {
-            let _ = handle.update(cx, |_, window, cx| {
-                view.update(cx, |this, cx| {
-                    for path in paths {
-                        this.open_path(path, window, cx);
-                    }
-                });
-            });
-        }
-    }
+    // Stragglers that arrive after the window is up (Dock drop while running
+    // uses open_handler → flush).
+    cx.defer(|cx| {
+        flush_pending_opens_into_editor(cx);
+    });
 }
 
 fn update_open_view(
@@ -5703,11 +5790,16 @@ fn install_app_menu(cx: &mut App) {
     cx.activate(true);
 }
 
-fn path_from_open_url(url: &str) -> Option<PathBuf> {
+pub(crate) fn path_from_open_url(url: &str) -> Option<PathBuf> {
+    // Finder / Launch Services may send file URLs with a host (`localhost`) or
+    // percent-encoded path segments. Strip query/fragment before decoding.
+    let url = url.split_once('#').map(|(head, _)| head).unwrap_or(url);
+    let url = url.split_once('?').map(|(head, _)| head).unwrap_or(url);
     let decoded = if let Some(rest) = url.strip_prefix("file://") {
         let path = if rest.starts_with('/') {
             rest
         } else {
+            // file://localhost/Users/... or file://hostname/path
             let slash = rest.find('/')?;
             &rest[slash..]
         };
@@ -5717,7 +5809,11 @@ fn path_from_open_url(url: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    Some(PathBuf::from(decoded))
+    let path = PathBuf::from(decoded);
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    Some(path)
 }
 
 fn percent_decode(input: &str) -> Option<String> {
@@ -5740,6 +5836,44 @@ fn percent_decode(input: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+#[cfg(test)]
+mod open_url_tests {
+    use super::path_from_open_url;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_plain_file_url() {
+        assert_eq!(
+            path_from_open_url("file:///Users/me/take.wav"),
+            Some(PathBuf::from("/Users/me/take.wav"))
+        );
+    }
+
+    #[test]
+    fn parses_localhost_file_url_and_encoding() {
+        assert_eq!(
+            path_from_open_url("file://localhost/Users/me/my%20take.wav"),
+            Some(PathBuf::from("/Users/me/my take.wav"))
+        );
+    }
+
+    #[test]
+    fn strips_query_and_fragment() {
+        assert_eq!(
+            path_from_open_url("file:///tmp/a.wav?x=1#frag"),
+            Some(PathBuf::from("/tmp/a.wav"))
+        );
+    }
+
+    #[test]
+    fn accepts_bare_unix_path() {
+        assert_eq!(
+            path_from_open_url("/tmp/a.wav"),
+            Some(PathBuf::from("/tmp/a.wav"))
+        );
+    }
+}
+
 pub fn run(
     initial: Option<Composition>,
     load_elapsed: Option<f64>,
@@ -5759,6 +5893,11 @@ pub fn run(
     };
 
     let app = gpui_kit::application().with_assets(AppAssets);
+    // Observe willFinishLaunching → NSAppleEventManager odoc handler. Must be
+    // before `run` so the observer is live when AppKit posts the notification.
+    #[cfg(target_os = "macos")]
+    crate::macos_open::install();
+    // Backup: GPUI application:openURLs: (used if our AE handler is not yet set).
     app.on_open_urls({
         let pending_opens = pending_opens.clone();
         move |urls| {
@@ -5770,7 +5909,18 @@ pub fn run(
             }
         }
     });
+    // Dock / Finder reopen. Ignore until the deferred first-window open has
+    // finished — otherwise cold launch via Open Document creates an empty
+    // editor and drops the preload / pending-open seed.
     app.on_reopen(|cx| {
+        let ready = cx.try_global::<AppLaunchState>().is_some_and(|launch| {
+            launch
+                .launch_ui_ready
+                .load(std::sync::atomic::Ordering::SeqCst)
+        });
+        if !ready {
+            return;
+        }
         if let Some((_, handle)) = living_editor_window(cx) {
             let _ = handle.update(cx, |_, window, _| {
                 window.activate_window();
@@ -5780,17 +5930,105 @@ pub fn run(
         open_main_window(cx, vec![]);
     });
     app.run(move |cx| {
+        // Keep did_finish_launching light: activating or opening a window here
+        // can re-enter applicationShouldHandleReopen while App is still
+        // borrowed (RefCell panic → abort across the ObjC boundary). That shows
+        // up when launching by double-clicking a document.
         gpui_kit::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
-        apply_muted_chrome(cx);
-        install_app_menu(cx);
+
+        #[cfg(target_os = "macos")]
+        {
+            // Cold-launch odoc may have been handled before App existed.
+            pending_opens
+                .lock()
+                .unwrap()
+                .extend(crate::macos_open::take_queued_paths());
+            pending_opens
+                .lock()
+                .unwrap()
+                .extend(crate::macos_open::paths_from_current_open_documents_event());
+            // Warm opens: queue paths, then flush on the main-thread GPUI
+            // executor. AsyncApp is !Send, so it lives in a thread-local; the
+            // AE handler only touches the Send `pending_opens` Arc.
+            thread_local! {
+                static ASYNC_APP: std::cell::RefCell<Option<gpui_kit::AsyncApp>> =
+                    const { std::cell::RefCell::new(None) };
+            }
+            ASYNC_APP.with(|slot| {
+                *slot.borrow_mut() = Some(cx.to_async());
+            });
+            let pending_opens = pending_opens.clone();
+            crate::macos_open::set_open_handler(move |paths| {
+                crate::macos_open::log_open(&format!(
+                    "open_handler: queueing {} path(s)",
+                    paths.len()
+                ));
+                pending_opens.lock().unwrap().extend(paths);
+                ASYNC_APP.with(|slot| {
+                    let Some(async_cx) = slot.borrow().clone() else {
+                        crate::macos_open::log_open("open_handler: no AsyncApp yet");
+                        return;
+                    };
+                    async_cx
+                        .spawn(async move |cx| {
+                            cx.update(|cx| {
+                                let ready =
+                                    cx.try_global::<AppLaunchState>().is_some_and(|launch| {
+                                        launch
+                                            .launch_ui_ready
+                                            .load(std::sync::atomic::Ordering::SeqCst)
+                                    });
+                                if living_editor_window(cx).is_some() {
+                                    flush_pending_opens_into_editor(cx);
+                                } else if ready {
+                                    open_main_window(cx, vec![]);
+                                }
+                            });
+                        })
+                        .detach();
+                });
+            });
+        }
 
         cx.set_global(AppLaunchState {
             pending_opens: pending_opens.clone(),
             output_device_spec: output_spec.clone(),
+            launch_ui_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         cx.on_window_closed(on_app_window_closed).detach();
 
-        open_main_window_seeded(cx, vec![], seed);
+        cx.spawn(async move |cx| {
+            // Yield so application:openURLs: can also append to pending_opens.
+            cx.background_executor()
+                .timer(Duration::from_millis(0))
+                .await;
+            #[cfg(target_os = "macos")]
+            {
+                let _ = cx.update(|cx| {
+                    if let Some(launch) = cx.try_global::<AppLaunchState>() {
+                        launch
+                            .pending_opens
+                            .lock()
+                            .unwrap()
+                            .extend(crate::macos_open::take_queued_paths());
+                    }
+                });
+            }
+            cx.update(|cx| {
+                Theme::change(ThemeMode::Dark, None, cx);
+                apply_muted_chrome(cx);
+                install_app_menu(cx);
+                open_main_window_seeded(cx, vec![], seed);
+                mark_launch_ui_ready(cx);
+            });
+            // Straggler openURLs / AE deliveries just after the first window.
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            cx.update(|cx| {
+                flush_pending_opens_into_editor(cx);
+            });
+        })
+        .detach();
     });
 }
