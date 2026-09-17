@@ -19,11 +19,11 @@ use gpui_kit::component::{
     Selectable as _, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
 };
 use gpui_kit::{
-    div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, App, AppContext as _,
-    Bounds, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement,
-    KeyContext, Menu, MenuItem, ParentElement as _, PathPromptOptions, Pixels, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowOptions,
+    div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, AnyWindowHandle, App,
+    AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
+    InteractiveElement as _, IntoElement, KeyContext, Menu, MenuItem, ParentElement as _,
+    PathPromptOptions, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId, WindowOptions,
 };
 
 use crate::assets::AppAssets;
@@ -40,6 +40,7 @@ use crate::commands::{
     ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowScript, ViewWaveformPeaks,
     ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewZoomIn, ViewZoomOut,
 };
+use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
 use crate::components::header_meta::HeaderMeta;
@@ -82,6 +83,34 @@ use field_ui_components::{
 struct OpenTarget(Entity<AppView>);
 
 impl Global for OpenTarget {}
+
+/// Launch-time state kept for recreating the editor after the last window closes
+/// (macOS QuitMode::Default).
+struct AppLaunchState {
+    pending_opens: Arc<Mutex<Vec<PathBuf>>>,
+    output_device_spec: Option<String>,
+}
+
+impl Global for AppLaunchState {}
+
+#[derive(Clone, Copy)]
+struct EditorWindow(AnyWindowHandle);
+
+impl Global for EditorWindow {}
+
+#[derive(Clone, Copy)]
+struct AboutWindow(AnyWindowHandle);
+
+impl Global for AboutWindow {}
+
+enum MainWindowSeed {
+    Empty,
+    Preloaded {
+        composition: Composition,
+        load_elapsed: Option<f64>,
+    },
+    Session(PathBuf),
+}
 
 fn to_repl_output(output: &EvalOutput) -> ReplOutput {
     ReplOutput {
@@ -1762,6 +1791,7 @@ impl AppView {
                 )
             };
         AppMenuState {
+            editor_open: true,
             explorer: self.explorer_dock_open(cx),
             detail: self.detail_dock_open(cx),
             script: self.script_dock_open(cx),
@@ -3635,47 +3665,8 @@ impl AppView {
         }
     }
 
-    fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_alert_dialog(cx, |alert, _, cx| {
-            let muted = cx.theme().muted_foreground;
-            alert.width(px(460.)).child(
-                v_flex()
-                    .w_full()
-                    .gap_4()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .items_start()
-                            .gap_3()
-                            .child(img("icons/app-mark.svg").size(px(128.)).flex_none())
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap_1()
-                                    .child(div().font_semibold().text_lg().child(crate::APP_NAME))
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(muted)
-                                            .child(crate::app_version_detail()),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(div().child(env!("CARGO_PKG_DESCRIPTION")))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .child(crate::APP_COPYRIGHT),
-                            ),
-                    ),
-            )
-        });
+    fn show_about(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        open_about_window(cx);
     }
 
     fn open_render_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4729,35 +4720,283 @@ impl AppView {
 }
 
 pub(crate) fn dispatch_command(command_id: &str, cx: &mut App) -> Result<(), String> {
-    let Some(view) = cx.try_global::<OpenTarget>().map(|target| target.0.clone()) else {
-        if command_id == "file.quit" {
-            cx.quit();
-            return Ok(());
-        }
-        return Err("application is not ready".into());
-    };
-    let Some(window) = cx.active_window() else {
-        return Err("no active window".into());
-    };
-    let command_id = command_id.to_string();
-    // Menu and key handlers run inside an update. Defer so path prompts and
-    // nested view updates are not attempted on the same tick.
-    cx.defer(move |cx| {
-        let _ = window.update(cx, |_, window, cx| {
-            view.update(cx, |this, cx| this.invoke_command(&command_id, window, cx))
+    if command_id == "help.about" {
+        open_about_window(cx);
+        return Ok(());
+    }
+
+    if let Some((view, window)) = living_editor_window(cx) {
+        let command_id = command_id.to_string();
+        // Menu and key handlers run inside an update. Defer so path prompts and
+        // nested view updates are not attempted on the same tick.
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                view.update(cx, |this, cx| this.invoke_command(&command_id, window, cx))
+            });
         });
+        return Ok(());
+    }
+
+    match command_id {
+        "file.quit" => {
+            cx.quit();
+            Ok(())
+        }
+        "file.open" => {
+            prompt_open_at_app_level(cx);
+            Ok(())
+        }
+        _ => Err("no active window".into()),
+    }
+}
+
+fn clear_editor_globals(cx: &mut App) {
+    if cx.has_global::<OpenTarget>() {
+        let _ = cx.remove_global::<OpenTarget>();
+    }
+    if cx.has_global::<EditorWindow>() {
+        let _ = cx.remove_global::<EditorWindow>();
+    }
+}
+
+fn window_is_open(cx: &App, handle: AnyWindowHandle) -> bool {
+    cx.windows().iter().any(|window| *window == handle)
+}
+
+fn living_editor_window(cx: &mut App) -> Option<(Entity<AppView>, AnyWindowHandle)> {
+    let view = cx.try_global::<OpenTarget>().map(|target| target.0.clone());
+    let handle = cx.try_global::<EditorWindow>().map(|editor| editor.0);
+    match (view, handle) {
+        (Some(view), Some(handle)) if window_is_open(cx, handle) => Some((view, handle)),
+        (None, None) => None,
+        _ => {
+            // Stale globals after the editor closed — not a transient update borrow.
+            clear_editor_globals(cx);
+            None
+        }
+    }
+}
+
+fn on_app_window_closed(cx: &mut App, id: WindowId) {
+    if let Some(EditorWindow(handle)) = cx.try_global::<EditorWindow>().copied() {
+        if handle.window_id() == id {
+            clear_editor_globals(cx);
+            refresh_menus_for_editor_presence(cx);
+        }
+    }
+    if let Some(AboutWindow(handle)) = cx.try_global::<AboutWindow>().copied() {
+        if handle.window_id() == id {
+            let _ = cx.remove_global::<AboutWindow>();
+        }
+    }
+}
+
+fn open_about_window(cx: &mut App) {
+    if let Some(AboutWindow(handle)) = cx.try_global::<AboutWindow>().copied() {
+        if window_is_open(cx, handle) {
+            // Activate if we can; a nested-update Err must not open a second About.
+            let _ = handle.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+            return;
+        }
+        let _ = cx.remove_global::<AboutWindow>();
+    }
+
+    // Native titlebar: movable, with system close/miniaturize controls. Do not use
+    // TitleBar::window_options (transparent + app-owned drag) without drawing TitleBar.
+    let options = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(SharedString::from(format!("About {}", crate::APP_NAME))),
+            appears_transparent: false,
+            traffic_light_position: None,
+        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(200.), px(200.)),
+            size: size(px(480.), px(300.)),
+        })),
+        app_owns_titlebar_drag: false,
+        #[cfg(target_os = "linux")]
+        window_decorations: Some(gpui_kit::WindowDecorations::Server),
+        ..Default::default()
+    };
+
+    match cx.open_window(options, |window, cx| {
+        let view = cx.new(AboutView::new);
+        window.focus(&view.focus_handle(cx), cx);
+        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+    }) {
+        Ok(handle) => {
+            cx.set_global(AboutWindow(handle.into()));
+        }
+        Err(err) => {
+            eprintln!("failed to open About window: {err}");
+        }
+    }
+}
+
+fn prompt_open_at_app_level(cx: &mut App) {
+    let receiver = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: true,
+        prompt: Some("Open".into()),
     });
-    Ok(())
+    cx.spawn(async move |cx| {
+        let paths = match receiver.await {
+            Ok(Ok(Some(paths))) => paths,
+            _ => return,
+        };
+        cx.update(|cx| {
+            open_main_window(cx, paths);
+        });
+    })
+    .detach();
+}
+
+fn take_pending_open_paths(cx: &App) -> Vec<PathBuf> {
+    cx.try_global::<AppLaunchState>()
+        .map(|launch| std::mem::take(&mut *launch.pending_opens.lock().unwrap()))
+        .unwrap_or_default()
+}
+
+fn open_main_window(cx: &mut App, paths: Vec<PathBuf>) {
+    open_main_window_seeded(cx, paths, MainWindowSeed::Empty);
+}
+
+fn open_main_window_seeded(cx: &mut App, mut paths: Vec<PathBuf>, seed: MainWindowSeed) {
+    paths.extend(take_pending_open_paths(cx));
+
+    if let Some((view, handle)) = living_editor_window(cx) {
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                window.activate_window();
+                if !paths.is_empty() {
+                    view.update(cx, |this, cx| {
+                        for path in paths {
+                            this.open_path(path, window, cx);
+                        }
+                    });
+                }
+            });
+        });
+        return;
+    }
+
+    let (output_spec, pending_opens) = {
+        let launch = cx.global::<AppLaunchState>();
+        (
+            launch.output_device_spec.clone(),
+            launch.pending_opens.clone(),
+        )
+    };
+    let device = resolve_output_device(output_spec.as_deref())
+        .expect("failed to resolve output audio device");
+    let output_device = output_spec.as_ref().map(|_| output_device_name(&device));
+
+    let (composition, source_path, load_elapsed, session_path) = match seed {
+        MainWindowSeed::Empty => (Composition::new(44100, 2), None, None, None),
+        MainWindowSeed::Preloaded {
+            composition,
+            load_elapsed,
+        } => {
+            let source_path = composition.pool().first().map(|media| media.path.clone());
+            (composition, source_path, load_elapsed, None)
+        }
+        MainWindowSeed::Session(path) => (Composition::new(44100, 2), None, None, Some(path)),
+    };
+
+    let title = AppView::composition_title(&composition);
+    let shared_composition = Arc::new(RwLock::new(composition));
+    let shared_buffer = Arc::new(RwLock::new(Buffer::empty()));
+    let playback = PlaybackSession::open(&device, shared_composition.clone())
+        .expect("failed to open audio playback device");
+
+    let options = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(title.clone()),
+            ..TitleBar::title_bar_options()
+        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(80.), px(80.)),
+            size: size(px(1280.), px(760.)),
+        })),
+        #[cfg(target_os = "linux")]
+        window_decorations: Some(gpui_kit::WindowDecorations::Client),
+        ..TitleBar::window_options()
+    };
+
+    let handle = cx
+        .open_window(options, move |window, cx| {
+            let view = cx.new(|cx| {
+                AppView::new(
+                    shared_composition.clone(),
+                    shared_buffer.clone(),
+                    source_path.clone(),
+                    load_elapsed,
+                    playback,
+                    output_device,
+                    pending_opens.clone(),
+                    session_path.clone(),
+                    window,
+                    cx,
+                )
+            });
+            cx.set_global(OpenTarget(view.clone()));
+            let closer = view.clone();
+            let pinner = view.clone();
+            let pinned = view.clone();
+            let close_all = view.clone();
+            let close_saved = view.clone();
+            cx.set_global(CenterTabBarHandler {
+                close: Rc::new(move |panel_id, window, cx| {
+                    closer.update(cx, |this, cx| {
+                        this.close_center_panel(panel_id, window, cx);
+                    });
+                }),
+                pin: Rc::new(move |panel_id, _, cx| {
+                    pinner.update(cx, |this, cx| {
+                        this.pin_center_panel(panel_id, cx);
+                    });
+                }),
+                is_pinned: Rc::new(move |panel_id, cx| pinned.read(cx).panel_is_pinned(panel_id)),
+                close_all: Rc::new(move |window, cx| {
+                    close_all.update(cx, |this, cx| {
+                        this.close_all_tabs(window, cx);
+                    });
+                }),
+                close_saved: Rc::new(move |window, cx| {
+                    close_saved.update(cx, |this, cx| {
+                        this.close_saved_tabs(window, cx);
+                    });
+                }),
+            });
+            window.focus(&view.focus_handle(cx), cx);
+            cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+        })
+        .expect("failed to open window");
+
+    cx.set_global(EditorWindow(handle.into()));
+    refresh_menus_for_editor_presence(cx);
+
+    if !paths.is_empty() {
+        if let Some(view) = cx.try_global::<OpenTarget>().map(|target| target.0.clone()) {
+            let _ = handle.update(cx, |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    for path in paths {
+                        this.open_path(path, window, cx);
+                    }
+                });
+            });
+        }
+    }
 }
 
 fn update_open_view(
     cx: &mut App,
     f: impl FnOnce(&mut AppView, &mut Window, &mut Context<AppView>) + 'static,
 ) {
-    let Some(view) = cx.try_global::<OpenTarget>().map(|target| target.0.clone()) else {
-        return;
-    };
-    let Some(window) = cx.active_window() else {
+    let Some((view, window)) = living_editor_window(cx) else {
         return;
     };
     cx.defer(move |cx| {
@@ -5030,6 +5269,8 @@ fn start_workflow_action(action: &StartWorkflow, cx: &mut App) {
 }
 
 struct AppMenuState {
+    /// False when macOS is running with no editor window (menus stay visible).
+    editor_open: bool,
     explorer: bool,
     detail: bool,
     script: bool,
@@ -5049,7 +5290,7 @@ struct AppMenuState {
 ///
 /// Windows/Linux paint a Lucide `dot` in the PopupMenu gutter via
 /// [`AppMenuBar`]. On macOS, `.checked(true)` still drives the state column;
-/// [`macos_menu::apply_waveform_radio_marks`] replaces the system checkmark
+/// [`macos_menu::apply_after_set_menus`] replaces the system checkmark
 /// with a filled-circle so labels stay aligned with other View items.
 fn waveform_representation_item(
     label: &'static str,
@@ -5085,29 +5326,57 @@ fn snap_marker_type_menu_item(name: &str, disabled: &HashSet<String>) -> MenuIte
     .checked(!disabled.contains(name))
 }
 
+fn no_editor_menu_state() -> AppMenuState {
+    AppMenuState {
+        editor_open: false,
+        explorer: false,
+        detail: false,
+        script: false,
+        envelope_overlay: false,
+        waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
+        analyze_selection_only: false,
+        marker_type: default_marker_type().to_string(),
+        add_at_hover: true,
+        snap_to_marker: false,
+        marker_types: DEFAULT_MARKER_TYPES
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect(),
+        snap_disabled: HashSet::new(),
+        workflow_running: false,
+        menu_workflows: Vec::new(),
+    }
+}
+
+/// Disable when there is no editor window. App menu + File → Open stay enabled.
+fn needs_editor(item: MenuItem, editor_open: bool) -> MenuItem {
+    item.disabled(!editor_open)
+}
+
 fn app_menus(state: &AppMenuState) -> Vec<Menu> {
+    let open = state.editor_open;
     let create_type_items: Vec<MenuItem> = state
         .marker_types
         .iter()
-        .map(|name| marker_type_menu_item(name, &state.marker_type))
+        .map(|name| needs_editor(marker_type_menu_item(name, &state.marker_type), open))
         .collect();
     let snap_type_items: Vec<MenuItem> = state
         .marker_types
         .iter()
-        .map(|name| snap_marker_type_menu_item(name, &state.snap_disabled))
+        .map(|name| needs_editor(snap_marker_type_menu_item(name, &state.snap_disabled), open))
         .collect();
 
     let mut file_items = vec![
         MenuItem::action("Open...", Open),
         MenuItem::separator(),
-        MenuItem::action("Save", Save),
-        MenuItem::action("Save As...", SaveAs),
-        MenuItem::action("Close", Close),
+        needs_editor(MenuItem::action("Save", Save), open),
+        needs_editor(MenuItem::action("Save As...", SaveAs), open),
+        needs_editor(MenuItem::action("Close", Close), open),
         MenuItem::separator(),
-        MenuItem::action("Render...", RenderFile),
+        needs_editor(MenuItem::action("Render...", RenderFile), open),
         MenuItem::separator(),
-        MenuItem::action("Save Session", SaveSession),
-        MenuItem::action("Save Session As...", SaveSessionAs),
+        needs_editor(MenuItem::action("Save Session", SaveSession), open),
+        needs_editor(MenuItem::action("Save Session As...", SaveSessionAs), open),
     ];
     if !cfg!(target_os = "macos") {
         file_items.push(MenuItem::separator());
@@ -5115,18 +5384,21 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     }
 
     let mut edit_items = vec![
-        MenuItem::action("Undo", EditUndo),
-        MenuItem::action("Redo", EditRedo),
+        needs_editor(MenuItem::action("Undo", EditUndo), open),
+        needs_editor(MenuItem::action("Redo", EditRedo), open),
         MenuItem::separator(),
-        MenuItem::action("Cut", EditCut),
-        MenuItem::action("Copy", EditCopy),
-        MenuItem::action("Paste", EditPaste),
+        needs_editor(MenuItem::action("Cut", EditCut), open),
+        needs_editor(MenuItem::action("Copy", EditCopy), open),
+        needs_editor(MenuItem::action("Paste", EditPaste), open),
         MenuItem::separator(),
-        MenuItem::action("Clear", EditClear),
-        MenuItem::action("Remove", EditRemove),
-        MenuItem::action("Duplicate", EditDuplicate),
-        MenuItem::action("Trim to Selection", EditTrim),
-        MenuItem::action("Break Out to Composition", EditBreakOut),
+        needs_editor(MenuItem::action("Clear", EditClear), open),
+        needs_editor(MenuItem::action("Remove", EditRemove), open),
+        needs_editor(MenuItem::action("Duplicate", EditDuplicate), open),
+        needs_editor(MenuItem::action("Trim to Selection", EditTrim), open),
+        needs_editor(
+            MenuItem::action("Break Out to Composition", EditBreakOut),
+            open,
+        ),
     ];
     if !cfg!(target_os = "macos") {
         edit_items.push(MenuItem::separator());
@@ -5135,6 +5407,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
 
     let mut menus = Vec::new();
     if cfg!(target_os = "macos") {
+        // App menu stays fully available with no editor (About / Quit).
         menus.push(Menu::new(crate::APP_NAME).items([
             MenuItem::action("About...", About),
             MenuItem::separator(),
@@ -5146,72 +5419,114 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     menus.push(Menu::new("File").items(file_items));
     menus.push(Menu::new("Edit").items(edit_items));
     menus.push(Menu::new("Selection").items([
-        MenuItem::action("Select All", SelectAll),
-        MenuItem::action("Select None", SelectNone),
-        MenuItem::action("Invert", InvertSelection),
+        needs_editor(MenuItem::action("Select All", SelectAll), open),
+        needs_editor(MenuItem::action("Select None", SelectNone), open),
+        needs_editor(MenuItem::action("Invert", InvertSelection), open),
         MenuItem::separator(),
-        MenuItem::action("Snap To Marker", SnapToMarker).checked(state.snap_to_marker),
-        MenuItem::submenu(Menu::new("Snap Marker Type").items(snap_type_items)),
+        needs_editor(
+            MenuItem::action("Snap To Marker", SnapToMarker).checked(state.snap_to_marker),
+            open,
+        ),
+        needs_editor(
+            MenuItem::submenu(Menu::new("Snap Marker Type").items(snap_type_items)),
+            open,
+        ),
         MenuItem::separator(),
-        MenuItem::submenu(Menu::new("Create Marker Type").items(create_type_items)),
-        MenuItem::action("Add at Hover", AddMarkerAtHover).checked(state.add_at_hover),
-        MenuItem::action("Add Marker", AddMarker),
-        MenuItem::action("Delete Marker", DeleteMarker),
+        needs_editor(
+            MenuItem::submenu(Menu::new("Create Marker Type").items(create_type_items)),
+            open,
+        ),
+        needs_editor(
+            MenuItem::action("Add at Hover", AddMarkerAtHover).checked(state.add_at_hover),
+            open,
+        ),
+        needs_editor(MenuItem::action("Add Marker", AddMarker), open),
+        needs_editor(MenuItem::action("Delete Marker", DeleteMarker), open),
     ]));
     menus.push(
         Menu::new("View").items([
-            MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
-            MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
-            MenuItem::action("Show Script", ViewScript).checked(state.script),
-            MenuItem::separator(),
-            waveform_representation_item(
-                "Peaks",
-                ViewWaveformPeaks,
-                matches!(
-                    state.waveform_representation,
-                    field_ui_components::WaveformRepresentation::Peaks
-                ),
+            needs_editor(
+                MenuItem::action("Show Explorer", ViewExplorer).checked(state.explorer),
+                open,
             ),
-            waveform_representation_item(
-                "Spectrum",
-                ViewWaveformSpectrum,
-                matches!(
-                    state.waveform_representation,
-                    field_ui_components::WaveformRepresentation::Spectrum
-                ),
+            needs_editor(
+                MenuItem::action("Show Detail", ViewDetail).checked(state.detail),
+                open,
             ),
-            waveform_representation_item(
-                "Peaks + Spectrum",
-                ViewWaveformPeaksSpectrum,
-                matches!(
-                    state.waveform_representation,
-                    field_ui_components::WaveformRepresentation::PeaksSpectrum
-                ),
+            needs_editor(
+                MenuItem::action("Show Script", ViewScript).checked(state.script),
+                open,
             ),
             MenuItem::separator(),
-            MenuItem::submenu(
-                Menu::new("Overlay").items([MenuItem::action(
-                    "Envelope Peak",
-                    ViewOverlayEnvelopePeak,
-                )
-                .checked(state.envelope_overlay)]),
+            needs_editor(
+                waveform_representation_item(
+                    "Peaks",
+                    ViewWaveformPeaks,
+                    matches!(
+                        state.waveform_representation,
+                        field_ui_components::WaveformRepresentation::Peaks
+                    ),
+                ),
+                open,
+            ),
+            needs_editor(
+                waveform_representation_item(
+                    "Spectrum",
+                    ViewWaveformSpectrum,
+                    matches!(
+                        state.waveform_representation,
+                        field_ui_components::WaveformRepresentation::Spectrum
+                    ),
+                ),
+                open,
+            ),
+            needs_editor(
+                waveform_representation_item(
+                    "Peaks + Spectrum",
+                    ViewWaveformPeaksSpectrum,
+                    matches!(
+                        state.waveform_representation,
+                        field_ui_components::WaveformRepresentation::PeaksSpectrum
+                    ),
+                ),
+                open,
             ),
             MenuItem::separator(),
-            MenuItem::action("Zoom In", ViewZoomIn),
-            MenuItem::action("Zoom Out", ViewZoomOut),
-            MenuItem::action("Reset View", ViewFitAll),
+            needs_editor(
+                MenuItem::submenu(
+                    Menu::new("Overlay").items([MenuItem::action(
+                        "Envelope Peak",
+                        ViewOverlayEnvelopePeak,
+                    )
+                    .checked(state.envelope_overlay)]),
+                ),
+                open,
+            ),
+            MenuItem::separator(),
+            needs_editor(MenuItem::action("Zoom In", ViewZoomIn), open),
+            needs_editor(MenuItem::action("Zoom Out", ViewZoomOut), open),
+            needs_editor(MenuItem::action("Reset View", ViewFitAll), open),
         ]),
     );
     menus.push(
         Menu::new("Analyze").items([
-            MenuItem::action("Selection Only", AnalyzeSelectionOnly)
-                .checked(state.analyze_selection_only),
-            MenuItem::separator(),
-            MenuItem::submenu(
-                Menu::new("Envelope").items([MenuItem::action("Peak", AnalyzeEnvelopePeak)]),
+            needs_editor(
+                MenuItem::action("Selection Only", AnalyzeSelectionOnly)
+                    .checked(state.analyze_selection_only),
+                open,
             ),
-            MenuItem::submenu(
-                Menu::new("Mark").items([MenuItem::action("Transients", AnalyzeTransients)]),
+            MenuItem::separator(),
+            needs_editor(
+                MenuItem::submenu(
+                    Menu::new("Envelope").items([MenuItem::action("Peak", AnalyzeEnvelopePeak)]),
+                ),
+                open,
+            ),
+            needs_editor(
+                MenuItem::submenu(
+                    Menu::new("Mark").items([MenuItem::action("Transients", AnalyzeTransients)]),
+                ),
+                open,
             ),
         ]),
     );
@@ -5223,14 +5538,15 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
 }
 
 fn workflow_menu(state: &AppMenuState) -> Menu {
+    let open = state.editor_open;
     let mut items = vec![
-        MenuItem::action("Cancel", CancelWorkflow).disabled(!state.workflow_running),
+        MenuItem::action("Cancel", CancelWorkflow).disabled(!state.workflow_running || !open),
         MenuItem::separator(),
     ];
     for (name, display_name) in &state.menu_workflows {
-        items.push(MenuItem::action(
-            display_name.clone(),
-            StartWorkflow { name: name.clone() },
+        items.push(needs_editor(
+            MenuItem::action(display_name.clone(), StartWorkflow { name: name.clone() }),
+            open,
         ));
     }
     Menu::new("Workflow").items(items)
@@ -5252,12 +5568,24 @@ fn apply_muted_chrome(cx: &mut App) {
 fn apply_app_menus(state: &AppMenuState, cx: &mut App) {
     cx.set_menus(app_menus(state));
     #[cfg(target_os = "macos")]
-    crate::macos_menu::apply_waveform_radio_marks();
+    crate::macos_menu::apply_after_set_menus();
     let owned = app_menus(state)
         .into_iter()
         .map(|menu| menu.owned())
         .collect();
     GlobalState::global_mut(cx).set_app_menus(owned);
+}
+
+fn refresh_menus_for_editor_presence(cx: &mut App) {
+    if let Some((view, _)) = living_editor_window(cx) {
+        let state = view.read(cx).app_menu_state(cx);
+        apply_app_menus(&state, cx);
+        if let Some(bar) = view.read(cx).app_menu_bar.clone() {
+            bar.update(cx, |bar, cx| bar.reload(cx));
+        }
+    } else {
+        apply_app_menus(&no_editor_menu_state(), cx);
+    }
 }
 
 fn install_app_menu(cx: &mut App) {
@@ -5325,27 +5653,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(cancel_workflow_action);
     cx.on_action(start_workflow_action);
     install_keybindings(cx);
-    apply_app_menus(
-        &AppMenuState {
-            explorer: false,
-            detail: false,
-            script: false,
-            envelope_overlay: false,
-            waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
-            analyze_selection_only: false,
-            marker_type: default_marker_type().to_string(),
-            add_at_hover: true,
-            snap_to_marker: false,
-            marker_types: DEFAULT_MARKER_TYPES
-                .iter()
-                .map(|(name, _)| (*name).to_string())
-                .collect(),
-            snap_disabled: HashSet::new(),
-            workflow_running: false,
-            menu_workflows: Vec::new(),
-        },
-        cx,
-    );
+    apply_app_menus(&no_editor_menu_state(), cx);
     cx.activate(true);
 }
 
@@ -5389,22 +5697,20 @@ fn percent_decode(input: &str) -> Option<String> {
 pub fn run(
     initial: Option<Composition>,
     load_elapsed: Option<f64>,
-    device: Device,
+    _device: Device,
     output_spec: Option<String>,
     session_path: Option<PathBuf>,
 ) {
-    let source_path = initial
-        .as_ref()
-        .and_then(|composition| composition.pool().first().map(|media| media.path.clone()));
-    let composition = initial.unwrap_or_else(|| Composition::new(44100, 2));
-    let title = AppView::composition_title(&composition);
-    let output_device = output_spec.map(|_| output_device_name(&device));
-
-    let shared_composition = Arc::new(RwLock::new(composition));
-    let shared_buffer = Arc::new(RwLock::new(Buffer::empty()));
-    let playback = PlaybackSession::open(&device, shared_composition.clone())
-        .expect("failed to open audio playback device");
     let pending_opens = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+
+    let seed = match (initial, session_path) {
+        (_, Some(path)) => MainWindowSeed::Session(path),
+        (Some(composition), None) => MainWindowSeed::Preloaded {
+            composition,
+            load_elapsed,
+        },
+        (None, None) => MainWindowSeed::Empty,
+    };
 
     let app = gpui_kit::application().with_assets(AppAssets);
     app.on_open_urls({
@@ -5418,80 +5724,27 @@ pub fn run(
             }
         }
     });
+    app.on_reopen(|cx| {
+        if let Some((_, handle)) = living_editor_window(cx) {
+            let _ = handle.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+            return;
+        }
+        open_main_window(cx, vec![]);
+    });
     app.run(move |cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         apply_muted_chrome(cx);
         install_app_menu(cx);
 
-        let title = title.clone();
-        let pending_opens = pending_opens.clone();
-        cx.spawn(async move |cx| {
-            let options = WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title.clone()),
-                    ..TitleBar::title_bar_options()
-                }),
-                window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    origin: point(px(80.), px(80.)),
-                    size: size(px(1280.), px(760.)),
-                })),
-                #[cfg(target_os = "linux")]
-                window_decorations: Some(gpui_kit::WindowDecorations::Client),
-                ..TitleBar::window_options()
-            };
+        cx.set_global(AppLaunchState {
+            pending_opens: pending_opens.clone(),
+            output_device_spec: output_spec.clone(),
+        });
+        cx.on_window_closed(on_app_window_closed).detach();
 
-            cx.open_window(options, move |window, cx| {
-                let view = cx.new(|cx| {
-                    AppView::new(
-                        shared_composition.clone(),
-                        shared_buffer.clone(),
-                        source_path.clone(),
-                        load_elapsed,
-                        playback,
-                        output_device,
-                        pending_opens.clone(),
-                        session_path.clone(),
-                        window,
-                        cx,
-                    )
-                });
-                cx.set_global(OpenTarget(view.clone()));
-                let closer = view.clone();
-                let pinner = view.clone();
-                let pinned = view.clone();
-                let close_all = view.clone();
-                let close_saved = view.clone();
-                cx.set_global(CenterTabBarHandler {
-                    close: Rc::new(move |panel_id, window, cx| {
-                        closer.update(cx, |this, cx| {
-                            this.close_center_panel(panel_id, window, cx);
-                        });
-                    }),
-                    pin: Rc::new(move |panel_id, _, cx| {
-                        pinner.update(cx, |this, cx| {
-                            this.pin_center_panel(panel_id, cx);
-                        });
-                    }),
-                    is_pinned: Rc::new(move |panel_id, cx| {
-                        pinned.read(cx).panel_is_pinned(panel_id)
-                    }),
-                    close_all: Rc::new(move |window, cx| {
-                        close_all.update(cx, |this, cx| {
-                            this.close_all_tabs(window, cx);
-                        });
-                    }),
-                    close_saved: Rc::new(move |window, cx| {
-                        close_saved.update(cx, |this, cx| {
-                            this.close_saved_tabs(window, cx);
-                        });
-                    }),
-                });
-                window.focus(&view.focus_handle(cx), cx);
-                cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
-            })
-            .expect("failed to open window");
-        })
-        .detach();
+        open_main_window_seeded(cx, vec![], seed);
     });
 }

@@ -24,32 +24,47 @@ struct RadioDotImage(objc2::rc::Retained<NSImage>);
 unsafe impl Send for RadioDotImage {}
 unsafe impl Sync for RadioDotImage {}
 
-/// Replace the system checkmark with a filled-circle radio mark for waveform
-/// representation items so they match the Windows/Linux Lucide `dot` gutter.
+/// Apply macOS-only menu fixes after `App::set_menus`.
 ///
-/// Call after `App::set_menus`. Labels stay unprefixed so text aligns with
-/// sibling View items; only the selected item shows a mark in the state column.
-pub fn apply_waveform_radio_marks() {
+/// AppKit's default `autoenablesItems` re-enables any action that GPUI's
+/// `validateMenuItem` reports as available (our global `on_action` handlers),
+/// which overrides `MenuItem::disabled`. Submenus are not validated that way,
+/// so only they appeared greyed. Turning auto-enable off keeps GPUI's
+/// `setEnabled_` from `disabled` as the source of truth.
+pub fn apply_after_set_menus() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
     let Some(main_menu) = NSApplication::sharedApplication(mtm).mainMenu() else {
         return;
     };
-    let Some(image) = radio_dot_image() else {
-        return;
-    };
-    visit_menu(&main_menu, image);
+    disable_autoenables(&main_menu);
+    if let Some(image) = radio_dot_image() {
+        apply_waveform_radio_marks_to(&main_menu, image);
+    }
 }
 
-fn visit_menu(menu: &NSMenu, image: &NSImage) {
+fn disable_autoenables(menu: &NSMenu) {
+    menu.setAutoenablesItems(false);
     let count = menu.numberOfItems();
     for index in 0..count {
         let Some(item) = menu.itemAtIndex(index) else {
             continue;
         };
         if let Some(submenu) = item.submenu() {
-            visit_menu(&submenu, image);
+            disable_autoenables(&submenu);
+        }
+    }
+}
+
+fn apply_waveform_radio_marks_to(menu: &NSMenu, image: &NSImage) {
+    let count = menu.numberOfItems();
+    for index in 0..count {
+        let Some(item) = menu.itemAtIndex(index) else {
+            continue;
+        };
+        if let Some(submenu) = item.submenu() {
+            apply_waveform_radio_marks_to(&submenu, image);
         }
         let title = item.title().to_string();
         if WAVEFORM_RADIO_TITLES.contains(&title.as_str()) {

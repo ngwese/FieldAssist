@@ -86,6 +86,15 @@ Default window is 1280×760, dark theme. macOS uses the system application menu;
 Windows and Linux put menus in the title bar and Quit on File. Settings exists
 in the menu and is disabled.
 
+FieldAssist remains a single-editor-window product. On macOS, closing that
+window leaves the process alive (`QuitMode::Default`). Dock reopen and
+File → Open recreate the editor with a **new empty session**, then load any
+chosen paths (audio / `.facomp` / `.fasession`) into it. About is an
+independent utility window (not parented to the editor). Quit with no editor
+window exits immediately. With no editor window, only the application menu
+(About / Quit) and File → Open stay enabled; other menu items are disabled.
+Windows and Linux still quit when the last window closes.
+
 ## Session
 
 There is always one UI-active session. It starts empty (untitled). Documents

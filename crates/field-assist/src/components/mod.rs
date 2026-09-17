@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+pub mod about;
 pub mod drop_overlay;
 pub mod edits;
 pub mod empty_pane;
