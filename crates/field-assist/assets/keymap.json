@@ -22,6 +22,8 @@
     "cmd-shift-s": "file.save_as",
     "cmd-w": "file.close",
     "cmd-q": "file.quit",
+    "cmd-h": "app.hide",
+    "cmd-alt-h": "app.hide_others",
     "cmd-z": "edit.undo",
     "cmd-shift-z": "edit.redo",
     "cmd-x": "edit.cut",

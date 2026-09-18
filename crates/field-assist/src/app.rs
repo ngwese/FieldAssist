@@ -31,14 +31,15 @@ use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AnalyzeEnvelopePeak,
     AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, DeleteMarker, EditBreakOut,
     EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim,
-    EditUndo, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit,
-    Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone,
-    SetActiveMarkerType, Settings, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
-    TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
-    TransportPrevious, TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll,
-    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
-    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowScript, ViewWaveformPeaks,
-    ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewZoomIn, ViewZoomOut,
+    EditUndo, Hide, HideOthers, InvertSelection, MarkerTypeBlue, MarkerTypePurple,
+    MarkerTypeYellow, Open, Quit, Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs,
+    SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll, SnapToMarker, StartWorkflow,
+    ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
+    TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
+    ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewHideDetail, ViewHideExplorer,
+    ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail, ViewShowExplorer,
+    ViewShowScript, ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewZoomIn,
+    ViewZoomOut,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -5270,6 +5271,18 @@ fn quit(_: &Quit, cx: &mut App) {
     let _ = crate::commands::dispatch("file.quit", cx);
 }
 
+fn hide(_: &Hide, cx: &mut App) {
+    cx.hide();
+}
+
+fn hide_others(_: &HideOthers, cx: &mut App) {
+    cx.hide_other_apps();
+}
+
+fn show_all(_: &ShowAll, cx: &mut App) {
+    cx.unhide_other_apps();
+}
+
 fn settings(_: &Settings, _cx: &mut App) {}
 
 fn open(_: &Open, cx: &mut App) {
@@ -5667,11 +5680,15 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
 
     let mut menus = Vec::new();
     if cfg!(target_os = "macos") {
-        // App menu stays fully available with no editor (About / Quit).
+        // App menu stays fully available with no editor (About / Hide / Quit).
         menus.push(Menu::new(crate::APP_NAME).items([
             MenuItem::action("About...", About),
             MenuItem::separator(),
             MenuItem::action("Settings...", Settings).disabled(true),
+            MenuItem::separator(),
+            MenuItem::action(format!("Hide {}", crate::APP_NAME), Hide),
+            MenuItem::action("Hide Others", HideOthers),
+            MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
             MenuItem::action(format!("Quit {}", crate::APP_NAME), Quit),
         ]));
@@ -5857,6 +5874,9 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(close);
     cx.on_action(render_cmd);
     cx.on_action(quit);
+    cx.on_action(hide);
+    cx.on_action(hide_others);
+    cx.on_action(show_all);
     cx.on_action(settings);
     cx.on_action(about);
     cx.on_action(transport_home);
