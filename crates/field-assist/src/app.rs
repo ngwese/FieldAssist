@@ -5640,7 +5640,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     ];
     if !cfg!(target_os = "macos") {
         file_items.push(MenuItem::separator());
-        file_items.push(MenuItem::action("Quit", Quit));
+        file_items.push(MenuItem::action("Exit", Quit));
     }
 
     let mut edit_items = vec![
@@ -5673,7 +5673,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Settings...", Settings).disabled(true),
             MenuItem::separator(),
-            MenuItem::action("Quit", Quit),
+            MenuItem::action(format!("Quit {}", crate::APP_NAME), Quit),
         ]));
     }
     menus.push(Menu::new("File").items(file_items));
