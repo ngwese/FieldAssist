@@ -336,7 +336,7 @@ mod tests {
     use field_audio_model::MediaId;
 
     fn media_tree(len: u64) -> ClipTree {
-        ClipTree::from_clip(Clip::from_media(ClipId(1), MediaId(0), 0, len))
+        ClipTree::from_clip(Clip::from_media(ClipId(1), MediaId([0u8; 32]), 0, len))
     }
 
     fn edit(id: u64, op: EditOp, snapshot: ClipTree) -> Edit {

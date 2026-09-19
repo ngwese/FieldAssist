@@ -137,9 +137,8 @@ mod tests {
     }
 
     fn memory_composition(frames: usize) -> Composition {
-        use crate::model::composition::MediaId;
         let samples = vec![vec![0.0; frames]];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         Composition::from_media(media).unwrap()
     }
 

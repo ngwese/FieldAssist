@@ -33,7 +33,10 @@ pub use markers::{
     StoredMarker, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
     MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
 };
-pub use media::{MediaId, MediaPool, MediaRef};
+pub use media::{
+    compute_media_id, descriptor_mismatch, DescriptorMismatch, MediaDescriptor, MediaId,
+    MediaIdentityFields, MediaPool, MediaRef, MediaStore,
+};
 pub use pager::{
     BlockPager, BlockSource, NullBlockSource, PagerStats, BLOCK_FRAMES, RAM_CACHE_BYTES,
 };

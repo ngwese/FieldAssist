@@ -47,9 +47,10 @@ incremental pass-through of a set of files.
 
 | This document | Earlier spec | Meaning in the as-built app |
 | --- | --- | --- |
-| **Session** (`.fasession`) | Workspace | The open set of compositions, workflow binding, grouping, and optional UI layout |
-| **Composition** (`.facomp`) | File + EDL | A non-destructive timeline over referenced media, plus markers and named region collections |
-| **Document** | Collection item | A composition as it appears in the session (id, paths, tab, group, state, properties) |
+| **Session** (`.fasession`) | Workspace | The open set of media and composition documents, recorded composition ids, workflow binding, grouping, optional UI layout, and a `media` descriptor array |
+| **Composition** (`.facomp`) | File + EDL | A non-destructive timeline over referenced media (`media:<blake3>` ids), plus markers and named region collections |
+| **Document** | Collection item | A session row (`doc:` id) whose target is either media (audio URL + recorded `comp:` id) or a `.facomp` (project URL + recorded `comp:` id) |
+| **Media** | Shared pool | Content-addressed by basename + audio/file stats (not mtime); session and compositions intern into a shared `MediaStore` |
 | **Explorer** | Collection list | Left dock listing session documents, grouped by `group` |
 | **Monitor chain** | Panner | Faust DSP that maps composition channels to the playback device. Shipping now; remains when processing lands |
 | **Processing chain** | Processing chain | Future ordered DSP/metadata applied for preview and export. Does not replace the monitor |
@@ -106,11 +107,12 @@ handled.
 
 A session holds:
 
-- A stable UUID
+- A stable id (`session:<uuid>`)
 - Optional path of the `.fasession` file
 - Ordered named `groups` registry (may include empty sections; order is the
   explorer section order)
-- Ordered documents, each with a UUID
+- Ordered documents, each with a `doc:<uuid>` row id
+- A `media` array of descriptors for open media-backed documents
 - Which document is active
 - Optional bound workflow name
 - String→string `properties` (session-level)
@@ -118,14 +120,21 @@ A session holds:
   are open
 - Dirty flag
 
-Each **document** records:
+Each **document** is a tagged target:
 
-- `source_path` for audio, or `project_path` for `.facomp` (the file URL used
-  on save is project path if set, otherwise source path)
+- **Media**: `media_id`, recorded `comp:<uuid>`, and optional `name` (defaults to
+  the media basename). The source URL lives only on the matching entry in the
+  session `media` array — documents do not repeat `url`.
+- **Composition**: `.facomp` project `url`, recorded `comp:<uuid>`, and optional
+  `name` (defaults to the composition file basename)
 - Whether its editor tab is open and pinned
 - Optional `group` (explorer section; Review uses `todo` / `reviewed` / `drop`)
 - Optional `state` (persisted; unused by built-in Review)
 - String→string `properties` (not written into `.facomp`)
+
+The document id (`doc:`) is the session-row / tab / explorer identity. It is
+not the composition id. Reloading a media document applies the **recorded**
+`comp:` id so break-out children that stored `parent` still lineage correctly.
 
 Closing a **tab** hides the editor and clears pin; the document stays in the
 session. Closing a **document** (File → Close or explorer Close) removes it
@@ -134,7 +143,7 @@ documents are rejected.
 
 **Tabs:** a newly opened document is a transient (unpinned) tab. Opening another
 file while a transient tab exists can replace that tab. Pinning keeps the tab.
-Explorer “open tab” opens and pins.
+explorer “open tab” opens and pins.
 
 **Dirty / save prompts:** a composition is modified when its edit cursor,
 markers, named region collections, or in-memory display title differ from the
@@ -143,44 +152,57 @@ not dirty a composition. An untitled session does not prompt to save even if
 its membership changed; a session prompts only when it is dirty **and** already
 has a path.
 
-Save Session writes JSON (`kind: fasession`, `format_version: 1`) atomically
+Save Session writes JSON (`kind: fasession`, `format_version: 2`) atomically
 (temp file then rename). Document URLs are stored relative to the session file
 when possible. The ordered `groups` list is persisted (including empty groups).
-Save fails if any document has no file URL. Suggested file name is
+Save fails if any document has no file URL. Older `format_version: 1` files are
+rejected (no path-only migration). Suggested file name is
 `{workflow}.fasession` when a workflow is bound, otherwise `session.fasession`.
 
 ## Composition
 
-A composition is a clip-tree timeline over a media pool. Source audio is
-referenced by URL and file stats; PCM is never stored in `.facomp`. Timeline
-edits change the EDL and clip tree only.
+A composition is a clip-tree timeline over media addressed by `media:<blake3>`
+ids. The identity hash covers basename (no parent dir) plus sample rate,
+channel count, frame count, bits per sample, size, container, and codec.
+**`modified` is not hashed** so a filesystem touch does not mint a new id;
+freshness (including mtime) is checked separately and may warn on open while
+keeping the recorded media id. Source PCM is never stored in `.facomp`.
+Timeline edits change the EDL and clip tree only.
 
-`.facomp` JSON (`kind: facomp`, `format_version: 6`) includes a stable
-composition `id` (UUID), optional `parent` (parent composition UUID when
-broken out), sample rate, channel count, media metadata, the initial clip
-tree, edit ops and cursor, optional `undo_floor` (break-out founding Trim),
-markers, marker types, named collections, optional `channel_layout`,
-`monitor_chain`, and `playback_channels`. Legacy v1–5 files mint an `id` on
-load and are marked dirty so the next save persists it. **Save As** mints a
-new `id` while keeping `parent`.
+`.facomp` JSON (`kind: facomp`, `format_version: 7`) includes a stable
+composition `id` (`comp:<uuid>`), optional `parent` (`comp:<uuid>` when
+broken out), sample rate, channel count, descriptors for media **used** by
+this composition, the initial clip tree (`media:` ids), edit ops and cursor,
+optional `undo_floor` (break-out founding Trim), markers, marker types, named
+collections, optional `channel_layout`, `monitor_chain`, and
+`playback_channels`. Older `format_version` values (≤6) are rejected. **Save
+As** mints a new `id` while keeping `parent`.
+
+Open compositions in a window share one `MediaStore` (pool + block pager).
+Intern-by-hash deduplicates matching media across documents. Break-out
+children share the parent’s store Arc.
 
 Parent→child lineage lives on the composition, not the session. Any session
 that has both files open rebuilds the tree by matching `parent` to an open
 `id`. A child opened alone displays as a root until its parent is added.
+Opening a child into an already-open session nests it under its parent in
+the explorer when that parent is present; restoring a `.fasession` keeps
+each document’s saved group and order (a detached child stays in its
+group).
 
 **Break Out to Composition** (Edit menu / `edit.break_out`) extracts each
 selected span into a new child composition that shares the parent’s media
-pool and decode cache. The child EDL is the parent’s reconstruction ops plus
-a founding `Trim`; Undo cannot go past that Trim. Each child gets a default
-display title of `N-` + parent name (or `N.M-` when breaking out from a child
-whose name already matches that pattern), with `N` / `M` unique among open
-siblings. Saving the child writes a standalone `.facomp` that still references
-the original media.
+store. The child EDL is the parent’s reconstruction ops plus a founding
+`Trim`; Undo cannot go past that Trim. Each child gets a default display
+title of `N-` + parent name (or `N.M-` when breaking out from a child whose
+name already matches that pattern), with `N` / `M` unique among open
+siblings. Saving the child writes a standalone `.facomp` that still
+references the media it uses.
 
-On open, if a media file’s size or mtime disagrees with the stored stats, the
-app warns that source media changed and re-probes. Decoded blocks may spill
-under the process temp directory (`FieldAssist/blocks/…`); that cache is not
-the source file.
+On open, if probed media disagrees with the recorded descriptor (identity
+stats or mtime-only), the app warns (Messages + dialog) and still opens,
+keeping the recorded `media:` id. Decoded blocks may spill under the process
+temp directory (`FieldAssist/blocks/…`); that cache is not the source file.
 
 **Channel layout** is a named Lua layout (see [SPEC-workflows.md](SPEC-workflows.md)).
 It labels waveform lanes and can default a monitor chain. `playback_channels` is

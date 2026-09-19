@@ -346,7 +346,7 @@ mod tests {
     use field_audio_model::MediaId;
 
     fn leaf(id: u64, len: u64) -> Clip {
-        Clip::from_media(ClipId(id), MediaId(1), id * 10, len)
+        Clip::from_media(ClipId(id), MediaId([1u8; 32]), id * 10, len)
     }
 
     fn ids() -> impl FnMut() -> ClipId {

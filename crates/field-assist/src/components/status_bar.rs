@@ -13,7 +13,8 @@ pub fn file_status_from_composition(composition: &Composition) -> Option<FileSta
     if composition.frames() == 0 {
         return None;
     }
-    let media = composition.pool().first();
+    let pool = composition.pool();
+    let media = pool.first();
     Some(FileStatus {
         sample_rate: composition.sample_rate(),
         bits_per_sample: media.and_then(|m| m.bits_per_sample),

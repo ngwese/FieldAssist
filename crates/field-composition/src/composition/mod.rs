@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -9,9 +9,10 @@ use anyhow::{bail, Context, Result};
 
 use field_audio_io::{probe_file, probe_header, ProbedFile, SymphoniaBlockSource};
 use field_audio_model::{
-    BlockPager, BlockSource, ChannelScope, Marker, MarkerId, MarkerList, MarkerType, MediaId,
-    MediaPool, MediaRef, RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES,
-    MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
+    descriptor_mismatch, BlockPager, BlockSource, ChannelScope, DescriptorMismatch, Marker,
+    MarkerId, MarkerList, MarkerType, MediaDescriptor, MediaId, MediaPool, MediaRef, MediaStore,
+    RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES, MARKER_TYPE_TRANSIENT,
+    SELECTION_COLLECTION,
 };
 use field_audio_process::{
     AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, SpectralOp,
@@ -73,11 +74,14 @@ pub struct Composition {
     identity_dirty: bool,
     /// In-memory rename; cleared on save once the path basename matches.
     display_title: Option<String>,
+    /// Stem of the `.facomp` path this composition was loaded from or last
+    /// saved to. Used by [`Self::display_name`] when there is no rename
+    /// override; not a dirtying field.
+    path_display_name: Option<String>,
     sample_rate: u32,
     channel_count: usize,
     tree: ClipTree,
-    pool: MediaPool,
-    pager: Arc<Mutex<BlockPager>>,
+    store: Arc<Mutex<MediaStore>>,
     edl: Edl,
     next_clip_id: u64,
     clipboard: Clipboard,
@@ -155,6 +159,14 @@ fn named_regions(collections: &[RegionCollection]) -> Vec<&RegionCollection> {
         .collect()
 }
 
+fn private_media_store() -> Arc<Mutex<MediaStore>> {
+    Arc::new(Mutex::new(MediaStore::in_memory()))
+}
+
+fn resolve_media_store(store: Option<Arc<Mutex<MediaStore>>>) -> Arc<Mutex<MediaStore>> {
+    store.unwrap_or_else(private_media_store)
+}
+
 /// Ensure a user-facing rename becomes a `.facomp` file name.
 pub fn normalize_facomp_file_name(name: &str) -> String {
     let trimmed = name.trim();
@@ -172,6 +184,13 @@ pub fn normalize_facomp_file_name(name: &str) -> String {
     format!("{trimmed}.facomp")
 }
 
+/// File-stem display label from a `.facomp` (or other) path.
+fn path_stem_name(path: &Path) -> Option<String> {
+    path.file_stem()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
 impl Composition {
     /// `new`.
     pub fn new(sample_rate: u32, channel_count: usize) -> Self {
@@ -181,12 +200,12 @@ impl Composition {
             parent: None,
             identity_dirty: false,
             display_title: None,
+            path_display_name: None,
             sample_rate,
             channel_count,
             edl: Edl::new(tree.clone()),
             tree,
-            pool: MediaPool::new(),
-            pager: Arc::new(Mutex::new(BlockPager::in_memory())),
+            store: private_media_store(),
             next_clip_id: 1,
             clipboard: Clipboard {
                 sample_rate,
@@ -227,17 +246,24 @@ impl Composition {
 
     /// `from_media`.
     pub fn from_media(media: MediaRef) -> Result<Self> {
+        Self::from_media_with_store(media, None)
+    }
+
+    fn from_media_with_store(
+        media: MediaRef,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<Self> {
         if media.sample_rate == 0 {
             bail!("media has no sample rate");
         }
         if media.channel_count == 0 {
             bail!("media has no channels");
         }
-        let mut pool = MediaPool::new();
+        let store = resolve_media_store(store);
         let sample_rate = media.sample_rate;
         let channel_count = media.channel_count;
         let frame_count = media.frame_count;
-        let media_id = pool.insert(media);
+        let media_id = store.lock().unwrap().intern(media).0;
         let mut next_clip_id = 1;
         let clip = Clip::from_media(ClipId(next_clip_id), media_id, 0, frame_count);
         next_clip_id += 1;
@@ -247,21 +273,19 @@ impl Composition {
             parent: None,
             identity_dirty: false,
             display_title: None,
+            path_display_name: None,
             sample_rate,
             channel_count,
             edl: Edl::new(tree.clone()),
             tree,
-            pool,
-            pager: Arc::new(Mutex::new(BlockPager::in_memory())),
+            store,
             next_clip_id,
             clipboard: Clipboard {
                 sample_rate,
                 channel_count,
                 clips: Vec::new(),
             },
-            initial: InitialState::FromMedia {
-                media_id: media_id.0,
-            },
+            initial: InitialState::FromMedia { media_id },
             markers: MarkerList::new(),
             marker_types: MarkerType::defaults(),
             collections: Vec::new(),
@@ -290,7 +314,10 @@ impl Composition {
             analysis_pass_stats: AnalysisPassStats::default(),
         };
         let peaked = composed
-            .pool
+            .store
+            .lock()
+            .unwrap()
+            .pool()
             .first()
             .is_some_and(|media| media.samples.is_some());
         if peaked {
@@ -299,6 +326,57 @@ impl Composition {
         }
         composed.mark_clean();
         Ok(composed)
+    }
+
+    /// Open a media file and build a single-clip composition.
+    pub fn from_media_path(path: &Path, store: Option<Arc<Mutex<MediaStore>>>) -> Result<Self> {
+        let probed = probe_file(path)?;
+        let mut media = media_ref_from_probed(probed);
+        media.path = path.to_path_buf();
+        media.prepare_url(None);
+        Self::from_media_with_store(media, store)
+    }
+
+    /// Build a composition from a persisted descriptor, reprobing the source file.
+    pub fn from_descriptor(
+        descriptor: MediaDescriptor,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<(Self, Option<DescriptorMismatch>)> {
+        Self::from_descriptor_with_base(descriptor, None, store)
+    }
+
+    /// Like [`Self::from_descriptor`], resolving relative descriptor URLs against `base`.
+    pub fn from_descriptor_with_base(
+        descriptor: MediaDescriptor,
+        base: Option<&Path>,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<(Self, Option<DescriptorMismatch>)> {
+        let store = resolve_media_store(store);
+        let mut media = MediaRef::from_descriptor(descriptor.clone(), PathBuf::new());
+        media.resolve_url(base)?;
+        if !media.path.to_string_lossy().starts_with("memory://") {
+            if !media.path.is_file() {
+                bail!("missing source media {}", media.path.display());
+            }
+            let probed = probe_file(&media.path)?;
+            let mut probed_ref = media_ref_from_probed(probed);
+            probed_ref.path = media.path.clone();
+            probed_ref.url = descriptor.url.clone();
+            let mismatch = descriptor_mismatch(&descriptor, &probed_ref.to_descriptor());
+            media = probed_ref;
+            media.id = descriptor.id;
+            media.url = descriptor.url;
+            media.basename = descriptor.basename;
+            let composed = Self::from_media_with_store(media, Some(store))?;
+            return Ok((composed, mismatch));
+        }
+        media.id = descriptor.id;
+        Ok((Self::from_media_with_store(media, Some(store))?, None))
+    }
+
+    /// Override composition identity (session reload of media documents).
+    pub fn set_id(&mut self, id: CompositionId) {
+        self.id = id;
     }
 
     /// `load_from_path`.
@@ -311,14 +389,32 @@ impl Composition {
         Self::load_from_path_with_progress(path, None, 0)
     }
 
+    /// Load a `.facomp` or media file, optionally interning into a session store.
+    pub fn load_from_path_into_store(
+        path: &Path,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<(Self, Vec<String>)> {
+        Self::load_from_path_with_progress_into_store(path, None, 0, store)
+    }
+
     /// `load_from_path_with_progress`.
     pub fn load_from_path_with_progress(
         path: &Path,
         progress: Option<&ProgressHandle>,
         epoch: u64,
     ) -> Result<(Self, Vec<String>)> {
+        Self::load_from_path_with_progress_into_store(path, progress, epoch, None)
+    }
+
+    /// Load with optional session media store and progress reporting.
+    pub fn load_from_path_with_progress_into_store(
+        path: &Path,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<(Self, Vec<String>)> {
         if is_facomp_path(path) {
-            return Self::load_facomp_with_progress(path, progress, epoch);
+            return Self::load_facomp_with_progress_into_store(path, progress, epoch, store);
         }
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -326,7 +422,6 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.2);
         }
-        let probed = probe_file(path)?;
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.8);
         }
@@ -338,7 +433,7 @@ impl Composition {
             .join("blocks")
             .join(format!("{:x}", hasher.finish()));
         Ok((
-            Self::from_media(media_ref_from_probed(probed))?.with_spill_dir(spill)?,
+            Self::from_media_path(path, store)?.with_spill_dir(spill)?,
             Vec::new(),
         ))
     }
@@ -353,6 +448,15 @@ impl Composition {
         progress: Option<&ProgressHandle>,
         epoch: u64,
     ) -> Result<(Self, Vec<String>)> {
+        Self::load_facomp_with_progress_into_store(path, progress, epoch, None)
+    }
+
+    fn load_facomp_with_progress_into_store(
+        path: &Path,
+        progress: Option<&ProgressHandle>,
+        epoch: u64,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<(Self, Vec<String>)> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -364,7 +468,9 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.2);
         }
-        let (mut composition, warnings) = Self::from_json_reprobing_at(&json, path.parent())?;
+        let (mut composition, warnings) =
+            Self::from_json_reprobing_at_into_store(&json, path.parent(), store)?;
+        composition.path_display_name = path_stem_name(path);
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.85);
         }
@@ -387,6 +493,9 @@ impl Composition {
         if let Some(title) = self.display_title.as_ref() {
             return normalize_facomp_file_name(title);
         }
+        if let Some(name) = self.path_display_name.as_ref() {
+            return normalize_facomp_file_name(name);
+        }
         let stem = self
             .pool()
             .first()
@@ -400,6 +509,7 @@ impl Composition {
     /// `save_to_path`.
     pub fn save_to_path(&mut self, path: &Path) -> Result<()> {
         write_atomic(path, &self.to_json_with_base(path.parent())?)?;
+        self.path_display_name = path_stem_name(path);
         self.mark_clean();
         Ok(())
     }
@@ -422,13 +532,20 @@ impl Composition {
     }
 
     /// `with_spill_dir`.
-    pub fn with_spill_dir(mut self, dir: impl AsRef<Path>) -> Result<Self> {
+    pub fn with_spill_dir(self, dir: impl AsRef<Path>) -> Result<Self> {
         let source: Arc<dyn BlockSource> = Arc::new(SymphoniaBlockSource);
-        self.pager = Arc::new(Mutex::new(BlockPager::new(
-            dir.as_ref().to_path_buf(),
-            source,
-        )?));
+        self.store.lock().unwrap().with_spill_dir(dir, source)?;
         Ok(self)
+    }
+
+    /// Shared session media store (pool + pager).
+    pub fn media_store(&self) -> Arc<Mutex<MediaStore>> {
+        Arc::clone(&self.store)
+    }
+
+    /// Block pager shared with other compositions using the same store.
+    pub fn pager_arc(&self) -> Arc<Mutex<BlockPager>> {
+        self.store.lock().unwrap().pager_arc()
     }
 
     /// Stable composition identity.
@@ -449,12 +566,12 @@ impl Composition {
 
     /// Share the parent's decode cache so break-out children do not re-decode.
     pub fn adopt_shared_media(&mut self, parent: &Composition) {
-        self.pager = Arc::clone(&parent.pager);
+        self.store = Arc::clone(&parent.store);
     }
 
     /// Whether this composition shares its block pager with `other`.
     pub fn shares_pager_with(&self, other: &Composition) -> bool {
-        Arc::ptr_eq(&self.pager, &other.pager)
+        Arc::ptr_eq(&self.pager_arc(), &other.pager_arc())
     }
 
     /// Extract `[start, start+len)` into a new child composition that shares
@@ -488,11 +605,11 @@ impl Composition {
             parent: self.parent,
             identity_dirty: false,
             display_title: None,
+            path_display_name: None,
             sample_rate: self.sample_rate,
             channel_count: self.channel_count,
             tree: self.tree.clone(),
-            pool: self.pool.clone(),
-            pager: Arc::clone(&self.pager),
+            store: Arc::clone(&self.store),
             edl,
             next_clip_id: self.next_clip_id,
             clipboard: Clipboard {
@@ -554,16 +671,44 @@ impl Composition {
         if let Some(title) = self.display_title.as_ref() {
             return title.clone();
         }
+        if let Some(name) = self.path_display_name.as_ref() {
+            return name.clone();
+        }
         self.media_display_name()
     }
 
     fn media_display_name(&self) -> String {
-        self.pool()
-            .first()
-            .and_then(|media| media.path.file_stem())
-            .map(|name| name.to_string_lossy().into_owned())
+        self.primary_media()
+            .and_then(|media| {
+                media
+                    .path
+                    .file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| {
+                        (!media.basename.is_empty()).then(|| {
+                            Path::new(&media.basename)
+                                .file_stem()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| media.basename.clone())
+                        })
+                    })
+            })
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "FieldAssist".into())
+    }
+
+    /// Media this composition was opened from, or the first used media entry.
+    fn primary_media(&self) -> Option<MediaRef> {
+        let store = self.store.lock().unwrap();
+        let pool = store.pool();
+        if let InitialState::FromMedia { media_id } = self.initial {
+            if let Some(media) = pool.get(media_id) {
+                return Some(media.clone());
+            }
+        }
+        drop(store);
+        self.used_media_refs().into_iter().next()
     }
 
     /// True when the EDL cursor is past the founding Init edit (user edits applied).
@@ -769,9 +914,13 @@ impl Composition {
         }
     }
 
-    /// `pool`.
-    pub fn pool(&self) -> &MediaPool {
-        &self.pool
+    /// Media used by this composition (not the full shared session store).
+    pub fn pool(&self) -> MediaPool {
+        let mut pool = MediaPool::new();
+        for media in self.used_media_refs() {
+            pool.insert(media);
+        }
+        pool
     }
 
     /// `channel_layout`.
@@ -825,13 +974,13 @@ impl Composition {
     }
 
     /// `codec`.
-    pub fn codec(&self) -> Option<&str> {
-        self.pool.first().map(|media| media.codec.as_str())
+    pub fn codec(&self) -> Option<String> {
+        self.primary_media().map(|media| media.codec)
     }
 
     /// `bit_depth`.
     pub fn bit_depth(&self) -> Option<u32> {
-        self.pool.first().and_then(|media| media.bits_per_sample)
+        self.primary_media().and_then(|media| media.bits_per_sample)
     }
 
     /// `clipboard`.
@@ -881,12 +1030,12 @@ impl Composition {
 
     /// Snapshot of block-pager cache / decode counters.
     pub fn pager_stats(&self) -> field_audio_model::PagerStats {
-        self.pager.lock().unwrap().stats()
+        self.pager_arc().lock().unwrap().stats()
     }
 
     /// Clear pager counters without flushing the cache.
     pub fn reset_pager_stats(&self) {
-        self.pager.lock().unwrap().reset_stats();
+        self.pager_arc().lock().unwrap().reset_stats();
     }
 
     fn alloc_clip_id(&mut self) -> ClipId {
@@ -1147,15 +1296,21 @@ impl Composition {
         let InitialState::FromMedia { media_id } = self.initial else {
             return None;
         };
-        let media = self.pool.get(MediaId(media_id))?;
-        if media.frame_count == 0 {
+        let frame_count = self
+            .store
+            .lock()
+            .unwrap()
+            .pool()
+            .get(media_id)
+            .map(|media| media.frame_count)?;
+        if frame_count == 0 {
             return None;
         }
         Some(ClipTree::from_clip(Clip::from_media(
             ClipId(1),
-            MediaId(media_id),
+            media_id,
             0,
-            media.frame_count,
+            frame_count,
         )))
     }
 
@@ -1452,10 +1607,17 @@ impl Composition {
         let Some(source) = &span.clip.source else {
             return;
         };
-        let Some(media) = self.pool.get(source.media_id) else {
+        let frame_count = self
+            .store
+            .lock()
+            .unwrap()
+            .pool()
+            .get(source.media_id)
+            .map(|media| media.frame_count);
+        let Some(frame_count) = frame_count else {
             return;
         };
-        let rolled = span.clip.with_rolled_offset(delta, media.frame_count);
+        let rolled = span.clip.with_rolled_offset(delta, frame_count);
         let tree = self.tree.map_clip_at(at, |_| rolled);
         self.commit(EditOp::Roll { at, delta }, tree);
     }
@@ -1562,46 +1724,51 @@ impl Composition {
             let mut remaining = count;
             let mut pos = start.min(self.frames());
             let mut dest_off = 0usize;
-            {
-                let mut pager = self.pager.lock().unwrap();
-                while remaining > 0 {
-                    let Some(span) = self.tree.at(pos) else {
-                        break;
-                    };
-                    let local = pos - span.start;
-                    let take = remaining.min(span.clip.len - local) as usize;
-                    if take == 0 {
-                        break;
-                    }
-                    if let Some(source) = &span.clip.source {
-                        for c in 0..ch {
-                            let plane_start = c * frames + dest_off;
-                            let plane = &mut scratch[plane_start..plane_start + take];
-                            pager.fill_channel(
-                                &self.pool,
-                                source.media_id,
-                                source.offset + local,
-                                take as u64,
-                                c,
-                                plane,
-                            )?;
-                        }
-                    }
-                    if span.clip.fade_in != 0 || span.clip.fade_out != 0 {
-                        for frame in 0..take {
-                            let gain = span.clip.gain_at(local + frame as u64);
-                            if (gain - 1.0).abs() < f32::EPSILON {
-                                continue;
-                            }
-                            for c in 0..ch {
-                                scratch[c * frames + dest_off + frame] *= gain;
-                            }
-                        }
-                    }
-                    remaining -= take as u64;
-                    pos += take as u64;
-                    dest_off += take;
+            while remaining > 0 {
+                let Some(span) = self.tree.at(pos) else {
+                    break;
+                };
+                let local = pos - span.start;
+                let take = remaining.min(span.clip.len - local) as usize;
+                if take == 0 {
+                    break;
                 }
+                if let Some(source) = &span.clip.source {
+                    let media_id = source.media_id;
+                    let offset = source.offset + local;
+                    self.store
+                        .lock()
+                        .unwrap()
+                        .with_locked_pager(|pool, pager| {
+                            for c in 0..ch {
+                                let plane_start = c * frames + dest_off;
+                                let plane = &mut scratch[plane_start..plane_start + take];
+                                pager.fill_channel(
+                                    pool,
+                                    media_id,
+                                    offset,
+                                    take as u64,
+                                    c,
+                                    plane,
+                                )?;
+                            }
+                            Ok::<(), anyhow::Error>(())
+                        })?;
+                }
+                if span.clip.fade_in != 0 || span.clip.fade_out != 0 {
+                    for frame in 0..take {
+                        let gain = span.clip.gain_at(local + frame as u64);
+                        if (gain - 1.0).abs() < f32::EPSILON {
+                            continue;
+                        }
+                        for c in 0..ch {
+                            scratch[c * frames + dest_off + frame] *= gain;
+                        }
+                    }
+                }
+                remaining -= take as u64;
+                pos += take as u64;
+                dest_off += take;
             }
 
             for frame in 0..frames {
@@ -1733,15 +1900,19 @@ impl Composition {
             return Ok(());
         }
         if let Some(source) = &clip.source {
-            let mut pager = self.pager.lock().unwrap();
-            pager.fill_channel(
-                &self.pool,
-                source.media_id,
-                source.offset + local,
-                dest.len() as u64,
-                channel,
-                dest,
-            )?;
+            self.store
+                .lock()
+                .unwrap()
+                .with_locked_pager(|pool, pager| {
+                    pager.fill_channel(
+                        pool,
+                        source.media_id,
+                        source.offset + local,
+                        dest.len() as u64,
+                        channel,
+                        dest,
+                    )
+                })?;
         }
         if clip.fade_in == 0 && clip.fade_out == 0 {
             return Ok(());
@@ -1764,15 +1935,19 @@ impl Composition {
         dest_offset: usize,
     ) -> Result<()> {
         if let Some(source) = &clip.source {
-            let mut pager = self.pager.lock().unwrap();
-            pager.fill_planar(
-                &self.pool,
-                source.media_id,
-                source.offset + local,
-                count,
-                dest,
-                dest_offset,
-            )?;
+            self.store
+                .lock()
+                .unwrap()
+                .with_locked_pager(|pool, pager| {
+                    pager.fill_planar(
+                        pool,
+                        source.media_id,
+                        source.offset + local,
+                        count,
+                        dest,
+                        dest_offset,
+                    )
+                })?;
         }
         if clip.fade_in == 0 && clip.fade_out == 0 {
             return Ok(());
@@ -2837,6 +3012,31 @@ impl Composition {
         }
     }
 
+    fn used_media_ids(&self) -> HashSet<MediaId> {
+        let mut ids = HashSet::new();
+        if let InitialState::FromMedia { media_id } = self.initial {
+            ids.insert(media_id);
+        }
+        for span in self.spans() {
+            if let Some(source) = &span.clip.source {
+                ids.insert(source.media_id);
+            }
+        }
+        ids
+    }
+
+    fn used_media_refs(&self) -> Vec<MediaRef> {
+        let ids = self.used_media_ids();
+        let store = self.store.lock().unwrap();
+        let pool = store.pool();
+        let mut refs: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| pool.get(id).cloned())
+            .collect();
+        refs.sort_by_key(|m| m.id.to_hex());
+        refs
+    }
+
     /// `to_project_file`.
     pub fn to_project_file(&self) -> ProjectFile {
         ProjectFile {
@@ -2844,7 +3044,7 @@ impl Composition {
             parent: self.parent,
             sample_rate: self.sample_rate,
             channel_count: self.channel_count,
-            media: self.pool.clone().into_refs(),
+            media: self.used_media_refs(),
             initial: self.initial.clone(),
             edits: self.edl.ops_from_first_user(),
             edit_cursor: self.edl.cursor(),
@@ -2874,6 +3074,17 @@ impl Composition {
 
     /// `from_project_file`.
     pub fn from_project_file(file: ProjectFile) -> Result<Self> {
+        Self::from_project_file_into_store(file, None)
+    }
+
+    fn from_project_file_into_store(
+        file: ProjectFile,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<Self> {
+        let store = resolve_media_store(store);
+        for media in &file.media {
+            store.lock().unwrap().intern(media.clone());
+        }
         let sample_rate = file.sample_rate;
         let channel_count = file.channel_count;
         let (id, identity_dirty) = match file.id {
@@ -2882,30 +3093,27 @@ impl Composition {
         };
         let parent = file.parent;
         let undo_floor = file.undo_floor;
-        let mut composition = match &file.initial {
-            InitialState::Empty => Composition::new(sample_rate, channel_count),
+        let initial = file.initial.clone();
+        let mut composition = match &initial {
+            InitialState::Empty => {
+                let mut composition = Composition::new(sample_rate, channel_count);
+                composition.store = Arc::clone(&store);
+                composition
+            }
             InitialState::FromMedia { media_id } => {
-                let mut pool = MediaPool::new();
-                for media in file.media.clone() {
-                    pool.insert(media);
-                }
-                let media = pool
-                    .get(MediaId(*media_id))
+                store
+                    .lock()
+                    .unwrap()
+                    .pool()
+                    .get(*media_id)
                     .cloned()
                     .context("initial media missing from project")?;
-                let mut composed = Composition::from_media(media)?;
-                composed.pool = pool;
-                composed
+                Self::bootstrap_from_media_id(*media_id, sample_rate, channel_count, store)?
             }
         };
         composition.id = id;
         composition.parent = parent;
         composition.identity_dirty = identity_dirty;
-        if matches!(file.initial, InitialState::Empty) {
-            for media in file.media {
-                composition.pool.insert(media);
-            }
-        }
         for op in file.edits {
             composition.replay(&op)?;
         }
@@ -2950,6 +3158,82 @@ impl Composition {
         Ok(composition)
     }
 
+    fn bootstrap_from_media_id(
+        media_id: MediaId,
+        sample_rate: u32,
+        channel_count: usize,
+        store: Arc<Mutex<MediaStore>>,
+    ) -> Result<Self> {
+        let frame_count = store
+            .lock()
+            .unwrap()
+            .pool()
+            .get(media_id)
+            .context("initial media missing from project")?
+            .frame_count;
+        let mut next_clip_id = 1;
+        let clip = Clip::from_media(ClipId(next_clip_id), media_id, 0, frame_count);
+        next_clip_id += 1;
+        let tree = ClipTree::from_clip(clip);
+        let mut composed = Self {
+            id: CompositionId::new(),
+            parent: None,
+            identity_dirty: false,
+            display_title: None,
+            path_display_name: None,
+            sample_rate,
+            channel_count,
+            edl: Edl::new(tree.clone()),
+            tree,
+            store,
+            next_clip_id,
+            clipboard: Clipboard {
+                sample_rate,
+                channel_count,
+                clips: Vec::new(),
+            },
+            initial: InitialState::FromMedia { media_id },
+            markers: MarkerList::new(),
+            marker_types: MarkerType::defaults(),
+            collections: Vec::new(),
+            next_region_id: 1,
+            channel_layout: None,
+            chosen_channel_layout: None,
+            channel_labels: BTreeMap::new(),
+            clean_edit_id: EditId(0),
+            clean_markers: Vec::new(),
+            clean_collections: Vec::new(),
+            monitor_chain: None,
+            playback_channels: None,
+            analysis_streams: AnalysisStreams::default(),
+            minmax_op: None,
+            envelope_op: None,
+            spectral_op: None,
+            transient_op: None,
+            analysis_target_ranges: Vec::new(),
+            analysis_read_pos: 0,
+            analysis_target_total: 0,
+            analysis_target_done: 0,
+            analysis_job_started: false,
+            analysis_target_configured: false,
+            analysis_pass_kinds: Vec::new(),
+            analysis_minmax_clip: None,
+            analysis_pass_stats: AnalysisPassStats::default(),
+        };
+        let peaked = composed
+            .store
+            .lock()
+            .unwrap()
+            .pool()
+            .first()
+            .is_some_and(|media| media.samples.is_some());
+        if peaked {
+            composed.ensure_clip_peaks().ok();
+            composed.edl = Edl::new(composed.tree.clone());
+        }
+        Ok(composed)
+    }
+
     /// `from_json`.
     pub fn from_json(json: &str) -> Result<Self> {
         Self::from_json_at(json, None)
@@ -2972,6 +3256,14 @@ impl Composition {
 
     /// `from_json_reprobing_at`.
     pub fn from_json_reprobing_at(json: &str, base: Option<&Path>) -> Result<(Self, Vec<String>)> {
+        Self::from_json_reprobing_at_into_store(json, base, None)
+    }
+
+    fn from_json_reprobing_at_into_store(
+        json: &str,
+        base: Option<&Path>,
+        store: Option<Arc<Mutex<MediaStore>>>,
+    ) -> Result<(Self, Vec<String>)> {
         let envelope = ProjectEnvelope::from_json(json)?;
         let mut warnings = Vec::new();
         let mut file = envelope.project;
@@ -3010,7 +3302,7 @@ impl Composition {
             }
         }
         file.media = resolved;
-        Ok((Self::from_project_file(file)?, warnings))
+        Ok((Self::from_project_file_into_store(file, store)?, warnings))
     }
 
     fn replay(&mut self, op: &EditOp) -> Result<()> {
@@ -3200,9 +3492,10 @@ fn media_stats_match(media: &MediaRef, meta: &std::fs::Metadata) -> bool {
 fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
     let path = probed.path;
     let url = encode_file_url(&path, None);
-    MediaRef {
-        id: MediaId(0),
+    let mut media = MediaRef {
+        id: MediaId([0u8; 32]),
         url,
+        basename: String::new(),
         path,
         sample_rate: probed.sample_rate,
         channel_count: probed.channel_count,
@@ -3212,9 +3505,10 @@ fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
         modified: probed.modified,
         container_format: probed.container_format,
         codec: probed.codec,
-        hash: None,
         samples: probed.samples,
-    }
+    };
+    media.finalize_identity();
+    media
 }
 
 /// `is_facomp_path`.
@@ -3295,7 +3589,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        MediaRef::from_memory(MediaId(0), rate, samples)
+        MediaRef::from_memory_samples(rate, samples)
     }
 
     fn materialize(comp: &Composition) -> Vec<Vec<f32>> {
@@ -3557,7 +3851,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 6);
+        assert_eq!(value["format_version"], 7);
         let media = &value["media"][0];
         assert!(media.get("url").is_some());
         assert!(media.get("path").is_none());
@@ -3633,6 +3927,25 @@ mod tests {
         comp.save_to_path(&path).unwrap();
         assert!(!comp.is_modified());
         assert!(comp.display_title().is_none());
+        assert_eq!(comp.display_name(), "snd-composition-display-title");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn facomp_display_name_uses_project_path_stem() {
+        let dir = std::env::temp_dir().join("fa-facomp-display-name");
+        let _ = std::fs::create_dir_all(&dir);
+        let wav = dir.join("media-source.wav");
+        write_minimal_wav(&wav, 8);
+        let mut comp = Composition::from_media_path(&wav, None).unwrap();
+        assert_eq!(comp.display_name(), "media-source");
+        let facomp = dir.join("1-child-edit.facomp");
+        comp.save_to_path(&facomp).unwrap();
+        assert_eq!(comp.display_name(), "1-child-edit");
+        let loaded = Composition::load_from_path(&facomp).unwrap();
+        assert_eq!(loaded.display_name(), "1-child-edit");
+        assert!(!loaded.is_modified());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3838,7 +4151,8 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(restored.frames(), live.frames());
         assert_eq!(restored.sample_rate(), 44100);
-        let media = restored.pool().first().unwrap();
+        let pool = restored.pool();
+        let media = pool.first().unwrap();
         assert_eq!(media.container_format, "wav");
         assert!(media.samples.is_none());
         let _ = std::fs::remove_file(wav);
@@ -3850,9 +4164,10 @@ mod tests {
         let dummy = std::env::temp_dir().join("snd-facomp-not-audio.bin");
         std::fs::write(&dummy, b"not an audio file at all!!").unwrap();
         let meta = std::fs::metadata(&dummy).unwrap();
-        let media = MediaRef {
-            id: MediaId(1),
+        let mut media = MediaRef {
+            id: MediaId([0u8; 32]),
             url: dummy.to_string_lossy().into_owned(),
+            basename: String::new(),
             path: dummy.clone(),
             sample_rate: 44100,
             channel_count: 1,
@@ -3862,16 +4177,17 @@ mod tests {
             modified: meta.modified().unwrap_or(std::time::UNIX_EPOCH),
             container_format: "wav".into(),
             codec: "pcm".into(),
-            hash: None,
             samples: None,
         };
+        media.finalize_identity();
+        let media_id = media.id;
         let file = ProjectFile {
             id: None,
             parent: None,
             sample_rate: 44100,
             channel_count: 1,
             media: vec![media],
-            initial: InitialState::FromMedia { media_id: 1 },
+            initial: InitialState::FromMedia { media_id },
             edits: Vec::new(),
             edit_cursor: 0,
             undo_floor: 0,
@@ -3990,10 +4306,10 @@ mod tests {
     }
 
     #[test]
-    fn project_json_v1_loads_without_markers() {
+    fn project_json_v7_loads_without_markers() {
         let json = r#"{
             "kind":"facomp",
-            "format_version":1,
+            "format_version":7,
             "sample_rate":44100,
             "channel_count":1,
             "media":[],
@@ -4016,7 +4332,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 6);
+        assert_eq!(value["format_version"], 7);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -4030,10 +4346,10 @@ mod tests {
     }
 
     #[test]
-    fn project_json_v2_loads_without_collections() {
+    fn project_json_v7_loads_without_collections() {
         let json = r#"{
             "kind":"facomp",
-            "format_version":2,
+            "format_version":7,
             "sample_rate":44100,
             "channel_count":1,
             "media":[],
@@ -4061,7 +4377,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 6);
+        assert_eq!(value["format_version"], 7);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()
@@ -4088,7 +4404,7 @@ mod tests {
         for s in &mut samples[click_at..click_at + 40] {
             *s = 1.0;
         }
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         {
             let mut comp = lock.write().unwrap();
@@ -4134,7 +4450,7 @@ mod tests {
         for s in &mut samples[click_at..click_at + 40] {
             *s = 1.0;
         }
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         {
             let mut comp = lock.write().unwrap();
@@ -4175,7 +4491,7 @@ mod tests {
         for s in &mut samples[5_000..5_040] {
             *s = 1.0;
         }
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         {
             let mut comp = lock.write().unwrap();
@@ -4222,7 +4538,7 @@ mod tests {
         let samples: Vec<f32> = (0..frames)
             .map(|i| (2.0 * PI * freq * i as f32 / rate as f32).sin())
             .collect();
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         assert!(lock.read().unwrap().needs_spectral_build());
         let first =
@@ -4286,7 +4602,7 @@ mod tests {
         let samples: Vec<f32> = (0..frames)
             .map(|i| (2.0 * PI * freq * i as f32 / rate as f32).sin())
             .collect();
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         run_spectral_to_complete(&lock);
 
@@ -4366,7 +4682,7 @@ mod tests {
         let samples: Vec<f32> = (0..frames)
             .map(|i| (2.0 * PI * 440.0 * i as f32 / rate as f32).sin())
             .collect();
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         run_spectral_to_complete(&lock);
 
@@ -4404,7 +4720,7 @@ mod tests {
         let samples: Vec<f32> = (0..frames)
             .map(|i| (2.0 * PI * 880.0 * i as f32 / rate as f32).sin())
             .collect();
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         run_spectral_to_complete(&lock);
 
@@ -4443,7 +4759,7 @@ mod tests {
         let samples: Vec<f32> = (0..frames)
             .map(|i| (2.0 * PI * 660.0 * i as f32 / rate as f32).sin())
             .collect();
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         run_spectral_to_complete(&lock);
 
@@ -4505,7 +4821,7 @@ mod tests {
         let mut samples = vec![0.0f32; frames];
         samples[100] = 1.0;
         samples[4_000] = 1.0;
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples]);
         let lock = RwLock::new(Composition::from_media(media).unwrap());
         loop {
             match Composition::build_next_analysis_block(&lock, AnalysisKind::EnvelopePeak, None, 0)
@@ -4605,10 +4921,10 @@ mod tests {
     }
 
     #[test]
-    fn project_json_v2_instance_color_becomes_marker_type() {
+    fn project_json_v7_instance_color_becomes_marker_type() {
         let json = r#"{
             "kind":"facomp",
-            "format_version":2,
+            "format_version":7,
             "sample_rate":44100,
             "channel_count":1,
             "media":[],
@@ -4651,7 +4967,7 @@ mod tests {
         assert!(!child.can_undo());
         let json = child.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 6);
+        assert_eq!(value["format_version"], 7);
         assert_eq!(value["parent"], parent_id.to_string());
         assert_eq!(value["id"], child.id().to_string());
         assert_eq!(value["edits"][0]["type"], "trim");
@@ -4712,10 +5028,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v5_load_mints_id_and_is_dirty() {
+    fn legacy_v7_without_id_mints_id_and_is_dirty() {
         let json = r#"{
             "kind":"facomp",
-            "format_version":5,
+            "format_version":7,
             "sample_rate":44100,
             "channel_count":1,
             "media":[],
@@ -4726,7 +5042,7 @@ mod tests {
         let restored = Composition::from_json(json).unwrap();
         assert!(restored.is_modified());
         let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
-        assert_eq!(saved["format_version"], 6);
+        assert_eq!(saved["format_version"], 7);
         assert!(saved.get("id").is_some());
     }
 
@@ -4750,5 +5066,130 @@ mod tests {
         child.adopt_shared_media(&other);
         assert!(child.shares_pager_with(&other));
         assert!(!child.shares_pager_with(&parent));
+    }
+
+    fn write_minimal_wav(path: &std::path::Path, frames: u32) {
+        use std::io::Write;
+        let bits_per_sample: u16 = 16;
+        let channels: u16 = 1;
+        let sample_rate: u32 = 44100;
+        let block_align = channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut out = std::fs::File::create(path).unwrap();
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&channels.to_le_bytes()).unwrap();
+        out.write_all(&sample_rate.to_le_bytes()).unwrap();
+        out.write_all(&byte_rate.to_le_bytes()).unwrap();
+        out.write_all(&block_align.to_le_bytes()).unwrap();
+        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        for _ in 0..frames {
+            out.write_all(&0i16.to_le_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn from_media_path_without_session_store() {
+        let path = std::env::temp_dir().join("snd-from-media-path-none.wav");
+        write_minimal_wav(&path, 8);
+        let comp = Composition::from_media_path(&path, None).unwrap();
+        assert_eq!(comp.frames(), 8);
+        assert_eq!(comp.pool().len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn shared_store_dedups_media_and_pager() {
+        let path = std::env::temp_dir().join("snd-shared-store-dedup.wav");
+        write_minimal_wav(&path, 8);
+        let store = Arc::new(Mutex::new(MediaStore::in_memory()));
+        let a = Composition::from_media_path(&path, Some(Arc::clone(&store))).unwrap();
+        let b = Composition::from_media_path(&path, Some(Arc::clone(&store))).unwrap();
+        assert!(Arc::ptr_eq(&a.media_store(), &b.media_store()));
+        assert!(Arc::ptr_eq(&a.pager_arc(), &b.pager_arc()));
+        assert_eq!(store.lock().unwrap().pool().len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn from_descriptor_resolves_relative_url_with_base() {
+        let dir = std::env::temp_dir().join("fa-from-descriptor-rel");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rel-clip.wav");
+        write_minimal_wav(&path, 12);
+        let absolute = Composition::from_media_path(&path, None).unwrap();
+        let mut descriptor = absolute.pool().first().unwrap().to_descriptor();
+        // Simulate session persistence: relative URL beside the session file.
+        descriptor.url = "rel-clip.wav".into();
+        let (comp, mismatch) =
+            Composition::from_descriptor_with_base(descriptor, Some(&dir), None).unwrap();
+        assert!(mismatch.is_none());
+        assert_eq!(comp.frames(), 12);
+        assert_eq!(comp.display_name(), "rel-clip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shared_store_keeps_per_composition_display_names() {
+        let dir = std::env::temp_dir().join("fa-shared-display-names");
+        let _ = std::fs::create_dir_all(&dir);
+        let a_path = dir.join("alpha-take.wav");
+        let b_path = dir.join("beta-take.wav");
+        write_minimal_wav(&a_path, 8);
+        write_minimal_wav(&b_path, 16);
+        let store = Arc::new(Mutex::new(MediaStore::in_memory()));
+        let a = Composition::from_media_path(&a_path, Some(Arc::clone(&store))).unwrap();
+        let b = Composition::from_media_path(&b_path, Some(Arc::clone(&store))).unwrap();
+        assert_eq!(store.lock().unwrap().pool().len(), 2);
+        assert_eq!(a.pool().len(), 1);
+        assert_eq!(b.pool().len(), 1);
+        assert_eq!(a.display_name(), "alpha-take");
+        assert_eq!(b.display_name(), "beta-take");
+        assert_ne!(a.pool().first().unwrap().id, b.pool().first().unwrap().id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn facomp_v6_is_rejected() {
+        let err = Composition::from_json(
+            r#"{"kind":"facomp","format_version":6,"sample_rate":44100,"channel_count":1,"media":[],"initial":{"type":"empty"},"edits":[],"edit_cursor":0}"#,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(err.contains("unsupported format_version 6"), "{err}");
+    }
+
+    #[test]
+    fn facomp_v7_initial_records_media_id() {
+        let comp = Composition::from_media(sine_media(6, 1, 44100)).unwrap();
+        let media_id = comp.pool().first().unwrap().id;
+        let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
+        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["initial"]["type"], "from_media");
+        assert_eq!(value["initial"]["media_id"], media_id.to_string());
+        assert_eq!(value["media"].as_array().unwrap().len(), 1);
+        assert_eq!(value["media"][0]["id"], media_id.to_string());
+    }
+
+    #[test]
+    fn save_writes_only_timeline_media() {
+        let store = Arc::new(Mutex::new(MediaStore::in_memory()));
+        let used = sine_media(8, 1, 44100);
+        let used_id = used.id;
+        let unused = sine_media(12, 1, 44100);
+        store.lock().unwrap().intern(unused);
+        let comp = Composition::from_media_with_store(used, Some(Arc::clone(&store))).unwrap();
+        assert_eq!(store.lock().unwrap().pool().len(), 2);
+        let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
+        assert_eq!(value["media"].as_array().unwrap().len(), 1);
+        assert_eq!(value["media"][0]["id"], used_id.to_string());
     }
 }

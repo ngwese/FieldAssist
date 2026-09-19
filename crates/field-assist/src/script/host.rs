@@ -14,6 +14,7 @@ use mlua::{Function, Lua, MultiValue, Table, Value};
 use crate::model::composition::{is_facomp_path, Composition};
 use crate::model::document::BufferDocument;
 use crate::model::{is_fasession_path, Buffer, DocumentId, Session, SessionDocument, SessionId};
+use field_session::placeholder_media_descriptor;
 
 use super::access;
 use super::app::bind_app;
@@ -145,11 +146,21 @@ impl TestWorld {
         let id = DocumentId::from_u128(self.next_id);
         let composition = Arc::new(RwLock::new(composition));
         let buffer = Arc::new(RwLock::new(buffer));
-        let document = BufferDocument::with_shared(composition, buffer);
+        let document = BufferDocument::with_shared(composition.clone(), buffer);
+        let comp_id = composition.read().unwrap().id();
+        let session_doc = match path.as_ref() {
+            Some(p) if is_facomp_path(p) => {
+                SessionDocument::new_composition(id, p.clone(), comp_id)
+            }
+            Some(p) => {
+                SessionDocument::new_media(id, p.clone(), comp_id, placeholder_media_descriptor(p))
+            }
+            None => SessionDocument::new(id, None),
+        };
         self.docs.insert(id, document);
         self.paths.insert(id, path.clone());
         self.names.insert(id, name.into());
-        self.session.insert(SessionDocument::new(id, path));
+        self.session.insert(session_doc);
         self.active = Some(id);
         id
     }

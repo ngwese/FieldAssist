@@ -121,11 +121,11 @@ mod tests {
 
     #[test]
     fn memory_urls_are_kept() {
-        let path = Path::new("memory://MediaId(0)");
-        assert_eq!(encode_file_url(path, None), "memory://MediaId(0)");
+        let path = Path::new("memory://test");
+        assert_eq!(encode_file_url(path, None), "memory://test");
         assert_eq!(
-            resolve_file_url("memory://MediaId(0)", None).unwrap(),
-            PathBuf::from("memory://MediaId(0)")
+            resolve_file_url("memory://test", None).unwrap(),
+            PathBuf::from("memory://test")
         );
     }
 

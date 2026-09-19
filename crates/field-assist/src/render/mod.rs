@@ -106,7 +106,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::model::composition::{Composition, MediaId, MediaRef};
+    use crate::model::composition::{Composition, MediaRef};
     use field_audio_io::{planar_frames, EncoderCaps};
 
     fn sine(frames: usize, channels: usize, rate: u32) -> MediaRef {
@@ -120,7 +120,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        MediaRef::from_memory(MediaId(0), rate, samples)
+        MediaRef::from_memory_samples(rate, samples)
     }
 
     fn decode_path(path: &Path) -> crate::audio::DecodedAudio {
@@ -350,7 +350,7 @@ mod tests {
         let rate = 48_000u32;
         let frames = 2048usize;
         let samples = sine(frames, rate, 440.0, 0.5);
-        let media = MediaRef::from_memory(MediaId(0), rate, vec![samples.clone()]);
+        let media = MediaRef::from_memory_samples(rate, vec![samples.clone()]);
         let comp = Composition::from_media(media).unwrap();
         let dest = std::env::temp_dir().join("fa-identity-render.wav");
         render_to_path(
@@ -383,7 +383,7 @@ mod tests {
         let mut left = vec![0.0f32; 128];
         left[0] = 1.0;
         let right = vec![0.0f32; 128];
-        let media = MediaRef::from_memory(MediaId(0), 48_000, vec![left, right]);
+        let media = MediaRef::from_memory_samples(48_000, vec![left, right]);
         let comp = Composition::from_media(media).unwrap();
         let dest = std::env::temp_dir().join("fa-identity-stereo.wav");
         render_to_path(

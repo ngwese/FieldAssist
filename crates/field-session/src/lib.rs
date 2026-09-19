@@ -18,19 +18,23 @@
 //! assert!(session.is_empty());
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use field_core::{encode_file_url, resolve_file_url};
-use serde::{Deserialize, Serialize};
+use field_audio_model::{MediaDescriptor, MediaId};
+use field_core::{
+    deserialize_prefixed_uuid, encode_file_url, resolve_file_url, serialize_prefixed_uuid,
+    CompositionId,
+};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 /// Session file kind marker written into `.fasession` envelopes.
 pub const FASESSION_KIND: &str = "fasession";
 /// Current on-disk format version for `.fasession` files.
-pub const FASESSION_FORMAT_VERSION: u32 = 1;
+pub const FASESSION_FORMAT_VERSION: u32 = 2;
 
 /// True when `path` looks like a `.facomp` project (extension only).
 fn is_facomp_path(path: &Path) -> bool {
@@ -39,8 +43,8 @@ fn is_facomp_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("facomp"))
 }
 
-/// Stable identity for an open composition in the session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Stable identity for an open composition in the session (`doc:<uuid>`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentId(pub Uuid);
 
 impl DocumentId {
@@ -68,12 +72,31 @@ impl DocumentId {
 
 impl fmt::Display for DocumentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        write!(f, "doc:{}", self.0)
     }
 }
 
-/// Identity of a session, stable across save/load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+impl fmt::Debug for DocumentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DocumentId({self})")
+    }
+}
+
+impl Serialize for DocumentId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_prefixed_uuid("doc", &self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DocumentId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let uuid = deserialize_prefixed_uuid("doc", deserializer)?;
+        Ok(Self(uuid))
+    }
+}
+
+/// Identity of a session, stable across save/load (`session:<uuid>`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId(pub Uuid);
 
 impl SessionId {
@@ -90,8 +113,50 @@ impl SessionId {
 
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        write!(f, "session:{}", self.0)
     }
+}
+
+impl fmt::Debug for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SessionId({self})")
+    }
+}
+
+impl Serialize for SessionId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_prefixed_uuid("session", &self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let uuid = deserialize_prefixed_uuid("session", deserializer)?;
+        Ok(Self(uuid))
+    }
+}
+
+/// What a session document tab points at on disk.
+#[derive(Clone, Debug)]
+pub enum SessionDocumentTarget {
+    /// Audio source file bound to a composition identity.
+    Media {
+        /// Stable media identity.
+        media_id: MediaId,
+        /// Composition this tab edits.
+        composition_id: CompositionId,
+        /// Resolved source path for the audio file.
+        source_path: PathBuf,
+        /// Last known descriptor for session persistence (updated on open/reload).
+        descriptor: MediaDescriptor,
+    },
+    /// Standalone `.facomp` project.
+    Composition {
+        /// Composition identity for this project.
+        composition_id: CompositionId,
+        /// Path to the `.facomp` file.
+        project_path: PathBuf,
+    },
 }
 
 /// Session metadata for one open composition. View entities live in AppView.
@@ -99,10 +164,11 @@ impl fmt::Display for SessionId {
 pub struct SessionDocument {
     /// id.
     pub id: DocumentId,
-    /// source_path.
-    pub source_path: Option<PathBuf>,
-    /// project_path.
-    pub project_path: Option<PathBuf>,
+    /// Open target (media file or composition project).
+    pub target: SessionDocumentTarget,
+    /// Optional display name override. When unset, defaults to the media
+    /// basename or the `.facomp` file stem/basename.
+    pub name: Option<String>,
     /// tab_open.
     pub tab_open: bool,
     /// Pinned tabs stay in the bar; transient tabs may be replaced.
@@ -116,12 +182,34 @@ pub struct SessionDocument {
 }
 
 impl SessionDocument {
-    /// `new`.
+    /// Open a media-backed document (legacy helper; prefer [`Self::new_media`]).
     pub fn new(id: DocumentId, source_path: Option<PathBuf>) -> Self {
+        let path = source_path.unwrap_or_default();
+        if is_facomp_path(&path) {
+            Self::new_composition(id, path, CompositionId::new())
+        } else {
+            let descriptor = placeholder_descriptor(&path);
+            Self::new_media(id, path, CompositionId::new(), descriptor)
+        }
+    }
+
+    /// Open a media-backed tab.
+    pub fn new_media(
+        id: DocumentId,
+        source_path: PathBuf,
+        composition_id: CompositionId,
+        descriptor: MediaDescriptor,
+    ) -> Self {
+        let media_id = descriptor.id;
         Self {
             id,
-            source_path,
-            project_path: None,
+            target: SessionDocumentTarget::Media {
+                media_id,
+                composition_id,
+                source_path,
+                descriptor,
+            },
+            name: None,
             tab_open: true,
             tab_pinned: false,
             group: None,
@@ -130,10 +218,212 @@ impl SessionDocument {
         }
     }
 
-    /// `file_path`.
-    pub fn file_path(&self) -> Option<&Path> {
-        self.project_path.as_deref().or(self.source_path.as_deref())
+    /// Open a `.facomp` project tab.
+    pub fn new_composition(
+        id: DocumentId,
+        project_path: PathBuf,
+        composition_id: CompositionId,
+    ) -> Self {
+        Self {
+            id,
+            target: SessionDocumentTarget::Composition {
+                composition_id,
+                project_path,
+            },
+            name: None,
+            tab_open: true,
+            tab_pinned: false,
+            group: None,
+            state: None,
+            properties: BTreeMap::new(),
+        }
     }
+
+    /// Primary on-disk path for save (project wins when both exist historically).
+    pub fn file_path(&self) -> Option<&Path> {
+        match &self.target {
+            SessionDocumentTarget::Composition { project_path, .. }
+                if !project_path.as_os_str().is_empty() =>
+            {
+                Some(project_path.as_path())
+            }
+            SessionDocumentTarget::Media { source_path, .. }
+                if !source_path.as_os_str().is_empty() =>
+            {
+                Some(source_path.as_path())
+            }
+            _ => None,
+        }
+    }
+
+    /// Explicit display-name override, if any.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Set or clear the display-name override (empty clears).
+    pub fn set_name(&mut self, name: impl AsRef<str>) {
+        let trimmed = name.as_ref().trim();
+        self.name = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+
+    /// Display name: explicit [`Self::name`], else media basename / composition
+    /// file basename.
+    pub fn effective_name(&self) -> String {
+        if let Some(name) = self.name.as_ref().filter(|n| !n.is_empty()) {
+            return name.clone();
+        }
+        match &self.target {
+            SessionDocumentTarget::Media {
+                descriptor,
+                source_path,
+                ..
+            } => {
+                if !descriptor.basename.is_empty() {
+                    descriptor.basename.clone()
+                } else {
+                    basename_of(source_path)
+                }
+            }
+            SessionDocumentTarget::Composition { project_path, .. } => basename_of(project_path),
+        }
+    }
+
+    /// Composition identity for this tab.
+    pub fn composition_id(&self) -> CompositionId {
+        match self.target {
+            SessionDocumentTarget::Media { composition_id, .. }
+            | SessionDocumentTarget::Composition { composition_id, .. } => composition_id,
+        }
+    }
+
+    /// True when the tab is backed by a media source file.
+    pub fn is_media(&self) -> bool {
+        matches!(self.target, SessionDocumentTarget::Media { .. })
+    }
+
+    /// True when the tab is a `.facomp` project.
+    pub fn is_composition(&self) -> bool {
+        matches!(self.target, SessionDocumentTarget::Composition { .. })
+    }
+
+    /// Resolved audio source path when this is a media tab.
+    pub fn source_path(&self) -> Option<&Path> {
+        match &self.target {
+            SessionDocumentTarget::Media { source_path, .. } => Some(source_path.as_path()),
+            _ => None,
+        }
+    }
+
+    /// Project path when this is a composition tab.
+    pub fn project_path(&self) -> Option<&Path> {
+        match &self.target {
+            SessionDocumentTarget::Composition { project_path, .. } => Some(project_path.as_path()),
+            _ => None,
+        }
+    }
+
+    /// Update the media source path (media tabs only).
+    pub fn set_source_path(&mut self, path: PathBuf) {
+        if let SessionDocumentTarget::Media {
+            source_path,
+            descriptor,
+            ..
+        } = &mut self.target
+        {
+            *source_path = path.clone();
+            if descriptor.url.is_empty() || !descriptor.url.contains("://") {
+                descriptor.url = path.to_string_lossy().into_owned();
+            }
+            descriptor.basename = basename_of(&path);
+        }
+    }
+
+    /// Set or upgrade to a project path (converts media tabs to composition).
+    pub fn set_project_path(&mut self, path: PathBuf) {
+        match &mut self.target {
+            SessionDocumentTarget::Composition { project_path, .. } => *project_path = path,
+            SessionDocumentTarget::Media { composition_id, .. } => {
+                let composition_id = *composition_id;
+                self.target = SessionDocumentTarget::Composition {
+                    composition_id,
+                    project_path: path,
+                };
+            }
+        }
+    }
+
+    /// Replace the composition id (media or project tab).
+    pub fn set_composition_id(&mut self, composition_id: CompositionId) {
+        match &mut self.target {
+            SessionDocumentTarget::Media {
+                composition_id: id, ..
+            }
+            | SessionDocumentTarget::Composition {
+                composition_id: id, ..
+            } => *id = composition_id,
+        }
+    }
+
+    /// Media descriptor when this is a media tab.
+    pub fn media_descriptor(&self) -> Option<&MediaDescriptor> {
+        match &self.target {
+            SessionDocumentTarget::Media { descriptor, .. } => Some(descriptor),
+            _ => None,
+        }
+    }
+
+    /// Update the recorded media descriptor (media tabs only).
+    pub fn set_media_descriptor(&mut self, descriptor: MediaDescriptor) {
+        if let SessionDocumentTarget::Media {
+            media_id,
+            descriptor: stored,
+            ..
+        } = &mut self.target
+        {
+            *media_id = descriptor.id;
+            *stored = descriptor;
+        }
+    }
+}
+
+/// Build a placeholder [`MediaDescriptor`] from a path (tests / untitled opens).
+pub fn placeholder_media_descriptor(path: &Path) -> MediaDescriptor {
+    placeholder_descriptor(path)
+}
+
+fn placeholder_descriptor(path: &Path) -> MediaDescriptor {
+    use std::time::UNIX_EPOCH;
+    let basename = basename_of(path);
+    MediaDescriptor {
+        id: MediaId::from_bytes([0u8; 32]),
+        url: if path.as_os_str().is_empty() {
+            String::new()
+        } else {
+            path.to_string_lossy().into_owned()
+        },
+        basename,
+        sample_rate: 44_100,
+        channel_count: 2,
+        frame_count: 0,
+        bits_per_sample: Some(16),
+        size_bytes: 0,
+        modified: UNIX_EPOCH,
+        container_format: "unknown".into(),
+        codec: "unknown".into(),
+    }
+    .with_computed_id()
+}
+
+fn basename_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// Ordered list of open compositions and which one is active.
@@ -313,12 +603,10 @@ impl Session {
     pub fn find_by_path(&self, path: &Path) -> Option<DocumentId> {
         self.documents.iter().find_map(|doc| {
             let matches_source = doc
-                .source_path
-                .as_deref()
+                .source_path()
                 .is_some_and(|source| paths_equivalent(source, path));
             let matches_project = doc
-                .project_path
-                .as_deref()
+                .project_path()
                 .is_some_and(|project| paths_equivalent(project, path));
             (matches_source || matches_project).then_some(doc.id)
         })
@@ -326,7 +614,16 @@ impl Session {
 
     /// Insert a document, make it active, and open a center tab.
     pub fn push(&mut self, source_path: Option<PathBuf>) -> DocumentId {
-        self.insert(SessionDocument::new(DocumentId::new(), source_path))
+        let path = source_path.unwrap_or_default();
+        if is_facomp_path(&path) {
+            self.insert(SessionDocument::new_composition(
+                DocumentId::new(),
+                path,
+                CompositionId::new(),
+            ))
+        } else {
+            self.insert(SessionDocument::new(DocumentId::new(), Some(path)))
+        }
     }
 
     /// `insert`.
@@ -418,8 +715,8 @@ impl Session {
     /// `set_project_path`.
     pub fn set_project_path(&mut self, id: DocumentId, path: PathBuf) {
         let changed = match self.get_mut(id) {
-            Some(doc) if doc.project_path.as_ref() != Some(&path) => {
-                doc.project_path = Some(path);
+            Some(doc) if doc.project_path() != Some(path.as_path()) => {
+                doc.set_project_path(path);
                 true
             }
             _ => false,
@@ -429,17 +726,37 @@ impl Session {
         }
     }
 
+    /// Record the composition identity for a session document.
+    pub fn set_composition_id(&mut self, id: DocumentId, composition_id: CompositionId) {
+        if let Some(doc) = self.get_mut(id) {
+            if doc.composition_id() != composition_id {
+                doc.set_composition_id(composition_id);
+                self.mark_dirty();
+            }
+        }
+    }
+
+    /// Update the media descriptor for a media-backed document.
+    pub fn set_media_descriptor(&mut self, id: DocumentId, descriptor: MediaDescriptor) {
+        if let Some(doc) = self.get_mut(id) {
+            if doc.is_media() {
+                doc.set_media_descriptor(descriptor);
+                self.mark_dirty();
+            }
+        }
+    }
+
     /// Point an existing document at a new audio or `.facomp` file.
     pub fn replace_document_path(&mut self, id: DocumentId, path: PathBuf) -> bool {
         let Some(doc) = self.get_mut(id) else {
             return false;
         };
         if is_facomp_path(&path) {
-            doc.project_path = Some(path);
-            doc.source_path = None;
+            doc.set_project_path(path);
+        } else if doc.is_media() {
+            doc.set_source_path(path);
         } else {
-            doc.source_path = Some(path);
-            doc.project_path = None;
+            doc.set_project_path(path);
         }
         self.mark_dirty();
         true
@@ -759,13 +1076,48 @@ impl Session {
         base: Option<&Path>,
     ) -> Result<SessionEnvelope> {
         let mut documents = Vec::with_capacity(self.documents.len());
+        let mut media = Vec::new();
+        let mut seen_media = HashSet::new();
         for doc in &self.documents {
-            let Some(path) = doc.file_path() else {
+            let Some(_path) = doc.file_path() else {
                 bail!("cannot save session: {} has no file URL", name_of(doc.id));
             };
+            let target = match &doc.target {
+                SessionDocumentTarget::Media {
+                    media_id,
+                    composition_id,
+                    source_path,
+                    descriptor,
+                } => {
+                    let mut descriptor = descriptor.clone();
+                    // Keep document media_id aligned with the descriptor we persist.
+                    let media_id = if *media_id == descriptor.id {
+                        *media_id
+                    } else {
+                        descriptor.id
+                    };
+                    descriptor.url = encode_file_url(source_path, base);
+                    if seen_media.insert(media_id) {
+                        media.push(descriptor.clone());
+                    }
+                    SessionDocumentTargetFile::Media {
+                        media_id,
+                        composition_id: *composition_id,
+                    }
+                }
+                SessionDocumentTarget::Composition {
+                    composition_id,
+                    project_path,
+                } => SessionDocumentTargetFile::Composition {
+                    composition_id: *composition_id,
+                    url: encode_file_url(project_path, base),
+                },
+            };
+            let name = doc.name.clone().filter(|n| !n.is_empty());
             documents.push(SessionDocumentFile {
                 id: doc.id,
-                url: encode_file_url(path, base),
+                name,
+                target,
                 group: doc.group.clone(),
                 state: doc.state.clone(),
                 properties: doc.properties.clone(),
@@ -782,6 +1134,7 @@ impl Session {
             active: self.active,
             capture_ui: self.capture_ui,
             groups: self.groups.clone(),
+            media,
             documents,
             ui: None,
         })
@@ -791,21 +1144,63 @@ impl Session {
     pub fn from_json(json: &str, session_path: Option<&Path>) -> Result<LoadedSession> {
         let envelope = SessionEnvelope::from_json(json)?;
         let base = session_path.and_then(|path| path.parent());
+        let media_by_id: HashMap<MediaId, MediaDescriptor> = envelope
+            .media
+            .into_iter()
+            .map(|descriptor| (descriptor.id, descriptor))
+            .collect();
         let mut documents = Vec::with_capacity(envelope.documents.len());
         for file_doc in envelope.documents {
-            let path = resolve_file_url(&file_doc.url, base)
-                .with_context(|| format!("invalid document URL {}", file_doc.url))?;
-            let (source_path, project_path) = if is_fasession_path(&path) {
-                bail!("session documents cannot be nested session files");
-            } else if is_facomp_path(&path) {
-                (None, Some(path))
-            } else {
-                (Some(path), None)
+            let name = file_doc.name.filter(|n| !n.is_empty());
+            let target = match file_doc.target {
+                SessionDocumentTargetFile::Media {
+                    media_id,
+                    composition_id,
+                } => {
+                    let mut descriptor = media_by_id.get(&media_id).cloned().ok_or_else(|| {
+                        anyhow::anyhow!("missing media descriptor for {}", media_id)
+                    })?;
+                    let path = resolve_file_url(&descriptor.url, base).with_context(|| {
+                        format!("invalid media URL {} for {}", descriptor.url, media_id)
+                    })?;
+                    if is_fasession_path(&path) {
+                        bail!("session documents cannot be nested session files");
+                    }
+                    if is_facomp_path(&path) {
+                        bail!("media document URL must not be a .facomp file");
+                    }
+                    if descriptor.basename.is_empty() {
+                        descriptor.basename = basename_of(&path);
+                    }
+                    SessionDocumentTarget::Media {
+                        media_id,
+                        composition_id,
+                        source_path: path,
+                        descriptor,
+                    }
+                }
+                SessionDocumentTargetFile::Composition {
+                    composition_id,
+                    url,
+                } => {
+                    let path = resolve_file_url(&url, base)
+                        .with_context(|| format!("invalid document URL {url}"))?;
+                    if is_fasession_path(&path) {
+                        bail!("session documents cannot be nested session files");
+                    }
+                    if !is_facomp_path(&path) {
+                        bail!("composition document URL must be a .facomp file");
+                    }
+                    SessionDocumentTarget::Composition {
+                        composition_id,
+                        project_path: path,
+                    }
+                }
             };
             documents.push(SessionDocument {
                 id: file_doc.id,
-                source_path,
-                project_path,
+                target,
+                name,
                 tab_open: file_doc.tab_open,
                 tab_pinned: file_doc.tab_pinned,
                 group: file_doc.group,
@@ -947,6 +1342,9 @@ struct SessionEnvelope {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     /// Ordered named explorer groups.
     pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Media descriptors for open media-backed documents.
+    pub media: Vec<MediaDescriptor>,
     /// documents.
     pub documents: Vec<SessionDocumentFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -962,8 +1360,11 @@ fn default_true() -> bool {
 struct SessionDocumentFile {
     /// id.
     pub id: DocumentId,
-    /// url.
-    pub url: String,
+    /// Optional display-name override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Tagged open target.
+    pub target: SessionDocumentTargetFile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// group.
     pub group: Option<String>,
@@ -981,6 +1382,25 @@ struct SessionDocumentFile {
     pub tab_pinned: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SessionDocumentTargetFile {
+    /// Media-backed tab (URL lives on the session `media` descriptor).
+    Media {
+        /// media_id.
+        media_id: MediaId,
+        /// composition_id.
+        composition_id: CompositionId,
+    },
+    /// `.facomp` project tab.
+    Composition {
+        /// composition_id.
+        composition_id: CompositionId,
+        /// url.
+        url: String,
+    },
+}
+
 impl SessionEnvelope {
     fn from_json(json: &str) -> Result<Self> {
         let envelope: Self = serde_json::from_str(json).context("parse session JSON")?;
@@ -988,8 +1408,9 @@ impl SessionEnvelope {
             bail!("not a FieldAssist session (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            1 => Ok(envelope),
+            2 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
+            1 => bail!("unsupported format_version 1 (upgrade to format_version 2)"),
             n if n > FASESSION_FORMAT_VERSION => {
                 bail!("this file requires a newer FieldAssist (format_version {n})")
             }
@@ -1092,7 +1513,10 @@ mod tests {
     fn find_by_path_matches_project_path() {
         let mut session = Session::new();
         let a = session.push(Some(path("a.wav")));
-        session.get_mut(a).unwrap().project_path = Some(path("a.wav.facomp"));
+        session
+            .get_mut(a)
+            .unwrap()
+            .set_project_path(path("a.wav.facomp"));
         assert_eq!(session.find_by_path(Path::new("a.wav.facomp")), Some(a));
     }
 
@@ -1159,10 +1583,17 @@ mod tests {
         let mut session = Session::new();
         session.id = SessionId::from_u128(1);
         let id = DocumentId::from_u128(2);
+        let composition_id = CompositionId::from_u128(3);
+        let descriptor = placeholder_descriptor(&wav);
         session.insert(SessionDocument {
             id,
-            source_path: Some(wav.clone()),
-            project_path: None,
+            target: SessionDocumentTarget::Media {
+                media_id: descriptor.id,
+                composition_id,
+                source_path: wav.clone(),
+                descriptor,
+            },
+            name: None,
             tab_open: true,
             tab_pinned: true,
             group: Some("day1".into()),
@@ -1186,7 +1617,7 @@ mod tests {
             Some("greg")
         );
         assert!(doc.tab_pinned);
-        assert_eq!(doc.source_path.as_deref(), Some(wav.as_path()));
+        assert_eq!(doc.source_path(), Some(wav.as_path()));
         let _ = std::fs::remove_file(&wav);
         let _ = std::fs::remove_file(&session_path);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1206,7 +1637,248 @@ mod tests {
         let json = serde_json::to_string(&id).unwrap();
         let parsed: DocumentId = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, id);
-        assert_eq!(id.to_string(), Uuid::from_u128(99).to_string());
+        assert_eq!(id.to_string(), "doc:00000000-0000-0000-0000-000000000063");
+    }
+
+    #[test]
+    fn session_id_serializes_with_prefix() {
+        let id = SessionId::from_u128(7);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"session:00000000-0000-0000-0000-000000000007\"");
+    }
+
+    #[test]
+    fn format_version_1_is_rejected() {
+        let err = Session::from_json(
+            r#"{"kind":"fasession","format_version":1,"id":"session:00000000-0000-0000-0000-000000000001","documents":[]}"#,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("format_version 1"), "{err}");
+    }
+
+    #[test]
+    fn media_only_session_round_trips_three_files() {
+        let dir = std::env::temp_dir().join("fa-session-media-only-rt");
+        let _ = std::fs::create_dir_all(&dir);
+        let paths = [
+            dir.join("one.wav"),
+            dir.join("two.wav"),
+            dir.join("three.wav"),
+        ];
+        for (i, path) in paths.iter().enumerate() {
+            std::fs::write(path, format!("wav{i}")).unwrap();
+        }
+        let session_path = dir.join("batch.fasession");
+
+        let mut session = Session::new();
+        let mut expected = Vec::new();
+        for (i, path) in paths.iter().enumerate() {
+            let doc_id = DocumentId::from_u128(100 + i as u128);
+            let comp_id = CompositionId::from_u128(200 + i as u128);
+            let mut descriptor = placeholder_descriptor(path);
+            descriptor.frame_count = 1000 + i as u64;
+            descriptor.size_bytes = 10 + i as u64;
+            descriptor.sample_rate = 48_000;
+            descriptor = descriptor.with_computed_id();
+            expected.push((doc_id, comp_id, path.clone(), descriptor.id));
+            session.insert(SessionDocument::new_media(
+                doc_id,
+                path.clone(),
+                comp_id,
+                descriptor,
+            ));
+        }
+
+        let json = session.to_json_at(&session_path, named, None).unwrap();
+        assert!(json.contains("\"format_version\": 2"), "{json}");
+        // Media URLs live only on the top-level media descriptors.
+        assert!(json.contains("\"url\": \"one.wav\""), "{json}");
+        assert!(json.contains("\"url\": \"two.wav\""), "{json}");
+        assert!(json.contains("\"url\": \"three.wav\""), "{json}");
+        assert!(json.contains("\"media\""), "{json}");
+        // Documents targeting media must not repeat url.
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for doc in parsed["documents"].as_array().unwrap() {
+            let target = &doc["target"];
+            if target["type"] == "media" {
+                assert!(target.get("url").is_none(), "{doc}");
+                assert!(doc.get("name").is_none() || doc["name"].is_null(), "{doc}");
+            }
+        }
+
+        let mut loaded = Session::from_json(&json, Some(&session_path)).unwrap();
+        assert_eq!(loaded.session.documents().len(), 3);
+        for (doc_id, comp_id, path, media_id) in &expected {
+            let doc = loaded.session.get(*doc_id).expect("document present");
+            assert!(doc.is_media(), "{doc_id}");
+            assert_eq!(doc.composition_id(), *comp_id);
+            assert_eq!(doc.source_path(), Some(path.as_path()));
+            assert!(
+                path.is_file(),
+                "resolved media path missing: {}",
+                path.display()
+            );
+            let descriptor = doc.media_descriptor().expect("descriptor");
+            assert_eq!(descriptor.id, *media_id);
+            // Descriptor URL stays relative; source_path is absolute beside session.
+            assert_eq!(descriptor.url, path.file_name().unwrap().to_string_lossy());
+            assert_eq!(doc.name(), None);
+            assert_eq!(
+                doc.effective_name(),
+                path.file_name().unwrap().to_string_lossy()
+            );
+        }
+
+        // Explicit name override round-trips; omission still defaults to basename.
+        loaded
+            .session
+            .get_mut(expected[0].0)
+            .unwrap()
+            .set_name("Take One");
+        let json_named = loaded
+            .session
+            .to_json_at(&session_path, named, None)
+            .unwrap();
+        assert!(
+            json_named.contains("\"name\": \"Take One\""),
+            "{json_named}"
+        );
+        let loaded_named = Session::from_json(&json_named, Some(&session_path)).unwrap();
+        assert_eq!(
+            loaded_named
+                .session
+                .get(expected[0].0)
+                .unwrap()
+                .effective_name(),
+            "Take One"
+        );
+        assert_eq!(
+            loaded_named
+                .session
+                .get(expected[1].0)
+                .unwrap()
+                .effective_name(),
+            "two.wav"
+        );
+
+        // Re-serialize from the loaded session and load again (true persistence loop).
+        let json2 = loaded_named
+            .session
+            .to_json_at(&session_path, named, None)
+            .unwrap();
+        let loaded2 = Session::from_json(&json2, Some(&session_path)).unwrap();
+        assert_eq!(loaded2.session.documents().len(), 3);
+        for (doc_id, comp_id, path, media_id) in &expected {
+            let doc = loaded2.session.get(*doc_id).unwrap();
+            assert_eq!(doc.composition_id(), *comp_id);
+            assert_eq!(doc.source_path(), Some(path.as_path()));
+            assert_eq!(doc.media_descriptor().unwrap().id, *media_id);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_version_2_round_trips_media_and_composition() {
+        let dir = std::env::temp_dir().join("fa-session-v2");
+        let _ = std::fs::create_dir_all(&dir);
+        let wav = dir.join("clip.wav");
+        std::fs::write(&wav, b"wav").unwrap();
+        let facomp = dir.join("edit.facomp");
+        std::fs::write(&facomp, b"proj").unwrap();
+        let session_path = dir.join("mix.fasession");
+
+        let media_comp = CompositionId::from_u128(10);
+        let project_comp = CompositionId::from_u128(11);
+        let media_id = DocumentId::from_u128(20);
+        let project_id = DocumentId::from_u128(21);
+        let descriptor = placeholder_descriptor(&wav);
+
+        let mut session = Session::new();
+        session.insert(SessionDocument::new_media(
+            media_id,
+            wav.clone(),
+            media_comp,
+            descriptor,
+        ));
+        session.insert(SessionDocument::new_composition(
+            project_id,
+            facomp.clone(),
+            project_comp,
+        ));
+
+        let json = session.to_json_at(&session_path, named, None).unwrap();
+        assert!(json.contains("\"format_version\": 2"), "{json}");
+        assert!(json.contains("\"type\": \"media\""), "{json}");
+        assert!(json.contains("\"type\": \"composition\""), "{json}");
+        assert!(json.contains("\"media\""), "{json}");
+
+        let loaded = Session::from_json(&json, Some(&session_path)).unwrap();
+        let media_doc = loaded.session.get(media_id).unwrap();
+        assert!(media_doc.is_media());
+        assert_eq!(media_doc.composition_id(), media_comp);
+        assert_eq!(media_doc.source_path(), Some(wav.as_path()));
+
+        let project_doc = loaded.session.get(project_id).unwrap();
+        assert!(project_doc.is_composition());
+        assert_eq!(project_doc.composition_id(), project_comp);
+        assert_eq!(project_doc.project_path(), Some(facomp.as_path()));
+        assert_eq!(project_doc.effective_name(), "edit.facomp");
+        assert_eq!(media_doc.effective_name(), "clip.wav");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn media_document_composition_id_stable_across_session_reload() {
+        // Ephemeral media tabs mint a composition id that children may parent
+        // to; session save/load must keep that id so lineage still matches.
+        let dir = std::env::temp_dir().join("fa-session-stable-comp-id");
+        let _ = std::fs::create_dir_all(&dir);
+        let wav = dir.join("parent.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let session_path = dir.join("batch.fasession");
+
+        let recorded = CompositionId::from_u128(0xAABB_CCDD);
+        let mut descriptor = placeholder_descriptor(&wav);
+        descriptor.frame_count = 100;
+        descriptor.size_bytes = 4;
+        descriptor = descriptor.with_computed_id();
+
+        let mut session = Session::new();
+        let parent_doc = DocumentId::from_u128(1);
+        session.insert(SessionDocument::new_media(
+            parent_doc,
+            wav.clone(),
+            recorded,
+            descriptor,
+        ));
+        let child_doc = DocumentId::from_u128(2);
+        let child_comp = CompositionId::from_u128(0x1122);
+        let facomp = dir.join("child.facomp");
+        std::fs::write(&facomp, b"{}").unwrap();
+        session.insert(SessionDocument::new_composition(
+            child_doc,
+            facomp.clone(),
+            child_comp,
+        ));
+
+        let json = session.to_json_at(&session_path, named, None).unwrap();
+        let loaded = Session::from_json(&json, Some(&session_path)).unwrap();
+        assert_eq!(
+            loaded.session.get(parent_doc).unwrap().composition_id(),
+            recorded
+        );
+        assert_eq!(
+            loaded.session.get(child_doc).unwrap().composition_id(),
+            child_comp
+        );
+        // Child lineage targets the recorded parent composition id.
+        assert_ne!(recorded, child_comp);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1405,7 +2077,7 @@ mod tests {
     #[test]
     fn from_json_rejects_unknown_kind() {
         let err = Session::from_json(
-            r#"{"kind":"other","format_version":1,"id":"00000000-0000-0000-0000-000000000001","documents":[]}"#,
+            r#"{"kind":"other","format_version":2,"id":"session:00000000-0000-0000-0000-000000000001","documents":[]}"#,
             None,
         )
         .unwrap_err()

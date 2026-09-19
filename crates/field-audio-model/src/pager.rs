@@ -50,7 +50,7 @@ pub struct PagerStats {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BlockKey {
-    media_id: u64,
+    media_id: MediaId,
     block_index: u64,
 }
 
@@ -128,7 +128,7 @@ impl BlockPager {
         }
         let media = pool
             .get(media_id)
-            .with_context(|| format!("unknown media {}", media_id.0))?;
+            .with_context(|| format!("unknown media {media_id}"))?;
         let mut remaining = count;
         let mut src = src_offset;
         let mut dst = dest_offset;
@@ -169,7 +169,7 @@ impl BlockPager {
         }
         let media = pool
             .get(media_id)
-            .with_context(|| format!("unknown media {}", media_id.0))?;
+            .with_context(|| format!("unknown media {media_id}"))?;
         let mut remaining = count;
         let mut src = src_offset;
         let mut dst = 0usize;
@@ -196,7 +196,7 @@ impl BlockPager {
 
     fn load_block(&mut self, media: &MediaRef, block_index: u64) -> Result<Arc<Vec<Vec<f32>>>> {
         let key = BlockKey {
-            media_id: media.id.0,
+            media_id: media.id,
             block_index,
         };
         if let Some(block) = self.ram.get(&key).cloned() {
@@ -256,8 +256,11 @@ impl BlockPager {
     }
 
     fn spill_path(&self, key: &BlockKey) -> PathBuf {
-        self.spill_dir
-            .join(format!("m{}_b{}.blk", key.media_id, key.block_index))
+        self.spill_dir.join(format!(
+            "m{}_b{}.blk",
+            key.media_id.to_hex(),
+            key.block_index
+        ))
     }
 
     fn spill(&mut self, key: &BlockKey, block: &Arc<Vec<Vec<f32>>>) -> Result<()> {
@@ -384,7 +387,7 @@ mod tests {
     fn fills_from_memory_media() {
         let mut pool = MediaPool::new();
         let id = pool.insert(MediaRef::from_memory(
-            MediaId(0),
+            MediaId([0u8; 32]),
             44100,
             vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]],
         ));
@@ -411,7 +414,7 @@ mod tests {
         let mut pool = MediaPool::new();
         let frames = BLOCK_FRAMES as usize * 2;
         let samples = vec![(0..frames).map(|i| i as f32).collect::<Vec<_>>()];
-        let id = pool.insert(MediaRef::from_memory(MediaId(0), 44100, samples));
+        let id = pool.insert(MediaRef::from_memory(MediaId([0u8; 32]), 44100, samples));
         let mut pager =
             BlockPager::with_cache_bytes(dir.clone(), 1024, Arc::new(NullBlockSource)).unwrap();
         let mut buf = [0.0; 1];
@@ -423,7 +426,7 @@ mod tests {
             .fill_planar(&pool, id, BLOCK_FRAMES, 1, &mut [&mut buf[..]], 0)
             .unwrap();
         assert_eq!(buf[0], BLOCK_FRAMES as f32);
-        let spilled = dir.join(format!("m{}_b0.blk", id.0));
+        let spilled = dir.join(format!("m{}_b0.blk", id.to_hex()));
         assert!(
             spilled.is_file(),
             "expected spill file {}",

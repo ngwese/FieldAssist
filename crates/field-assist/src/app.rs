@@ -56,12 +56,13 @@ use crate::dock_titles::{
 };
 use crate::lineage::{ExplorerLineageFlags, LineageNode, LineageTree};
 use crate::model::composition::{
-    default_marker_type, AnalysisBlockOutcome, AnalysisKind, Composition, EditId,
-    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    default_marker_type, AnalysisBlockOutcome, AnalysisKind, Composition, DescriptorMismatch,
+    EditId, MediaDescriptor, MediaStore, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
+    MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 use crate::model::{
-    is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, DocumentId, MarkerId,
-    RegionId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
+    is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, CompositionId,
+    DocumentId, MarkerId, RegionId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
 };
 use crate::monitor::MonitorChain;
 use crate::monitor_schema::{collect_param_addresses, param_ui_layout_from_json};
@@ -69,7 +70,7 @@ use crate::playback::{
     list_output_devices, output_device_name, resolve_output_device, should_refresh_monitor_ui,
     PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackSession, TransportState,
 };
-use crate::progress::ProgressState;
+use crate::progress::{ProgressHandle, ProgressState};
 use crate::script::{
     DropLayout, EvalOutput, LogEntry, LogLevel as ScriptLogLevel, ResumeWorkflow, ScriptHost,
     ToolbarItem,
@@ -173,6 +174,8 @@ enum AfterSessionWrite {
 
 pub struct AppView {
     session: Session,
+    /// Shared media pool + pager for all documents in this window/session.
+    media_store: Arc<Mutex<MediaStore>>,
     views: HashMap<DocumentId, DocumentViews>,
     dock_area: Entity<DockArea>,
     explorer: Entity<ExplorerPanel>,
@@ -190,12 +193,16 @@ pub struct AppView {
     playback_faults: PlaybackFaultFlusher,
     app_menu_bar: Option<Entity<AppMenuBar>>,
     pending_opens: Arc<Mutex<Vec<PathBuf>>>,
+    /// Completed background opens: `(id, epoch, elapsed, nest_under_parent, result)`.
+    /// `nest_under_parent` is false for session restore so fasession group/order
+    /// is preserved; true for fresh opens into an existing session.
     pending_load: Arc<
         Mutex<
             Vec<(
                 DocumentId,
                 u64,
                 f64,
+                bool,
                 Result<(Composition, Vec<String>), String>,
             )>,
         >,
@@ -487,6 +494,7 @@ impl AppView {
         let workflow_bar_view = cx.new(|_| WorkflowBar::new(app.clone()));
         let mut this = Self {
             session,
+            media_store: Arc::new(Mutex::new(MediaStore::in_memory())),
             views,
             dock_area,
             explorer,
@@ -641,13 +649,12 @@ impl AppView {
         });
         if let Some(title) = title {
             let dir = doc
-                .project_path
-                .as_ref()
-                .or(doc.source_path.as_ref())
+                .project_path()
+                .or(doc.source_path())
                 .and_then(|path| path.parent())?;
             return Some(dir.join(field_composition::normalize_facomp_file_name(&title)));
         }
-        doc.project_path.clone()
+        doc.project_path().map(Path::to_path_buf)
     }
 
     pub(crate) fn refresh_explorer(&self, cx: &mut Context<Self>) {
@@ -710,8 +717,9 @@ impl AppView {
             return Vec::new();
         };
         let composition = views.composition.read().unwrap();
-        let mut media: Vec<_> = composition.pool().iter().collect();
-        media.sort_by_key(|m| m.id.0);
+        let pool = composition.pool();
+        let mut media: Vec<_> = pool.iter().collect();
+        media.sort_by_key(|m| m.id.to_hex());
         media
             .into_iter()
             .map(|m| {
@@ -789,10 +797,6 @@ impl AppView {
         if spans.is_empty() {
             return;
         }
-        let parent_group = self
-            .session
-            .get(parent_id)
-            .and_then(|doc| doc.group.clone());
         let parent_name = self.display_title(parent_id, cx).to_string();
         let tree = self.lineage_tree(cx);
         let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
@@ -823,27 +827,11 @@ impl AppView {
             }
         }
         let mut last_id = None;
-        let mut insert_at = self
-            .session
-            .documents()
-            .iter()
-            .filter(|doc| doc.group == parent_group)
-            .position(|doc| doc.id == parent_id)
-            .map(|i| i + 1)
-            .unwrap_or_else(|| {
-                self.session
-                    .documents()
-                    .iter()
-                    .filter(|doc| doc.group == parent_group)
-                    .count()
-            });
         for child in children {
             let composition = Arc::new(RwLock::new(child));
             let buffer = Arc::new(RwLock::new(Buffer::empty()));
             let id = self.add_document(composition, buffer, None, window, cx);
-            self.session
-                .place_document(id, parent_group.clone(), insert_at);
-            insert_at += 1;
+            self.place_document_under_parent(parent_id, id, cx);
             self.pin_tab(id, cx);
             last_id = Some(id);
         }
@@ -1590,23 +1578,7 @@ impl AppView {
                 let Some(parent_id) = tree.parent(id) else {
                     return;
                 };
-                let parent_group = self
-                    .session
-                    .get(parent_id)
-                    .and_then(|doc| doc.group.clone());
-                let members: Vec<DocumentId> = self
-                    .session
-                    .documents()
-                    .iter()
-                    .filter(|doc| doc.id != id && doc.group == parent_group)
-                    .map(|doc| doc.id)
-                    .collect();
-                let index = members
-                    .iter()
-                    .position(|&member| member == parent_id)
-                    .map(|i| i + 1)
-                    .unwrap_or(members.len());
-                self.session.place_document(id, parent_group, index);
+                self.place_document_under_parent(parent_id, id, cx);
                 self.refresh_explorer(cx);
             }
             ExplorerEvent::Rename { id, name } => {
@@ -1637,22 +1609,81 @@ impl AppView {
         }
     }
 
+    /// Place `child` in the parent's group, immediately after the parent's
+    /// contiguous attached descendants (so the explorer nests it).
+    fn place_document_under_parent(
+        &mut self,
+        parent_id: DocumentId,
+        child_id: DocumentId,
+        cx: &App,
+    ) {
+        if parent_id == child_id {
+            return;
+        }
+        let Some(parent_group) = self.session.get(parent_id).map(|doc| doc.group.clone()) else {
+            return;
+        };
+        let tree = self.lineage_tree(cx);
+        let members: Vec<DocumentId> = self
+            .session
+            .documents()
+            .iter()
+            .filter(|doc| doc.id != child_id && doc.group == parent_group)
+            .map(|doc| doc.id)
+            .collect();
+        let Some(index) = tree.insert_index_under_parent(parent_id, &members) else {
+            return;
+        };
+        self.session.place_document(child_id, parent_group, index);
+    }
+
+    /// After a fresh open (not session restore), nest under an open parent;
+    /// if this document is a parent, pull already-open children into its
+    /// contiguous block. Restore keeps the fasession group and order.
+    fn ensure_lineage_placement(&mut self, id: DocumentId, cx: &App) {
+        let tree = self.lineage_tree(cx);
+        if let Some(parent_id) = tree.parent(id) {
+            self.place_document_under_parent(parent_id, id, cx);
+            return;
+        }
+        let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        let children = tree.children(id, &ordered);
+        for child_id in children {
+            self.place_document_under_parent(id, child_id, cx);
+        }
+    }
+
     fn push_loaded_composition(
         &mut self,
         id: DocumentId,
         composition: Composition,
         elapsed: f64,
+        nest_under_parent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(views) = self.views.get(&id).cloned() else {
             return;
         };
+        let composition_id = composition.id();
+        let media_descriptor = composition
+            .pool()
+            .first()
+            .map(|media| media.to_descriptor());
         {
             *views.composition.write().unwrap() = composition;
         }
         {
             *views.buffer.write().unwrap() = Buffer::empty();
+        }
+        self.session.set_composition_id(id, composition_id);
+        if let Some(descriptor) = media_descriptor {
+            if self.session.get(id).is_some_and(|doc| doc.is_media()) {
+                self.session.set_media_descriptor(id, descriptor);
+            }
+        }
+        if nest_under_parent {
+            self.ensure_lineage_placement(id, cx);
         }
         views.document.read(cx).progress.cancel();
         if self.session.active() == Some(id) {
@@ -2375,9 +2406,11 @@ impl AppView {
     }
 
     pub(crate) fn script_path(&self, id: DocumentId) -> Option<PathBuf> {
-        self.session
-            .get(id)
-            .and_then(|doc| doc.project_path.clone().or_else(|| doc.source_path.clone()))
+        self.session.get(id).and_then(|doc| {
+            doc.project_path()
+                .map(Path::to_path_buf)
+                .or_else(|| doc.source_path().map(Path::to_path_buf))
+        })
     }
 
     pub(crate) fn script_open(
@@ -3343,10 +3376,19 @@ impl AppView {
 
     fn show_media_warning(&self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
         let message = message.to_string();
+        self.messages.update(cx, |panel, cx| {
+            panel.append(
+                vec![LogLine::new(LogLevel::Warn, "media", message.clone())],
+                cx,
+            );
+        });
+        let title = if message.contains("Composition id") {
+            "Composition identity"
+        } else {
+            "Source media changed"
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
-            alert
-                .title("Source media changed")
-                .description(message.clone())
+            alert.title(title).description(message.clone())
         });
     }
 
@@ -3360,9 +3402,8 @@ impl AppView {
     fn suggested_save_directory(&self, id: DocumentId, cx: &App) -> PathBuf {
         if let Some(doc) = self.session.get(id) {
             if let Some(parent) = doc
-                .project_path
-                .as_ref()
-                .or(doc.source_path.as_ref())
+                .project_path()
+                .or(doc.source_path())
                 .and_then(|path| path.parent())
             {
                 return parent.to_path_buf();
@@ -3480,8 +3521,8 @@ impl AppView {
             let path_changed = self
                 .session
                 .get(id)
-                .and_then(|doc| doc.project_path.as_ref())
-                .is_some_and(|existing| existing != &path);
+                .and_then(|doc| doc.project_path())
+                .is_some_and(|existing| existing != path.as_path());
             if mint_new_id && path_changed {
                 composition.mint_new_id();
             }
@@ -4030,7 +4071,7 @@ impl AppView {
 
     fn drain_pending_load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let completed = std::mem::take(&mut *self.pending_load.lock().unwrap());
-        for (id, epoch, elapsed, result) in completed {
+        for (id, epoch, elapsed, nest_under_parent, result) in completed {
             let valid = self
                 .views
                 .get(&id)
@@ -4040,7 +4081,14 @@ impl AppView {
             }
             match result {
                 Ok((composition, warnings)) => {
-                    self.push_loaded_composition(id, composition, elapsed, window, cx);
+                    self.push_loaded_composition(
+                        id,
+                        composition,
+                        elapsed,
+                        nest_under_parent,
+                        window,
+                        cx,
+                    );
                     if !warnings.is_empty() {
                         self.show_media_warning(&warnings.join("\n"), window, cx);
                     }
@@ -4092,15 +4140,26 @@ impl AppView {
         cx.notify();
         let pending = self.pending_load.clone();
         let progress = views.document.read(cx).progress.clone();
+        let store = Arc::clone(&self.media_store);
+        let restoring = self.restoring_session;
+        let nest_under_parent = !restoring;
+        let recorded = self.session.get(id).map(|doc| {
+            let descriptor = if restoring && doc.is_media() {
+                doc.media_descriptor().cloned()
+            } else {
+                None
+            };
+            (doc.composition_id(), doc.is_media(), descriptor, restoring)
+        });
         std::thread::spawn(move || {
             let started = Instant::now();
-            // Header/project probe only. Overview bins are built later for the
-            // active document so session restore cannot stall a small file
-            // behind N parallel full-file decodes.
-            let result = Composition::load_from_path_with_progress(&path, Some(&progress), epoch)
+            let result = load_document_into_session_store(&path, store, recorded, &progress, epoch)
                 .map_err(|err| format!("{err:#}"));
             let elapsed = started.elapsed().as_secs_f64();
-            pending.lock().unwrap().push((id, epoch, elapsed, result));
+            pending
+                .lock()
+                .unwrap()
+                .push((id, epoch, elapsed, nest_under_parent, result));
         });
     }
 
@@ -4255,6 +4314,7 @@ impl AppView {
             .map(|doc| doc.id)
             .collect();
         self.session = loaded.session;
+        self.media_store = Arc::new(Mutex::new(MediaStore::in_memory()));
         self.restoring_session = true;
         for id in docs {
             self.attach_session_document(id, window, cx);
@@ -5001,6 +5061,76 @@ fn prompt_open_at_app_level(cx: &mut App) {
         });
     })
     .detach();
+}
+
+fn load_document_into_session_store(
+    path: &Path,
+    store: Arc<Mutex<MediaStore>>,
+    recorded: Option<(CompositionId, bool, Option<MediaDescriptor>, bool)>,
+    progress: &ProgressHandle,
+    epoch: u64,
+) -> anyhow::Result<(Composition, Vec<String>)> {
+    let mut warnings = Vec::new();
+    let (mut composition, load_warnings) =
+        if let Some((recorded_id, true, Some(mut descriptor), _)) = recorded.clone() {
+            // Session JSON stores relative media URLs; `path` is already resolved
+            // absolute by session load. Prefer that so reopen does not look in cwd.
+            descriptor.url = path.to_string_lossy().into_owned();
+            let (mut composition, mismatch) = Composition::from_descriptor_with_base(
+                descriptor,
+                path.parent(),
+                Some(Arc::clone(&store)),
+            )?;
+            composition = composition.with_spill_dir(spill_dir_for(path))?;
+            composition.set_id(recorded_id);
+            if let Some(kind) = mismatch {
+                warnings.push(match kind {
+                    DescriptorMismatch::Identity => format!(
+                        "Media identity changed for {} (keeping recorded media id)",
+                        path.display()
+                    ),
+                    DescriptorMismatch::Freshness => format!(
+                        "Media file modified on disk for {} (identity unchanged)",
+                        path.display()
+                    ),
+                });
+            }
+            (composition, Vec::new())
+        } else {
+            Composition::load_from_path_with_progress_into_store(
+                path,
+                Some(progress),
+                epoch,
+                Some(store),
+            )?
+        };
+    warnings.extend(load_warnings);
+    if let Some((recorded_id, is_media, _, restoring)) = recorded {
+        if is_media {
+            composition.set_id(recorded_id);
+        } else if restoring && composition.id() != recorded_id {
+            // Only warn when the session file recorded a composition id. Fresh
+            // opens mint a placeholder id before load; the file's id wins.
+            warnings.push(format!(
+                "Composition id {} differs from session-recorded {}",
+                composition.id(),
+                recorded_id
+            ));
+        }
+    }
+    Ok((composition, warnings))
+}
+
+fn spill_dir_for(path: &Path) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    std::time::SystemTime::now().hash(&mut hasher);
+    std::env::temp_dir()
+        .join("FieldAssist")
+        .join("blocks")
+        .join(format!("{:x}", hasher.finish()))
 }
 
 fn take_pending_open_paths(cx: &App) -> Vec<PathBuf> {

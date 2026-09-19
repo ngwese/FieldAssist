@@ -1424,19 +1424,25 @@ impl Render for ExplorerPanel {
                                                                 )
                                                             }
                                                         })
-                                                        .child(
+                                                        .child({
+                                                            // Left gutter: link when detached
+                                                            // (aligned with group disclosure
+                                                            // triangles); otherwise the parent
+                                                            // chevron when this row has children.
+                                                            let explorer = explorer.clone();
                                                             div()
-                                                                .id(SharedString::from(format!(
-                                                                    "comp-disclose-{id}"
-                                                                )))
+                                                                .id(SharedString::from(if detached {
+                                                                    format!("comp-link-{id}")
+                                                                } else {
+                                                                    format!("comp-disclose-{id}")
+                                                                }))
                                                                 .w(px(DISCLOSURE_SLOT))
                                                                 .h(px(DISCLOSURE_SLOT))
                                                                 .flex()
                                                                 .flex_none()
                                                                 .items_center()
                                                                 .justify_center()
-                                                                .when(has_children, |this| {
-                                                                    let explorer = explorer.clone();
+                                                                .when(detached, |this| {
                                                                     this.cursor_pointer()
                                                                         .on_mouse_down(
                                                                             MouseButton::Left,
@@ -1444,36 +1450,111 @@ impl Render for ExplorerPanel {
                                                                                 cx.stop_propagation();
                                                                             },
                                                                         )
-                                                                        .on_click(move |_, _, cx| {
-                                                                            cx.stop_propagation();
-                                                                            explorer.update(
-                                                                                cx,
-                                                                                |this, cx| {
-                                                                                    this.toggle_parent_collapse(
-                                                                                        id, cx,
+                                                                        .on_click({
+                                                                            let explorer =
+                                                                                explorer.clone();
+                                                                            move |event: &ClickEvent,
+                                                                                  window,
+                                                                                  cx| {
+                                                                                cx.stop_propagation();
+                                                                                if event
+                                                                                    .modifiers()
+                                                                                    .shift
+                                                                                {
+                                                                                    dispatch(
+                                                                                        &explorer,
+                                                                                        ExplorerEvent::Reattach(
+                                                                                            id,
+                                                                                        ),
+                                                                                        window,
+                                                                                        cx,
                                                                                     );
-                                                                                },
-                                                                            );
+                                                                                } else if let Some(
+                                                                                    parent_id,
+                                                                                ) =
+                                                                                    parent_id
+                                                                                {
+                                                                                    explorer
+                                                                                        .update(
+                                                                                            cx,
+                                                                                            |this,
+                                                                                             cx| {
+                                                                                                this.selected = Some(
+                                                                                                    parent_id,
+                                                                                                );
+                                                                                                cx.notify();
+                                                                                            },
+                                                                                        );
+                                                                                    dispatch(
+                                                                                        &explorer,
+                                                                                        ExplorerEvent::Activate(
+                                                                                            parent_id,
+                                                                                        ),
+                                                                                        window,
+                                                                                        cx,
+                                                                                    );
+                                                                                }
+                                                                            }
                                                                         })
                                                                         .child(
-                                                                            Icon::new(
-                                                                                if parent_open {
-                                                                                    IconName::ChevronDown
-                                                                                } else {
-                                                                                    IconName::ChevronRight
+                                                                            Icon::new(LinkIcon)
+                                                                                .xsmall()
+                                                                                .text_color(muted),
+                                                                        )
+                                                                })
+                                                                .when(
+                                                                    !detached && has_children,
+                                                                    |this| {
+                                                                        this.cursor_pointer()
+                                                                            .on_mouse_down(
+                                                                                MouseButton::Left,
+                                                                                |_, _, cx| {
+                                                                                    cx.stop_propagation();
                                                                                 },
                                                                             )
-                                                                            .xsmall()
-                                                                            .text_color(muted),
-                                                                        )
-                                                                }),
-                                                        )
-                                                        .when(detached, |this| {
+                                                                            .on_click({
+                                                                                let explorer =
+                                                                                    explorer
+                                                                                        .clone();
+                                                                                move |_, _, cx| {
+                                                                                    cx.stop_propagation();
+                                                                                    explorer
+                                                                                        .update(
+                                                                                            cx,
+                                                                                            |this,
+                                                                                             cx| {
+                                                                                                this.toggle_parent_collapse(
+                                                                                                    id, cx,
+                                                                                                );
+                                                                                            },
+                                                                                        );
+                                                                                }
+                                                                            })
+                                                                            .child(
+                                                                                Icon::new(
+                                                                                    if parent_open {
+                                                                                        IconName::ChevronDown
+                                                                                    } else {
+                                                                                        IconName::ChevronRight
+                                                                                    },
+                                                                                )
+                                                                                .xsmall()
+                                                                                .text_color(muted),
+                                                                            )
+                                                                    },
+                                                                )
+                                                        })
+                                                        .when(detached && has_children, |this| {
+                                                            // Rare: detached parent with attached
+                                                            // descendants — keep collapse control
+                                                            // beside the gutter link.
                                                             let explorer = explorer.clone();
                                                             this.child(
                                                                 div()
                                                                     .id(SharedString::from(
-                                                                        format!("comp-link-{id}"),
+                                                                        format!(
+                                                                            "comp-disclose-{id}"
+                                                                        ),
                                                                     ))
                                                                     .w(px(DISCLOSURE_SLOT))
                                                                     .h(px(DISCLOSURE_SLOT))
@@ -1488,54 +1569,27 @@ impl Render for ExplorerPanel {
                                                                             cx.stop_propagation();
                                                                         },
                                                                     )
-                                                                    .on_click({
-                                                                        let explorer =
-                                                                            explorer.clone();
-                                                                        move |event: &ClickEvent,
-                                                                              window,
-                                                                              cx| {
-                                                                            cx.stop_propagation();
-                                                                            if event
-                                                                                .modifiers()
-                                                                                .shift
-                                                                            {
-                                                                                dispatch(
-                                                                                    &explorer,
-                                                                                    ExplorerEvent::Reattach(
-                                                                                        id,
-                                                                                    ),
-                                                                                    window,
-                                                                                    cx,
+                                                                    .on_click(move |_, _, cx| {
+                                                                        cx.stop_propagation();
+                                                                        explorer.update(
+                                                                            cx,
+                                                                            |this, cx| {
+                                                                                this.toggle_parent_collapse(
+                                                                                    id, cx,
                                                                                 );
-                                                                            } else if let Some(
-                                                                                parent_id,
-                                                                            ) = parent_id
-                                                                            {
-                                                                                explorer.update(
-                                                                                    cx,
-                                                                                    |this, cx| {
-                                                                                        this.selected =
-                                                                                            Some(
-                                                                                                parent_id,
-                                                                                            );
-                                                                                        cx.notify();
-                                                                                    },
-                                                                                );
-                                                                                dispatch(
-                                                                                    &explorer,
-                                                                                    ExplorerEvent::Activate(
-                                                                                        parent_id,
-                                                                                    ),
-                                                                                    window,
-                                                                                    cx,
-                                                                                );
-                                                                            }
-                                                                        }
+                                                                            },
+                                                                        );
                                                                     })
                                                                     .child(
-                                                                        Icon::new(LinkIcon)
-                                                                            .xsmall()
-                                                                            .text_color(muted),
+                                                                        Icon::new(
+                                                                            if parent_open {
+                                                                                IconName::ChevronDown
+                                                                            } else {
+                                                                                IconName::ChevronRight
+                                                                            },
+                                                                        )
+                                                                        .xsmall()
+                                                                        .text_color(muted),
                                                                     ),
                                                             )
                                                         })

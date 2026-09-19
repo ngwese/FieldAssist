@@ -271,7 +271,7 @@ impl Composition {
 
             this.analysis_pass_stats.consume_ns += t0.elapsed().as_nanos() as u64;
             {
-                let pager = this.pager.lock().unwrap().stats();
+                let pager = this.pager_arc().lock().unwrap().stats();
                 this.analysis_pass_stats.decode_ns = pager.decode_ns;
                 this.analysis_pass_stats.decodes = pager.decodes;
                 this.analysis_pass_stats.ram_hits = pager.ram_hits;
@@ -690,7 +690,7 @@ impl Composition {
         }
 
         {
-            let pager = this.pager.lock().unwrap().stats();
+            let pager = this.pager_arc().lock().unwrap().stats();
             this.analysis_pass_stats.decode_ns = pager.decode_ns;
             this.analysis_pass_stats.decodes = pager.decodes;
             this.analysis_pass_stats.ram_hits = pager.ram_hits;
@@ -709,7 +709,7 @@ impl Composition {
 
     /// Replace the block pager (tests / specialized hosts).
     pub fn set_pager(&mut self, pager: field_audio_model::BlockPager) {
-        self.pager = std::sync::Arc::new(std::sync::Mutex::new(pager));
+        *self.pager_arc().lock().unwrap() = pager;
     }
 
     /// Clear overview peaks and analysis streams so a pass must rebuild.
@@ -727,7 +727,7 @@ impl Composition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field_audio_model::{BlockSource, MediaId, MediaRef, BLOCK_FRAMES};
+    use field_audio_model::{BlockSource, MediaRef, BLOCK_FRAMES};
     use field_audio_process::{AnalysisKind, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR};
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -744,7 +744,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        MediaRef::from_memory(MediaId(0), rate, samples)
+        MediaRef::from_memory_samples(rate, samples)
     }
 
     fn run_kinds_to_complete(lock: &RwLock<Composition>, kinds: &[AnalysisKind]) {

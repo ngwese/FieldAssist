@@ -299,7 +299,7 @@ mod tests {
             id: ClipId(1),
             len: 10,
             source: Some(ClipSource {
-                media_id: MediaId(7),
+                media_id: MediaId([7u8; 32]),
                 offset: 100,
             }),
             fade_in: 3,
@@ -350,7 +350,7 @@ mod tests {
             id: ClipId(1),
             len: block * 2,
             source: Some(ClipSource {
-                media_id: MediaId(1),
+                media_id: MediaId([1u8; 32]),
                 offset: 0,
             }),
             fade_in: 0,
@@ -377,7 +377,7 @@ mod tests {
             id: ClipId(1),
             len: PEAK_BLOCK as u64 * 2,
             source: Some(ClipSource {
-                media_id: MediaId(1),
+                media_id: MediaId([1u8; 32]),
                 offset: 0,
             }),
             fade_in: 0,
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn roll_clamps_to_media() {
-        let clip = Clip::from_media(ClipId(1), MediaId(1), 8, 4);
+        let clip = Clip::from_media(ClipId(1), MediaId([1u8; 32]), 8, 4);
         let rolled = clip.with_rolled_offset(10, 12);
         assert_eq!(rolled.source.unwrap().offset, 8);
         let rolled = clip.with_rolled_offset(-20, 12);

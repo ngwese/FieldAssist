@@ -1203,11 +1203,11 @@ impl WaveformEditor for BufferDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::composition::{Composition, MediaId, MediaRef};
+    use crate::model::composition::{Composition, MediaRef};
 
     fn test_document(frames: usize) -> BufferDocument {
         let samples = vec![vec![0.0; frames], vec![0.0; frames]];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         BufferDocument::new(Composition::from_media(media).unwrap())
     }
 

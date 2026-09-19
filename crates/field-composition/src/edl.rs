@@ -1,37 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use field_audio_model::{MarkerType, RegionCollection, StoredMarker};
+use field_audio_model::{MarkerType, MediaId, RegionCollection, StoredMarker};
+
+pub use field_core::CompositionId;
 
 use super::tree::ClipTree;
-
-/// Stable identity for a composition across saves and sessions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CompositionId(pub Uuid);
-
-impl CompositionId {
-    /// Mint a new random composition id.
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for CompositionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for CompositionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// EditId.
@@ -285,7 +261,7 @@ pub enum InitialState {
     /// Single full-length clip from a media pool entry.
     FromMedia {
         /// Media pool id.
-        media_id: u64,
+        media_id: MediaId,
     },
 }
 
@@ -340,7 +316,7 @@ pub struct ProjectFile {
 /// FACOMP_KIND:.
 pub const FACOMP_KIND: &str = "facomp";
 /// FACOMP_FORMAT_VERSION:.
-pub const FACOMP_FORMAT_VERSION: u32 = 6;
+pub const FACOMP_FORMAT_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// ProjectEnvelope.
@@ -373,7 +349,7 @@ impl ProjectEnvelope {
             bail!("not a FieldAssist composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            1 | 2 | 3 | 4 | 5 | 6 => Ok(envelope),
+            7 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer FieldAssist (format_version {n})")
@@ -399,7 +375,7 @@ mod tests {
     fn undo_redo_and_jump() {
         let mut edl = Edl::new(ClipTree::empty());
         let a = ClipTree::from_clip(Clip::silence(ClipId(1), 10));
-        let b = ClipTree::from_clip(Clip::from_media(ClipId(2), MediaId(1), 0, 4));
+        let b = ClipTree::from_clip(Clip::from_media(ClipId(2), MediaId([1u8; 32]), 0, 4));
         let id_a = edl.push(EditOp::Delete { start: 0, len: 1 }, a);
         let id_b = edl.push(EditOp::Paste { at: 0, len: 4 }, b.clone());
         assert!(edl.can_undo());

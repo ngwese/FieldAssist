@@ -46,12 +46,12 @@ pub fn next_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::model::buffer::ChannelScope;
-    use crate::model::composition::{Composition, MediaId, MediaRef, MARKER_TYPE_BLUE};
+    use crate::model::composition::{Composition, MediaRef, MARKER_TYPE_BLUE};
     use crate::model::document::BufferDocument;
 
     fn test_document() -> BufferDocument {
         let samples = vec![vec![0.0; 1000]];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         let mut doc = BufferDocument::new(Composition::from_media(media).unwrap());
         doc.add_marker(50, MARKER_TYPE_BLUE, None);
         doc.add_labeled_region(100, 200, ChannelScope::all(), None, "cues");

@@ -144,6 +144,24 @@ impl LineageTree {
         out
     }
 
+    /// Index in `ordered_without_child` at which to insert a child so it sits
+    /// in the contiguous attached block under `parent` (after existing
+    /// attached descendants). `ordered_without_child` must omit the child.
+    pub fn insert_index_under_parent(
+        &self,
+        parent: DocumentId,
+        ordered_without_child: &[DocumentId],
+    ) -> Option<usize> {
+        let i = ordered_without_child.iter().position(|&id| id == parent)?;
+        let mut end = i + 1;
+        while end < ordered_without_child.len()
+            && self.is_descendant(ordered_without_child[end], parent)
+        {
+            end += 1;
+        }
+        Some(end)
+    }
+
     /// Indent / disclosure / link flags for explorer rows in `ordered`
     /// (one session group, session order).
     pub fn explorer_flags(
@@ -305,6 +323,37 @@ mod tests {
         // First edge a→b may stick; b→a would cycle and is rejected.
         assert_eq!(tree.parent(doc(1)), Some(doc(2)));
         assert_eq!(tree.parent(doc(2)), None);
+    }
+
+    #[test]
+    fn insert_index_under_parent_after_attached_block() {
+        let root = LineageNode {
+            document: doc(1),
+            composition: comp(10),
+            parent: None,
+        };
+        let child = LineageNode {
+            document: doc(2),
+            composition: comp(20),
+            parent: Some(comp(10)),
+        };
+        let other = LineageNode {
+            document: doc(3),
+            composition: comp(30),
+            parent: None,
+        };
+        let new_child = LineageNode {
+            document: doc(4),
+            composition: comp(40),
+            parent: Some(comp(10)),
+        };
+        let tree = LineageTree::from_nodes(&[root, child, other, new_child]);
+        // Without the new child: parent, attached child, then unrelated.
+        let without = [doc(1), doc(2), doc(3)];
+        assert_eq!(tree.insert_index_under_parent(doc(1), &without), Some(2));
+        // Empty block: insert right after parent.
+        let alone = [doc(1), doc(3)];
+        assert_eq!(tree.insert_index_under_parent(doc(1), &alone), Some(1));
     }
 
     #[test]

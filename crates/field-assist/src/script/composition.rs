@@ -99,7 +99,7 @@ impl UserData for LuaComposition {
         });
         fields.add_field_method_get("codec", |lua, this| {
             with_document(lua, this.id, |doc| {
-                Ok(doc.composition.read().unwrap().codec().map(str::to_string))
+                Ok(doc.composition.read().unwrap().codec())
             })
         });
         fields.add_field_method_get("bit_depth", |lua, this| {

@@ -33,7 +33,7 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
 
-    use crate::model::composition::{Composition, MediaId, MediaRef};
+    use crate::model::composition::{Composition, MediaRef};
     use crate::model::Buffer;
 
     use super::*;
@@ -41,7 +41,7 @@ mod tests {
     fn test_host() -> (ScriptHost, Rc<RefCell<TestWorld>>) {
         let world = Rc::new(RefCell::new(TestWorld::new()));
         let samples = vec![vec![0.0; 1000], vec![0.0; 1000]];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         let composition = Composition::from_media(media).expect("composition");
         world
             .borrow_mut()
@@ -502,7 +502,7 @@ mod tests {
     fn detect_with(channels: usize, filename: Option<&str>) -> (Option<String>, Option<String>) {
         let world = Rc::new(RefCell::new(TestWorld::new()));
         let samples = vec![vec![0.0f32; 64]; channels];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         let composition = Composition::from_media(media).expect("composition");
         let path = filename.map(std::path::PathBuf::from);
         let id = world
@@ -552,7 +552,7 @@ mod tests {
     fn detect_layout_remaps_persisted_1oa() {
         let world = Rc::new(RefCell::new(TestWorld::new()));
         let samples = vec![vec![0.0f32; 64]; 4];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         let composition = Composition::from_media(media).expect("composition");
         let id = world
             .borrow_mut()
@@ -863,7 +863,7 @@ mod tests {
     fn session_move_reorders_documents() {
         let (mut host, world) = test_host();
         let samples = vec![vec![0.0; 100], vec![0.0; 100]];
-        let media = MediaRef::from_memory(MediaId(1), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         let composition = Composition::from_media(media).expect("composition");
         let second = world
             .borrow_mut()
@@ -1270,7 +1270,7 @@ mod tests {
     fn review_next_cycles_todo_and_reviewed_updates_group() {
         let (mut host, world) = test_host();
         let samples = vec![vec![0.0; 1000], vec![0.0; 1000]];
-        let media = MediaRef::from_memory(MediaId(0), 44100, samples);
+        let media = MediaRef::from_memory_samples(44100, samples);
         let composition = Composition::from_media(media).expect("composition");
         let second = world
             .borrow_mut()

@@ -46,10 +46,11 @@ pub use edl::{
     FACOMP_FORMAT_VERSION, FACOMP_KIND,
 };
 pub use field_audio_model::{
-    default_marker_type, marker_type_color, BlockPager, BlockSource, Marker, MarkerId, MarkerList,
-    MarkerType, MediaId, MediaPool, MediaRef, NullBlockSource, PagerStats, StoredMarker,
-    BLOCK_FRAMES, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
-    MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
+    default_marker_type, descriptor_mismatch, marker_type_color, BlockPager, BlockSource,
+    DescriptorMismatch, Marker, MarkerId, MarkerList, MarkerType, MediaDescriptor, MediaId,
+    MediaPool, MediaRef, MediaStore, NullBlockSource, PagerStats, StoredMarker, BLOCK_FRAMES,
+    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT,
+    MARKER_TYPE_YELLOW,
 };
 pub use field_audio_process::AnalysisKind;
 pub use tree::ClipTree;

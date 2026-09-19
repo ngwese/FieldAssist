@@ -12,12 +12,15 @@ file covers only crate boundaries and composition patterns.
 ## Crate DAG
 
 ```text
-field-core
+field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
     ├── field-audio-model
+    │       (MediaId `media:`, MediaDescriptor, MediaPool, MediaStore, pager)
     │       ├── field-audio-process
     │       └── field-composition ← also field-audio-io, field-core
     ├── field-audio-io
-    ├── field-session
+    ├── field-session   (depends on field-core + field-audio-model serde;
+    │                    DocumentId `doc:`, SessionId `session:`; no
+    │                    field-composition edge)
     └── (used by most crates)
 
 field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
@@ -31,17 +34,17 @@ field-assist (package name FieldAssist)
 
 | Crate | Level | Responsibility |
 | --- | --- | --- |
-| `field-core` | leaf | File URLs, `ProgressHandle` |
-| `field-audio-model` | leaf | `PcmBuffer`, regions, markers, media pool, `BlockPager` / `BlockSource` |
+| `field-core` | leaf | File URLs, `ProgressHandle`, prefixed `CompositionId` |
+| `field-audio-model` | leaf | `PcmBuffer`, regions, markers, `MediaId` / descriptors, `MediaPool` / `MediaStore`, `BlockPager` / `BlockSource` |
 | `field-audio-io` | leaf | Probe/decode/encode above Symphonia and format encoders |
 | `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops ([SPEC-analysis.md](spec/SPEC-analysis.md)) |
 | `field-audio-monitor` | mid | Monitor chain Faust DSP, UI schema, lock-free params |
 | `field-audio-playback` | mid | Realtime device I/O, transport, playhead |
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
-| `field-composition` | high | `.facomp` I/O, EDL, clip tree |
-| `field-session` | high | `.fasession` I/O and membership |
+| `field-composition` | high | `.facomp` I/O (v7), EDL, clip tree; re-exports `CompositionId` |
+| `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
 | `field-play` | example | Headless `.facomp` playback on the default output |
-| `FieldAssist` | app | Document editor, Lua, docks, `PlaybackSession`, adapters |
+| `FieldAssist` | app | Document editor, Lua, docks, shared session `MediaStore`, `PlaybackSession`, adapters |
 
 ## Trait-at-leaf composition
 

@@ -703,7 +703,7 @@ mod tests {
     use field_audio_model::MediaId;
 
     fn media_tree(frames: u64) -> ClipTree {
-        ClipTree::from_clip(Clip::from_media(ClipId(1), MediaId(0), 0, frames))
+        ClipTree::from_clip(Clip::from_media(ClipId(1), MediaId([0u8; 32]), 0, frames))
     }
 
     #[test]
