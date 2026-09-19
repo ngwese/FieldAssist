@@ -65,6 +65,22 @@ impl IconNamed for LinkIcon {
     }
 }
 
+struct AudioLinesIcon;
+
+impl IconNamed for AudioLinesIcon {
+    fn path(self) -> SharedString {
+        "icons/audio-lines.svg".into()
+    }
+}
+
+struct SquareTextIcon;
+
+impl IconNamed for SquareTextIcon {
+    fn path(self) -> SharedString {
+        "icons/square-text.svg".into()
+    }
+}
+
 /// Shorten `text` to at most `max_chars`, keeping the start and end with `…`
 /// in the middle.
 fn middle_ellipsis(text: &str, max_chars: usize) -> String {
@@ -155,6 +171,7 @@ struct ExplorerItem {
     id: DocumentId,
     name: SharedString,
     modified: bool,
+    has_edits: bool,
     group: Option<String>,
     path: Option<PathBuf>,
     depth: usize,
@@ -423,6 +440,7 @@ impl ExplorerPanel {
             DocumentId,
             SharedString,
             bool,
+            bool,
             Option<String>,
             Option<PathBuf>,
             usize,
@@ -437,11 +455,23 @@ impl ExplorerPanel {
         let items: Vec<ExplorerItem> = docs
             .iter()
             .map(
-                |(id, name, modified, group, path, depth, parent, detached, has_children)| {
+                |(
+                    id,
+                    name,
+                    modified,
+                    has_edits,
+                    group,
+                    path,
+                    depth,
+                    parent,
+                    detached,
+                    has_children,
+                )| {
                     ExplorerItem {
                         id: *id,
                         name: name.clone(),
                         modified: *modified,
+                        has_edits: *has_edits,
                         group: group.clone(),
                         path: path.clone(),
                         depth: *depth,
@@ -1209,6 +1239,7 @@ impl Render for ExplorerPanel {
                                                 let name = item.name.clone();
                                                 let path = item.path.clone();
                                                 let is_modified = item.modified;
+                                                let has_edits = item.has_edits;
                                                 let depth = item.depth;
                                                 let parent_id = item.parent;
                                                 let detached = item.detached;
@@ -1508,6 +1539,31 @@ impl Render for ExplorerPanel {
                                                                     ),
                                                             )
                                                         })
+                                                        .child(
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "comp-kind-{id}"
+                                                                )))
+                                                                .w(px(DISCLOSURE_SLOT))
+                                                                .h(px(DISCLOSURE_SLOT))
+                                                                .flex()
+                                                                .flex_none()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .child(
+                                                                    if has_edits {
+                                                                        Icon::new(SquareTextIcon)
+                                                                            .xsmall()
+                                                                            .text_color(muted)
+                                                                            .into_any_element()
+                                                                    } else {
+                                                                        Icon::new(AudioLinesIcon)
+                                                                            .xsmall()
+                                                                            .text_color(muted)
+                                                                            .into_any_element()
+                                                                    },
+                                                                ),
+                                                        )
                                                         .child({
                                                             if renaming_this {
                                                                 if let Some(input) =
@@ -2149,6 +2205,7 @@ mod tests {
             id: DocumentId::from_u128(id),
             name: name.into(),
             modified: false,
+            has_edits: false,
             group: group.map(str::to_string),
             path: None,
             depth: 0,
@@ -2315,6 +2372,7 @@ mod tests {
             id: DocumentId::from_u128(1),
             name: "parent".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 0,
@@ -2326,6 +2384,7 @@ mod tests {
             id: DocumentId::from_u128(2),
             name: "child".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 1,
@@ -2337,6 +2396,7 @@ mod tests {
             id: DocumentId::from_u128(3),
             name: "other".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 0,
@@ -2348,6 +2408,7 @@ mod tests {
             id: DocumentId::from_u128(4),
             name: "detached".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 1,
@@ -2369,6 +2430,7 @@ mod tests {
             id: DocumentId::from_u128(1),
             name: "root".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 0,
@@ -2380,6 +2442,7 @@ mod tests {
             id: DocumentId::from_u128(2),
             name: "child".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 1,
@@ -2391,6 +2454,7 @@ mod tests {
             id: DocumentId::from_u128(3),
             name: "grand".into(),
             modified: false,
+            has_edits: false,
             group: None,
             path: None,
             depth: 2,

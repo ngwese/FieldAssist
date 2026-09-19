@@ -560,10 +560,15 @@ impl Composition {
     fn media_display_name(&self) -> String {
         self.pool()
             .first()
-            .and_then(|media| media.path.file_name())
+            .and_then(|media| media.path.file_stem())
             .map(|name| name.to_string_lossy().into_owned())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "FieldAssist".into())
+    }
+
+    /// True when the EDL cursor is past the founding Init edit (user edits applied).
+    pub fn has_edits(&self) -> bool {
+        self.edl.cursor() > 0
     }
 
     /// `sample_rate`.
@@ -3601,7 +3606,17 @@ mod tests {
         media.path = std::path::PathBuf::from("take.wav");
         let comp = Composition::from_media(media).unwrap();
         assert_eq!(comp.suggested_facomp_name(), "take.facomp");
-        assert_eq!(comp.display_name(), "take.wav");
+        assert_eq!(comp.display_name(), "take");
+    }
+
+    #[test]
+    fn has_edits_false_until_user_edit() {
+        let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
+        assert!(!comp.has_edits());
+        comp.delete(0, 2);
+        assert!(comp.has_edits());
+        assert!(comp.undo());
+        assert!(!comp.has_edits());
     }
 
     #[test]

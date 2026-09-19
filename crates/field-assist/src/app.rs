@@ -38,8 +38,8 @@ use crate::commands::{
     TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
     ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewHideDetail, ViewHideExplorer,
     ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail, ViewShowExplorer,
-    ViewShowScript, ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewZoomIn,
-    ViewZoomOut,
+    ViewShowScript, ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum,
+    ViewWrapMessages, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -128,14 +128,16 @@ fn to_repl_output(output: &EvalOutput) -> ReplOutput {
 fn to_log_lines(entries: Vec<LogEntry>) -> Vec<LogLine> {
     entries
         .into_iter()
-        .map(|entry| LogLine {
-            level: match entry.level {
-                ScriptLogLevel::Info => LogLevel::Info,
-                ScriptLogLevel::Warn => LogLevel::Warn,
-                ScriptLogLevel::Error => LogLevel::Error,
-            },
-            topic: entry.topic,
-            text: entry.message,
+        .map(|entry| {
+            LogLine::new(
+                match entry.level {
+                    ScriptLogLevel::Info => LogLevel::Info,
+                    ScriptLogLevel::Warn => LogLevel::Warn,
+                    ScriptLogLevel::Error => LogLevel::Error,
+                },
+                entry.topic,
+                entry.message,
+            )
         })
         .collect()
 }
@@ -533,14 +535,7 @@ impl AppView {
         this.refresh_output_devices_cache();
         if let Some(fault) = this.playback.output_fault().map(str::to_string) {
             this.messages.update(cx, |panel, cx| {
-                panel.append(
-                    vec![LogLine {
-                        level: LogLevel::Error,
-                        topic: "output".into(),
-                        text: fault.into(),
-                    }],
-                    cx,
-                );
+                panel.append(vec![LogLine::new(LogLevel::Error, "output", fault)], cx);
             });
         }
         if let Some(path) = session_path {
@@ -627,27 +622,9 @@ impl AppView {
 
     fn display_title(&self, id: DocumentId, _cx: &App) -> SharedString {
         if let Some(views) = self.views.get(&id) {
-            let composition = views.composition.read().unwrap();
-            if composition.display_title().is_some() {
-                return composition.display_name().into();
-            }
+            return Self::composition_title(&views.composition.read().unwrap());
         }
-        if let Some(path) = self
-            .session
-            .get(id)
-            .and_then(|doc| doc.project_path.as_ref().or(doc.source_path.as_ref()))
-        {
-            if let Some(name) = path.file_name() {
-                let name = name.to_string_lossy();
-                if !name.is_empty() {
-                    return name.into_owned().into();
-                }
-            }
-        }
-        self.views
-            .get(&id)
-            .map(|views| Self::composition_title(&views.composition.read().unwrap()))
-            .unwrap_or_else(|| crate::APP_NAME.into())
+        crate::APP_NAME.into()
     }
 
     /// Directory + display-title basename when the composition was renamed in
@@ -694,10 +671,14 @@ impl AppView {
             .into_iter()
             .filter_map(|id| {
                 let doc = by_id.get(&id)?;
-                let modified = self
+                let (modified, has_edits) = self
                     .views
                     .get(&doc.id)
-                    .is_some_and(|views| views.composition.read().unwrap().is_modified());
+                    .map(|views| {
+                        let composition = views.composition.read().unwrap();
+                        (composition.is_modified(), composition.has_edits())
+                    })
+                    .unwrap_or((false, false));
                 let row = flags.get(&doc.id).copied().unwrap_or(ExplorerLineageFlags {
                     depth: 0,
                     parent: None,
@@ -708,6 +689,7 @@ impl AppView {
                     doc.id,
                     self.display_title(doc.id, cx),
                     modified,
+                    has_edits,
                     doc.group.clone(),
                     doc.file_path().map(PathBuf::from),
                     row.depth,
@@ -1973,13 +1955,15 @@ impl AppView {
         }
         let lines: Vec<LogLine> = messages
             .into_iter()
-            .map(|entry| LogLine {
-                level: match entry.level {
-                    PlaybackFaultLevel::Warn => LogLevel::Warn,
-                    PlaybackFaultLevel::Error => LogLevel::Error,
-                },
-                topic: "playback".into(),
-                text: entry.text,
+            .map(|entry| {
+                LogLine::new(
+                    match entry.level {
+                        PlaybackFaultLevel::Warn => LogLevel::Warn,
+                        PlaybackFaultLevel::Error => LogLevel::Error,
+                    },
+                    "playback",
+                    entry.text,
+                )
             })
             .collect();
         self.messages.update(cx, |panel, cx| {
@@ -2124,14 +2108,13 @@ impl AppView {
             self.flush_script_logs(cx);
             self.messages.update(cx, |panel, cx| {
                 panel.append(
-                    vec![LogLine {
-                        level: LogLevel::Error,
-                        topic: "output".into(),
-                        text: format!(
+                    vec![LogLine::new(
+                        LogLevel::Error,
+                        "output",
+                        format!(
                             "Failed to open audio output ({err}). Select another device in Monitor."
-                        )
-                        .into(),
-                    }],
+                        ),
+                    )],
                     cx,
                 );
             });
@@ -2882,6 +2865,7 @@ impl AppView {
             "view.show-script" => self.show_script_dock(window, cx),
             "view.hide-script" => self.hide_script_dock(window, cx),
             "view.toggle-script" => self.toggle_script_dock(window, cx),
+            "view.wrap_messages" => self.toggle_wrap_messages(cx),
             "view.overlay_envelope_peak" => self.toggle_envelope_overlay(window, cx),
             "view.waveform_peaks" => self.set_waveform_representation(
                 field_ui_components::WaveformRepresentation::Peaks,
@@ -3181,11 +3165,11 @@ impl AppView {
                         let stats = composition.read().unwrap().analysis_pass_stats();
                         // Push the log before notifying the UI so the next
                         // drain_pending_analysis cannot race past an empty queue.
-                        pending_logs.lock().unwrap().push(LogLine {
-                            level: LogLevel::Info,
-                            topic: "analysis".into(),
-                            text: stats.info_message(&kinds),
-                        });
+                        pending_logs.lock().unwrap().push(LogLine::new(
+                            LogLevel::Info,
+                            "analysis",
+                            stats.info_message(&kinds),
+                        ));
                         pending.lock().unwrap().push(id);
                         break;
                     }
@@ -3271,6 +3255,13 @@ impl AppView {
         views.document.update(cx, |doc, cx| {
             doc.analyze_selection_only = !doc.analyze_selection_only;
             cx.notify();
+        });
+        self.sync_view_menus(cx);
+    }
+
+    fn toggle_wrap_messages(&mut self, cx: &mut Context<Self>) {
+        self.messages.update(cx, |panel, cx| {
+            panel.toggle_wrap_messages(cx);
         });
         self.sync_view_menus(cx);
     }
@@ -5405,6 +5396,10 @@ fn view_hide_script(_: &ViewHideScript, cx: &mut App) {
     let _ = crate::commands::dispatch("view.hide-script", cx);
 }
 
+fn view_wrap_messages(_: &ViewWrapMessages, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.wrap_messages", cx);
+}
+
 fn view_overlay_envelope_peak(_: &ViewOverlayEnvelopePeak, cx: &mut App) {
     let _ = crate::commands::dispatch("view.overlay_envelope_peak", cx);
 }
@@ -5901,6 +5896,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(view_script);
     cx.on_action(view_show_script);
     cx.on_action(view_hide_script);
+    cx.on_action(view_wrap_messages);
     cx.on_action(view_overlay_envelope_peak);
     cx.on_action(view_waveform_peaks);
     cx.on_action(view_waveform_spectrum);
