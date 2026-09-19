@@ -27,7 +27,7 @@ field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
 field-audio-playback    (cpal engine; PlaybackDataProvider + MonitorProcess)
 field-ui-components     (gpui widgets + host traits / DTOs)
 
-field-play              (example CLI: .facomp → default device + monitor)
+field-play              (example CLI: composition → default device + monitor)
 field-assist (package name FieldAssist)
     depends on all of the above (except field-play)
 ```
@@ -43,7 +43,7 @@ field-assist (package name FieldAssist)
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
 | `field-composition` | high | `.facomp` I/O (v7), EDL, clip tree; re-exports `CompositionId` |
 | `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
-| `field-play` | example | Headless `.facomp` playback on the default output |
+| `field-play` | example | Headless composition playback on the default output |
 | `FieldAssist` | app | Document editor, Lua, docks, shared session `MediaStore`, `PlaybackSession`, adapters |
 
 ## Trait-at-leaf composition
@@ -118,11 +118,14 @@ A CLI or mobile tool can depend on a subset, for example:
 - probe/peaks CLI: `field-audio-io` + `field-audio-process`
 - session batch tool: `field-session` + `field-composition` + I/O (no GPUI, no Faust)
 - **`field-play`**: `field-composition` + `field-audio-playback` +
-  `field-audio-monitor` — plays a `.facomp` on the system default device,
-  using the composition's monitoring chain when set, otherwise Direct
+  `field-audio-monitor` — plays a composition on the system default device
+  (no session). Loads a `.facomp`, or builds one from a media file with
+  `Composition::from_media_path`. Uses the composition's monitoring chain
+  when set, otherwise Direct.
 
 ```bash
 cargo run -p field-play -- path/to/project.facomp
+cargo run -p field-play -- path/to/take.wav
 ```
 
 The desktop app remains `crates/field-assist` (Cargo package `FieldAssist`).

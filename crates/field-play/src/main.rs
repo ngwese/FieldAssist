@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! Example CLI: open a `.facomp` and play it on the system default output.
+//! Example CLI: open a `.facomp` (or build one from a media file) and play it
+//! on the system default output.
 //!
 //! Uses the composition's stored monitoring chain when set; otherwise plays
-//! direct (channel map only, no Faust DSP).
+//! direct (channel map only, no Faust DSP). No session crate is involved.
 
 mod monitor_process;
 mod provider;
@@ -14,7 +15,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use field_audio_monitor::{MonitorChain, MonitorHost};
 use field_audio_playback::{
@@ -29,13 +30,14 @@ use provider::CompositionProvider;
 #[derive(Parser, Debug)]
 #[command(
     name = "field-play",
-    about = "Play a .facomp through the default audio device",
+    about = "Play a .facomp or media file through the default audio device",
     long_about = "Loads a FieldAssist composition and plays it on the system \
-default output. When the composition defines a monitoring chain, that Faust \
-listen path is used; otherwise audio is sent direct."
+default output. A media file is opened as a single-clip composition (no \
+session). When the composition defines a monitoring chain, that Faust listen \
+path is used; otherwise audio is sent direct."
 )]
 struct Args {
-    /// Path to a `.facomp` composition file.
+    /// Path to a `.facomp` composition or media file.
     path: PathBuf,
 
     /// Print playback / pager counters every second and at exit.
@@ -53,12 +55,16 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if !is_facomp_path(&args.path) {
-        bail!("{} is not a .facomp file", args.path.display());
-    }
-
-    let (composition, warnings) = Composition::load_facomp(&args.path)
-        .with_context(|| format!("load {}", args.path.display()))?;
+    let (composition, warnings) = if is_facomp_path(&args.path) {
+        Composition::load_facomp(&args.path)
+            .with_context(|| format!("load {}", args.path.display()))?
+    } else {
+        (
+            Composition::from_media_path(&args.path, None)
+                .with_context(|| format!("open media {}", args.path.display()))?,
+            Vec::new(),
+        )
+    };
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
