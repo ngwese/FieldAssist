@@ -626,6 +626,16 @@ impl Session {
         }
     }
 
+    /// Insert an unsaved composition document that already has a stable id
+    /// (break-out children). The path is filled in on first save.
+    pub fn push_untitled_composition(&mut self, composition_id: CompositionId) -> DocumentId {
+        self.insert(SessionDocument::new_composition(
+            DocumentId::new(),
+            PathBuf::new(),
+            composition_id,
+        ))
+    }
+
     /// `insert`.
     pub fn insert(&mut self, doc: SessionDocument) -> DocumentId {
         let id = doc.id;
@@ -1879,6 +1889,35 @@ mod tests {
         assert_ne!(recorded, child_comp);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untitled_composition_keeps_recorded_id_when_path_is_assigned() {
+        let mut session = Session::new();
+        let composition_id = CompositionId::from_u128(0xCAFE);
+        let id = session.push_untitled_composition(composition_id);
+        let doc = session.get(id).unwrap();
+        assert!(doc.is_composition());
+        assert_eq!(doc.composition_id(), composition_id);
+        assert!(doc.file_path().is_none());
+
+        session.set_project_path(id, path("1-take.facomp"));
+        let doc = session.get(id).unwrap();
+        assert!(doc.is_composition());
+        assert_eq!(doc.composition_id(), composition_id);
+        assert_eq!(doc.project_path(), Some(Path::new("1-take.facomp")));
+    }
+
+    #[test]
+    fn untitled_media_converted_to_composition_keeps_placeholder_id() {
+        let mut session = Session::new();
+        let id = session.push(None);
+        let placeholder = session.get(id).unwrap().composition_id();
+        assert!(session.get(id).unwrap().is_media());
+        session.set_project_path(id, path("child.facomp"));
+        let doc = session.get(id).unwrap();
+        assert!(doc.is_composition());
+        assert_eq!(doc.composition_id(), placeholder);
     }
 
     #[test]

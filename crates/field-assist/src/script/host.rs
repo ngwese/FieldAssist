@@ -155,7 +155,7 @@ impl TestWorld {
             Some(p) => {
                 SessionDocument::new_media(id, p.clone(), comp_id, placeholder_media_descriptor(p))
             }
-            None => SessionDocument::new(id, None),
+            None => SessionDocument::new_composition(id, PathBuf::new(), comp_id),
         };
         self.docs.insert(id, document);
         self.paths.insert(id, path.clone());

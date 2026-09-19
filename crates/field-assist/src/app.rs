@@ -909,6 +909,7 @@ impl AppView {
                 .save_to_path(&path)
                 .map_err(|err| format!("{err:#}"))?;
             self.session.set_project_path(*id, path);
+            self.sync_session_composition_id(*id);
         }
         if !untitled.is_empty() {
             self.refresh_explorer(cx);
@@ -1534,7 +1535,11 @@ impl AppView {
     ) -> DocumentId {
         self.commit_active_monitor_params(cx);
         let app = cx.weak_entity();
-        let id = self.session.push(source_path);
+        let composition_id = composition.read().unwrap().id();
+        let id = match source_path {
+            None => self.session.push_untitled_composition(composition_id),
+            Some(path) => self.session.push(Some(path)),
+        };
         let views = Self::make_views(
             id,
             composition,
@@ -1710,6 +1715,14 @@ impl AppView {
         self.adopt_shared_media_from_lineage(cx);
         self.pending_loaded_scripts.push((id, elapsed));
         cx.notify();
+    }
+
+    fn sync_session_composition_id(&mut self, id: DocumentId) {
+        let Some(views) = self.views.get(&id) else {
+            return;
+        };
+        let composition_id = views.composition.read().unwrap().id();
+        self.session.set_composition_id(id, composition_id);
     }
 
     fn toggle_detail_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3382,11 +3395,7 @@ impl AppView {
                 cx,
             );
         });
-        let title = if message.contains("Composition id") {
-            "Composition identity"
-        } else {
-            "Source media changed"
-        };
+        let title = "Source media changed";
         window.open_alert_dialog(cx, move |alert, _, _| {
             alert.title(title).description(message.clone())
         });
@@ -3532,6 +3541,7 @@ impl AppView {
         match result {
             (Ok(()), elapsed) => {
                 self.session.set_project_path(id, path);
+                self.sync_session_composition_id(id);
                 self.fire_saved_script(id, elapsed, window, cx);
                 match after {
                     AfterWrite::None => {
@@ -4634,6 +4644,40 @@ fn waveform_hover_key_context_active(pointer_over: bool, typing: bool) -> bool {
 }
 
 #[cfg(test)]
+mod composition_identity_load_tests {
+    use super::load_document_into_session_store;
+    use crate::model::{Composition, CompositionId, MediaStore};
+    use crate::progress::ProgressHandle;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn restoring_composition_keeps_file_id_when_session_differs() {
+        let dir = std::env::temp_dir().join("fa-comp-id-mismatch");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("child.facomp");
+        let mut composition = Composition::new(44100, 1);
+        let file_id = composition.id();
+        composition.save_to_path(&path).unwrap();
+
+        let recorded = CompositionId::from_u128(0xDEAD);
+        let store = Arc::new(Mutex::new(MediaStore::in_memory()));
+        let progress = ProgressHandle::new();
+        let (loaded, warnings) = load_document_into_session_store(
+            &path,
+            store,
+            Some((recorded, false, None, true)),
+            &progress,
+            1,
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(loaded.id(), file_id);
+        assert_ne!(loaded.id(), recorded);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod waveform_hover_key_context_tests {
     use super::waveform_hover_key_context_active;
 
@@ -5105,18 +5149,8 @@ fn load_document_into_session_store(
             )?
         };
     warnings.extend(load_warnings);
-    if let Some((recorded_id, is_media, _, restoring)) = recorded {
-        if is_media {
-            composition.set_id(recorded_id);
-        } else if restoring && composition.id() != recorded_id {
-            // Only warn when the session file recorded a composition id. Fresh
-            // opens mint a placeholder id before load; the file's id wins.
-            warnings.push(format!(
-                "Composition id {} differs from session-recorded {}",
-                composition.id(),
-                recorded_id
-            ));
-        }
+    if let Some((recorded_id, true, _, _)) = recorded {
+        composition.set_id(recorded_id);
     }
     Ok((composition, warnings))
 }
