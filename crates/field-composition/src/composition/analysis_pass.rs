@@ -826,7 +826,7 @@ mod tests {
         run_kinds_to_complete(&lock, &[AnalysisKind::Spectral, AnalysisKind::EnvelopePeak]);
         {
             let mut comp = lock.write().unwrap();
-            comp.delete(4_000, 128);
+            comp.clear(4_000, 128);
         }
         assert!(lock.read().unwrap().needs_spectral_build());
         assert!(lock.read().unwrap().needs_envelope_peak_build());

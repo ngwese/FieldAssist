@@ -47,8 +47,11 @@ pub enum EditOp {
         /// Range length in frames.
         len: u64,
     },
-    /// Delete range (may leave silence).
-    Delete {
+    /// Clear range to silence of the same length (Edit → Clear).
+    ///
+    /// Older `.facomp` files may still serialize this as `"type": "delete"`.
+    #[serde(alias = "delete")]
+    Clear {
         /// Range start frame.
         start: u64,
         /// Range length in frames.
@@ -316,7 +319,7 @@ pub struct ProjectFile {
 /// FACOMP_KIND:.
 pub const FACOMP_KIND: &str = "facomp";
 /// FACOMP_FORMAT_VERSION:.
-pub const FACOMP_FORMAT_VERSION: u32 = 7;
+pub const FACOMP_FORMAT_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// ProjectEnvelope.
@@ -349,7 +352,7 @@ impl ProjectEnvelope {
             bail!("not a FieldAssist composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            7 => Ok(envelope),
+            7 | 8 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer FieldAssist (format_version {n})")
@@ -376,7 +379,7 @@ mod tests {
         let mut edl = Edl::new(ClipTree::empty());
         let a = ClipTree::from_clip(Clip::silence(ClipId(1), 10));
         let b = ClipTree::from_clip(Clip::from_media(ClipId(2), MediaId([1u8; 32]), 0, 4));
-        let id_a = edl.push(EditOp::Delete { start: 0, len: 1 }, a);
+        let id_a = edl.push(EditOp::Clear { start: 0, len: 1 }, a);
         let id_b = edl.push(EditOp::Paste { at: 0, len: 4 }, b.clone());
         assert!(edl.can_undo());
         edl.undo();
@@ -385,5 +388,13 @@ mod tests {
         assert_eq!(edl.current_id(), id_b);
         edl.jump_to(id_a);
         assert_eq!(edl.snapshot().frames(), 10);
+    }
+
+    #[test]
+    fn clear_op_accepts_legacy_delete_tag() {
+        let op: EditOp = serde_json::from_str(r#"{"type":"delete","start":1,"len":2}"#).unwrap();
+        assert_eq!(op, EditOp::Clear { start: 1, len: 2 });
+        let written = serde_json::to_value(&op).unwrap();
+        assert_eq!(written["type"], "clear");
     }
 }

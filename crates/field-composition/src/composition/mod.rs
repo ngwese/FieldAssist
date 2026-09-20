@@ -1464,9 +1464,20 @@ impl Composition {
         self.commit(EditOp::Cut { start, len }, tree);
     }
 
-    /// `delete`.
-    pub fn delete(&mut self, start: u64, len: u64) {
+    /// Clear a range to silence of the same length (Edit → Clear).
+    ///
+    /// No-op when `len` is 0 or the range is already entirely silence clips
+    /// (`source` is `None`), so repeating Clear does not stack EDL history.
+    pub fn clear(&mut self, start: u64, len: u64) {
         if len == 0 {
+            return;
+        }
+        let start = start.min(self.tree.frames());
+        let len = len.min(self.tree.frames().saturating_sub(start));
+        if len == 0 {
+            return;
+        }
+        if range_is_silence(&self.tree, start, len) {
             return;
         }
         let silence = Clip::silence(self.alloc_clip_id(), len);
@@ -1478,7 +1489,7 @@ impl Composition {
                 ClipId(n)
             });
         self.next_clip_id = n;
-        self.commit(EditOp::Delete { start, len }, tree);
+        self.commit(EditOp::Clear { start, len }, tree);
     }
 
     /// `paste`.
@@ -3321,8 +3332,8 @@ impl Composition {
                 self.remove(*start, *len);
                 Ok(())
             }
-            EditOp::Delete { start, len } => {
-                self.delete(*start, *len);
+            EditOp::Clear { start, len } => {
+                self.clear(*start, *len);
                 Ok(())
             }
             EditOp::Paste { at, .. } => self.paste(*at),
@@ -3360,6 +3371,21 @@ impl Composition {
     fn replace_init_snapshot(&mut self, tree: ClipTree) {
         self.edl.replace_init_snapshot(tree);
     }
+}
+
+fn range_is_silence(tree: &ClipTree, start: u64, len: u64) -> bool {
+    let end = start.saturating_add(len);
+    let mut frame = start;
+    while frame < end {
+        let Some(span) = tree.at(frame) else {
+            return false;
+        };
+        if span.clip.source.is_some() {
+            return false;
+        }
+        frame = span.end().max(frame.saturating_add(1));
+    }
+    true
 }
 
 fn normalize_half_open_ranges(ranges: Vec<(u64, u64)>, frames: u64) -> Vec<(u64, u64)> {
@@ -3619,14 +3645,14 @@ mod tests {
     }
 
     #[test]
-    fn unaligned_delete_keeps_right_peak_cache() {
+    fn unaligned_clear_keeps_right_peak_cache() {
         let block = PEAK_BLOCK as u64;
         let mut comp = Composition::from_media(sine_media((block * 4) as usize, 1, 44100)).unwrap();
         assert!(!comp.needs_peak_build());
-        comp.delete(block + 7, 5);
+        comp.clear(block + 7, 5);
         assert!(
             !comp.needs_peak_build(),
-            "delete should reuse suffix peak bins instead of rebuilding"
+            "clear should reuse suffix peak bins instead of rebuilding"
         );
         let right = comp
             .spans()
@@ -3641,13 +3667,13 @@ mod tests {
     }
 
     #[test]
-    fn remove_shrinks_delete_preserves_length() {
+    fn remove_shrinks_clear_preserves_length() {
         let mut comp = Composition::from_media(sine_media(20, 1, 48000)).unwrap();
         comp.remove(5, 5);
         comp.assert_invariants();
         assert_eq!(comp.frames(), 15);
         comp.undo();
-        comp.delete(5, 5);
+        comp.clear(5, 5);
         comp.assert_invariants();
         assert_eq!(comp.frames(), 20);
         let samples = materialize(&comp);
@@ -3655,6 +3681,35 @@ mod tests {
         assert_ne!(samples[0][4], 0.0);
         assert_eq!(comp.modified_ranges(), vec![(5, 10)]);
         assert_eq!(comp.ranges_for_edit(comp.current_edit()), vec![(5, 10)]);
+    }
+
+    #[test]
+    fn clear_is_idempotent_when_already_silence() {
+        let mut comp = Composition::from_media(sine_media(20, 1, 48000)).unwrap();
+        let before = comp.edits().len();
+        comp.clear(5, 5);
+        assert_eq!(comp.edits().len(), before + 1);
+        let after_first = comp.edits().len();
+        let cursor = comp.edit_cursor();
+        let current = comp.current_edit();
+        comp.clear(5, 5);
+        assert_eq!(comp.edits().len(), after_first);
+        assert_eq!(comp.edit_cursor(), cursor);
+        assert_eq!(comp.current_edit(), current);
+        let samples = materialize(&comp);
+        assert!(samples[0][5..10].iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn clear_mixed_audio_and_silence_still_commits() {
+        let mut comp = Composition::from_media(sine_media(20, 1, 48000)).unwrap();
+        comp.clear(5, 5);
+        let after_first = comp.edits().len();
+        // Spans existing silence [5,10) and audio [10,15).
+        comp.clear(5, 10);
+        assert_eq!(comp.edits().len(), after_first + 1);
+        let samples = materialize(&comp);
+        assert!(samples[0][5..15].iter().all(|&s| s == 0.0));
     }
 
     #[test]
@@ -3710,7 +3765,7 @@ mod tests {
         let init = comp.current_edit();
         comp.remove(0, 2);
         let after = comp.current_edit();
-        comp.delete(0, 2);
+        comp.clear(0, 2);
         assert!(comp.jump_to_edit(init));
         assert_eq!(comp.frames(), 8);
         assert!(comp.jump_to_edit(after));
@@ -3853,7 +3908,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["format_version"], 8);
         let media = &value["media"][0];
         assert!(media.get("url").is_some());
         assert!(media.get("path").is_none());
@@ -3909,7 +3964,7 @@ mod tests {
     fn has_edits_false_until_user_edit() {
         let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
         assert!(!comp.has_edits());
-        comp.delete(0, 2);
+        comp.clear(0, 2);
         assert!(comp.has_edits());
         assert!(comp.undo());
         assert!(!comp.has_edits());
@@ -4249,7 +4304,7 @@ mod tests {
     fn json_replay_matches_live_snapshots() {
         let mut live = Composition::from_media(sine_media(20, 1, 44100)).unwrap();
         live.remove(2, 2);
-        live.delete(0, 3);
+        live.clear(0, 3);
         live.duplicate(0, 4);
         let json = live.to_json().unwrap();
         assert!(!json.contains("samples"));
@@ -4277,7 +4332,7 @@ mod tests {
         comp.remove(0, 1);
         assert!(comp.undo());
         assert!(comp.can_redo());
-        comp.delete(0, 1);
+        comp.clear(0, 1);
         assert!(!comp.can_redo());
         assert_eq!(comp.frames(), 9);
     }
@@ -4334,7 +4389,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["format_version"], 8);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -4379,7 +4434,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["format_version"], 8);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()
@@ -4626,7 +4681,7 @@ mod tests {
         let delete_len = 500u64;
         {
             let mut comp = lock.write().unwrap();
-            comp.delete(delete_start, delete_len);
+            comp.clear(delete_start, delete_len);
             assert!(
                 comp.spectral_has_data(),
                 "edit must not wipe spectral stream"
@@ -4777,13 +4832,13 @@ mod tests {
         {
             let mut comp = lock.write().unwrap();
             let mid = comp.frames() / 2;
-            comp.delete(mid, 400);
+            comp.clear(mid, 400);
         }
         run_spectral_to_complete(&lock);
         {
             let mut comp = lock.write().unwrap();
             let mid2 = comp.frames() / 2;
-            comp.delete(mid2 + 2_000, 300);
+            comp.clear(mid2 + 2_000, 300);
         }
         run_spectral_to_complete(&lock);
 
@@ -4845,7 +4900,7 @@ mod tests {
 
         {
             let mut comp = lock.write().unwrap();
-            comp.delete(3_500, 200);
+            comp.clear(3_500, 200);
             assert!(comp.envelope_peak_has_data());
             assert!(comp.needs_envelope_peak_build());
             let series = comp
@@ -4969,7 +5024,7 @@ mod tests {
         assert!(!child.can_undo());
         let json = child.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["format_version"], 8);
         assert_eq!(value["parent"], parent_id.to_string());
         assert_eq!(value["id"], child.id().to_string());
         assert_eq!(value["edits"][0]["type"], "trim");
@@ -5024,7 +5079,7 @@ mod tests {
             child.modified_ranges().is_empty(),
             "founding Trim must not paint a full-timeline change bar"
         );
-        child.delete(2, 4);
+        child.clear(2, 4);
         assert_eq!(child.modified_ranges(), vec![(2, 6)]);
         assert!(child.ranges_for_edit(child.edits()[1].id).is_empty());
     }
@@ -5044,7 +5099,7 @@ mod tests {
         let restored = Composition::from_json(json).unwrap();
         assert!(restored.is_modified());
         let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
-        assert_eq!(saved["format_version"], 7);
+        assert_eq!(saved["format_version"], 8);
         assert!(saved.get("id").is_some());
     }
 
@@ -5170,15 +5225,50 @@ mod tests {
     }
 
     #[test]
-    fn facomp_v7_initial_records_media_id() {
+    fn facomp_v8_initial_records_media_id() {
         let comp = Composition::from_media(sine_media(6, 1, 44100)).unwrap();
         let media_id = comp.pool().first().unwrap().id;
         let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
-        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["format_version"], 8);
         assert_eq!(value["initial"]["type"], "from_media");
         assert_eq!(value["initial"]["media_id"], media_id.to_string());
         assert_eq!(value["media"].as_array().unwrap().len(), 1);
         assert_eq!(value["media"][0]["id"], media_id.to_string());
+    }
+
+    #[test]
+    fn facomp_v8_clear_writes_clear_tag() {
+        let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
+        comp.clear(2, 3);
+        let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
+        assert_eq!(value["format_version"], 8);
+        let edits = value["edits"].as_array().unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["type"], "clear");
+        assert_eq!(edits[0]["start"], 2);
+        assert_eq!(edits[0]["len"], 3);
+    }
+
+    #[test]
+    fn facomp_v7_delete_tag_loads_as_clear() {
+        let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
+        comp.clear(2, 3);
+        let mut value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
+        value["format_version"] = serde_json::json!(7);
+        value["edits"][0]["type"] = serde_json::json!("delete");
+        let restored = Composition::from_json(&value.to_string()).unwrap();
+        assert_eq!(restored.edits().len(), 2);
+        assert!(matches!(
+            restored.edits()[1].op,
+            EditOp::Clear { start: 2, len: 3 }
+        ));
+        let silence = restored
+            .spans()
+            .into_iter()
+            .find(|span| span.contains(2))
+            .expect("span covering cleared range");
+        assert!(silence.clip.source.is_none());
+        assert!(silence.end() >= 5);
     }
 
     #[test]
