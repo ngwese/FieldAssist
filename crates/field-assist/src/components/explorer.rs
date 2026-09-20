@@ -383,6 +383,9 @@ pub struct ExplorerPanel {
     /// Insertion gap while dragging a named group header: before index among
     /// named groups (`0..=session_groups.len`).
     group_drop_slot: Option<usize>,
+    /// Armed only by CompositionDrag / GroupDrag `on_drag_move`. Cleared each
+    /// paint so dock-resize (and other) GPUI drags cannot revive a stale slot.
+    reorder_drop_active: bool,
     collapsed: HashSet<SectionKey>,
     /// Parents whose attached children are hidden.
     collapsed_parents: HashSet<DocumentId>,
@@ -411,6 +414,7 @@ impl ExplorerPanel {
             hovered_close: None,
             drop_slot: None,
             group_drop_slot: None,
+            reorder_drop_active: false,
             collapsed: HashSet::new(),
             collapsed_parents: HashSet::new(),
             renaming: None,
@@ -574,6 +578,7 @@ impl ExplorerPanel {
     }
 
     fn set_drop_slot(&mut self, slot: Option<(SectionKey, usize)>, cx: &mut Context<Self>) {
+        self.reorder_drop_active = true;
         if self.drop_slot != slot {
             self.drop_slot = slot;
             cx.notify();
@@ -581,10 +586,27 @@ impl ExplorerPanel {
     }
 
     fn set_group_drop_slot(&mut self, slot: Option<usize>, cx: &mut Context<Self>) {
+        self.reorder_drop_active = true;
         if self.group_drop_slot != slot {
             self.group_drop_slot = slot;
             cx.notify();
         }
+    }
+
+    /// Drop slots must not outlive a cancelled reorder. Dock splitter
+    /// resize (and other chrome) also uses GPUI `on_drag`, so
+    /// `has_active_drag` alone would revive a stale insertion marker.
+    fn take_reorder_drop_slots(
+        &mut self,
+        cx: &App,
+    ) -> (Option<(SectionKey, usize)>, Option<usize>) {
+        let (drop_slot, group_drop_slot, _) = visible_reorder_drop_slots(
+            cx.has_active_drag(),
+            &mut self.drop_slot,
+            &mut self.group_drop_slot,
+            &mut self.reorder_drop_active,
+        );
+        (drop_slot, group_drop_slot)
     }
 
     fn begin_rename(&mut self, target: RenameTarget, window: &mut Window, cx: &mut Context<Self>) {
@@ -789,6 +811,32 @@ fn section_key_for_group(group: Option<&str>) -> SectionKey {
     }
 }
 
+/// Decide which insertion markers to paint for this frame.
+///
+/// `reorder_drop_active` is armed only by CompositionDrag / GroupDrag
+/// `on_drag_move` and consumed here, so other GPUI drags (dock resize)
+/// cannot show a leftover marker.
+fn visible_reorder_drop_slots(
+    has_active_drag: bool,
+    drop_slot: &mut Option<(SectionKey, usize)>,
+    group_drop_slot: &mut Option<usize>,
+    reorder_drop_active: &mut bool,
+) -> (Option<(SectionKey, usize)>, Option<usize>, bool) {
+    if !has_active_drag {
+        *drop_slot = None;
+        *group_drop_slot = None;
+        *reorder_drop_active = false;
+        return (None, None, false);
+    }
+    let live = *reorder_drop_active;
+    *reorder_drop_active = false;
+    if live {
+        (drop_slot.clone(), *group_drop_slot, true)
+    } else {
+        (None, None, false)
+    }
+}
+
 /// Overlay line that does not consume layout height (avoids list shift while
 /// dragging, which would otherwise flicker the drop slot around midpoints).
 fn insertion_marker_overlay(color: gpui_kit::Hsla) -> impl IntoElement {
@@ -863,18 +911,9 @@ impl Render for ExplorerPanel {
         let cyan = cx.theme().cyan;
         let radius = cx.theme().radius;
         let border = cx.theme().border;
+        let (drop_slot, group_drop_slot) = self.take_reorder_drop_slots(cx);
         let sections = group_sections(&self.items, &self.session_groups);
         let named_count = self.session_groups.len();
-        let drop_slot = if cx.has_active_drag() {
-            self.drop_slot.clone()
-        } else {
-            None
-        };
-        let group_drop_slot = if cx.has_active_drag() {
-            self.group_drop_slot
-        } else {
-            None
-        };
 
         let info_focus = self.selected_or_active().and_then(|id| {
             self.items
@@ -2382,6 +2421,57 @@ mod tests {
         };
         assert!(slot_before_from_y(px(15.), bounds));
         assert!(!slot_before_from_y(px(25.), bounds));
+    }
+
+    #[test]
+    fn idle_clears_stale_reorder_drop_slots() {
+        let mut drop_slot = Some((SectionKey::Session, 1));
+        let mut group_drop_slot = Some(0usize);
+        let mut active = true;
+        let (shown, group, live) =
+            visible_reorder_drop_slots(false, &mut drop_slot, &mut group_drop_slot, &mut active);
+        assert!(shown.is_none());
+        assert!(group.is_none());
+        assert!(!live);
+        assert!(drop_slot.is_none());
+        assert!(group_drop_slot.is_none());
+        assert!(!active);
+    }
+
+    #[test]
+    fn foreign_active_drag_hides_stale_reorder_marker() {
+        // Dock splitter resize also sets has_active_drag; without an armed
+        // reorder move the insertion marker must stay hidden.
+        let mut drop_slot = Some((SectionKey::Session, 2));
+        let mut group_drop_slot = Some(1usize);
+        let mut active = false;
+        let (shown, group, live) =
+            visible_reorder_drop_slots(true, &mut drop_slot, &mut group_drop_slot, &mut active);
+        assert!(shown.is_none());
+        assert!(group.is_none());
+        assert!(!live);
+        // Stored slot kept for a possible later composition drop read, but
+        // not painted while a non-reorder drag is active.
+        assert_eq!(drop_slot, Some((SectionKey::Session, 2)));
+        assert_eq!(group_drop_slot, Some(1));
+    }
+
+    #[test]
+    fn armed_reorder_move_shows_drop_slots_once() {
+        let mut drop_slot = Some((SectionKey::Named("todo".into()), 0));
+        let mut group_drop_slot = None;
+        let mut active = true;
+        let (shown, group, live) =
+            visible_reorder_drop_slots(true, &mut drop_slot, &mut group_drop_slot, &mut active);
+        assert_eq!(shown, Some((SectionKey::Named("todo".into()), 0)));
+        assert!(group.is_none());
+        assert!(live);
+        assert!(!active);
+        // Second paint without another on_drag_move hides the marker.
+        let (shown, _, live) =
+            visible_reorder_drop_slots(true, &mut drop_slot, &mut group_drop_slot, &mut active);
+        assert!(shown.is_none());
+        assert!(!live);
     }
 
     #[test]
