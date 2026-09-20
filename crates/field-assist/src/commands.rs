@@ -518,7 +518,14 @@ mod tests {
         assert_eq!(map.get("cmd-c").map(String::as_str), Some("edit.copy"));
         assert_eq!(map.get("cmd-v").map(String::as_str), Some("edit.paste"));
         assert_eq!(map.get("backspace").map(String::as_str), Some("edit.clear"));
-        assert_eq!(map.get("delete").map(String::as_str), Some("edit.remove"));
+        assert_eq!(
+            map.get("shift-backspace").map(String::as_str),
+            Some("edit.remove")
+        );
+        assert_eq!(
+            map.get("shift-delete").map(String::as_str),
+            Some("edit.remove")
+        );
         assert!(map.get("ctrl-o").is_none());
     }
 

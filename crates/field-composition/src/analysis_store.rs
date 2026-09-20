@@ -109,10 +109,10 @@ pub fn subtract_frame_range(
 pub fn analysis_dirty_seeds(op: &EditOp, pre_tree: &ClipTree, post_frames: u64) -> Vec<FrameRange> {
     let seeds = match op {
         EditOp::Init | EditOp::Copy { .. } => Vec::new(),
-        EditOp::Delete { start, len } if *len > 0 => {
+        EditOp::Clear { start, len } if *len > 0 => {
             vec![(*start, start.saturating_add(*len))]
         }
-        EditOp::Delete { .. } => Vec::new(),
+        EditOp::Clear { .. } => Vec::new(),
         EditOp::Cut { start, .. } | EditOp::Remove { start, .. } => {
             // Join at the hole; a zero-length seed expands by radius.
             vec![(*start, *start)]
@@ -180,7 +180,7 @@ fn splice_packed_channel(
     let mut out = vec![empty; new_hops.saturating_mul(stride)];
 
     match op {
-        EditOp::Init | EditOp::Copy { .. } | EditOp::Roll { .. } | EditOp::Delete { .. } => {
+        EditOp::Init | EditOp::Copy { .. } | EditOp::Roll { .. } | EditOp::Clear { .. } => {
             let copy_hops = old_hops.min(new_hops);
             if stride > 0 {
                 let n = copy_hops * stride;
@@ -717,7 +717,7 @@ mod tests {
         series.covered_frames = frames;
 
         let pre = media_tree(frames);
-        let op = EditOp::Delete {
+        let op = EditOp::Clear {
             start: 4_000,
             len: 500,
         };

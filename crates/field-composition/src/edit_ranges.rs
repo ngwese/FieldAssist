@@ -12,8 +12,8 @@ pub fn landing_ranges(op: &EditOp, pre: &ClipTree) -> Vec<FrameRange> {
     match op {
         EditOp::Init | EditOp::Copy { .. } => Vec::new(),
         EditOp::Cut { .. } | EditOp::Remove { .. } => Vec::new(),
-        EditOp::Delete { start, len } if *len > 0 => vec![(*start, start.saturating_add(*len))],
-        EditOp::Delete { .. } => Vec::new(),
+        EditOp::Clear { start, len } if *len > 0 => vec![(*start, start.saturating_add(*len))],
+        EditOp::Clear { .. } => Vec::new(),
         EditOp::Paste { at, len } if *len > 0 => vec![(*at, at.saturating_add(*len))],
         EditOp::Paste { .. } => Vec::new(),
         EditOp::Trim { len, .. } if *len > 0 => vec![(0, *len)],
@@ -92,7 +92,7 @@ pub fn map_range_through_op(start: u64, end: u64, op: &EditOp) -> Vec<FrameRange
         return Vec::new();
     }
     match op {
-        EditOp::Init | EditOp::Copy { .. } | EditOp::Roll { .. } | EditOp::Delete { .. } => {
+        EditOp::Init | EditOp::Copy { .. } | EditOp::Roll { .. } | EditOp::Clear { .. } => {
             vec![(start, end)]
         }
         EditOp::Paste { at, len } => insert_shift(start, end, *at, *len),
@@ -154,11 +154,11 @@ fn invert_op(op: &EditOp) -> Option<EditOp> {
 ///
 /// Returns `None` when the stream must be cleared (e.g. undoing trim restores
 /// audio the hop cache no longer holds). Length-preserving ops
-/// ([`EditOp::Delete`], [`EditOp::Roll`]) are self-inverse for stream geometry.
+/// ([`EditOp::Clear`], [`EditOp::Roll`]) are self-inverse for stream geometry.
 pub fn analysis_inverse_op(op: &EditOp) -> Option<EditOp> {
     match op {
         EditOp::Trim { .. } => None,
-        EditOp::Delete { start, len } => Some(EditOp::Delete {
+        EditOp::Clear { start, len } => Some(EditOp::Clear {
             start: *start,
             len: *len,
         }),
@@ -348,9 +348,9 @@ mod tests {
     }
 
     #[test]
-    fn delete_lands_in_place() {
+    fn clear_lands_in_place() {
         let pre = media_tree(20);
-        let ranges = landing_ranges(&EditOp::Delete { start: 5, len: 5 }, &pre);
+        let ranges = landing_ranges(&EditOp::Clear { start: 5, len: 5 }, &pre);
         assert_eq!(ranges, vec![(5, 10)]);
     }
 
@@ -371,7 +371,7 @@ mod tests {
     fn later_insert_shifts_earlier_delete() {
         let edits = vec![
             edit(0, EditOp::Init, media_tree(20)),
-            edit(1, EditOp::Delete { start: 5, len: 5 }, media_tree(20)),
+            edit(1, EditOp::Clear { start: 5, len: 5 }, media_tree(20)),
             edit(2, EditOp::Paste { at: 0, len: 4 }, media_tree(24)),
         ];
         assert_eq!(ranges_for_edit(&edits, 2, 1), vec![(9, 14)]);
@@ -439,7 +439,7 @@ mod tests {
         let edits = vec![
             edit(0, EditOp::Init, media_tree(20)),
             edit(1, EditOp::Trim { start: 2, len: 10 }, media_tree(10)),
-            edit(2, EditOp::Delete { start: 1, len: 2 }, media_tree(10)),
+            edit(2, EditOp::Clear { start: 1, len: 2 }, media_tree(10)),
         ];
         assert_eq!(modified_ranges(&edits, 2, 0), vec![(0, 10), (1, 3)]);
         assert_eq!(modified_ranges(&edits, 2, 1), vec![(1, 3)]);

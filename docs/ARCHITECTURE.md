@@ -41,7 +41,7 @@ field-assist (package name FieldAssist)
 | `field-audio-monitor` | mid | Monitor chain Faust DSP, UI schema, lock-free params |
 | `field-audio-playback` | mid | Realtime device I/O, transport, playhead |
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
-| `field-composition` | high | `.facomp` I/O (v7), EDL, clip tree; re-exports `CompositionId` |
+| `field-composition` | high | `.facomp` I/O (v8), EDL, clip tree; re-exports `CompositionId` |
 | `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
 | `field-play` | example | Headless composition playback on the default output |
 | `FieldAssist` | app | Document editor, Lua, docks, shared session `MediaStore`, `PlaybackSession`, adapters |

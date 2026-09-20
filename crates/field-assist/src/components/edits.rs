@@ -16,7 +16,7 @@ pub fn edit_title(op: &EditOp) -> &'static str {
         EditOp::Copy { .. } => "Copy",
         EditOp::Paste { .. } => "Paste",
         EditOp::Remove { .. } => "Remove",
-        EditOp::Delete { .. } => "Delete",
+        EditOp::Clear { .. } => "Clear",
         EditOp::Trim { .. } => "Trim",
         EditOp::Move { .. } => "Move",
         EditOp::Duplicate { .. } => "Duplicate",
@@ -31,7 +31,7 @@ pub fn edit_detail(op: &EditOp, sample_rate: u32) -> String {
         EditOp::Cut { start, len }
         | EditOp::Copy { start, len }
         | EditOp::Remove { start, len }
-        | EditOp::Delete { start, len }
+        | EditOp::Clear { start, len }
         | EditOp::Trim { start, len }
         | EditOp::Duplicate { start, len } => {
             format!(
@@ -106,6 +106,8 @@ mod tests {
     #[test]
     fn formats_two_line_edit_cards() {
         assert_eq!(edit_title(&EditOp::Init), "Initial");
+        assert_eq!(edit_title(&EditOp::Clear { start: 0, len: 10 }), "Clear");
+        assert_eq!(edit_title(&EditOp::Remove { start: 0, len: 10 }), "Remove");
         assert_eq!(edit_detail(&EditOp::Init, 44100), "start of composition");
         assert_eq!(
             edit_detail(

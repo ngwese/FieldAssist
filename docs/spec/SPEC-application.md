@@ -174,14 +174,15 @@ freshness (including mtime) is checked separately and may warn on open while
 keeping the recorded media id. Source PCM is never stored in `.facomp`.
 Timeline edits change the EDL and clip tree only.
 
-`.facomp` JSON (`kind: facomp`, `format_version: 7`) includes a stable
+`.facomp` JSON (`kind: facomp`, `format_version: 8`) includes a stable
 composition `id` (`comp:<uuid>`), optional `parent` (`comp:<uuid>` when
 broken out), sample rate, channel count, descriptors for media **used** by
 this composition, the initial clip tree (`media:` ids), edit ops and cursor,
 optional `undo_floor` (break-out founding Trim), markers, marker types, named
 collections, optional `channel_layout`, `monitor_chain`, and
-`playback_channels`. Older `format_version` values (≤6) are rejected. **Save
-As** mints a new `id` while keeping `parent`.
+`playback_channels`. Format **7** still loads (Clear edits may appear as the
+legacy EDL tag `"delete"`). Older `format_version` values (≤6) are rejected.
+**Save As** mints a new `id` while keeping `parent`.
 
 Open compositions in a window share one `MediaStore` (pool + block pager).
 Intern-by-hash deduplicates matching media across documents. Break-out
@@ -328,7 +329,7 @@ They are recorded on the composition EDL with undo/redo.
 | Copy | Clipboard of clip-tree slices |
 | Paste | At caret, or replace the first selected span; sample rate and channel count must match |
 | Clear (Backspace) | Silence of the same length |
-| Remove (Delete) | Close the gap |
+| Remove (Shift+Delete) | Close the gap |
 | Duplicate | Insert a copy after the range |
 | Trim | Keep selected spans concatenated; discard the rest |
 | Break Out to Composition | Each selected span becomes a named child composition sharing media |

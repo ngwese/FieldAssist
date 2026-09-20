@@ -14,7 +14,8 @@
     "home": "transport.home",
     "end": "transport.end",
     "backspace": "edit.clear",
-    "delete": "edit.remove"
+    "shift-backspace": "edit.remove",
+    "shift-delete": "edit.remove"
   },
   "macos": {
     "cmd-o": "file.open",

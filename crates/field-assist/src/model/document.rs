@@ -778,7 +778,7 @@ impl BufferDocument {
         }
         let from = self.composition.read().unwrap().edit_cursor();
         for (start, len) in spans {
-            self.composition.write().unwrap().delete(start, len);
+            self.composition.write().unwrap().clear(start, len);
         }
         self.after_tree_changed(from);
     }
