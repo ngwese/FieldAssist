@@ -275,11 +275,14 @@ impl AppView {
                             }
                         });
                         let progress = views.document.read(cx).progress.snapshot();
+                        let transport = this.playback.transport_state();
+                        if this.follow_playhead && transport == TransportState::Playing {
+                            this.maybe_follow_playhead(cx);
+                        }
                         if progress != this.last_progress {
                             this.last_progress = progress;
                             views.waveform.update(cx, |_, cx| cx.notify());
                         }
-                        let transport = this.playback.transport_state();
                         views.workspace.update(cx, |workspace, cx| {
                             workspace.sync_transport(transport, this.playback.looping(), cx);
                         });
@@ -294,9 +297,6 @@ impl AppView {
                             this.playback.input_meters_active(),
                         ) {
                             this.monitor.update(cx, |_, cx| cx.notify());
-                        }
-                        if this.follow_playhead && transport == TransportState::Playing {
-                            this.maybe_follow_playhead(cx);
                         }
                     }
                 })

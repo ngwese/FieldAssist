@@ -263,8 +263,12 @@ where
     }
 
     /// Keep `sample` at `fraction` of the viewport width (0..=1), clamped to the
-    /// buffer. No-op when the full buffer already fits.
+    /// buffer. No-op when the full buffer already fits, or while the user is
+    /// dragging the horizontal scrollbar (retain their scroll until release).
     pub fn follow_sample(&mut self, sample: f64, fraction: f32, cx: &mut Context<Self>) {
+        if matches!(self.drag, Some(Drag::Scrollbar { .. })) {
+            return;
+        }
         if self.shows_full_buffer(cx) {
             return;
         }
@@ -1279,7 +1283,7 @@ fn paint_peaks_body(
             WaveformDataProvider::read_channel(provider, channel, first, &mut samples);
             for (offset, sample) in samples.iter().enumerate() {
                 let i = first + offset;
-                let x = origin_x + ((i as f64 - start_sample) / samples_per_pixel) as f32;
+                let x = (origin_x + ((i as f64 - start_sample) / samples_per_pixel) as f32).floor();
                 let y = y_scale
                     .tick(&(*sample as f64))
                     .unwrap_or(origin_y + height * 0.5);
@@ -1627,10 +1631,15 @@ fn paint_column(
     let y_min = y_scale.tick(&(min as f64)).unwrap_or(origin_y + height);
     let top = y_max.min(y_min);
     let bar_h = (y_max - y_min).abs().max(1.0);
+    // Integer column edges so abutting 1px quads stay gap-free when origin_x
+    // is fractional (paint_quad edge-snaps independently per bar).
+    let x0 = (origin_x + col as f32).floor();
+    let x1 = (origin_x + col as f32 + 1.0).floor();
+    let bar_w = (x1 - x0).max(1.0);
     window.paint_quad(fill(
         Bounds {
-            origin: point(px(origin_x + col as f32), px(top)),
-            size: size(px(1.0), px(bar_h)),
+            origin: point(px(x0), px(top)),
+            size: size(px(bar_w), px(bar_h)),
         },
         color,
     ));
@@ -2121,6 +2130,15 @@ fn apply_scroll_to_frame(
     clamp_viewport(start_sample, &mut spp, viewport_width, frames);
 }
 
+/// Snap scroll origin to a whole pixel in sample space so peaks/spectrum
+/// column bins stay stable under Follow Playhead.
+fn quantize_start_to_pixel(start: f64, spp: f64) -> f64 {
+    if !(spp > 0.0) {
+        return start;
+    }
+    (start / spp).floor() * spp
+}
+
 fn apply_follow_sample(
     start_sample: &mut f64,
     samples_per_pixel: f64,
@@ -2136,6 +2154,8 @@ fn apply_follow_sample(
     }
     let fraction = fraction.clamp(0.0, 1.0);
     *start_sample = sample - fraction * visible;
+    clamp_viewport(start_sample, &mut spp, viewport_width, frames);
+    *start_sample = quantize_start_to_pixel(*start_sample, spp);
     clamp_viewport(start_sample, &mut spp, viewport_width, frames);
 }
 
@@ -2240,6 +2260,29 @@ mod tests {
         // visible = 100 * 100 = 10000 == frames
         apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5000.0, 0.5);
         assert!((start - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn follow_sample_quantizes_within_pixel() {
+        let mut start = 0.0;
+        let spp = 10.0;
+        // Ideal start = 5001 - 500 = 4501 → floor to 4500
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5001.0, 0.5);
+        assert!((start - 4500.0).abs() < 1e-9);
+        let before = start;
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5009.0, 0.5);
+        assert!((start - before).abs() < 1e-9);
+    }
+
+    #[test]
+    fn follow_sample_steps_one_pixel_when_crossing() {
+        let mut start = 0.0;
+        let spp = 10.0;
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5009.0, 0.5);
+        assert!((start - 4500.0).abs() < 1e-9);
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5010.0, 0.5);
+        // Ideal start = 4510 → floor to 4510
+        assert!((start - 4510.0).abs() < 1e-9);
     }
 
     #[test]
