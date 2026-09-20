@@ -141,6 +141,11 @@ session. Closing a **document** (File → Close or explorer Close) removes it
 from the session after a modified-composition prompt. Nested `.fasession`
 documents are rejected.
 
+**Close Session** (File → Close Session / `file.close_session`) prompts for
+modified compositions and a dirty saved session (same rules as quit / open
+session), then replaces the window with a new untitled empty session and an
+empty shared media pool.
+
 **Tabs:** a newly opened document is a transient (unpinned) tab. Opening another
 file while a transient tab exists can replace that tab. Pinning keeps the tab.
 explorer “open tab” opens and pins.
@@ -414,7 +419,8 @@ Those belong to the future processing layer.
 Menus, keymap, and Lua `app:command` share these ids:
 
 **File:** `file.open`, `file.save`, `file.save_as`, `file.save_session`,
-`file.save_session_as`, `file.close`, `file.render`, `file.quit`
+`file.save_session_as`, `file.close_session`, `file.close`, `file.render`,
+`file.quit`
 
 **Help:** `help.about`
 

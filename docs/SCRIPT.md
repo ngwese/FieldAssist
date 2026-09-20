@@ -266,7 +266,8 @@ when `n >= 4`) then channel-count fallbacks (`1`, `2`, `4`, `9`).
 `app:command(id)` runs the same actions as menus and key bindings.
 
 **File:** `file.open`, `file.save`, `file.save_as`, `file.save_session`,
-`file.save_session_as`, `file.close`, `file.render`, `file.quit`
+`file.save_session_as`, `file.close_session`, `file.close`, `file.render`,
+`file.quit`
 
 **Help:** `help.about`
 

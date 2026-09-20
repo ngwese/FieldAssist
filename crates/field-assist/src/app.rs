@@ -29,9 +29,9 @@ use gpui_kit::{
 use crate::assets::AppAssets;
 use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AnalyzeEnvelopePeak,
-    AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, DeleteMarker, EditBreakOut,
-    EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove, EditTrim,
-    EditUndo, Hide, HideOthers, InvertSelection, MarkerTypeBlue, MarkerTypePurple,
+    AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
+    EditBreakOut, EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove,
+    EditTrim, EditUndo, Hide, HideOthers, InvertSelection, MarkerTypeBlue, MarkerTypePurple,
     MarkerTypeYellow, Open, Quit, Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs,
     SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll, SnapToMarker, StartWorkflow,
     ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
@@ -165,6 +165,14 @@ enum AfterWrite {
 enum PendingContinue {
     Quit,
     LoadSession(PathBuf),
+    CloseSession,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingContinuePrompt {
+    Quit,
+    CloseSession,
+    LoadSession,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2959,6 +2967,7 @@ impl AppView {
             "file.save_session_as" => {
                 self.prompt_save_session_as(AfterSessionWrite::None, window, cx)
             }
+            "file.close_session" => self.request_close_session(window, cx),
             "file.close" => self.request_close_active(window, cx),
             "file.render" => self.open_render_sheet(window, cx),
             "file.quit" => self.request_quit(window, cx),
@@ -3839,6 +3848,11 @@ impl AppView {
         self.resolve_unsaved_then_continue(window, cx);
     }
 
+    fn request_close_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_continue = Some(PendingContinue::CloseSession);
+        self.resolve_unsaved_then_continue(window, cx);
+    }
+
     fn resolve_unsaved_then_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let modified = self.modified_compositions(cx);
         if !modified.is_empty() {
@@ -3848,8 +3862,12 @@ impl AppView {
         self.after_compositions_clean(window, cx);
     }
 
-    fn pending_continue_is_quit(&self) -> bool {
-        matches!(self.pending_continue, Some(PendingContinue::Quit))
+    fn pending_continue_prompt_kind(&self) -> PendingContinuePrompt {
+        match self.pending_continue {
+            Some(PendingContinue::Quit) => PendingContinuePrompt::Quit,
+            Some(PendingContinue::CloseSession) => PendingContinuePrompt::CloseSession,
+            Some(PendingContinue::LoadSession(_)) | None => PendingContinuePrompt::LoadSession,
+        }
     }
 
     fn prompt_unsaved_then_continue(
@@ -3858,11 +3876,14 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let quitting = self.pending_continue_is_quit();
-        let description = if quitting {
-            "Save changes to these compositions before quitting?"
-        } else {
-            "Save changes to these compositions before opening this session?"
+        let description = match self.pending_continue_prompt_kind() {
+            PendingContinuePrompt::Quit => "Save changes to these compositions before quitting?",
+            PendingContinuePrompt::CloseSession => {
+                "Save changes to these compositions before closing the session?"
+            }
+            PendingContinuePrompt::LoadSession => {
+                "Save changes to these compositions before opening this session?"
+            }
         };
         let list = cx.new(|cx| QuitUnsavedList::new(items, cx));
         let view = cx.entity();
@@ -3901,11 +3922,12 @@ impl AppView {
     }
 
     fn prompt_save_session_then_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let quitting = self.pending_continue_is_quit();
-        let description = if quitting {
-            "Save the current session before quitting?"
-        } else {
-            "Save the current session before opening another?"
+        let description = match self.pending_continue_prompt_kind() {
+            PendingContinuePrompt::Quit => "Save the current session before quitting?",
+            PendingContinuePrompt::CloseSession => "Save the current session before closing it?",
+            PendingContinuePrompt::LoadSession => {
+                "Save the current session before opening another?"
+            }
         };
         let view = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -3975,6 +3997,9 @@ impl AppView {
                 if let Err(err) = self.replace_session_from_path(&path, window, cx) {
                     self.show_load_error(&err, window, cx);
                 }
+            }
+            Some(PendingContinue::CloseSession) => {
+                self.close_to_empty_session(window, cx);
             }
             None => {}
         }
@@ -4504,6 +4529,25 @@ impl AppView {
         self.resume_bound_workflow(window, cx);
         cx.notify();
         Ok(())
+    }
+
+    /// Tear down every document and start a fresh untitled session with an
+    /// empty media pool (File → Close Session).
+    fn close_to_empty_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_outgoing_workflow(window, cx);
+        self.teardown_all_documents(window, cx);
+        self.session = Session::new();
+        self.media_store = Arc::new(Mutex::new(MediaStore::in_memory()));
+        self.apply_active(window, cx);
+        self.refresh_explorer(cx);
+        self.refresh_media_panel(cx);
+        self.explorer.update(cx, |explorer, cx| {
+            explorer.sync_selection_to_active(cx);
+        });
+        self.update_window_title(window, cx);
+        self.sync_view_menus(cx);
+        self.fire_session_loaded_script(window, cx);
+        cx.notify();
     }
 
     fn teardown_all_documents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5616,6 +5660,10 @@ fn save_session_as(_: &SaveSessionAs, cx: &mut App) {
     let _ = crate::commands::dispatch("file.save_session_as", cx);
 }
 
+fn close_session(_: &CloseSession, cx: &mut App) {
+    let _ = crate::commands::dispatch("file.close_session", cx);
+}
+
 fn close(_: &Close, cx: &mut App) {
     let _ = crate::commands::dispatch("file.close", cx);
 }
@@ -5979,6 +6027,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         MenuItem::separator(),
         needs_editor(MenuItem::action("Save Session", SaveSession), open),
         needs_editor(MenuItem::action("Save Session As...", SaveSessionAs), open),
+        needs_editor(MenuItem::action("Close Session", CloseSession), open),
     ];
     if !cfg!(target_os = "macos") {
         file_items.push(MenuItem::separator());
@@ -6206,6 +6255,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(save_as);
     cx.on_action(save_session);
     cx.on_action(save_session_as);
+    cx.on_action(close_session);
     cx.on_action(close);
     cx.on_action(render_cmd);
     cx.on_action(quit);
