@@ -692,7 +692,8 @@ app:declare_workflow(Review)
 ```
 
 Built-in **Add** merges audio/`.facomp` and session documents into the current
-session. **Replace** replaces the session or the active document. **Review**
-is stateful: menu start marks documents `"todo"`; drop expands folders with
-`find_files`; toolbar Previous/Next/Drop/Reviewed/Output/Finish; start and
-resume enable loop, Preview, and the explorer.
+session (dropped directories are expanded with `find_files`). **Replace**
+replaces the session or the active document. **Review** is stateful: menu
+start marks documents `"todo"`; drop expands folders with `find_files`;
+toolbar Previous/Next/Drop/Reviewed/Output/Finish; start and resume enable
+loop, Preview, and the explorer.

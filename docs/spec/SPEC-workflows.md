@@ -173,6 +173,8 @@ For each dropped path:
 
 - `.fasession` → `load_session`, `session:open` each incoming document path
   not already in the active session, then close the loaded session
+- directory → expand with `app:find_files` for readable audio / `.facomp`
+  extensions; `session:open` each file
 - otherwise → `session:open(path)`
 
 ### Replace (one-shot, drag-drop)

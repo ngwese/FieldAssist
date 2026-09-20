@@ -1,7 +1,47 @@
 -- Built-in drag-drop workflow: add files to the current session.
 
+-- Readable audio plus composition projects. find_files matches these
+-- case-insensitively, with or without a leading dot.
+local MEDIA_EXTS = {
+  "wav", "wave", "aif", "aiff", "flac", "ogg", "oga",
+  "mp3", "mp2", "m4a", "aac", "caf", "w64", "facomp",
+}
+
+local function join_path(dir, rel)
+  if not rel or rel == "" then
+    return dir
+  end
+  local last = dir:sub(-1)
+  local sep = "/"
+  if last == "/" or last == "\\" then
+    sep = ""
+  elseif dir:find("\\") then
+    sep = "\\"
+  end
+  if sep == "\\" then
+    rel = rel:gsub("/", "\\")
+  end
+  return dir .. sep .. rel
+end
+
 local function is_session_path(path)
   return string.lower(path):match("%.fasession$") ~= nil
+end
+
+-- Directories are expanded with app:find_files; a file path fails that call
+-- and is kept as a single item.
+local function expand_item(path)
+  local ok, found = pcall(function()
+    return app:find_files(path, MEDIA_EXTS)
+  end)
+  if not ok then
+    return { path }
+  end
+  local paths = {}
+  for _, rel in ipairs(found) do
+    paths[#paths + 1] = join_path(path, rel)
+  end
+  return paths
 end
 
 local function session_has_path(session, path)
@@ -16,6 +56,21 @@ local function session_has_path(session, path)
   return false
 end
 
+local function add_path(path)
+  if is_session_path(path) then
+    local incoming = app:load_session(path)
+    for _, doc in ipairs(incoming.compositions) do
+      local doc_path = doc.path
+      if doc_path and not session_has_path(app.session, doc_path) then
+        app.session:open(doc_path)
+      end
+    end
+    incoming:close()
+  else
+    app.session:open(path)
+  end
+end
+
 app:declare_workflow({
   name = "add",
   display_name = "Add",
@@ -24,18 +79,13 @@ app:declare_workflow({
   drop = { row = 1, priority = 1, color = app.theme.semantic.success },
 }, function(payload)
   local paths = payload.paths or {}
-  for _, path in ipairs(paths) do
-    if is_session_path(path) then
-      local incoming = app:load_session(path)
-      for _, doc in ipairs(incoming.compositions) do
-        local doc_path = doc.path
-        if doc_path and not session_has_path(app.session, doc_path) then
-          app.session:open(doc_path)
-        end
-      end
-      incoming:close()
+  for _, item in ipairs(paths) do
+    if is_session_path(item) then
+      add_path(item)
     else
-      app.session:open(path)
+      for _, path in ipairs(expand_item(item)) do
+        add_path(path)
+      end
     end
   end
 end)

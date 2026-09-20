@@ -1917,6 +1917,30 @@ mod tests {
     }
 
     #[test]
+    fn add_workflow_expands_dropped_directory() {
+        let dir = std::env::temp_dir().join("fieldassist-add-dir");
+        let nested = dir.join("takes");
+        std::fs::create_dir_all(&nested).expect("temp dir");
+        let a = nested.join("a.wav");
+        let b = nested.join("b.flac");
+        let skip = nested.join("notes.txt");
+        std::fs::write(&a, b"a").expect("a");
+        std::fs::write(&b, b"b").expect("b");
+        std::fs::write(&skip, b"nope").expect("skip");
+        let (mut host, world) = test_host();
+        host.load_init_from(None).expect("workflows");
+        let before = world.borrow().session.documents().len();
+        host.invoke_workflow("add", &[nested.clone()])
+            .expect("invoke add");
+        let world = world.borrow();
+        assert_eq!(world.session.documents().len(), before + 2);
+        assert!(world.session.find_by_path(&a).is_some());
+        assert!(world.session.find_by_path(&b).is_some());
+        assert!(world.session.find_by_path(&skip).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn replace_workflow_alerts_on_multiple_files() {
         let (mut host, _) = test_host();
         host.load_init_from(None).expect("workflows");
