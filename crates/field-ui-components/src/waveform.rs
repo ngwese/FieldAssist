@@ -133,6 +133,9 @@ where
     scrollbar_width: f32,
     drag: Option<Drag>,
     hover_sample: Option<usize>,
+    /// Last pointer position used for [`Self::hover_sample`], so auto-scroll /
+    /// pan can remap the ghost bar to stay under the cursor.
+    hover_pointer: Option<(f32, f32)>,
     hovered_edit: Option<u64>,
     pointer_over: bool,
     focus_handle: FocusHandle,
@@ -171,6 +174,7 @@ where
             scrollbar_width: 0.0,
             drag: None,
             hover_sample: None,
+            hover_pointer: None,
             hovered_edit: None,
             pointer_over: false,
             focus_handle: cx.focus_handle(),
@@ -242,6 +246,7 @@ where
             );
         }
         if (self.start_sample - before).abs() > f64::EPSILON {
+            self.sync_hover_from_pointer(cx);
             cx.notify();
         }
     }
@@ -258,6 +263,7 @@ where
             sample,
         );
         if (self.start_sample - before).abs() > f64::EPSILON {
+            self.sync_hover_from_pointer(cx);
             cx.notify();
         }
     }
@@ -283,6 +289,7 @@ where
             fraction as f64,
         );
         if (self.start_sample - before).abs() > f64::EPSILON {
+            self.sync_hover_from_pointer(cx);
             cx.notify();
         }
     }
@@ -300,6 +307,7 @@ where
     pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
         let anchor = self.anchor_sample(cx);
         self.zoom_at(1.0 / ZOOM_FACTOR, anchor, cx);
+        self.sync_hover_from_pointer(cx);
         cx.notify();
     }
 
@@ -307,6 +315,7 @@ where
     pub fn zoom_out(&mut self, cx: &mut Context<Self>) {
         let anchor = self.anchor_sample(cx);
         self.zoom_at(ZOOM_FACTOR, anchor, cx);
+        self.sync_hover_from_pointer(cx);
         cx.notify();
     }
 
@@ -314,6 +323,7 @@ where
     pub fn fit(&mut self, cx: &mut Context<Self>) {
         self.start_sample = 0.0;
         self.samples_per_pixel = self.max_samples_per_pixel(cx);
+        self.sync_hover_from_pointer(cx);
         cx.notify();
     }
 
@@ -345,6 +355,7 @@ where
                 sample,
             );
         }
+        self.sync_hover_from_pointer(cx);
         cx.notify();
     }
 
@@ -352,6 +363,7 @@ where
     pub fn reset_view(&mut self, cx: &mut Context<Self>) {
         self.drag = None;
         self.hover_sample = None;
+        self.hover_pointer = None;
         self.hovered_edit = None;
         self.live_peaks_spectrum_split = None;
         self.start_sample = 0.0;
@@ -410,6 +422,7 @@ where
             (old * factor).clamp(MIN_SAMPLES_PER_PIXEL, self.max_samples_per_pixel(cx));
         self.start_sample = anchor_sample - pixel * self.samples_per_pixel;
         self.clamp_scroll(cx);
+        self.sync_hover_from_pointer(cx);
     }
 
     fn sample_at_x(&self, x: f32) -> f64 {
@@ -424,6 +437,7 @@ where
             self.clear_hover(cx);
             return;
         }
+        self.hover_pointer = Some((x, y));
         let next = hover_sample_from_x(
             x,
             self.content_origin_x,
@@ -439,9 +453,31 @@ where
     }
 
     fn clear_hover(&mut self, cx: &mut Context<Self>) {
+        self.hover_pointer = None;
         if self.hover_sample.take().is_some() {
             cx.notify();
         }
+    }
+
+    /// Remap [`Self::hover_sample`] from the last pointer X after scroll/zoom.
+    fn sync_hover_from_pointer(&mut self, cx: &App) {
+        let Some((x, y)) = self.hover_pointer else {
+            return;
+        };
+        if self.content_height > 0.0
+            && (y < self.content_origin_y || y > self.content_origin_y + self.content_height)
+        {
+            self.hover_sample = None;
+            return;
+        }
+        self.hover_sample = hover_sample_from_x(
+            x,
+            self.content_origin_x,
+            self.viewport_width,
+            self.start_sample,
+            self.samples_per_pixel,
+            self.frames(cx),
+        );
     }
 
     fn set_pointer_over(&mut self, hovered: bool, cx: &mut Context<Self>) {
@@ -455,6 +491,7 @@ where
     fn pan_pixels(&mut self, dx: f32, cx: &App) {
         self.start_sample -= dx as f64 * self.samples_per_pixel;
         self.clamp_scroll(cx);
+        self.sync_hover_from_pointer(cx);
     }
 
     fn set_start_from_scrollbar_x(&mut self, x: f32, grab_offset: f32, cx: &App) {
@@ -466,6 +503,7 @@ where
         let max_start = self.max_start(cx);
         self.start_sample = (thumb_x as f64 / max_travel as f64) * max_start;
         self.clamp_scroll(cx);
+        self.sync_hover_from_pointer(cx);
     }
 
     fn remember_viewport(
@@ -496,9 +534,11 @@ where
         if first {
             self.start_sample = 0.0;
             self.samples_per_pixel = self.max_samples_per_pixel(cx);
+            self.sync_hover_from_pointer(cx);
             cx.notify();
         } else if changed {
             self.clamp_scroll(cx);
+            self.sync_hover_from_pointer(cx);
             cx.notify();
         }
     }
@@ -2308,6 +2348,17 @@ mod tests {
     fn hover_sample_maps_pixel_inside_viewport() {
         let sample = hover_sample_from_x(150.0, 50.0, 100.0, 1000.0, 10.0, 10_000);
         assert_eq!(sample, Some(2000));
+    }
+
+    #[test]
+    fn hover_sample_tracks_fixed_x_when_scroll_origin_moves() {
+        let x = 150.0;
+        let origin = 50.0;
+        let width = 100.0;
+        let spp = 10.0;
+        let before = hover_sample_from_x(x, origin, width, 1000.0, spp, 10_000).unwrap();
+        let after = hover_sample_from_x(x, origin, width, 1100.0, spp, 10_000).unwrap();
+        assert_eq!(after - before, 100);
     }
 
     #[test]
