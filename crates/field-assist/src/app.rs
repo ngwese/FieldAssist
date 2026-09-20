@@ -36,10 +36,10 @@ use crate::commands::{
     SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll, SnapToMarker, StartWorkflow,
     ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
     TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
-    ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewHideDetail, ViewHideExplorer,
-    ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail, ViewShowExplorer,
-    ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks, ViewWaveformPeaksSpectrum,
-    ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
+    ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead, ViewFrame, ViewHideDetail,
+    ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail,
+    ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks,
+    ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -237,6 +237,8 @@ pub struct AppView {
     restoring_session: bool,
     /// View → Peaks / Spectrum / Peaks + Spectrum (app-wide, not per document).
     waveform_representation: field_ui_components::WaveformRepresentation,
+    /// View → Follow Playhead (app-wide; default on).
+    follow_playhead: bool,
 }
 
 impl AppView {
@@ -292,6 +294,9 @@ impl AppView {
                             this.playback.input_meters_active(),
                         ) {
                             this.monitor.update(cx, |_, cx| cx.notify());
+                        }
+                        if this.follow_playhead && transport == TransportState::Playing {
+                            this.maybe_follow_playhead(cx);
                         }
                     }
                 })
@@ -542,6 +547,7 @@ impl AppView {
             workflow_bar_view,
             restoring_session: false,
             waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
+            follow_playhead: true,
         };
         this.load_init_lua(window, cx);
         this.refresh_output_devices_cache();
@@ -1848,6 +1854,7 @@ impl AppView {
             explorer: self.explorer_dock_open(cx),
             detail: self.detail_dock_open(cx),
             script: self.script_dock_open(cx),
+            follow_playhead: self.follow_playhead,
             envelope_overlay,
             waveform_representation: self.waveform_representation,
             analyze_selection_only,
@@ -2959,14 +2966,17 @@ impl AppView {
             "transport.home" => {
                 self.playback.home();
                 self.sync_playback_to_document(cx);
+                self.maybe_follow_playhead(cx);
             }
             "transport.previous" => {
                 self.playback.previous();
                 self.sync_playback_to_document(cx);
+                self.maybe_follow_playhead(cx);
             }
             "transport.start" => {
                 self.playback.start();
                 self.sync_playback_to_document(cx);
+                self.maybe_follow_playhead(cx);
             }
             "transport.play_pause" => {
                 self.playback.toggle_play_pause();
@@ -2979,10 +2989,12 @@ impl AppView {
             "transport.next" => {
                 self.playback.next();
                 self.sync_playback_to_document(cx);
+                self.maybe_follow_playhead(cx);
             }
             "transport.end" => {
                 self.playback.end();
                 self.sync_playback_to_document(cx);
+                self.maybe_follow_playhead(cx);
             }
             "transport.loop" => {
                 self.playback.toggle_loop();
@@ -3023,6 +3035,7 @@ impl AppView {
             "view.show-media" => self.show_media_tab(window, cx),
             "view.toggle-media" => self.toggle_media_tab(window, cx),
             "view.wrap_messages" => self.toggle_wrap_messages(cx),
+            "view.follow_playhead" => self.toggle_follow_playhead(cx),
             "view.overlay_envelope_peak" => self.toggle_envelope_overlay(window, cx),
             "view.waveform_peaks" => self.set_waveform_representation(
                 field_ui_components::WaveformRepresentation::Peaks,
@@ -3421,6 +3434,35 @@ impl AppView {
             panel.toggle_wrap_messages(cx);
         });
         self.sync_view_menus(cx);
+    }
+
+    fn toggle_follow_playhead(&mut self, cx: &mut Context<Self>) {
+        self.follow_playhead = !self.follow_playhead;
+        self.maybe_follow_playhead(cx);
+        self.sync_view_menus(cx);
+    }
+
+    /// Pan the active waveform so the playhead stays centered when follow is on
+    /// and the view is zoomed in.
+    fn maybe_follow_playhead(&mut self, cx: &mut Context<Self>) {
+        if !self.follow_playhead {
+            return;
+        }
+        let Some(views) = self.active_views() else {
+            return;
+        };
+        let sample = views
+            .document
+            .read(cx)
+            .selection_position_sample()
+            .map(|s| s as f64);
+        let Some(sample) = sample else {
+            return;
+        };
+        let waveform = views.waveform.clone();
+        waveform.update(cx, |view, cx| {
+            view.follow_sample(sample, 0.5, cx);
+        });
     }
 
     fn toggle_envelope_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5686,6 +5728,10 @@ fn view_wrap_messages(_: &ViewWrapMessages, cx: &mut App) {
     let _ = crate::commands::dispatch("view.wrap_messages", cx);
 }
 
+fn view_follow_playhead(_: &ViewFollowPlayhead, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.follow_playhead", cx);
+}
+
 fn view_overlay_envelope_peak(_: &ViewOverlayEnvelopePeak, cx: &mut App) {
     let _ = crate::commands::dispatch("view.overlay_envelope_peak", cx);
 }
@@ -5828,6 +5874,7 @@ struct AppMenuState {
     explorer: bool,
     detail: bool,
     script: bool,
+    follow_playhead: bool,
     envelope_overlay: bool,
     waveform_representation: field_ui_components::WaveformRepresentation,
     analyze_selection_only: bool,
@@ -5886,6 +5933,7 @@ fn no_editor_menu_state() -> AppMenuState {
         explorer: false,
         detail: false,
         script: false,
+        follow_playhead: true,
         envelope_overlay: false,
         waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
         analyze_selection_only: false,
@@ -6013,6 +6061,12 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             ),
             needs_editor(
                 MenuItem::action("Show Script", ViewScript).checked(state.script),
+                open,
+            ),
+            MenuItem::separator(),
+            needs_editor(
+                MenuItem::action("Follow Playhead", ViewFollowPlayhead)
+                    .checked(state.follow_playhead),
                 open,
             ),
             MenuItem::separator(),
@@ -6185,6 +6239,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(view_show_media);
     cx.on_action(view_toggle_media);
     cx.on_action(view_wrap_messages);
+    cx.on_action(view_follow_playhead);
     cx.on_action(view_overlay_envelope_peak);
     cx.on_action(view_waveform_peaks);
     cx.on_action(view_waveform_spectrum);

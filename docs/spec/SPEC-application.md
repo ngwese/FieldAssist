@@ -278,7 +278,10 @@ thread.
 
 Zoom factor 1.25 (minimum 1/50 sample per pixel). Fit-all and Frame (selection
 or caret) are view commands. Horizontal pan uses drag, a scrollbar, or
-Shift+wheel.
+Shift+wheel. **Follow Playhead** (View menu, default on) keeps the playhead
+centered in the waveform while playing or after transport seeks, whenever the
+viewport does not already show the full buffer. Toggle it off to pan freely
+during playback.
 
 ### Selection
 

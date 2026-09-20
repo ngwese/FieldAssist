@@ -262,6 +262,36 @@ where
         }
     }
 
+    /// Keep `sample` at `fraction` of the viewport width (0..=1), clamped to the
+    /// buffer. No-op when the full buffer already fits.
+    pub fn follow_sample(&mut self, sample: f64, fraction: f32, cx: &mut Context<Self>) {
+        if self.shows_full_buffer(cx) {
+            return;
+        }
+        let frames = self.frames(cx) as f64;
+        let before = self.start_sample;
+        apply_follow_sample(
+            &mut self.start_sample,
+            self.samples_per_pixel,
+            self.viewport_width,
+            frames,
+            sample,
+            fraction as f64,
+        );
+        if (self.start_sample - before).abs() > f64::EPSILON {
+            cx.notify();
+        }
+    }
+
+    /// True when the viewport already shows the entire buffer (fit-all zoom).
+    pub fn shows_full_buffer(&self, cx: &App) -> bool {
+        let frames = self.frames(cx) as f64;
+        if frames <= 0.0 || self.viewport_width <= 1.0 {
+            return true;
+        }
+        self.visible_samples() + 0.5 >= frames
+    }
+
     /// Zoom in around the playhead (or viewport center).
     pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
         let anchor = self.anchor_sample(cx);
@@ -2091,6 +2121,24 @@ fn apply_scroll_to_frame(
     clamp_viewport(start_sample, &mut spp, viewport_width, frames);
 }
 
+fn apply_follow_sample(
+    start_sample: &mut f64,
+    samples_per_pixel: f64,
+    viewport_width: f32,
+    frames: f64,
+    sample: f64,
+    fraction: f64,
+) {
+    let mut spp = samples_per_pixel;
+    let visible = spp * viewport_width.max(1.0) as f64;
+    if frames <= 0.0 || visible + 0.5 >= frames {
+        return;
+    }
+    let fraction = fraction.clamp(0.0, 1.0);
+    *start_sample = sample - fraction * visible;
+    clamp_viewport(start_sample, &mut spp, viewport_width, frames);
+}
+
 fn apply_scroll_ranges_into_view(
     start_sample: &mut f64,
     samples_per_pixel: f64,
@@ -2157,6 +2205,41 @@ mod tests {
         let spp = 10.0;
         apply_scroll_to_frame(&mut start, spp, 100.0, 10_000.0, 4500.0);
         assert!((start - 4000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn follow_sample_centers_without_changing_zoom() {
+        let mut start = 0.0;
+        let spp = 10.0;
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5000.0, 0.5);
+        // visible = 1000; start = 5000 - 0.5 * 1000 = 4500
+        assert!((start - 4500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn follow_sample_clamps_at_timeline_start() {
+        let mut start = 1000.0;
+        let spp = 10.0;
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 100.0, 0.5);
+        assert!((start - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn follow_sample_clamps_at_timeline_end() {
+        let mut start = 0.0;
+        let spp = 10.0;
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 9900.0, 0.5);
+        // max_start = 10000 - 1000 = 9000
+        assert!((start - 9000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn follow_sample_is_noop_when_full_buffer_visible() {
+        let mut start = 0.0;
+        let spp = 100.0;
+        // visible = 100 * 100 = 10000 == frames
+        apply_follow_sample(&mut start, spp, 100.0, 10_000.0, 5000.0, 0.5);
+        assert!((start - 0.0).abs() < 1e-9);
     }
 
     #[test]

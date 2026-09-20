@@ -274,7 +274,7 @@ when `n >= 4`) then channel-count fallbacks (`1`, `2`, `4`, `9`).
 `view.show-explorer`, `view.hide-explorer`, `view.toggle-explorer`,
 `view.show-detail`, `view.hide-detail`, `view.toggle-detail`,
 `view.show-script`, `view.hide-script`, `view.toggle-script`,
-`view.show-media`, `view.toggle-media`
+`view.show-media`, `view.toggle-media`, `view.follow_playhead`
 
 Show and hide are idempotent. Menus use the toggle variants.
 
