@@ -8,6 +8,7 @@ mod files;
 mod host;
 mod layout;
 mod marker;
+mod media;
 mod prototype;
 mod region;
 mod selection;
@@ -450,6 +451,80 @@ mod tests {
         );
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("pcm\t32\tnil\tnil\t2\t44100"));
+    }
+
+    fn write_minimal_wav(path: &std::path::Path, frames: u32) {
+        use std::io::Write;
+        let bits_per_sample: u16 = 16;
+        let channels: u16 = 1;
+        let sample_rate: u32 = 44100;
+        let block_align = channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut out = std::fs::File::create(path).unwrap();
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&channels.to_le_bytes()).unwrap();
+        out.write_all(&sample_rate.to_le_bytes()).unwrap();
+        out.write_all(&byte_rate.to_le_bytes()).unwrap();
+        out.write_all(&block_align.to_le_bytes()).unwrap();
+        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        for _ in 0..frames {
+            out.write_all(&0i16.to_le_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn app_media_lists_fixture_pool() {
+        let (mut host, _) = test_host();
+        let out = host.eval("return #app.media, app.media[1].channels, app.media[1].sample_rate");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("1\t2\t44100"));
+    }
+
+    #[test]
+    fn app_add_and_remove_media_pool_entries() {
+        let (mut host, _) = test_host();
+        let path = std::env::temp_dir().join("fa-lua-add-media.wav");
+        write_minimal_wav(&path, 32);
+        let path_lua = path.to_string_lossy().replace('\\', "\\\\");
+        let out = host.eval(&format!(
+            r#"
+            local before = #app.media
+            local m = app:add_media("{path_lua}")
+            assert(m.id and m.path and m.basename)
+            assert(#app.media == before + 1)
+            app:remove_media(m)
+            return #app.media, before
+            "#
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("1\t1"));
+    }
+
+    #[test]
+    fn app_remove_media_rejects_referenced_fixture() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local id = app.media[1].id
+            local ok, err = pcall(function() app:remove_media(id) end)
+            return ok, tostring(err)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = out.result.unwrap_or_default();
+        assert!(
+            result.starts_with("false\t") && result.contains("still referenced"),
+            "{result}"
+        );
     }
 
     #[test]

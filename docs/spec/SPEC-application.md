@@ -258,8 +258,10 @@ right; and background job text (opening, building peaks, rendering).
 
 The Script panel is a Lua REPL. `print` goes to the transcript. `app:info`,
 `app:warn`, and `app:error` go to Messages (and colored stdout when attached).
-The Messages tab has no badge; totals appear on the status bar. See
-[SCRIPT.md](../SCRIPT.md).
+The Messages tab has no badge; totals appear on the status bar. The Media tab
+lists every entry in the window-shared media pool (descriptor fields plus
+resolved path). Pool-only entries added via Lua are shown there but are not
+persisted in `.fasession`. See [SCRIPT.md](../SCRIPT.md).
 
 ## Review editor
 

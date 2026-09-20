@@ -113,6 +113,22 @@ impl BlockPager {
         self.stats = PagerStats::default();
     }
 
+    /// Drop RAM-cached blocks for `media_id` (spill files are left for temp cleanup).
+    pub fn evict_media(&mut self, media_id: MediaId) {
+        let keys: Vec<_> = self
+            .ram
+            .keys()
+            .copied()
+            .filter(|key| key.media_id == media_id)
+            .collect();
+        for key in keys {
+            if let Some(block) = self.ram.remove(&key) {
+                self.ram_bytes = self.ram_bytes.saturating_sub(block_ram_bytes(&block));
+            }
+            self.order.retain(|k| k != &key);
+        }
+    }
+
     /// Fill planar destination channels from media starting at `src_offset`.
     pub fn fill_planar(
         &mut self,

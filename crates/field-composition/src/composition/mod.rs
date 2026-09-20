@@ -3012,7 +3012,8 @@ impl Composition {
         }
     }
 
-    fn used_media_ids(&self) -> HashSet<MediaId> {
+    /// Media ids referenced by the initial state or current clip tree.
+    pub fn used_media_ids(&self) -> HashSet<MediaId> {
         let mut ids = HashSet::new();
         if let InitialState::FromMedia { media_id } = self.initial {
             ids.insert(media_id);
@@ -3489,7 +3490,8 @@ fn media_stats_match(media: &MediaRef, meta: &std::fs::Metadata) -> bool {
     stored.as_secs() == actual.as_secs()
 }
 
-fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
+/// Build a [`MediaRef`] from a probed audio file (identity finalized).
+pub fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
     let path = probed.path;
     let url = encode_file_url(&path, None);
     let mut media = MediaRef {

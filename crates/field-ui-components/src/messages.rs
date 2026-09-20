@@ -14,10 +14,11 @@ use gpui_kit::component::{
     v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, uniform_list, App, AppContext as _, Context,
-    DragMoveEvent, ElementId, Empty, EntityId, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
+    canvas, div, prelude::FluentBuilder as _, px, uniform_list, App, AppContext as _, Context,
+    DispatchPhase, ElementId, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
 };
 
 const MIN_COLUMN_WIDTH: f32 = 32.;
@@ -210,12 +211,12 @@ impl MessagesPanel {
         cx.notify();
     }
 
-    /// Whether long message text wraps within the pane width.
+    /// Whether long message text wraps within the message column width.
     pub fn wrap_messages(&self) -> bool {
         self.wrap_messages
     }
 
-    /// Set whether long message text wraps within the pane width.
+    /// Set whether long message text wraps within the message column width.
     pub fn set_wrap_messages(&mut self, wrap: bool, cx: &mut Context<Self>) {
         if self.wrap_messages == wrap {
             return;
@@ -285,7 +286,6 @@ impl MessagesPanel {
         if self.hidden.contains(&col) {
             self.hidden.remove(&col);
         } else {
-            // Keep at least one non-message column? Allow hiding all fixed cols.
             self.hidden.insert(col);
         }
         cx.notify();
@@ -307,13 +307,11 @@ impl MessagesPanel {
         });
     }
 
-    fn apply_resize_drag(&mut self, column: MessageColumn, x: Pixels, cx: &mut Context<Self>) {
+    fn apply_resize_drag(&mut self, x: Pixels, cx: &mut Context<Self>) {
         let Some(drag) = self.resize_drag.as_ref() else {
             return;
         };
-        if drag.column != column {
-            return;
-        }
+        let column = drag.column;
         let delta = f32::from(x) - drag.start_x;
         let new_width = px(f32::from(drag.start_width) + delta);
         self.set_column_width(column, new_width);
@@ -329,99 +327,122 @@ impl MessagesPanel {
         let entity_id = cx.entity_id();
         let visible = self.visible_columns();
         let hidden = self.hidden.clone();
+        let border = cx.theme().border;
 
         h_flex()
-            .id("messages-header")
+            .id("messages-header-bar")
             .w_full()
             .flex_none()
             .items_center()
-            .px_1p5()
-            .py_0p5()
-            .child(h_flex().flex_1().min_w_0().items_center().children(
-                visible.iter().enumerate().flat_map(|(ix, col)| {
-                    let col = *col;
-                    let width = self.column_width(col);
-                    let label = col.label();
-                    let mut cells = Vec::new();
-                    cells.push(
-                        div()
-                            .id(("messages-th", ix as u64))
-                            .when(col.is_flex(), |el| el.flex_1().min_w_0())
-                            .when(!col.is_flex(), |el| el.w(width).flex_none())
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_color(muted)
-                            .cursor_grab()
-                            .on_drag(
-                                DragMessageColumn {
-                                    entity_id,
-                                    column: col,
-                                    name: SharedString::from(col.menu_label()),
-                                },
-                                |drag, _, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.new(|_| drag.clone())
-                                },
-                            )
-                            .on_drop(cx.listener(move |this, drag: &DragMessageColumn, _, cx| {
-                                if drag.entity_id != cx.entity_id() {
-                                    return;
-                                }
-                                this.move_column_to(drag.column, col, cx);
-                            }))
-                            .child(label)
-                            .into_any_element(),
-                    );
-                    if !col.is_flex() {
-                        cells.push(resize_handle(entity_id, col, cx).into_any_element());
-                    }
-                    cells
-                }),
-            ))
-            .child(column_menu_button(hidden, self.wrap_messages, muted, cx))
+            .border_b_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .id("messages-header")
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .px_1p5()
+                    .py_0p5()
+                    .children(visible.iter().enumerate().flat_map(|(ix, col)| {
+                        let col = *col;
+                        let width = self.column_width(col);
+                        let label = col.label();
+                        let mut cells = Vec::new();
+                        cells.push(
+                            div()
+                                .id(("messages-th", ix as u64))
+                                .when(col.is_flex(), |el| el.flex_1().min_w_0())
+                                .when(!col.is_flex(), |el| el.w(width).flex_none())
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_color(muted)
+                                .cursor_grab()
+                                .on_drag(
+                                    DragMessageColumn {
+                                        entity_id,
+                                        column: col,
+                                        name: SharedString::from(col.menu_label()),
+                                    },
+                                    |drag, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.new(|_| drag.clone())
+                                    },
+                                )
+                                .on_drop(cx.listener(
+                                    move |this, drag: &DragMessageColumn, _, cx| {
+                                        if drag.entity_id != cx.entity_id() {
+                                            return;
+                                        }
+                                        this.move_column_to(drag.column, col, cx);
+                                    },
+                                ))
+                                .child(label)
+                                .into_any_element(),
+                        );
+                        if !col.is_flex() {
+                            cells.push(resize_handle(col, cx).into_any_element());
+                        }
+                        cells
+                    })),
+            )
+            .child(
+                h_flex()
+                    .id("messages-chrome-header")
+                    .w(px(ELLIPSIS_WIDTH))
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .child(column_menu_button(hidden, self.wrap_messages, muted, cx)),
+            )
     }
 }
 
-fn resize_handle(
-    entity_id: EntityId,
-    column: MessageColumn,
-    cx: &mut Context<MessagesPanel>,
-) -> impl IntoElement {
+fn resize_handle(column: MessageColumn, cx: &mut Context<MessagesPanel>) -> impl IntoElement {
     h_flex()
         .id(("messages-resize", column.stable_id()))
         .w(px(RESIZE_HANDLE_WIDTH))
         .flex_none()
-        .h_full()
+        .self_stretch()
         .occlude()
         .cursor_col_resize()
         .on_mouse_down(
-            gpui_kit::MouseButton::Left,
-            cx.listener(move |this, e: &gpui_kit::MouseDownEvent, _, cx| {
+            MouseButton::Left,
+            cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                 this.begin_resize(column, e.position.x, cx);
+                cx.notify();
             }),
         )
-        .on_drag_move(
-            cx.listener(move |this, e: &DragMoveEvent<ResizeMessageColumn>, _, cx| {
-                let drag = e.drag(cx);
-                if drag.entity_id != cx.entity_id() || drag.column != column {
-                    return;
+}
+
+fn install_resize_listeners(entity: Entity<MessagesPanel>, window: &mut Window) {
+    window.on_mouse_event({
+        let entity = entity.clone();
+        move |event: &MouseMoveEvent, phase, _, cx| {
+            if phase != DispatchPhase::Capture {
+                return;
+            }
+            entity.update(cx, |this, cx| {
+                if this.resize_drag.is_some() {
+                    this.apply_resize_drag(event.position.x, cx);
                 }
-                this.apply_resize_drag(column, e.event.position.x, cx);
-            }),
-        )
-        .on_drag(
-            ResizeMessageColumn { entity_id, column },
-            |drag, _, _, cx| {
-                cx.stop_propagation();
-                cx.new(|_| drag.clone())
-            },
-        )
-        .on_mouse_up(
-            gpui_kit::MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                this.end_resize(cx);
-            }),
-        )
+            });
+        }
+    });
+    window.on_mouse_event({
+        let entity = entity.clone();
+        move |event: &MouseUpEvent, phase, _, cx| {
+            if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            entity.update(cx, |this, cx| {
+                if this.resize_drag.is_some() {
+                    this.end_resize(cx);
+                    cx.notify();
+                }
+            });
+        }
+    });
 }
 
 fn column_menu_button(
@@ -496,18 +517,6 @@ impl Render for DragMessageColumn {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct ResizeMessageColumn {
-    entity_id: EntityId,
-    column: MessageColumn,
-}
-
-impl Render for ResizeMessageColumn {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
 fn count_level(entries: &[LogLine], acked_until: usize, level: LogLevel) -> usize {
     entries
         .get(acked_until..)
@@ -560,53 +569,44 @@ impl Render for MessagesPanel {
         let entries = self.entries.clone();
         let count = entries.len();
         let header = self.render_header(cx);
-
-        // Snapshot layout for row closures.
         let order = self.column_order.clone();
         let widths = self.column_widths.clone();
         let hidden = self.hidden.clone();
+        let entity = cx.entity().clone();
 
         v_flex()
             .id("messages-panel")
             .size_full()
             .text_xs()
+            .track_focus(&self.focus_handle)
             .child(header)
-            .child(if wrap {
-                let order = order.clone();
-                let widths = widths.clone();
-                let hidden = hidden.clone();
-                v_flex()
-                    .id("messages-wrap-rows")
+            .child(
+                div()
+                    .id("messages-body")
                     .flex_1()
-                    .size_full()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.wrap_scroll)
-                    .children(entries.iter().enumerate().map(|(ix, entry)| {
-                        render_row_static(
-                            ("messages-row", ix as u64),
-                            entry,
-                            &order,
-                            &widths,
-                            &hidden,
-                            info,
-                            warning,
-                            danger,
-                            muted,
-                            foreground,
-                            true,
+                    .w_full()
+                    .relative()
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, _, window, _| {
+                                install_resize_listeners(entity.clone(), window);
+                            },
                         )
-                    }))
-                    .into_any_element()
-            } else {
-                let order = order.clone();
-                let widths = widths.clone();
-                let hidden = hidden.clone();
-                uniform_list("messages-rows", count, {
-                    move |range, _, _cx| {
-                        range
-                            .map(|ix| {
-                                let entry = &entries[ix];
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(if wrap {
+                        let order = order.clone();
+                        let widths = widths.clone();
+                        let hidden = hidden.clone();
+                        v_flex()
+                            .id("messages-wrap-rows")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.wrap_scroll)
+                            .children(entries.iter().enumerate().map(|(ix, entry)| {
                                 render_row_static(
                                     ("messages-row", ix as u64),
                                     entry,
@@ -618,17 +618,38 @@ impl Render for MessagesPanel {
                                     danger,
                                     muted,
                                     foreground,
-                                    false,
+                                    true,
                                 )
-                            })
-                            .collect()
-                    }
-                })
-                .track_scroll(&self.list_scroll)
-                .flex_1()
-                .size_full()
-                .into_any_element()
-            })
+                            }))
+                            .into_any_element()
+                    } else {
+                        uniform_list("messages-rows", count, {
+                            move |range, _, _cx| {
+                                range
+                                    .map(|ix| {
+                                        let entry = &entries[ix];
+                                        render_row_static(
+                                            ("messages-row", ix as u64),
+                                            entry,
+                                            &order,
+                                            &widths,
+                                            &hidden,
+                                            info,
+                                            warning,
+                                            danger,
+                                            muted,
+                                            foreground,
+                                            false,
+                                        )
+                                    })
+                                    .collect()
+                            }
+                        })
+                        .track_scroll(&self.list_scroll)
+                        .size_full()
+                        .into_any_element()
+                    }),
+            )
     }
 }
 

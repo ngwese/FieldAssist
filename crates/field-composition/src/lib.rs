@@ -34,8 +34,8 @@ pub use analysis_store::{
 };
 pub use clip::{Clip, ClipCache, ClipId, ClipMarker, ClipMarkerId, ClipSource, ClipSpan};
 pub use composition::{
-    is_facomp_path, normalize_facomp_file_name, AnalysisBlockOutcome, AnalysisPassStats, Clipboard,
-    Composition, FramesIter, PeakBlockOutcome,
+    is_facomp_path, media_ref_from_probed, normalize_facomp_file_name, AnalysisBlockOutcome,
+    AnalysisPassStats, Clipboard, Composition, FramesIter, PeakBlockOutcome,
 };
 pub use edit_ranges::{
     analysis_inverse_op, map_inclusive_through_inverse, map_inclusive_through_op,

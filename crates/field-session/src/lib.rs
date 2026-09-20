@@ -306,6 +306,14 @@ impl SessionDocument {
         matches!(self.target, SessionDocumentTarget::Media { .. })
     }
 
+    /// Stable media id when this is a media-backed document.
+    pub fn media_id(&self) -> Option<MediaId> {
+        match self.target {
+            SessionDocumentTarget::Media { media_id, .. } => Some(media_id),
+            SessionDocumentTarget::Composition { .. } => None,
+        }
+    }
+
     /// True when the tab is a `.facomp` project.
     pub fn is_composition(&self) -> bool {
         matches!(self.target, SessionDocumentTarget::Composition { .. })

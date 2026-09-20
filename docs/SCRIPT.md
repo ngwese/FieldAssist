@@ -12,7 +12,8 @@ Script) and from files loaded at startup.
 5. [app](#app)
 6. [session](#session)
 7. [composition](#composition)
-8. [workflow](#workflow)
+8. [media](#media)
+9. [workflow](#workflow)
 
 ## Initilization
 
@@ -73,6 +74,7 @@ flowchart TB
   session["session<br/>app.session"]
   sessions["sessions[]<br/>app.sessions"]
   comps["composition<br/>app.composition / session.compositions"]
+  media["media<br/>app.media"]
   selection["collection<br/>c.selection"]
   regions["region"]
   markers["marker"]
@@ -83,6 +85,7 @@ flowchart TB
   app --> session
   app --> sessions
   app --> comps
+  app --> media
   app --> theme
   app --> proto
   app --> inst
@@ -100,6 +103,7 @@ flowchart TB
 | `app` | Global |
 | `session` | `app.session` (UI-active) or `app:load_session(path)` |
 | `composition` | `app.composition`, `app.compositions[i]`, `session:open(path)` |
+| `media` | `app.media[i]`, `app:add_media(path)` |
 | `collection` | `c.selection` or `c:collection(name)` |
 | `region` | `c.regions[i]`, `collection.regions[i]`, `c:add_region(...)` |
 | `marker` | `c.markers[i]`, `c:add_marker(...)`, `c:marker_at(...)`, `c:remove_marker_by_type(...)` |
@@ -162,12 +166,15 @@ workflow registration.
 | `looping` | read | Transport loop on/off. Prefer `app:command("transport.loop")` to change. |
 | `preview` | read | Status-bar Preview on/off. Prefer `app:command("transport.preview")`. |
 | `explorer` | read | Whether the Compositions dock is open. Prefer `view.show-explorer` / `view.hide-explorer`. |
+| `media` | read | Snapshot table of shared media-pool entries (see [media](#media)). |
 
 ### Methods
 
 | Method | Description |
 | --- | --- |
 | `open(path)` | Open a file into the active session; returns the composition. Alias of `session:open`. |
+| `add_media(path)` | Probe and intern audio into the shared pool without opening a document; returns [media](#media). |
+| `remove_media(media_or_id)` | Remove a pool entry by userdata or `"media:<hex>"`. Errors if still referenced by an open document or composition. |
 | `load_session(path)` | Load a `.fasession` without replacing the UI session. |
 | `command(id)` | Run a menu/keymap command by id. Unknown ids error. |
 | `dofile(path)` | Execute a Lua file. |
@@ -266,7 +273,8 @@ when `n >= 4`) then channel-count fallbacks (`1`, `2`, `4`, `9`).
 **View:** `view.fit_all`, `view.frame`, `view.zoom_in`, `view.zoom_out`,
 `view.show-explorer`, `view.hide-explorer`, `view.toggle-explorer`,
 `view.show-detail`, `view.hide-detail`, `view.toggle-detail`,
-`view.show-script`, `view.hide-script`, `view.toggle-script`
+`view.show-script`, `view.hide-script`, `view.toggle-script`,
+`view.show-media`, `view.toggle-media`
 
 Show and hide are idempotent. Menus use the toggle variants.
 
@@ -487,6 +495,49 @@ not saved in `.facomp`; named collections are.
 | Method | Description |
 | --- | --- |
 | `remove()` | Delete this marker; returns whether it still existed. |
+
+## media
+
+A media object is one entry in the window-shared media pool (content-addressed
+by basename + audio/file stats). Opening audio or a `.facomp` interns media
+into this pool. Scripts can also add pool-only entries that are **not** session
+documents and are **not** written into `.fasession`. Reloading or replacing a
+session rebuilds the pool from open documents, so pool-only items vanish unless
+a script re-adds them (for example from `session_loaded`).
+
+**Typical access:** `app.media[i]`, `app:add_media(path)`.
+
+Reading `app.media` returns a **snapshot** table. Field access on a removed
+entry errors.
+
+### Properties
+
+| Property | Access | Description |
+| --- | --- | --- |
+| `id` | read | `media:<hex>` content id. |
+| `url` | read | Stored descriptor URL (relative, `file://`, or `memory://`). |
+| `path` | read | Resolved filesystem path. |
+| `basename` | read | Basename used for identity. |
+| `sample_rate` | read | Hz. |
+| `channels` | read | Channel count. |
+| `frames` | read | Frame count. |
+| `bit_depth` | read | Bits per sample, or `nil`. |
+| `size_bytes` | read | File size in bytes. |
+| `modified` | read | Freshness stamp (RFC3339 string). |
+| `container_format` | read | Container label. |
+| `codec` | read | Codec label. |
+| `duration` | read | Length in seconds, or `nil` when sample rate is 0. |
+
+### Examples
+
+```lua
+local m = app:add_media("/path/to/extra.wav")
+print(m.id, m.path, m.channels)
+for _, entry in ipairs(app.media) do
+  print(entry.basename, entry.size_bytes)
+end
+app:remove_media(m)   -- errors if an open composition still uses it
+```
 
 ## workflow
 

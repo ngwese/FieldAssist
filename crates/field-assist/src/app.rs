@@ -38,13 +38,14 @@ use crate::commands::{
     TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
     ViewDetail, ViewExplorer, ViewFitAll, ViewFrame, ViewHideDetail, ViewHideExplorer,
     ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail, ViewShowExplorer,
-    ViewShowScript, ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum,
-    ViewWrapMessages, ViewZoomIn, ViewZoomOut,
+    ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks, ViewWaveformPeaksSpectrum,
+    ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
 use crate::components::header_meta::HeaderMeta;
+use crate::components::media_panel::MediaPoolPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::render_sheet::RenderSheet;
 use crate::components::status_bar::file_status_from_composition;
@@ -187,6 +188,7 @@ pub struct AppView {
     empty_editors: Entity<EmptyPane>,
     repl: Entity<ReplPanel>,
     messages: Entity<MessagesPanel>,
+    media_panel: Entity<MediaPoolPanel>,
     script: ScriptHost,
     idle_composition: Arc<RwLock<Composition>>,
     playback: PlaybackSession,
@@ -423,6 +425,7 @@ impl AppView {
         let script = ScriptHost::new().expect("lua runtime");
         let repl = cx.new(|cx| ReplPanel::new("Script", window, cx));
         let messages = cx.new(|cx| MessagesPanel::new(cx));
+        let media_panel = cx.new(|cx| MediaPoolPanel::new(cx));
         let render_sheet = cx.new(|cx| RenderSheet::new(window, cx));
         cx.observe(&render_sheet, |_, _, cx| cx.notify()).detach();
         repl.update(cx, |repl, _| {
@@ -506,6 +509,7 @@ impl AppView {
             empty_editors,
             repl,
             messages,
+            media_panel,
             script,
             idle_composition,
             playback,
@@ -1522,6 +1526,7 @@ impl AppView {
         }
         self.apply_active(window, cx);
         self.refresh_explorer(cx);
+        self.refresh_media_panel(cx);
         cx.notify();
     }
 
@@ -1713,6 +1718,7 @@ impl AppView {
         }
         self.refresh_explorer(cx);
         self.adopt_shared_media_from_lineage(cx);
+        self.refresh_media_panel(cx);
         self.pending_loaded_scripts.push((id, elapsed));
         cx.notify();
     }
@@ -1860,19 +1866,22 @@ impl AppView {
         if opened {
             let script_handle = panel_handle(self.repl.clone());
             let messages_handle = panel_handle(self.messages.clone());
+            let media_handle = panel_handle(self.media_panel.clone());
             let size = self.script_dock_size;
             self.dock_area.update(cx, |area, cx| {
                 area.set_dock(
                     DockPlacement::Bottom,
                     DockLayout::tabs()
                         .panel_view(script_handle, cx)
-                        .panel_view(messages_handle, cx),
+                        .panel_view(messages_handle, cx)
+                        .panel_view(media_handle, cx),
                     window,
                     cx,
                 );
                 area.set_dock_size(DockPlacement::Bottom, size, window, cx);
                 area.set_dock_collapsible(DockPlacement::Bottom, false, window, cx);
             });
+            self.refresh_media_panel(cx);
         }
         self.repl.focus_handle(cx).focus(window, cx);
         if opened {
@@ -2087,6 +2096,106 @@ impl AppView {
         self.messages.focus_handle(cx).focus(window, cx);
         self.sync_view_menus(cx);
         cx.notify();
+    }
+
+    fn media_tab_visible(&self, cx: &App) -> bool {
+        if !self.script_dock_open(cx) {
+            return false;
+        }
+        let area = self.dock_area.read(cx);
+        let Some(tree) = area.layout(DockPlacement::Bottom) else {
+            return false;
+        };
+        let panel_id = PanelId::from(self.media_panel.entity_id());
+        let Some(node) = tree.find_panel_node(panel_id) else {
+            return false;
+        };
+        match tree.find_node(node).map(|node| node.kind()) {
+            Some(PaneRef::Tabs { panels, active_ix }) => panels.get(active_ix) == Some(&panel_id),
+            _ => false,
+        }
+    }
+
+    fn toggle_media_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.media_tab_visible(cx) {
+            self.hide_script_dock(window, cx);
+            return;
+        }
+        self.show_media_tab(window, cx);
+    }
+
+    fn show_media_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel_id = PanelId::from(self.media_panel.entity_id());
+        let dock_open = self.script_dock_open(cx);
+        if !dock_open {
+            self.show_script_dock(window, cx);
+        }
+        self.refresh_media_panel(cx);
+        self.dock_area.update(cx, |area, cx| {
+            if let Some((node, ix, active_ix)) =
+                Self::panel_tab_slot(area, DockPlacement::Bottom, panel_id)
+            {
+                if ix != active_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        });
+        self.media_panel.focus_handle(cx).focus(window, cx);
+        self.sync_view_menus(cx);
+        cx.notify();
+    }
+
+    fn refresh_media_panel(&self, cx: &mut Context<Self>) {
+        let rows = crate::media_pool::list_media(&self.media_store);
+        self.media_panel.update(cx, |panel, cx| {
+            panel.set_rows(rows, cx);
+        });
+    }
+
+    pub(crate) fn script_list_media(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Vec<crate::media_pool::MediaPoolRow> {
+        self.refresh_media_panel(cx);
+        crate::media_pool::list_media(&self.media_store)
+    }
+
+    pub(crate) fn script_add_media(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::media_pool::MediaPoolRow, String> {
+        let row = crate::media_pool::add_media(&self.media_store, &path)
+            .map_err(|err| format!("{err:#}"))?;
+        self.refresh_media_panel(cx);
+        Ok(row)
+    }
+
+    pub(crate) fn script_remove_media(
+        &mut self,
+        id: crate::model::composition::MediaId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let mut referenced = crate::media_pool::referenced_media_ids(
+            &self.session,
+            std::iter::empty::<&Composition>(),
+        );
+        for views in self.views.values() {
+            referenced.extend(views.composition.read().unwrap().used_media_ids());
+        }
+        crate::media_pool::remove_media(&self.media_store, id, &referenced)
+            .map_err(|err| format!("{err:#}"))?;
+        self.refresh_media_panel(cx);
+        Ok(())
     }
 
     fn choose_channel_layout(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2911,6 +3020,8 @@ impl AppView {
             "view.show-script" => self.show_script_dock(window, cx),
             "view.hide-script" => self.hide_script_dock(window, cx),
             "view.toggle-script" => self.toggle_script_dock(window, cx),
+            "view.show-media" => self.show_media_tab(window, cx),
+            "view.toggle-media" => self.toggle_media_tab(window, cx),
             "view.wrap_messages" => self.toggle_wrap_messages(cx),
             "view.overlay_envelope_peak" => self.toggle_envelope_overlay(window, cx),
             "view.waveform_peaks" => self.set_waveform_representation(
@@ -4341,6 +4452,7 @@ impl AppView {
         self.apply_session_ui(ui.as_ref(), window, cx);
         self.session.mark_clean();
         self.refresh_explorer(cx);
+        self.refresh_media_panel(cx);
         self.explorer.update(cx, |explorer, cx| {
             explorer.sync_selection_to_active(cx);
         });
@@ -5226,9 +5338,9 @@ fn flush_pending_opens_into_editor(cx: &mut App) {
         });
     }) {
         Ok(()) => {}
-        Err(err) => {
+        Err(_err) => {
             #[cfg(target_os = "macos")]
-            crate::macos_open::log_open(&format!("flush: handle.update failed ({err}); re-queue"));
+            crate::macos_open::log_open(&format!("flush: handle.update failed ({_err}); re-queue"));
             push_pending_open_paths(cx, paths_for_retry);
         }
     }
@@ -5380,11 +5492,13 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
                 .unwrap()
                 .extend(crate::macos_open::take_queued_paths());
         }
-        let pending_count = pending_opens.lock().unwrap().len();
         #[cfg(target_os = "macos")]
-        crate::macos_open::log_open(&format!(
-            "open_window build: draining {pending_count} pending path(s)"
-        ));
+        {
+            let pending_count = pending_opens.lock().unwrap().len();
+            crate::macos_open::log_open(&format!(
+                "open_window build: draining {pending_count} pending path(s)"
+            ));
+        }
         view.update(cx, |this, cx| {
             this.drain_pending_opens(window, cx);
         });
@@ -5558,6 +5672,14 @@ fn view_show_script(_: &ViewShowScript, cx: &mut App) {
 
 fn view_hide_script(_: &ViewHideScript, cx: &mut App) {
     let _ = crate::commands::dispatch("view.hide-script", cx);
+}
+
+fn view_show_media(_: &ViewShowMedia, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.show-media", cx);
+}
+
+fn view_toggle_media(_: &ViewToggleMedia, cx: &mut App) {
+    let _ = crate::commands::dispatch("view.toggle-media", cx);
 }
 
 fn view_wrap_messages(_: &ViewWrapMessages, cx: &mut App) {
@@ -6060,6 +6182,8 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(view_script);
     cx.on_action(view_show_script);
     cx.on_action(view_hide_script);
+    cx.on_action(view_show_media);
+    cx.on_action(view_toggle_media);
     cx.on_action(view_wrap_messages);
     cx.on_action(view_overlay_envelope_peak);
     cx.on_action(view_waveform_peaks);

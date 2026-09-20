@@ -49,6 +49,7 @@ mod lineage;
 mod macos_menu;
 #[cfg(target_os = "macos")]
 mod macos_open;
+mod media_pool;
 mod model;
 mod monitor;
 mod monitor_schema;

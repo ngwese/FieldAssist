@@ -46,6 +46,8 @@ actions!(
         ViewHideDetail,
         ViewShowScript,
         ViewHideScript,
+        ViewShowMedia,
+        ViewToggleMedia,
         ViewWrapMessages,
         ViewOverlayEnvelopePeak,
         ViewWaveformPeaks,
@@ -134,6 +136,8 @@ const KNOWN_COMMANDS: &[&str] = &[
     "view.show-script",
     "view.hide-script",
     "view.toggle-script",
+    "view.show-media",
+    "view.toggle-media",
     "view.wrap_messages",
     "view.overlay_envelope_peak",
     "view.waveform_peaks",
@@ -393,6 +397,8 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "view.show-script" => KeyBinding::new(keystrokes, ViewShowScript, Some(context)),
         "view.hide-script" => KeyBinding::new(keystrokes, ViewHideScript, Some(context)),
         "view.toggle-script" => KeyBinding::new(keystrokes, ViewScript, Some(context)),
+        "view.show-media" => KeyBinding::new(keystrokes, ViewShowMedia, Some(context)),
+        "view.toggle-media" => KeyBinding::new(keystrokes, ViewToggleMedia, Some(context)),
         "view.wrap_messages" => KeyBinding::new(keystrokes, ViewWrapMessages, Some(context)),
         "transport.home" => KeyBinding::new(keystrokes, TransportHome, Some(context)),
         "transport.previous" => KeyBinding::new(keystrokes, TransportPrevious, Some(context)),
@@ -617,6 +623,8 @@ mod tests {
             "view.show-script",
             "view.hide-script",
             "view.toggle-script",
+            "view.show-media",
+            "view.toggle-media",
         ] {
             assert!(is_known_command(id), "{id}");
             assert!(binding_for(id, "f12").is_some(), "{id}");

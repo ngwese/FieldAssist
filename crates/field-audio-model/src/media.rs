@@ -439,6 +439,11 @@ impl MediaPool {
         id
     }
 
+    /// Remove media by id, returning the previous entry when present.
+    pub fn remove(&mut self, id: MediaId) -> Option<MediaRef> {
+        self.media.remove(&id)
+    }
+
     /// Look up media by id.
     pub fn get(&self, id: MediaId) -> Option<&MediaRef> {
         self.media.get(&id)
@@ -550,6 +555,13 @@ impl MediaStore {
     /// Intern an entry into the pool.
     pub fn intern(&mut self, media: MediaRef) -> (MediaId, bool) {
         self.pool.intern(media)
+    }
+
+    /// Remove media by id and drop its RAM pager blocks.
+    pub fn remove(&mut self, id: MediaId) -> Option<MediaRef> {
+        let removed = self.pool.remove(id)?;
+        self.pager.lock().unwrap().evict_media(id);
+        Some(removed)
     }
 }
 
@@ -787,5 +799,17 @@ mod tests {
         assert_eq!(b.id, id);
         assert!(!pool.intern(b).1);
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn remove_drops_interned_entry() {
+        let mut store = MediaStore::in_memory();
+        let media = MediaRef::from_memory_samples(44_100, vec![vec![0.0; 8]]);
+        let id = media.id;
+        assert!(store.intern(media).1);
+        assert_eq!(store.pool().len(), 1);
+        assert!(store.remove(id).is_some());
+        assert!(store.pool().is_empty());
+        assert!(store.remove(id).is_none());
     }
 }

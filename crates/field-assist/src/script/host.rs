@@ -7,13 +7,15 @@ use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use mlua::{Function, Lua, MultiValue, Table, Value};
 
 use crate::model::composition::{is_facomp_path, Composition};
 use crate::model::document::BufferDocument;
-use crate::model::{is_fasession_path, Buffer, DocumentId, Session, SessionDocument, SessionId};
+use crate::model::{
+    is_fasession_path, Buffer, DocumentId, MediaStore, Session, SessionDocument, SessionId,
+};
 use field_session::placeholder_media_descriptor;
 
 use super::access;
@@ -105,6 +107,7 @@ pub struct TestWorld {
     pub names: HashMap<DocumentId, String>,
     pub active: Option<DocumentId>,
     pub session: Session,
+    pub media_store: Arc<Mutex<MediaStore>>,
     next_id: u128,
     pub output_device: Option<String>,
     pub output_devices: Vec<String>,
@@ -124,6 +127,7 @@ impl TestWorld {
             names: HashMap::new(),
             active: None,
             session: Session::new(),
+            media_store: Arc::new(Mutex::new(MediaStore::in_memory())),
             next_id: 0,
             output_device: None,
             output_devices: Vec::new(),
@@ -144,6 +148,12 @@ impl TestWorld {
     ) -> DocumentId {
         self.next_id += 1;
         let id = DocumentId::from_u128(self.next_id);
+        {
+            let mut store = self.media_store.lock().unwrap();
+            for media in composition.pool().iter() {
+                store.intern(media.clone());
+            }
+        }
         let composition = Arc::new(RwLock::new(composition));
         let buffer = Arc::new(RwLock::new(buffer));
         let document = BufferDocument::with_shared(composition.clone(), buffer);
@@ -153,7 +163,14 @@ impl TestWorld {
                 SessionDocument::new_composition(id, p.clone(), comp_id)
             }
             Some(p) => {
-                SessionDocument::new_media(id, p.clone(), comp_id, placeholder_media_descriptor(p))
+                let descriptor = composition
+                    .read()
+                    .unwrap()
+                    .pool()
+                    .first()
+                    .map(|media| media.to_descriptor())
+                    .unwrap_or_else(|| placeholder_media_descriptor(p));
+                SessionDocument::new_media(id, p.clone(), comp_id, descriptor)
             }
             None => SessionDocument::new_composition(id, PathBuf::new(), comp_id),
         };
@@ -1468,6 +1485,53 @@ impl HostHandle {
             return;
         }
         let _ = access::with_view(|view, _, cx| view.refresh_explorer(cx));
+    }
+
+    pub fn list_media(&self) -> mlua::Result<Vec<crate::media_pool::MediaPoolRow>> {
+        if let Some(test) = self.inner.borrow().test.clone() {
+            return Ok(crate::media_pool::list_media(&test.borrow().media_store));
+        }
+        access::with_view(|view, _, cx| view.script_list_media(cx)).map_err(mlua::Error::runtime)
+    }
+
+    pub fn media_row(
+        &self,
+        id: crate::model::composition::MediaId,
+    ) -> mlua::Result<Option<crate::media_pool::MediaPoolRow>> {
+        Ok(self.list_media()?.into_iter().find(|row| row.id == id))
+    }
+
+    pub fn add_media(&self, path: &str) -> mlua::Result<crate::media_pool::MediaPoolRow> {
+        let path = PathBuf::from(path);
+        if let Some(test) = self.inner.borrow().test.clone() {
+            let store = Arc::clone(&test.borrow().media_store);
+            return crate::media_pool::add_media(&store, &path).map_err(mlua::Error::runtime);
+        }
+        access::with_view(|view, _, cx| view.script_add_media(path, cx))
+            .map_err(mlua::Error::runtime)?
+            .map_err(mlua::Error::runtime)
+    }
+
+    pub fn remove_media(&self, id: crate::model::composition::MediaId) -> mlua::Result<()> {
+        if let Some(test) = self.inner.borrow().test.clone() {
+            let world = test.borrow();
+            let mut referenced = crate::media_pool::referenced_media_ids(
+                &world.session,
+                std::iter::empty::<&Composition>(),
+            );
+            for doc in world.docs.values() {
+                referenced.extend(doc.composition.read().unwrap().used_media_ids());
+            }
+            let store = Arc::clone(&world.media_store);
+            drop(world);
+            crate::media_pool::remove_media(&store, id, &referenced)
+                .map(|_| ())
+                .map_err(mlua::Error::runtime)?;
+            return Ok(());
+        }
+        access::with_view(|view, _, cx| view.script_remove_media(id, cx))
+            .map_err(mlua::Error::runtime)?
+            .map_err(mlua::Error::runtime)
     }
 
     pub fn document_state(&self, id: DocumentId) -> mlua::Result<Option<String>> {

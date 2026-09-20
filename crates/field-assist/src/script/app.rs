@@ -11,6 +11,7 @@ use super::composition::LuaComposition;
 use super::files::{find_files, find_files_matching, normalize_extension};
 use super::host::{host_from_lua, stringify_value, LogLevel};
 use super::layout::layout_from_lua;
+use super::media::LuaMedia;
 use super::session::LuaSession;
 use super::theme::LuaTheme;
 use super::workflow::{
@@ -83,12 +84,30 @@ impl UserData for LuaApp {
             let host = host_from_lua(lua)?;
             Ok(host.explorer())
         });
+        fields.add_field_method_get("media", |lua, _| {
+            let host = host_from_lua(lua)?;
+            let rows = host.list_media()?;
+            let table = lua.create_table_with_capacity(rows.len(), 0)?;
+            for (index, row) in rows.into_iter().enumerate() {
+                table.set(index + 1, LuaMedia { id: row.id })?;
+            }
+            Ok(table)
+        });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("open", |lua, _, path: String| {
             let host = host_from_lua(lua)?;
             host.open(&path).map(|id| LuaComposition { id })
+        });
+        methods.add_method("add_media", |lua, _, path: String| {
+            let host = host_from_lua(lua)?;
+            host.add_media(&path).map(|row| LuaMedia { id: row.id })
+        });
+        methods.add_method("remove_media", |lua, _, value: Value| {
+            let host = host_from_lua(lua)?;
+            let media = LuaMedia::from_lua(value, lua)?;
+            host.remove_media(media.id)
         });
         methods.add_method("load_session", |lua, _, path: String| {
             let host = host_from_lua(lua)?;

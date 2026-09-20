@@ -7,6 +7,7 @@ pub mod edits;
 pub mod empty_pane;
 pub mod explorer;
 pub mod header_meta;
+pub mod media_panel;
 pub mod quit_unsaved;
 pub mod render_sheet;
 pub mod status_bar;
