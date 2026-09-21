@@ -13,6 +13,7 @@ pub mod media_panel;
 pub mod quick_note;
 pub mod quit_unsaved;
 pub mod settings_window;
+pub mod spectrum_gradient_editor;
 pub mod status_bar;
 pub mod user_variables_window;
 pub mod variables_filter;

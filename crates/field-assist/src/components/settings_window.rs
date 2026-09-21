@@ -57,7 +57,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
             SettingPage::new("General")
                 .icon(IconName::Settings)
                 .default_open(true)
-                .description("Appearance, layout, waveform, and selection defaults")
+                .description("Appearance, layout, and selection defaults")
                 .group(
                     SettingGroup::new()
                         .title("Appearance")
@@ -172,7 +172,37 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                 )
                 .group(
                     SettingGroup::new()
-                        .title("Waveform")
+                        .title("Selection")
+                        .item(selection_switch(
+                            "Zero Crossing",
+                            "Snap placement to zero crossings by default",
+                            |s| s.selection.zero_crossing,
+                            |s, v| s.selection.zero_crossing = v,
+                            true,
+                        ))
+                        .item(selection_switch(
+                            "Snap to Marker",
+                            "Snap placement to markers by default",
+                            |s| s.selection.snap_to_marker,
+                            |s, v| s.selection.snap_to_marker = v,
+                            false,
+                        ))
+                        .item(selection_switch(
+                            "Add at Hover",
+                            "Place markers at the pointer instead of the caret",
+                            |s| s.selection.add_at_hover,
+                            |s, v| s.selection.add_at_hover = v,
+                            true,
+                        )),
+                ),
+        )
+        .page(
+            SettingPage::new("Waveform")
+                .icon(IconName::HardDrive)
+                .description("Playhead, representation, peak and spectrum styling")
+                .group(
+                    SettingGroup::new()
+                        .title("General")
                         .item(
                             SettingItem::new(
                                 "Follow Playhead",
@@ -217,7 +247,11 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                                 .default_value(SharedString::from("peaks")),
                             )
                             .description("Default waveform body for new documents"),
-                        )
+                        ),
+                )
+                .group(
+                    SettingGroup::new()
+                        .title("Peak Styling")
                         .item(
                             SettingItem::new(
                                 "Peak Rendering",
@@ -268,29 +302,30 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                         )),
                 )
                 .group(
-                    SettingGroup::new()
-                        .title("Selection")
-                        .item(selection_switch(
-                            "Zero Crossing",
-                            "Snap placement to zero crossings by default",
-                            |s| s.selection.zero_crossing,
-                            |s, v| s.selection.zero_crossing = v,
-                            true,
-                        ))
-                        .item(selection_switch(
-                            "Snap to Marker",
-                            "Snap placement to markers by default",
-                            |s| s.selection.snap_to_marker,
-                            |s, v| s.selection.snap_to_marker = v,
-                            false,
-                        ))
-                        .item(selection_switch(
-                            "Add at Hover",
-                            "Place markers at the pointer instead of the caret",
-                            |s| s.selection.add_at_hover,
-                            |s, v| s.selection.add_at_hover = v,
-                            true,
-                        )),
+                    SettingGroup::new().title("Spectrum Styling").item(
+                        SettingItem::render(|options, window, cx| {
+                            window.use_keyed_state(
+                                SharedString::from(format!(
+                                    "spectrum-gradient-{}-{}-{}",
+                                    options.page_ix(),
+                                    options.group_ix(),
+                                    options.item_ix()
+                                )),
+                                cx,
+                                |window, cx| {
+                                    crate::components::spectrum_gradient_editor::SpectrumGradientEditor::new(
+                                        window, cx,
+                                    )
+                                },
+                            )
+                            .clone()
+                        })
+                        .keywords(["spectrum", "gradient", "heatmap", "colormap"])
+                        .on_reset(
+                            crate::components::spectrum_gradient_editor::spectrum_gradient_is_dirty,
+                            crate::components::spectrum_gradient_editor::spectrum_gradient_reset,
+                        ),
+                    ),
                 ),
         )
         .page(

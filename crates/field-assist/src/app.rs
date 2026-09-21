@@ -677,7 +677,12 @@ impl AppView {
             }
         })
         .detach();
-        let waveform = cx.new(|cx| WaveformDisplay::new(document.clone(), cx));
+        let spectrum_gradient = waveform.spectrum_gradient_enum();
+        let waveform = cx.new(|cx| {
+            let mut view = WaveformDisplay::new(document.clone(), cx);
+            view.set_spectrum_gradient(spectrum_gradient, cx);
+            view
+        });
         cx.observe(&waveform, |this, waveform, cx| {
             let over = waveform.read(cx).pointer_over();
             if this.last_waveform_over == over {
@@ -711,6 +716,15 @@ impl AppView {
     fn active_views(&self) -> Option<DocumentViews> {
         let id = self.session.active()?;
         self.views.get(&id).cloned()
+    }
+
+    /// Drop spectrum tile caches so heatmaps rebuild with the new theme palette.
+    pub(crate) fn invalidate_waveform_theme(&mut self, cx: &mut Context<Self>) {
+        for views in self.views.values() {
+            views.waveform.update(cx, |waveform, cx| {
+                waveform.bump_paint_epoch(cx);
+            });
+        }
     }
 
     fn composition_title(composition: &Composition) -> SharedString {
@@ -2261,6 +2275,7 @@ impl AppView {
         self.follow_playhead = waveform.follow_playhead;
         self.set_waveform_representation(waveform.representation_enum(), window, cx);
         self.apply_peak_rendering_settings(&waveform, cx);
+        self.apply_spectrum_gradient_settings(&waveform, cx);
         self.sync_view_menus(cx);
         cx.notify();
     }
@@ -4122,6 +4137,23 @@ impl AppView {
                     view.bump_paint_epoch(cx);
                 });
             }
+        }
+    }
+
+    fn apply_spectrum_gradient_settings(
+        &mut self,
+        waveform: &crate::settings::WaveformSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let gradient = waveform.spectrum_gradient_enum();
+        let ids: Vec<_> = self.views.keys().copied().collect();
+        for id in ids {
+            let Some(views) = self.views.get(&id).cloned() else {
+                continue;
+            };
+            views.waveform.update(cx, |view, cx| {
+                view.set_spectrum_gradient(gradient, cx);
+            });
         }
     }
 
@@ -6752,6 +6784,7 @@ pub(crate) fn apply_waveform_default_from_settings(cx: &mut App) {
         this.follow_playhead = waveform.follow_playhead;
         this.set_waveform_representation(waveform.representation_enum(), window, cx);
         this.apply_peak_rendering_settings(&waveform, cx);
+        this.apply_spectrum_gradient_settings(&waveform, cx);
         this.sync_view_menus(cx);
         cx.notify();
     });

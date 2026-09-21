@@ -201,13 +201,18 @@ fn refresh_open_windows(cx: &mut gpui_kit::App) {
 }
 
 pub(crate) fn apply_theme_mode(mode: ThemeMode) -> Result<(), String> {
-    access::with_view(|_, window, cx| {
+    access::with_view(|view, window, cx| {
         apply_theme_mode_in_app(mode, Some(window), cx);
+        view.invalidate_waveform_theme(cx);
     })
 }
 
 pub(crate) fn apply_theme_name(name: &str) -> Result<(), String> {
-    access::with_view(|_, window, cx| apply_theme_name_in_app(name, Some(window), cx))?
+    access::with_view(|view, window, cx| {
+        apply_theme_name_in_app(name, Some(window), cx)?;
+        view.invalidate_waveform_theme(cx);
+        Ok(())
+    })?
 }
 
 pub(super) fn live_theme_names() -> Result<Vec<String>, String> {

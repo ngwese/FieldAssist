@@ -89,7 +89,9 @@ pub use variables::{
     VariableAddHandler, VariableRemoveHandler, VariableRow, VariableScopeHandler,
     VariableValueHandler, VariablesTable, VariablesTableOptions,
 };
-pub use waveform::WaveformDisplay;
+pub use waveform::{
+    SpectrumGradient, SpectrumGradientStop, WaveformDisplay, SPECTRUM_GRADIENT_DB_FLOOR,
+};
 pub use waveform_axis::{format_db_hover, format_hz_hover, hover_axis_quantize, WaveformHoverAxis};
 pub use waveform_data::{
     clamp_peaks_spectrum_split, clamp_threaded_ribbon_db, clamp_threaded_shell_value_reduce,
