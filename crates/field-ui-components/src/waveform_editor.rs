@@ -67,12 +67,6 @@ pub trait WaveformEditor: Send + Sync {
     /// Playhead sample and lane coverage, if any.
     fn playhead(&self) -> Option<(usize, LaneScope)>;
 
-    /// Whether zero-crossing snap is enabled.
-    fn snap_zero_crossings(&self) -> bool;
-
-    /// Toggle zero-crossing snap.
-    fn toggle_zero_crossing_snap(&mut self);
-
     /// Lane coverage for a click/drag that started on `lane` (Alt = single).
     fn channel_lanes(&self, lane: usize, alt: bool) -> LaneScope;
 

@@ -74,7 +74,7 @@ impl BufferDocument {
                 sample: 0,
                 channels: ChannelScope::all(),
             }),
-            snap_zero_crossings: false,
+            snap_zero_crossings: true,
             snap_to_marker: false,
             snap_marker_disabled: HashSet::new(),
             monitor_params_pinned: false,
@@ -177,6 +177,8 @@ impl BufferDocument {
 
     pub fn snap_sample(&mut self, scope: &ChannelScope, sample: usize, radius: usize) -> usize {
         let sample = self.clamp_sample(sample);
+        // Snap To Marker wins inside the latch radius; Zero Crossing is the
+        // fallback when no marker is nearby (issue #13).
         if self.snap_to_marker {
             if let Some(latched) = self.latched_marker {
                 if sample.abs_diff(latched) > radius {
@@ -1109,14 +1111,6 @@ impl WaveformEditor for BufferDocument {
             .map(|pos| (pos.sample, lane_scope_from_channels(&pos.channels)))
     }
 
-    fn snap_zero_crossings(&self) -> bool {
-        self.snap_zero_crossings
-    }
-
-    fn toggle_zero_crossing_snap(&mut self) {
-        BufferDocument::toggle_zero_crossing_snap(self);
-    }
-
     fn channel_lanes(&self, lane: usize, alt: bool) -> LaneScope {
         lane_scope_from_channels(&self.channel_scope_for_lane(lane, alt))
     }
@@ -1397,6 +1391,37 @@ mod tests {
         assert_eq!(doc.snap_sample(&ChannelScope::all(), 105, 10), 100);
         assert_eq!(doc.snap_sample(&ChannelScope::all(), 200, 10), 200);
         assert_eq!(doc.latched_marker, None);
+    }
+
+    fn document_with_channel(samples: Vec<f32>) -> BufferDocument {
+        let media = MediaRef::from_memory_samples(44100, vec![samples]);
+        BufferDocument::new(Composition::from_media(media).unwrap())
+    }
+
+    #[test]
+    fn playhead_click_snaps_to_zero_crossing() {
+        let mut samples = vec![1.0; 200];
+        for sample in samples.iter_mut().skip(80) {
+            *sample = -1.0;
+        }
+        let mut doc = document_with_channel(samples);
+        doc.snap_zero_crossings = true;
+        doc.click_without_drag(90, ChannelScope::all(), false);
+        assert_eq!(doc.current_position.as_ref().map(|p| p.sample), Some(79));
+    }
+
+    #[test]
+    fn marker_snap_wins_over_zero_crossing() {
+        let mut samples = vec![1.0; 200];
+        for sample in samples.iter_mut().skip(102) {
+            *sample = -1.0;
+        }
+        let mut doc = document_with_channel(samples);
+        assert!(doc.add_marker_of_type(100, "Blue").is_some());
+        doc.snap_zero_crossings = true;
+        assert_eq!(doc.snap_sample(&ChannelScope::all(), 101, 10), 101);
+        doc.snap_to_marker = true;
+        assert_eq!(doc.snap_sample(&ChannelScope::all(), 101, 10), 100);
     }
 
     #[test]

@@ -287,8 +287,9 @@ Show and hide are idempotent. Menus use the toggle variants.
 `edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.break_out`
 
 **Selection / markers:** `selection.select_all`, `selection.select_none`,
-`selection.invert`, `selection.marker_type_blue`, `selection.marker_type_yellow`,
-`selection.marker_type_purple`, `selection.snap_to_marker`,
+`selection.invert`, `selection.zero_crossing`, `selection.marker_type_blue`,
+`selection.marker_type_yellow`, `selection.marker_type_purple`,
+`selection.snap_to_marker`,
 `selection.add_at_hover`, `selection.add_marker`, `selection.delete_marker`
 
 Marker commands use the active marker type from the Selection menu. Prefer

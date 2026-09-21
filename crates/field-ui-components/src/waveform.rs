@@ -8,7 +8,6 @@
 
 use gpui_kit::component::{
     h_flex,
-    menu::ContextMenuExt,
     plot::scale::{Scale as _, ScaleLinear},
     v_flex, ActiveTheme as _, StyledExt as _,
 };
@@ -30,14 +29,6 @@ use crate::waveform_data::{
     MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
 };
 use crate::waveform_editor::{LaneScope, PaintRegion, WaveformEditor};
-
-#[allow(missing_docs)]
-mod waveform_actions {
-    use gpui_kit::actions;
-    actions!(waveform, [ToggleZeroCrossing]);
-}
-/// Toggle zero-crossing snap for region / caret placement.
-pub use waveform_actions::ToggleZeroCrossing;
 
 /// Hover mode for the waveform root so `WaveformHover` keybindings stay active
 /// across keypresses while the pointer remains over the view (issue #15).
@@ -1727,7 +1718,6 @@ where
         self.clamp_scroll(cx);
         let theme = cx.theme().clone();
         let document = self.document.clone();
-        let snap = WaveformEditor::snap_zero_crossings(self.document.read(cx));
         let start_sample = self.start_sample;
         let samples_per_pixel = self.samples_per_pixel;
         let hover_sample = self.hover_sample;
@@ -1770,11 +1760,6 @@ where
                     .w_full()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .on_action(cx.listener(|this, _: &ToggleZeroCrossing, _, cx| {
-                        this.document
-                            .update(cx, |doc, _| WaveformEditor::toggle_zero_crossing_snap(doc));
-                        cx.notify();
-                    }))
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                         if WaveformDataProvider::frames(this.document.read(cx)) == 0 {
                             return;
@@ -1997,9 +1982,6 @@ where
                                     )
                                 })),
                         )
-                    })
-                    .context_menu(move |menu, _, _| {
-                        menu.menu_with_check("Zero Crossing", snap, Box::new(ToggleZeroCrossing))
                     }),
             )
             .when(!is_empty, |this| {

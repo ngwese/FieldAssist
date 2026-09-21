@@ -32,8 +32,6 @@
 //! impl WaveformEditor for EmptyWave {
 //!     fn selection_span(&self) -> Option<(usize, usize)> { None }
 //!     fn playhead(&self) -> Option<(usize, LaneScope)> { None }
-//!     fn snap_zero_crossings(&self) -> bool { false }
-//!     fn toggle_zero_crossing_snap(&mut self) {}
 //!     fn channel_lanes(&self, _lane: usize, _alt: bool) -> LaneScope { LaneScope::All }
 //!     fn begin_replace(&mut self, _: usize, _: LaneScope, _: usize) {}
 //!     fn begin_extend(&mut self, _: usize, _: LaneScope, _: usize) {}
@@ -85,7 +83,7 @@ pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
 pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
-pub use waveform::{ToggleZeroCrossing, WaveformDisplay};
+pub use waveform::WaveformDisplay;
 pub use waveform_data::{
     clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
     DEFAULT_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,

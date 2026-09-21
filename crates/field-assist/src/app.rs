@@ -40,6 +40,7 @@ use crate::commands::{
     ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail,
     ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks,
     ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
+    ZeroCrossing,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -80,7 +81,7 @@ use field_ui_components::{
     content_foreground, tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice,
     CompactDockSkin, ContentForeground, EditsPanel, LayoutPicker, LogLevel, LogLine, MarkersPanel,
     MessagesPanel, MonitorCallbacks, MonitorPanel, MonitorSnapshot, RegionsPanel, ReplOutput,
-    ReplPanel, SessionStatusBar, ToggleZeroCrossing, WaveformDisplay,
+    ReplPanel, SessionStatusBar, WaveformDisplay,
 };
 
 struct OpenTarget(Entity<AppView>);
@@ -1835,28 +1836,36 @@ impl AppView {
     }
 
     fn app_menu_state(&self, cx: &App) -> AppMenuState {
-        let (snap_to_marker, marker_types, snap_disabled, envelope_overlay, analyze_selection_only) =
-            if let Some(views) = self.active_views() {
-                let doc = views.document.read(cx);
-                (
-                    doc.snap_to_marker,
-                    doc.marker_types().into_iter().map(|ty| ty.name).collect(),
-                    doc.snap_marker_disabled.clone(),
-                    doc.show_envelope_peak,
-                    doc.analyze_selection_only,
-                )
-            } else {
-                (
-                    false,
-                    DEFAULT_MARKER_TYPES
-                        .iter()
-                        .map(|(name, _)| (*name).to_string())
-                        .collect(),
-                    HashSet::new(),
-                    false,
-                    false,
-                )
-            };
+        let (
+            snap_zero_crossings,
+            snap_to_marker,
+            marker_types,
+            snap_disabled,
+            envelope_overlay,
+            analyze_selection_only,
+        ) = if let Some(views) = self.active_views() {
+            let doc = views.document.read(cx);
+            (
+                doc.snap_zero_crossings,
+                doc.snap_to_marker,
+                doc.marker_types().into_iter().map(|ty| ty.name).collect(),
+                doc.snap_marker_disabled.clone(),
+                doc.show_envelope_peak,
+                doc.analyze_selection_only,
+            )
+        } else {
+            (
+                true,
+                false,
+                DEFAULT_MARKER_TYPES
+                    .iter()
+                    .map(|(name, _)| (*name).to_string())
+                    .collect(),
+                HashSet::new(),
+                false,
+                false,
+            )
+        };
         AppMenuState {
             editor_open: true,
             explorer: self.explorer_dock_open(cx),
@@ -1868,6 +1877,7 @@ impl AppView {
             analyze_selection_only,
             marker_type: self.active_marker_type.clone(),
             add_at_hover: self.add_marker_at_hover,
+            snap_zero_crossings,
             snap_to_marker,
             marker_types,
             snap_disabled,
@@ -3081,6 +3091,10 @@ impl AppView {
             "selection.select_all" => self.run_edit(cx, |doc| doc.select_all()),
             "selection.select_none" => self.run_edit(cx, |doc| doc.clear_selection()),
             "selection.invert" => self.run_edit(cx, |doc| doc.invert_selection()),
+            "selection.zero_crossing" => {
+                self.update_active_document(cx, |doc| doc.toggle_zero_crossing_snap());
+                self.sync_view_menus(cx);
+            }
             "selection.marker_type_blue" => self.set_active_marker_type(MARKER_TYPE_BLUE, cx),
             "selection.marker_type_yellow" => self.set_active_marker_type(MARKER_TYPE_YELLOW, cx),
             "selection.marker_type_purple" => self.set_active_marker_type(MARKER_TYPE_PURPLE, cx),
@@ -3097,6 +3111,12 @@ impl AppView {
                 let kind = self.active_marker_type.clone();
                 let sample = self.marker_target_sample(cx).unwrap_or(0);
                 self.run_edit(cx, |doc| {
+                    let scope = doc
+                        .current_position
+                        .as_ref()
+                        .map(|pos| pos.channels.clone())
+                        .unwrap_or_else(ChannelScope::all);
+                    let sample = doc.snap_sample(&scope, sample, 0);
                     doc.add_marker_of_type(sample, &kind);
                 });
             }
@@ -5015,14 +5035,6 @@ impl Render for AppView {
             .track_focus(&self.focus_handle)
             .relative()
             .size_full()
-            .on_action(cx.listener(|this, _: &ToggleZeroCrossing, _, cx| {
-                if let Some(views) = this.active_views() {
-                    views.document.update(cx, |doc, _| {
-                        doc.toggle_zero_crossing_snap();
-                    });
-                    cx.notify();
-                }
-            }))
             .child(
                 v_flex()
                     .size_full()
@@ -5860,6 +5872,10 @@ fn invert_selection(_: &InvertSelection, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.invert", cx);
 }
 
+fn zero_crossing(_: &ZeroCrossing, cx: &mut App) {
+    let _ = crate::commands::dispatch("selection.zero_crossing", cx);
+}
+
 fn marker_type_blue(_: &MarkerTypeBlue, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.marker_type_blue", cx);
 }
@@ -5928,6 +5944,7 @@ struct AppMenuState {
     analyze_selection_only: bool,
     marker_type: String,
     add_at_hover: bool,
+    snap_zero_crossings: bool,
     snap_to_marker: bool,
     marker_types: Vec<String>,
     snap_disabled: HashSet<String>,
@@ -5987,6 +6004,7 @@ fn no_editor_menu_state() -> AppMenuState {
         analyze_selection_only: false,
         marker_type: default_marker_type().to_string(),
         add_at_hover: true,
+        snap_zero_crossings: true,
         snap_to_marker: false,
         marker_types: DEFAULT_MARKER_TYPES
             .iter()
@@ -6077,6 +6095,11 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         needs_editor(MenuItem::action("Select All", SelectAll), open),
         needs_editor(MenuItem::action("Select None", SelectNone), open),
         needs_editor(MenuItem::action("Invert", InvertSelection), open),
+        MenuItem::separator(),
+        needs_editor(
+            MenuItem::action("Zero Crossing", ZeroCrossing).checked(state.snap_zero_crossings),
+            open,
+        ),
         MenuItem::separator(),
         needs_editor(
             MenuItem::action("Snap To Marker", SnapToMarker).checked(state.snap_to_marker),
@@ -6310,6 +6333,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(select_all);
     cx.on_action(select_none);
     cx.on_action(invert_selection);
+    cx.on_action(zero_crossing);
     cx.on_action(marker_type_blue);
     cx.on_action(marker_type_yellow);
     cx.on_action(marker_type_purple);

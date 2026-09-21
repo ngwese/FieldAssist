@@ -71,6 +71,7 @@ actions!(
         SelectAll,
         SelectNone,
         InvertSelection,
+        ZeroCrossing,
         MarkerTypeBlue,
         MarkerTypeYellow,
         MarkerTypePurple,
@@ -172,6 +173,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "selection.select_all",
     "selection.select_none",
     "selection.invert",
+    "selection.zero_crossing",
     "selection.marker_type_blue",
     "selection.marker_type_yellow",
     "selection.marker_type_purple",
@@ -428,6 +430,7 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "selection.select_all" => KeyBinding::new(keystrokes, SelectAll, Some(context)),
         "selection.select_none" => KeyBinding::new(keystrokes, SelectNone, Some(context)),
         "selection.invert" => KeyBinding::new(keystrokes, InvertSelection, Some(context)),
+        "selection.zero_crossing" => KeyBinding::new(keystrokes, ZeroCrossing, Some(context)),
         "selection.marker_type_blue" => KeyBinding::new(keystrokes, MarkerTypeBlue, Some(context)),
         "selection.marker_type_yellow" => {
             KeyBinding::new(keystrokes, MarkerTypeYellow, Some(context))

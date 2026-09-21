@@ -302,9 +302,11 @@ collections persist on the composition; the Regions panel can adopt a named
 collection into the selection. Regions may overlap. Region bounds in the UI
 are inclusive sample indices.
 
-Snap: optional zero-crossing snap (context menu) and optional snap-to-marker
-(Selection menu, per type). Marker snap uses a fraction of the visible
-timeline as latch radius.
+Snap: zero-crossing snap is on by default (Selection menu). Optional
+snap-to-marker is off by default (Selection menu, per type). When both are
+on, marker snap wins inside its latch radius (a fraction of the visible
+timeline); otherwise zero-crossing snap applies. Zero-crossing snap covers
+playhead placement, region begin/end, and Add Marker.
 
 ### Markers
 
@@ -437,7 +439,7 @@ idempotent; menus and status-bar pane buttons use the toggles.
 `edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.break_out`
 
 **Selection:** `selection.select_all`, `selection.select_none`,
-`selection.invert`, `selection.marker_type_blue`,
+`selection.invert`, `selection.zero_crossing`, `selection.marker_type_blue`,
 `selection.marker_type_yellow`, `selection.marker_type_purple`,
 `selection.snap_to_marker`, `selection.add_at_hover`,
 `selection.add_marker`, `selection.delete_marker`
