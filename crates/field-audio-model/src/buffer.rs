@@ -51,6 +51,29 @@ impl ChannelScope {
             }
         }
     }
+
+    /// Remap explicit channel indices through a take of parent channels.
+    ///
+    /// `selected[new] = old`. Channels not in `selected` are dropped. Returns
+    /// `false` when an explicit scope becomes empty (caller should drop the
+    /// region). [`AllChannels`](Self::AllChannels) is unchanged.
+    pub fn remap_take(&mut self, selected: &[usize]) -> bool {
+        match self {
+            Self::AllChannels => true,
+            Self::Channels(channels) => {
+                let remapped: Vec<usize> = channels
+                    .iter()
+                    .filter_map(|old| selected.iter().position(|s| s == old))
+                    .collect();
+                if remapped.is_empty() {
+                    false
+                } else {
+                    *channels = remapped;
+                    true
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "serde")]

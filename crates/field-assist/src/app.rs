@@ -30,17 +30,17 @@ use crate::assets::AppAssets;
 use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AnalyzeEnvelopePeak,
     AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
-    EditBreakOut, EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo, EditRemove,
-    EditTrim, EditUndo, Hide, HideOthers, InvertSelection, MarkerTypeBlue, MarkerTypePurple,
-    MarkerTypeYellow, Open, Quit, Render as RenderFile, Save, SaveAs, SaveSession, SaveSessionAs,
-    SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll, SnapToMarker, StartWorkflow,
-    ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
-    TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
-    ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead, ViewFrame, ViewHideDetail,
-    ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail,
-    ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks,
-    ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
-    ZeroCrossing,
+    EditBreakOutChannels, EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate,
+    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Hide, HideOthers, InvertSelection,
+    MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Render as RenderFile, Save,
+    SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings,
+    ShowAll, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome,
+    TransportLoop, TransportNext, TransportPlayPause, TransportPreview, TransportPrevious,
+    TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead,
+    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
+    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
+    ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages,
+    ViewZoomIn, ViewZoomOut, ZeroCrossing,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -804,7 +804,7 @@ impl AppView {
         }
     }
 
-    fn break_out_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn break_out_regions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(parent_id) = self.session.active() else {
             return;
         };
@@ -839,12 +839,17 @@ impl AppView {
                         children.push(child);
                     }
                     Err(err) => {
-                        self.show_save_error(&format!("Break out failed: {err:#}"), window, cx);
+                        self.show_save_error(
+                            &format!("Compositions from selection failed: {err:#}"),
+                            window,
+                            cx,
+                        );
                         return;
                     }
                 }
             }
         }
+        let mut created_ids = Vec::new();
         let mut last_id = None;
         for child in children {
             let composition = Arc::new(RwLock::new(child));
@@ -852,13 +857,76 @@ impl AppView {
             let id = self.add_document(composition, buffer, None, window, cx);
             self.place_document_under_parent(parent_id, id, cx);
             self.pin_tab(id, cx);
+            created_ids.push(id);
             last_id = Some(id);
         }
         self.adopt_shared_media_from_lineage(cx);
+        for &id in &created_ids {
+            let _guard = crate::script::enter(self, window, cx);
+            self.script.fire_detect_layout(id);
+            self.flush_script_logs(cx);
+        }
         if let Some(id) = last_id {
             self.session.focus(id);
             self.apply_active(window, cx);
         }
+        self.refresh_explorer(cx);
+        cx.notify();
+    }
+
+    fn break_out_channels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(parent_id) = self.session.active() else {
+            return;
+        };
+        let Some(parent_views) = self.views.get(&parent_id).cloned() else {
+            return;
+        };
+        let channels = parent_views.document.read(cx).selected_channels();
+        if channels.is_empty() {
+            return;
+        }
+        let spans = parent_views.document.read(cx).selection_spans();
+        let ranges: Vec<(u64, u64)> = spans.into_iter().filter(|(_, len)| *len > 0).collect();
+        let parent_name = self.display_title(parent_id, cx).to_string();
+        let tree = self.lineage_tree(cx);
+        let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        let sibling_names: Vec<String> = tree
+            .children(parent_id, &ordered)
+            .iter()
+            .map(|id| self.display_title(*id, cx).to_string())
+            .collect();
+        let child = {
+            let parent = parent_views.composition.read().unwrap();
+            match parent.break_out_channels(&ranges, Some(&channels)) {
+                Ok(mut child) => {
+                    let name =
+                        crate::break_out_name::next_break_out_name(&parent_name, &sibling_names);
+                    child.set_display_title(&name);
+                    child
+                }
+                Err(err) => {
+                    self.show_save_error(
+                        &format!("Composition from channels failed: {err:#}"),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+            }
+        };
+        let composition = Arc::new(RwLock::new(child));
+        let buffer = Arc::new(RwLock::new(Buffer::empty()));
+        let id = self.add_document(composition, buffer, None, window, cx);
+        self.place_document_under_parent(parent_id, id, cx);
+        self.pin_tab(id, cx);
+        self.adopt_shared_media_from_lineage(cx);
+        {
+            let _guard = crate::script::enter(self, window, cx);
+            self.script.fire_detect_layout(id);
+            self.flush_script_logs(cx);
+        }
+        self.session.focus(id);
+        self.apply_active(window, cx);
         self.refresh_explorer(cx);
         cx.notify();
     }
@@ -2530,7 +2598,7 @@ impl AppView {
         self.lineage_tree(cx).children(id, &ordered)
     }
 
-    pub(crate) fn script_break_out(
+    pub(crate) fn script_break_out_regions(
         &mut self,
         id: DocumentId,
         window: &mut Window,
@@ -2541,7 +2609,7 @@ impl AppView {
             self.apply_active(window, cx);
         }
         let before: HashSet<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
-        self.break_out_selection(window, cx);
+        self.break_out_regions(window, cx);
         let created: Vec<DocumentId> = self
             .session
             .documents()
@@ -2550,6 +2618,38 @@ impl AppView {
             .filter(|doc| !before.contains(doc))
             .collect();
         Ok(created)
+    }
+
+    pub(crate) fn script_break_out_channels(
+        &mut self,
+        id: DocumentId,
+        channels: Option<Vec<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<DocumentId, String> {
+        if self.session.active() != Some(id) {
+            self.session.focus(id);
+            self.apply_active(window, cx);
+        }
+        if let Some(channels) = channels {
+            if let Some(views) = self.views.get(&id) {
+                views.document.update(cx, |doc, cx| {
+                    doc.clear_channel_selection();
+                    for (i, &ch) in channels.iter().enumerate() {
+                        doc.click_channel_header(ch, false, i > 0);
+                    }
+                    cx.notify();
+                });
+            }
+        }
+        let before: HashSet<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
+        self.break_out_channels(window, cx);
+        self.session
+            .documents()
+            .iter()
+            .map(|d| d.id)
+            .find(|doc| !before.contains(doc))
+            .ok_or_else(|| "break_out_channels created no child".into())
     }
 
     pub(crate) fn script_path(&self, id: DocumentId) -> Option<PathBuf> {
@@ -3087,7 +3187,8 @@ impl AppView {
             "edit.remove" => self.run_edit(cx, |doc| doc.edit_remove()),
             "edit.duplicate" => self.run_edit(cx, |doc| doc.edit_duplicate()),
             "edit.trim" => self.run_edit(cx, |doc| doc.edit_trim()),
-            "edit.break_out" => self.break_out_selection(window, cx),
+            "edit.break_out_regions" => self.break_out_regions(window, cx),
+            "edit.break_out_channels" => self.break_out_channels(window, cx),
             "selection.select_all" => self.run_edit(cx, |doc| doc.select_all()),
             "selection.select_none" => self.run_edit(cx, |doc| doc.clear_selection()),
             "selection.invert" => self.run_edit(cx, |doc| doc.invert_selection()),
@@ -5856,8 +5957,12 @@ fn edit_trim(_: &EditTrim, cx: &mut App) {
     let _ = crate::commands::dispatch("edit.trim", cx);
 }
 
-fn edit_break_out(_: &EditBreakOut, cx: &mut App) {
-    let _ = crate::commands::dispatch("edit.break_out", cx);
+fn edit_break_out_regions(_: &EditBreakOutRegions, cx: &mut App) {
+    let _ = crate::commands::dispatch("edit.break_out_regions", cx);
+}
+
+fn edit_break_out_channels(_: &EditBreakOutChannels, cx: &mut App) {
+    let _ = crate::commands::dispatch("edit.break_out_channels", cx);
 }
 
 fn select_all(_: &SelectAll, cx: &mut App) {
@@ -6064,10 +6169,6 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         needs_editor(MenuItem::action("Remove", EditRemove), open),
         needs_editor(MenuItem::action("Duplicate", EditDuplicate), open),
         needs_editor(MenuItem::action("Trim to Selection", EditTrim), open),
-        needs_editor(
-            MenuItem::action("Break Out to Composition", EditBreakOut),
-            open,
-        ),
     ];
     if !cfg!(target_os = "macos") {
         edit_items.push(MenuItem::separator());
@@ -6329,7 +6430,8 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(edit_remove);
     cx.on_action(edit_duplicate);
     cx.on_action(edit_trim);
-    cx.on_action(edit_break_out);
+    cx.on_action(edit_break_out_regions);
+    cx.on_action(edit_break_out_channels);
     cx.on_action(select_all);
     cx.on_action(select_none);
     cx.on_action(invert_selection);

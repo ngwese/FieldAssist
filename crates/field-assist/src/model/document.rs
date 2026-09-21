@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::buffer::{Buffer, ChannelScope, RegionId};
@@ -26,6 +26,10 @@ pub struct BufferDocument {
     #[allow(dead_code)] // twin Arc also kept on DocumentViews for UI
     pub buffer: Arc<RwLock<Buffer>>,
     pub selection: RegionCollection,
+    /// Header multi-select of composition channels (session-only).
+    selected_channels: BTreeSet<usize>,
+    /// Anchor for shift-extend channel header selection.
+    channel_selection_anchor: usize,
     pub current_position: Option<SamplePosition>,
     pub snap_zero_crossings: bool,
     pub snap_to_marker: bool,
@@ -70,6 +74,8 @@ impl BufferDocument {
             composition,
             buffer,
             selection: RegionCollection::new(SELECTION_COLLECTION),
+            selected_channels: BTreeSet::new(),
+            channel_selection_anchor: 0,
             current_position: Some(SamplePosition {
                 sample: 0,
                 channels: ChannelScope::all(),
@@ -509,6 +515,53 @@ impl BufferDocument {
     pub fn clear_selection(&mut self) {
         self.clear_drag();
         self.selection.clear();
+        self.selected_channels.clear();
+        self.channel_selection_anchor = 0;
+    }
+
+    /// Currently selected waveform channel headers (sorted).
+    pub fn selected_channels(&self) -> Vec<usize> {
+        self.selected_channels.iter().copied().collect()
+    }
+
+    /// Whether any channel headers are selected.
+    pub fn has_channel_selection(&self) -> bool {
+        !self.selected_channels.is_empty()
+    }
+
+    /// Click a channel header: replace, shift-extend, or secondary-toggle.
+    pub fn click_channel_header(&mut self, index: usize, shift: bool, disjoint: bool) {
+        let count = self.composition.read().unwrap().channel_count();
+        if index >= count {
+            return;
+        }
+        if shift {
+            let start = self.channel_selection_anchor.min(index);
+            let end = self.channel_selection_anchor.max(index);
+            let range = start..=end;
+            if disjoint {
+                self.selected_channels.extend(range);
+            } else {
+                self.selected_channels = range.collect();
+            }
+        } else if disjoint {
+            if !self.selected_channels.remove(&index) {
+                self.selected_channels.insert(index);
+            }
+            self.channel_selection_anchor = index;
+        } else if self.selected_channels.len() == 1 && self.selected_channels.contains(&index) {
+            self.selected_channels.clear();
+            self.channel_selection_anchor = index;
+        } else {
+            self.selected_channels.clear();
+            self.selected_channels.insert(index);
+            self.channel_selection_anchor = index;
+        }
+    }
+
+    pub fn clear_channel_selection(&mut self) {
+        self.selected_channels.clear();
+        self.channel_selection_anchor = 0;
     }
 
     pub fn invert_selection(&mut self) {
@@ -1192,6 +1245,22 @@ impl WaveformEditor for BufferDocument {
     fn set_peaks_spectrum_split(&mut self, fraction: f32) {
         self.peaks_spectrum_split = field_ui_components::clamp_peaks_spectrum_split(fraction);
     }
+
+    fn selected_channels(&self) -> Vec<usize> {
+        BufferDocument::selected_channels(self)
+    }
+
+    fn click_channel_header(&mut self, index: usize, shift: bool, disjoint: bool) {
+        BufferDocument::click_channel_header(self, index, shift, disjoint);
+    }
+
+    fn has_time_selection(&self) -> bool {
+        !self.selection_spans().is_empty()
+    }
+
+    fn has_channel_selection(&self) -> bool {
+        BufferDocument::has_channel_selection(self)
+    }
 }
 
 #[cfg(test)]
@@ -1291,6 +1360,25 @@ mod tests {
         doc.edit_duplicate();
         doc.edit_trim();
         assert_eq!(doc.frames(), 50);
+    }
+
+    #[test]
+    fn channel_header_selection_and_clear() {
+        let mut doc = test_document(50);
+        doc.click_channel_header(0, false, false);
+        assert_eq!(doc.selected_channels(), vec![0]);
+        doc.click_channel_header(1, true, false);
+        assert_eq!(doc.selected_channels(), vec![0, 1]);
+        doc.click_channel_header(0, false, true);
+        assert_eq!(doc.selected_channels(), vec![1]);
+        doc.select_range(10, 20, ChannelScope::all());
+        assert!(!doc.selection.regions.is_empty());
+        doc.clear_selection();
+        assert!(doc.selection.regions.is_empty());
+        assert!(doc.selected_channels().is_empty());
+        doc.click_channel_header(1, false, false);
+        doc.click_channel_header(1, false, false);
+        assert!(doc.selected_channels().is_empty());
     }
 
     #[test]

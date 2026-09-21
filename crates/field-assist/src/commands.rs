@@ -67,7 +67,8 @@ actions!(
         EditRemove,
         EditDuplicate,
         EditTrim,
-        EditBreakOut,
+        EditBreakOutRegions,
+        EditBreakOutChannels,
         SelectAll,
         SelectNone,
         InvertSelection,
@@ -169,7 +170,8 @@ const KNOWN_COMMANDS: &[&str] = &[
     "edit.remove",
     "edit.duplicate",
     "edit.trim",
-    "edit.break_out",
+    "edit.break_out_regions",
+    "edit.break_out_channels",
     "selection.select_all",
     "selection.select_none",
     "selection.invert",
@@ -426,7 +428,10 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "edit.remove" => KeyBinding::new(keystrokes, EditRemove, Some(context)),
         "edit.duplicate" => KeyBinding::new(keystrokes, EditDuplicate, Some(context)),
         "edit.trim" => KeyBinding::new(keystrokes, EditTrim, Some(context)),
-        "edit.break_out" => KeyBinding::new(keystrokes, EditBreakOut, Some(context)),
+        "edit.break_out_regions" => KeyBinding::new(keystrokes, EditBreakOutRegions, Some(context)),
+        "edit.break_out_channels" => {
+            KeyBinding::new(keystrokes, EditBreakOutChannels, Some(context))
+        }
         "selection.select_all" => KeyBinding::new(keystrokes, SelectAll, Some(context)),
         "selection.select_none" => KeyBinding::new(keystrokes, SelectNone, Some(context)),
         "selection.invert" => KeyBinding::new(keystrokes, InvertSelection, Some(context)),

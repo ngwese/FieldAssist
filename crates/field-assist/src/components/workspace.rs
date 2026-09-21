@@ -6,6 +6,7 @@ use std::rc::Rc;
 use field_ui_components::Transport;
 use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent},
+    menu::{ContextMenuExt as _, PopupMenuItem},
     v_flex,
 };
 use gpui_kit::{
@@ -16,8 +17,8 @@ use gpui_kit::{
 
 use crate::app::AppView;
 use crate::commands::{
-    TransportEnd, TransportHome, TransportLoop, TransportNext, TransportPlayPause,
-    TransportPrevious,
+    EditBreakOutChannels, EditBreakOutRegions, TransportEnd, TransportHome, TransportLoop,
+    TransportNext, TransportPlayPause, TransportPrevious,
 };
 use crate::components::drop_overlay::file_drop_overlay;
 use crate::model::document::BufferDocument;
@@ -145,6 +146,9 @@ impl Panel for WorkspacePanel {
 impl Render for WorkspacePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
+        let waveform = self.waveform.clone();
+        let has_time = waveform.read(cx).has_time_selection(cx);
+        let has_channels = waveform.read(cx).has_channel_selection(cx);
         let layout = self
             .app
             .upgrade()
@@ -164,7 +168,36 @@ impl Render for WorkspacePanel {
                         }
                         style
                     })
-                    .child(self.waveform.clone())
+                    .child(
+                        div()
+                            .id("workspace-waveform-menu")
+                            .size_full()
+                            .context_menu({
+                                move |menu, _, _| {
+                                    menu.item(
+                                        PopupMenuItem::new("Compositions from Selection")
+                                            .disabled(!has_time)
+                                            .on_click(|_, window, cx| {
+                                                window.dispatch_action(
+                                                    Box::new(EditBreakOutRegions),
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new("Composition from Channels")
+                                            .disabled(!has_channels)
+                                            .on_click(|_, window, cx| {
+                                                window.dispatch_action(
+                                                    Box::new(EditBreakOutChannels),
+                                                    cx,
+                                                );
+                                            }),
+                                    )
+                                }
+                            })
+                            .child(self.waveform.clone()),
+                    )
                     .when_some(layout, |this, layout| {
                         this.child(file_drop_overlay(layout, self.app.clone()))
                     }),

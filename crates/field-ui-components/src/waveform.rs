@@ -197,6 +197,16 @@ where
         self.pointer_over
     }
 
+    /// Whether the document has a non-empty time/region selection.
+    pub fn has_time_selection(&self, cx: &App) -> bool {
+        WaveformEditor::has_time_selection(self.document.read(cx))
+    }
+
+    /// Whether any channel headers are selected.
+    pub fn has_channel_selection(&self, cx: &App) -> bool {
+        WaveformEditor::has_channel_selection(self.document.read(cx))
+    }
+
     /// Highlight ranges for the hovered edit history card (`None` clears).
     pub fn set_hovered_edit(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
         if self.hovered_edit == id {
@@ -1823,6 +1833,10 @@ where
                                     };
                                     let channel_label =
                                         WaveformDataProvider::channel_label(document.read(cx), ch);
+                                    let channel_selected = WaveformEditor::selected_channels(
+                                        document.read(cx),
+                                    )
+                                    .contains(&ch);
                                     h_flex()
                                     .id(SharedString::from(format!("lane-{ch}")))
                                     .w_full()
@@ -1832,6 +1846,7 @@ where
                                     .border_color(theme.border)
                                     .child(
                                         div()
+                                            .id(SharedString::from(format!("lane-header-{ch}")))
                                             .w(px(48.))
                                             .flex_none()
                                             .h_full()
@@ -1841,7 +1856,32 @@ where
                                             .border_color(theme.border)
                                             .text_xs()
                                             .font_semibold()
-                                            .text_color(theme.muted_foreground)
+                                            .text_color(if channel_selected {
+                                                theme.accent_foreground
+                                            } else {
+                                                theme.muted_foreground
+                                            })
+                                            .when(channel_selected, |this| {
+                                                this.bg(theme.accent.opacity(0.35))
+                                            })
+                                            .cursor_pointer()
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    move |this, event: &MouseDownEvent, _, cx| {
+                                                        let shift = event.modifiers.shift;
+                                                        let disjoint =
+                                                            event.modifiers.secondary();
+                                                        this.document.update(cx, |doc, cx| {
+                                                            WaveformEditor::click_channel_header(
+                                                                doc, ch, shift, disjoint,
+                                                            );
+                                                            cx.notify();
+                                                        });
+                                                        cx.notify();
+                                                    },
+                                                ),
+                                            )
                                             .child(channel_label),
                                     )
                                     .child(

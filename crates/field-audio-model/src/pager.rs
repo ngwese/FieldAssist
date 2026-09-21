@@ -210,6 +210,53 @@ impl BlockPager {
         Ok(())
     }
 
+    /// Fill planar destinations from media, mapping each dest plane to a media
+    /// channel via `source_channels[dest_index]`. When `source_channels` is
+    /// `None`, behaves like [`Self::fill_planar`] (identity mapping).
+    pub fn fill_planar_mapped(
+        &mut self,
+        pool: &MediaPool,
+        media_id: MediaId,
+        src_offset: u64,
+        count: u64,
+        dest: &mut [&mut [f32]],
+        dest_offset: usize,
+        source_channels: Option<&[usize]>,
+    ) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let media = pool
+            .get(media_id)
+            .with_context(|| format!("unknown media {media_id}"))?;
+        let mut remaining = count;
+        let mut src = src_offset;
+        let mut dst = dest_offset;
+        while remaining > 0 {
+            let block_index = src / BLOCK_FRAMES;
+            let block_off = (src % BLOCK_FRAMES) as usize;
+            let block = self.load_block(media, block_index)?;
+            let available = block
+                .first()
+                .map(|ch| ch.len().saturating_sub(block_off))
+                .unwrap_or(0) as u64;
+            if available == 0 {
+                break;
+            }
+            let take = remaining.min(available);
+            for (dest_ch, dest_plane) in dest.iter_mut().enumerate() {
+                let media_ch = source_channels
+                    .and_then(|map| map.get(dest_ch).copied())
+                    .unwrap_or(dest_ch);
+                copy_block_channel(&block, media_ch, block_off, take, dest_plane, dst);
+            }
+            remaining -= take;
+            src += take;
+            dst += take as usize;
+        }
+        Ok(())
+    }
+
     fn load_block(&mut self, media: &MediaRef, block_index: u64) -> Result<Arc<Vec<Vec<f32>>>> {
         let key = BlockKey {
             media_id: media.id,

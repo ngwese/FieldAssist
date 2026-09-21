@@ -21,7 +21,7 @@ use field_audio_process::{
 use field_core::{encode_file_url, ProgressHandle};
 
 use super::analysis_store::AnalysisStreams;
-use super::clip::{Clip, ClipId, ClipSpan};
+use super::clip::{Clip, ClipCache, ClipId, ClipSpan};
 use super::edit_ranges::{
     analysis_inverse_op, map_inclusive_through_inverse, map_inclusive_through_op,
 };
@@ -98,6 +98,8 @@ pub struct Composition {
     clean_collections: Vec<RegionCollection>,
     monitor_chain: Option<String>,
     playback_channels: Option<Vec<usize>>,
+    /// Dest composition channel → media channel. `None` means identity.
+    source_channels: Option<Vec<usize>>,
     /// In-memory derived streams (envelope, …); not saved to `.facomp`.
     analysis_streams: AnalysisStreams,
     /// Scratch min/max fold kept across pager blocks of one clip.
@@ -145,6 +147,22 @@ fn normalize_playback_channels(
         return None;
     }
     if channels.len() == channel_count && channels.iter().copied().eq(0..channel_count) {
+        return None;
+    }
+    Some(channels)
+}
+
+/// Normalize a dest→media channel map. Identity `0..channel_count` becomes
+/// `None`. Length must equal `channel_count` when present.
+fn normalize_source_channels(
+    channels: Option<Vec<usize>>,
+    channel_count: usize,
+) -> Option<Vec<usize>> {
+    let channels = channels?;
+    if channels.len() != channel_count || channel_count == 0 {
+        return None;
+    }
+    if channels.iter().copied().eq(0..channel_count) {
         return None;
     }
     Some(channels)
@@ -225,6 +243,7 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: None,
             playback_channels: None,
+            source_channels: None,
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -298,6 +317,7 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: None,
             playback_channels: None,
+            source_channels: None,
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -577,23 +597,146 @@ impl Composition {
     /// Extract `[start, start+len)` into a new child composition that shares
     /// media and the block pager with this composition.
     pub fn break_out(&self, start: u64, len: u64) -> Result<Composition> {
-        if len == 0 {
-            bail!("break out range is empty");
+        self.break_out_channels(&[(start, len)], None)
+    }
+
+    /// Extract a child composition with an optional time trim and/or channel
+    /// subset. Empty `ranges` keeps the full timeline. `channels` are indices
+    /// into this composition; `None` or all channels keeps the full topology.
+    pub fn break_out_channels(
+        &self,
+        ranges: &[(u64, u64)],
+        channels: Option<&[usize]>,
+    ) -> Result<Composition> {
+        let ranges: Vec<(u64, u64)> = ranges.iter().copied().filter(|(_, len)| *len > 0).collect();
+        for &(start, len) in &ranges {
+            if start.saturating_add(len) > self.frames() {
+                bail!("break out range is outside the composition");
+            }
         }
-        if start.saturating_add(len) > self.frames() {
-            bail!("break out range is outside the composition");
+        let mut selected: Option<Vec<usize>> = channels.map(|chs| {
+            let mut v: Vec<usize> = chs
+                .iter()
+                .copied()
+                .filter(|&c| c < self.channel_count)
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        });
+        if let Some(chs) = &selected {
+            if chs.is_empty() {
+                bail!("break out channel set is empty");
+            }
+            if chs.len() == self.channel_count && chs.iter().copied().eq(0..self.channel_count) {
+                selected = None;
+            }
+        }
+        if ranges.is_empty() && selected.is_none() {
+            bail!("break out requires a time range or channel subset");
         }
         let mut child = self.clone_at_cursor();
         child.id = CompositionId::new();
         child.parent = Some(self.id);
         child.identity_dirty = false;
-        child.trim(start, len);
+        if !ranges.is_empty() {
+            if ranges.len() == 1 {
+                let (start, len) = ranges[0];
+                child.trim(start, len);
+            } else {
+                child.trim_ranges(&ranges);
+            }
+        }
+        if let Some(chs) = selected {
+            child.take_channels(&chs);
+        }
         child.edl.set_undo_floor(child.edl.cursor());
         // Leave dirty so the first save writes the standalone child.
         child.clean_edit_id = EditId(u64::MAX);
         child.clean_markers.clear();
         child.clean_collections.clear();
         Ok(child)
+    }
+
+    /// Restrict this composition to a subset of its current channels.
+    ///
+    /// `selected` are indices into the current topology. Composes with any
+    /// existing [`Self::source_channels`] map. Clears chosen layout so
+    /// `detect_layout` can assign one that matches the new channel count.
+    pub fn take_channels(&mut self, selected: &[usize]) {
+        let mut selected: Vec<usize> = selected
+            .iter()
+            .copied()
+            .filter(|&c| c < self.channel_count)
+            .collect();
+        selected.sort_unstable();
+        selected.dedup();
+        if selected.is_empty() {
+            return;
+        }
+        if selected.len() == self.channel_count
+            && selected.iter().copied().eq(0..self.channel_count)
+        {
+            return;
+        }
+        let new_map: Vec<usize> = selected
+            .iter()
+            .map(|&parent_ch| self.media_channel(parent_ch))
+            .collect();
+        let mut new_labels = BTreeMap::new();
+        for (new_i, &old_i) in selected.iter().enumerate() {
+            if let Some(label) = self.channel_labels.get(&old_i) {
+                new_labels.insert(new_i, label.clone());
+            }
+        }
+        let new_playback = self.playback_channels.as_ref().map(|chs| {
+            chs.iter()
+                .filter_map(|old| selected.iter().position(|s| s == old))
+                .collect::<Vec<_>>()
+        });
+        for collection in &mut self.collections {
+            collection
+                .regions
+                .retain_mut(|region| region.channels.remap_take(&selected));
+        }
+        self.tree = self.tree.map_clips(|clip| {
+            let mut clip = clip.clone();
+            clip.cache = ClipCache::default();
+            clip
+        });
+        self.edl.map_snapshots(|tree| {
+            tree.map_clips(|clip| {
+                let mut clip = clip.clone();
+                clip.cache = ClipCache::default();
+                clip
+            })
+        });
+        self.channel_count = selected.len();
+        self.source_channels = normalize_source_channels(Some(new_map), self.channel_count);
+        self.channel_labels = new_labels;
+        self.clipboard.channel_count = self.channel_count;
+        self.playback_channels = normalize_playback_channels(new_playback, self.channel_count);
+        // Channel topology changed — let detect_layout pick a matching layout.
+        self.chosen_channel_layout = None;
+        self.channel_layout = None;
+        self.analysis_streams = AnalysisStreams::default();
+        self.minmax_op = None;
+        self.envelope_op = None;
+        self.spectral_op = None;
+        self.transient_op = None;
+    }
+
+    /// Media channel index for a destination composition channel.
+    pub fn media_channel(&self, dest: usize) -> usize {
+        self.source_channels
+            .as_ref()
+            .and_then(|map| map.get(dest).copied())
+            .unwrap_or(dest)
+    }
+
+    /// Dest→media channel map, when not identity.
+    pub fn source_channels(&self) -> Option<&[usize]> {
+        self.source_channels.as_deref()
     }
 
     /// Clone reconstruction state at the current cursor, sharing the pager.
@@ -630,6 +773,7 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: self.monitor_chain.clone(),
             playback_channels: self.playback_channels.clone(),
+            source_channels: self.source_channels.clone(),
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -1747,6 +1891,7 @@ impl Composition {
                 if let Some(source) = &span.clip.source {
                     let media_id = source.media_id;
                     let offset = source.offset + local;
+                    let map = self.source_channels.as_deref();
                     self.store
                         .lock()
                         .unwrap()
@@ -1754,12 +1899,13 @@ impl Composition {
                             for c in 0..ch {
                                 let plane_start = c * frames + dest_off;
                                 let plane = &mut scratch[plane_start..plane_start + take];
+                                let media_ch = map.and_then(|m| m.get(c).copied()).unwrap_or(c);
                                 pager.fill_channel(
                                     pool,
                                     media_id,
                                     offset,
                                     take as u64,
-                                    c,
+                                    media_ch,
                                     plane,
                                 )?;
                             }
@@ -1911,6 +2057,7 @@ impl Composition {
             return Ok(());
         }
         if let Some(source) = &clip.source {
+            let media_ch = self.media_channel(channel);
             self.store
                 .lock()
                 .unwrap()
@@ -1920,7 +2067,7 @@ impl Composition {
                         source.media_id,
                         source.offset + local,
                         dest.len() as u64,
-                        channel,
+                        media_ch,
                         dest,
                     )
                 })?;
@@ -1946,17 +2093,19 @@ impl Composition {
         dest_offset: usize,
     ) -> Result<()> {
         if let Some(source) = &clip.source {
+            let map = self.source_channels.as_deref();
             self.store
                 .lock()
                 .unwrap()
                 .with_locked_pager(|pool, pager| {
-                    pager.fill_planar(
+                    pager.fill_planar_mapped(
                         pool,
                         source.media_id,
                         source.offset + local,
                         count,
                         dest,
                         dest_offset,
+                        map,
                     )
                 })?;
         }
@@ -3067,6 +3216,7 @@ impl Composition {
             channel_layout: self.chosen_channel_layout.clone(),
             monitor_chain: self.monitor_chain.clone(),
             playback_channels: self.playback_channels.clone(),
+            source_channels: self.source_channels.clone(),
         }
     }
 
@@ -3157,6 +3307,8 @@ impl Composition {
         composition.monitor_chain = file.monitor_chain.filter(|name| !name.is_empty());
         composition.playback_channels =
             normalize_playback_channels(file.playback_channels, composition.channel_count);
+        composition.source_channels =
+            normalize_source_channels(file.source_channels, composition.channel_count);
         if identity_dirty {
             // Minted id for a legacy file — leave dirty so the next save
             // persists identity.
@@ -3217,6 +3369,7 @@ impl Composition {
             clean_collections: Vec::new(),
             monitor_chain: None,
             playback_channels: None,
+            source_channels: None,
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -3908,7 +4061,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 8);
+        assert_eq!(value["format_version"], 9);
         let media = &value["media"][0];
         assert!(media.get("url").is_some());
         assert!(media.get("path").is_none());
@@ -4254,6 +4407,7 @@ mod tests {
             channel_layout: None,
             monitor_chain: None,
             playback_channels: None,
+            source_channels: None,
         };
         let json = ProjectEnvelope::wrap(file).to_json().unwrap();
         let (comp, warnings) = Composition::from_json_reprobing(&json).unwrap();
@@ -4389,7 +4543,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 8);
+        assert_eq!(value["format_version"], 9);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -4434,7 +4588,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 8);
+        assert_eq!(value["format_version"], 9);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()
@@ -5024,7 +5178,7 @@ mod tests {
         assert!(!child.can_undo());
         let json = child.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 8);
+        assert_eq!(value["format_version"], 9);
         assert_eq!(value["parent"], parent_id.to_string());
         assert_eq!(value["id"], child.id().to_string());
         assert_eq!(value["edits"][0]["type"], "trim");
@@ -5037,6 +5191,66 @@ mod tests {
         assert_eq!(restored.id(), child.id());
         assert!(!restored.can_undo());
         restored.assert_invariants();
+    }
+
+    #[test]
+    fn break_out_channels_maps_reads_and_composes() {
+        let parent = Composition::from_media(sine_media(32, 4, 44100)).unwrap();
+        let expected = materialize(&parent);
+        let child = parent
+            .break_out_channels(&[(4, 12)], Some(&[0, 2]))
+            .unwrap();
+        assert_eq!(child.frames(), 12);
+        assert_eq!(child.channel_count(), 2);
+        assert_eq!(child.source_channels(), Some(&[0usize, 2][..]));
+        assert_eq!(child.parent_id(), Some(parent.id()));
+        assert!(!child.can_undo());
+        let got = materialize(&child);
+        assert_eq!(got[0], expected[0][4..16]);
+        assert_eq!(got[1], expected[2][4..16]);
+
+        let mut parent2 = Composition::from_media(sine_media(16, 4, 44100)).unwrap();
+        parent2.apply_channel_layout(Some("test".into()), {
+            let mut m = BTreeMap::new();
+            m.insert(0, "W".into());
+            m.insert(1, "X".into());
+            m.insert(2, "Y".into());
+            m.insert(3, "Z".into());
+            m
+        });
+        let mid = parent2.break_out_channels(&[], Some(&[0, 2, 3])).unwrap();
+        assert_eq!(mid.channel_count(), 3);
+        assert_eq!(mid.source_channels(), Some(&[0usize, 2, 3][..]));
+        assert_eq!(mid.channel_label(0), "W");
+        assert_eq!(mid.channel_label(1), "Y");
+        assert_eq!(mid.channel_label(2), "Z");
+        assert!(mid.chosen_channel_layout().is_none());
+
+        let nested = mid.break_out_channels(&[], Some(&[0, 2])).unwrap();
+        assert_eq!(nested.channel_count(), 2);
+        assert_eq!(nested.source_channels(), Some(&[0usize, 3][..]));
+        assert_eq!(nested.parent_id(), Some(mid.id()));
+
+        let json = nested.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["channel_count"], 2);
+        assert_eq!(value["source_channels"], serde_json::json!([0, 3]));
+        let restored = Composition::from_json(&json).unwrap();
+        assert_eq!(restored.source_channels(), Some(&[0usize, 3][..]));
+        assert_eq!(restored.channel_count(), 2);
+    }
+
+    #[test]
+    fn format8_load_keeps_identity_source_channels() {
+        let parent = Composition::from_media(sine_media(8, 2, 44100)).unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&parent.to_json().unwrap()).unwrap();
+        value["format_version"] = serde_json::json!(8);
+        value.as_object_mut().unwrap().remove("source_channels");
+        let restored = Composition::from_json(&value.to_string()).unwrap();
+        assert!(restored.source_channels().is_none());
+        assert_eq!(restored.channel_count(), 2);
     }
 
     #[test]
@@ -5099,7 +5313,7 @@ mod tests {
         let restored = Composition::from_json(json).unwrap();
         assert!(restored.is_modified());
         let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
-        assert_eq!(saved["format_version"], 8);
+        assert_eq!(saved["format_version"], 9);
         assert!(saved.get("id").is_some());
     }
 
@@ -5229,7 +5443,7 @@ mod tests {
         let comp = Composition::from_media(sine_media(6, 1, 44100)).unwrap();
         let media_id = comp.pool().first().unwrap().id;
         let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
-        assert_eq!(value["format_version"], 8);
+        assert_eq!(value["format_version"], 9);
         assert_eq!(value["initial"]["type"], "from_media");
         assert_eq!(value["initial"]["media_id"], media_id.to_string());
         assert_eq!(value["media"].as_array().unwrap().len(), 1);
@@ -5241,7 +5455,7 @@ mod tests {
         let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
         comp.clear(2, 3);
         let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
-        assert_eq!(value["format_version"], 8);
+        assert_eq!(value["format_version"], 9);
         let edits = value["edits"].as_array().unwrap();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0]["type"], "clear");

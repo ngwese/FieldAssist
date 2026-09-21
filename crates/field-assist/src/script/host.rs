@@ -1442,21 +1442,41 @@ impl HostHandle {
         .map_err(mlua::Error::runtime)?
     }
 
-    pub fn break_out_composition(&self, id: DocumentId) -> mlua::Result<Vec<LuaComposition>> {
+    pub fn break_out_regions(&self, id: DocumentId) -> mlua::Result<Vec<LuaComposition>> {
         self.require_document(id)?;
         if let Some(test) = &self.inner.borrow().test {
             let _ = test;
             return Err(mlua::Error::runtime(
-                "break_out is not available in tests without a UI session",
+                "break_out_regions is not available in tests without a UI session",
             ));
         }
         access::with_view(|view, window, cx| {
-            view.script_break_out(id, window, cx)
+            view.script_break_out_regions(id, window, cx)
                 .map(|ids| {
                     ids.into_iter()
                         .map(|pid| LuaComposition { id: pid })
                         .collect()
                 })
+                .map_err(mlua::Error::runtime)
+        })
+        .map_err(mlua::Error::runtime)?
+    }
+
+    pub fn break_out_channels(
+        &self,
+        id: DocumentId,
+        channels: Option<Vec<usize>>,
+    ) -> mlua::Result<LuaComposition> {
+        self.require_document(id)?;
+        if let Some(test) = &self.inner.borrow().test {
+            let _ = test;
+            return Err(mlua::Error::runtime(
+                "break_out_channels is not available in tests without a UI session",
+            ));
+        }
+        access::with_view(|view, window, cx| {
+            view.script_break_out_channels(id, channels, window, cx)
+                .map(|pid| LuaComposition { id: pid })
                 .map_err(mlua::Error::runtime)
         })
         .map_err(mlua::Error::runtime)?

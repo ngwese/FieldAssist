@@ -314,12 +314,16 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// playback_channels.
     pub playback_channels: Option<Vec<usize>>,
+    /// Dest composition channel → media channel map. Omitted means identity
+    /// `0..channel_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_channels: Option<Vec<usize>>,
 }
 
 /// FACOMP_KIND:.
 pub const FACOMP_KIND: &str = "facomp";
 /// FACOMP_FORMAT_VERSION:.
-pub const FACOMP_FORMAT_VERSION: u32 = 8;
+pub const FACOMP_FORMAT_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// ProjectEnvelope.
@@ -352,7 +356,7 @@ impl ProjectEnvelope {
             bail!("not a FieldAssist composition (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            7 | 8 => Ok(envelope),
+            7 | 8 | 9 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             n if n > FACOMP_FORMAT_VERSION => {
                 bail!("this file requires a newer FieldAssist (format_version {n})")

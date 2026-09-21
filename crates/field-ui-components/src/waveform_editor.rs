@@ -113,4 +113,22 @@ pub trait WaveformEditor: Send + Sync {
 
     /// Update the shared peaks/spectrum lane split fraction.
     fn set_peaks_spectrum_split(&mut self, _fraction: f32) {}
+
+    /// Selected channel-header indices (sorted).
+    fn selected_channels(&self) -> Vec<usize> {
+        Vec::new()
+    }
+
+    /// Click a channel header (shift = extend, secondary = toggle).
+    fn click_channel_header(&mut self, _index: usize, _shift: bool, _disjoint: bool) {}
+
+    /// Whether the time/region selection has any non-empty span.
+    fn has_time_selection(&self) -> bool {
+        self.selection_span().is_some()
+    }
+
+    /// Whether any channel headers are selected.
+    fn has_channel_selection(&self) -> bool {
+        !self.selected_channels().is_empty()
+    }
 }

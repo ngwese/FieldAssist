@@ -284,7 +284,8 @@ Show and hide are idempotent. Menus use the toggle variants.
 `transport.loop`, `transport.preview`
 
 **Edit:** `edit.undo`, `edit.redo`, `edit.cut`, `edit.copy`, `edit.paste`,
-`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.break_out`
+`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`,
+`edit.break_out_regions`, `edit.break_out_channels`
 
 **Selection / markers:** `selection.select_all`, `selection.select_none`,
 `selection.invert`, `selection.zero_crossing`, `selection.marker_type_blue`,
@@ -388,6 +389,7 @@ removed region/marker errors on further field access.
 | `channel_layout` | read/write | Effective layout name; assign a defined name or `nil`. |
 | `monitor_chain` | read/write | Monitor DSP id (`"mono"`, `"stereo"`, `"ms"`, `"foa"`, `"foa_fuma"`), or `nil` for 1:1. |
 | `playback_channels` | read/write | 0-based channels to the monitor, or `nil` / `"all"`. |
+| `source_channels` | read | Dest→media channel map when not identity, else `nil`. |
 | `duration` | read | Length in seconds. |
 | `position` | read/write | Playhead / caret sample. |
 | `selection` | read/write | Session selection [collection](#collection). Assign `nil` to clear. |
@@ -417,9 +419,11 @@ removed region/marker errors on further field access.
 | `undo()` / `redo()` | History; return whether a step ran. |
 | `cut()` / `copy()` / `paste()` | Clipboard over selection spans. |
 | `clear()` / `remove()` / `duplicate()` / `trim()` | Same as Edit menu on selection. |
-| `break_out()` | Edit → Break Out: each selection span becomes a child composition with a default `N-` / `N.M-` display title. Returns one composition or a list. |
+| `break_out_regions()` | Waveform → Compositions from Selection (`edit.break_out_regions`): each selection span becomes a child with a default `N-` / `N.M-` title. Returns one composition or a list. |
+| `break_out_channels([channels]?)` | Waveform → Composition from Channels (`edit.break_out_channels`): one child with the given 0-based channels, or the current header selection if omitted. Uses the time selection when present, else the full timeline. |
 
 Channel scopes (`select`, `add_region`): omit / `nil` / `"all"`, or `{0, 1}`.
+`clear_selection()` also clears any channel-header selection.
 
 ### Examples
 
@@ -432,11 +436,14 @@ c:trim()
 ```
 
 Break out selection spans into child compositions (shares media; saves as a
-standalone `.facomp` with a founding Trim):
+standalone `.facomp` with a founding Trim). Channel subset:
 
 ```lua
-local child = c:break_out()
+local child = c:break_out_regions()
 print(child.id, child.parent and child.parent.id)
+
+local stereo = c:break_out_channels({0, 1})
+print(stereo.channels, stereo.source_channels)
 ```
 
 Named region:

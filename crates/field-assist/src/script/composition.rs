@@ -202,6 +202,21 @@ impl UserData for LuaComposition {
                 }
             })
         });
+        fields.add_field_method_get("source_channels", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let composition = doc.composition.read().unwrap();
+                match composition.source_channels() {
+                    None => Ok(Value::Nil),
+                    Some(channels) => {
+                        let table = lua.create_table()?;
+                        for (i, ch) in channels.iter().enumerate() {
+                            table.set(i + 1, *ch as i64)?;
+                        }
+                        Ok(Value::Table(table))
+                    }
+                }
+            })
+        });
         fields.add_field_method_set("playback_channels", |lua, this, value: Value| {
             with_document(lua, this.id, |doc| {
                 let channels = match value {
@@ -498,9 +513,9 @@ impl UserData for LuaComposition {
                 true
             })
         });
-        methods.add_method("break_out", |lua, this, ()| {
+        methods.add_method("break_out_regions", |lua, this, ()| {
             let host = host_from_lua(lua)?;
-            let created = host.break_out_composition(this.id)?;
+            let created = host.break_out_regions(this.id)?;
             match created.len() {
                 1 => created.into_iter().next().unwrap().into_lua(lua),
                 _ => {
@@ -511,6 +526,21 @@ impl UserData for LuaComposition {
                     Ok(Value::Table(table))
                 }
             }
+        });
+        methods.add_method("break_out_channels", |lua, this, channels: Value| {
+            let host = host_from_lua(lua)?;
+            let channels = match channels {
+                Value::Nil => None,
+                other => {
+                    let scope = channels_from_lua(lua, other)?;
+                    match scope {
+                        ChannelScope::AllChannels => None,
+                        ChannelScope::Channels(chs) => Some(chs),
+                    }
+                }
+            };
+            let child = host.break_out_channels(this.id, channels)?;
+            child.into_lua(lua)
         });
     }
 }

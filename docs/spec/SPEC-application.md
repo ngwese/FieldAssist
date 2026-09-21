@@ -174,15 +174,17 @@ freshness (including mtime) is checked separately and may warn on open while
 keeping the recorded media id. Source PCM is never stored in `.facomp`.
 Timeline edits change the EDL and clip tree only.
 
-`.facomp` JSON (`kind: facomp`, `format_version: 8`) includes a stable
+`.facomp` JSON (`kind: facomp`, `format_version: 9`) includes a stable
 composition `id` (`comp:<uuid>`), optional `parent` (`comp:<uuid>` when
-broken out), sample rate, channel count, descriptors for media **used** by
-this composition, the initial clip tree (`media:` ids), edit ops and cursor,
-optional `undo_floor` (break-out founding Trim), markers, marker types, named
-collections, optional `channel_layout`, `monitor_chain`, and
-`playback_channels`. Format **7** still loads (Clear edits may appear as the
-legacy EDL tag `"delete"`). Older `format_version` values (≤6) are rejected.
-**Save As** mints a new `id` while keeping `parent`.
+broken out), sample rate, channel count, optional `source_channels` (dest
+composition channel → media channel map; omitted means identity),
+descriptors for media **used** by this composition, the initial clip tree
+(`media:` ids), edit ops and cursor, optional `undo_floor` (break-out
+founding Trim), markers, marker types, named collections, optional
+`channel_layout`, `monitor_chain`, and `playback_channels`. Formats **7**
+and **8** still load (Clear edits may appear as the legacy EDL tag
+`"delete"`). Older `format_version` values (≤6) are rejected. **Save As**
+mints a new `id` while keeping `parent`.
 
 Open compositions in a window share one `MediaStore` (pool + block pager).
 Intern-by-hash deduplicates matching media across documents. Break-out
@@ -196,14 +198,24 @@ the explorer when that parent is present; restoring a `.fasession` keeps
 each document’s saved group and order (a detached child stays in its
 group).
 
-**Break Out to Composition** (Edit menu / `edit.break_out`) extracts each
-selected span into a new child composition that shares the parent’s media
-store. The child EDL is the parent’s reconstruction ops plus a founding
-`Trim`; Undo cannot go past that Trim. Each child gets a default display
-title of `N-` + parent name (or `N.M-` when breaking out from a child whose
-name already matches that pattern), with `N` / `M` unique among open
-siblings. Saving the child writes a standalone `.facomp` that still
-references the media it uses.
+**Compositions from Selection** (waveform context menu /
+`edit.break_out_regions`) extracts each selected time span into a new
+full-channel child composition that shares the parent’s media store. The
+child EDL is the parent’s reconstruction ops plus a founding `Trim`; Undo
+cannot go past that Trim. Each child gets a default display title of `N-` +
+parent name (or `N.M-` when breaking out from a child whose name already
+matches that pattern), with `N` / `M` unique among open siblings. Saving the
+child writes a standalone `.facomp` that still references the media it uses.
+After creation the host runs `detect_layout` on each child.
+
+**Composition from Channels** (waveform context menu /
+`edit.break_out_channels`) creates one child whose channels are the current
+waveform channel-header selection. If a time selection exists, the child is
+also trimmed to those spans (multi-span uses the same concatenation as Trim);
+otherwise the full parent duration is kept. The child stores a
+`source_channels` map (dest → media) and a reduced `channel_count`. Nested
+channel break-outs compose maps. Chosen layout is cleared so `detect_layout`
+can assign a layout that matches the new channel count.
 
 On open, if probed media disagrees with the recorded descriptor (identity
 stats or mtime-only), the app warns (Messages + dialog) and still opens,
@@ -273,8 +285,12 @@ persisted in `.fasession`. See [SCRIPT.md](../SCRIPT.md).
 
 ### Waveform
 
-One lane per channel, labeled from the effective layout. Overview paint uses
-peak bins (256 samples per bin) built on a background thread with progress.
+One lane per channel, labeled from the effective layout. Channel headers
+support multi-select: click replaces, Shift-click extends a range from the
+anchor, and secondary-modifier click (Cmd on macOS, Ctrl elsewhere) toggles.
+Re-clicking the only selected header clears the channel selection. Overview
+paint uses peak bins (256 samples per bin) built on a background thread with
+progress.
 That peak gather is the first shipping instance of analysis (pull-based when
 the waveform needs overview bins). Analyze → Envelope → Peak and Detect
 Transients, plus View → Show Envelope Peak, are also shipping; see
@@ -297,10 +313,13 @@ shift-click extends the nearest endpoint. Alt scopes the gesture to the
 lane’s channel. Click without drag sets the caret; secondary-modifier click
 keeps the current selection.
 
+**Select None** (`selection.select_none` / `c:clear_selection()`) clears both
+the time/region selection and any channel-header selection.
+
 The selection collection is session state and is not saved in `.facomp`. Named
 collections persist on the composition; the Regions panel can adopt a named
 collection into the selection. Regions may overlap. Region bounds in the UI
-are inclusive sample indices.
+are inclusive sample indices. Channel-header selection is also session-only.
 
 Snap: zero-crossing snap is on by default (Selection menu). Optional
 snap-to-marker is off by default (Selection menu, per type). When both are
@@ -334,10 +353,14 @@ They are recorded on the composition EDL with undo/redo.
 | Remove (Shift+Delete) | Close the gap |
 | Duplicate | Insert a copy after the range |
 | Trim | Keep selected spans concatenated; discard the rest |
-| Break Out to Composition | Each selected span becomes a named child composition sharing media |
+| Compositions from Selection | Each selected span becomes a named full-channel child (`edit.break_out_regions`) |
+| Composition from Channels | One child with selected header channels; optional time trim (`edit.break_out_channels`) |
 
-The Edits panel lists EDL steps and can jump the cursor. The clip tree may
-also represent move and roll; those are not first-class menu commands.
+The waveform context menu offers the two composition commands (enabled when
+a time selection or channel-header selection exists, respectively). They are
+not on the Edit menu. The Edits panel lists EDL steps and can jump the
+cursor. The clip tree may also represent move and roll; those are not
+first-class menu commands.
 
 ## Playback
 
@@ -436,7 +459,8 @@ idempotent; menus and status-bar pane buttons use the toggles.
 `transport.loop`, `transport.preview`
 
 **Edit:** `edit.undo`, `edit.redo`, `edit.cut`, `edit.copy`, `edit.paste`,
-`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`, `edit.break_out`
+`edit.clear`, `edit.remove`, `edit.duplicate`, `edit.trim`,
+`edit.break_out_regions`, `edit.break_out_channels`
 
 **Selection:** `selection.select_all`, `selection.select_none`,
 `selection.invert`, `selection.zero_crossing`, `selection.marker_type_blue`,
