@@ -10,7 +10,9 @@ use gpui_kit::{
 
 use crate::model::document::BufferDocument;
 use crate::playback::TransportState;
-use field_ui_components::WaveformDisplay;
+use field_ui_components::{
+    format_db_hover, format_hz_hover, hover_axis_quantize, WaveformDisplay, WaveformHoverAxis,
+};
 
 /// Title-bar session readout. Lives in its own view so hover, playhead, and
 /// selection updates do not rebuild the window chrome or docks.
@@ -19,6 +21,7 @@ pub struct HeaderMeta {
     waveform: Option<Entity<WaveformDisplay<BufferDocument>>>,
     transport: TransportState,
     last_hover: Option<usize>,
+    last_hover_axis: Option<u64>,
     focus_handle: FocusHandle,
     _document_observe: Option<Subscription>,
     _waveform_observe: Option<Subscription>,
@@ -31,6 +34,7 @@ impl HeaderMeta {
             waveform: None,
             transport: TransportState::Stopped,
             last_hover: None,
+            last_hover_axis: None,
             focus_handle: cx.focus_handle(),
             _document_observe: None,
             _waveform_observe: None,
@@ -46,6 +50,7 @@ impl HeaderMeta {
         self.document = document;
         self.waveform = waveform;
         self.last_hover = None;
+        self.last_hover_axis = None;
         self._document_observe = self
             .document
             .as_ref()
@@ -53,10 +58,12 @@ impl HeaderMeta {
         self._waveform_observe = self.waveform.as_ref().map(|waveform| {
             cx.observe(waveform, |this, wave, cx| {
                 let hover = wave.read(cx).hover_sample();
-                if this.last_hover == hover {
+                let axis_key = wave.read(cx).hover_axis().map(hover_axis_quantize);
+                if this.last_hover == hover && this.last_hover_axis == axis_key {
                     return;
                 }
                 this.last_hover = hover;
+                this.last_hover_axis = axis_key;
                 cx.notify();
             })
         });
@@ -93,8 +100,13 @@ impl Render for HeaderMeta {
                 .as_ref()
                 .zip(self.waveform.as_ref())
                 .and_then(|(document, waveform)| {
-                    let sample = waveform.read(cx).hover_sample()?;
-                    Some(format_hover_meta(document.read(cx), sample))
+                    let wave = waveform.read(cx);
+                    let sample = wave.hover_sample();
+                    let axis = wave.hover_axis();
+                    if sample.is_none() && axis.is_none() {
+                        return None;
+                    }
+                    Some(format_hover_meta(document.read(cx), sample, axis))
                 });
 
         h_flex()
@@ -141,11 +153,26 @@ fn transport_state_label(state: TransportState) -> &'static str {
     }
 }
 
-fn format_hover_meta(doc: &BufferDocument, sample: usize) -> String {
-    format!(
-        "hover {}  ·  {sample} smp",
-        format_secs(doc.sample_to_secs(sample))
-    )
+fn format_hover_meta(
+    doc: &BufferDocument,
+    sample: Option<usize>,
+    axis: Option<WaveformHoverAxis>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(sample) = sample {
+        parts.push(format!(
+            "hover {}  ·  {sample} smp",
+            format_secs(doc.sample_to_secs(sample))
+        ));
+    } else {
+        parts.push("hover".into());
+    }
+    match axis {
+        Some(WaveformHoverAxis::PeakDb(db)) => parts.push(format_db_hover(db)),
+        Some(WaveformHoverAxis::SpectrumHz(hz)) => parts.push(format_hz_hover(hz)),
+        None => {}
+    }
+    parts.join("  ·  ")
 }
 
 fn format_header_meta(doc: &BufferDocument, transport: TransportState) -> String {

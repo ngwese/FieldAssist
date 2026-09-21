@@ -276,9 +276,9 @@ submenu where needed).
 
 | Mode | Behavior |
 | --- | --- |
-| **Peaks** (default) | As-built overview: peak bins; sample-accurate zoom still reads PCM |
-| **Spectrum** | Lanes show a time × frequency heatmap from the spectral stream. Missing data triggers the Spectral job. Zoomed sample-accurate PCM paint is Peaks-only |
-| **Peaks + Spectrum** | Each lane is split vertically: peaks on top, spectrum below. A shared drag handle sets the peaks/spectrum height ratio for all lanes (default 20% / 80%). Missing data queues MinMax and Spectral together so one shared pass feeds both |
+| **Peaks** (default) | As-built overview: peak bins; sample-accurate zoom still reads PCM. A left gutter labels the linear amplitude axis in dBFS (`-3` near full scale, `-∞` at the zero line). Hover reports dB |
+| **Spectrum** | Lanes show a time × frequency heatmap from the spectral stream. Missing data triggers the Spectral job. Zoomed sample-accurate PCM paint is Peaks-only. The left gutter labels log Hz (`1k`-style); hover reports frequency |
+| **Peaks + Spectrum** | Each lane is split vertically: peaks on top, spectrum below. A shared drag handle sets the peaks/spectrum height ratio for all lanes (default 20% / 80%). Missing data queues MinMax and Spectral together so one shared pass feeds both. The left gutter stacks both scales (shared across channels); hover follows the pane under the pointer |
 
 **Overlays** (View → Overlay): independent toggles for extra streams (RMS,
 correlation, and similar). Region and marker results use the existing lane

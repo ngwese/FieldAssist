@@ -61,6 +61,7 @@ mod status_bar;
 mod theme;
 mod transport;
 mod waveform;
+mod waveform_axis;
 mod waveform_data;
 mod waveform_editor;
 
@@ -84,6 +85,7 @@ pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
 pub use waveform::WaveformDisplay;
+pub use waveform_axis::{format_db_hover, format_hz_hover, hover_axis_quantize, WaveformHoverAxis};
 pub use waveform_data::{
     clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
     DEFAULT_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,

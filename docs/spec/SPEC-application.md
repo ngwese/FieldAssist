@@ -266,11 +266,13 @@ sample rate, channels, length, size) for media in that composition’s pool.
 
 ### Header and status
 
-The header shows playhead, hover sample, and selection. The status bar shows
-Preview; sample rate, bit depth, channel count, duration, and source size;
-muted error and warning counts (one control that toggles Messages) to the
-right of that file metadata; a layout picker and Monitor control on the far
-right; and background job text (opening, building peaks, rendering).
+The header shows playhead, hover sample (time and sample index), Y-axis
+hover when the pointer is over a peaks or spectrum pane (dBFS or Hz), and
+selection. The status bar shows Preview; sample rate, bit depth, channel
+count, duration, and source size; muted error and warning counts (one
+control that toggles Messages) to the right of that file metadata; a layout
+picker and Monitor control on the far right; and background job text
+(opening, building peaks, rendering).
 
 ### Script dock
 
@@ -288,7 +290,12 @@ persisted in `.fasession`. See [SCRIPT.md](../SCRIPT.md).
 One lane per channel, labeled from the effective layout. Channel headers
 support multi-select: click replaces, Shift-click extends a range from the
 anchor, and secondary-modifier click (Cmd on macOS, Ctrl elsewhere) toggles.
-Re-clicking the only selected header clears the channel selection. Overview
+Re-clicking the only selected header clears the channel selection. A left
+scale gutter labels peaks panes in dBFS (`-3` near full scale aligned to
+linear amplitude, `-∞` on the zero line) and spectrum panes in log Hz
+(`1k`-style). Tick selection is shared
+across channels from the first lane. Hovering a pane reports the Y value in
+the header and draws a horizontal readout tick in the gutter. Overview
 paint uses peak bins (256 samples per bin) built on a background thread with
 progress.
 That peak gather is the first shipping instance of analysis (pull-based when

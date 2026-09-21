@@ -17,13 +17,18 @@ use gpui_kit::{
     DispatchPhase, Entity, FocusHandle, Focusable, HoverListenerMode, InteractiveElement as _,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
     PathBuilder, Pixels, Render, RenderImage, Rgba, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    StatefulInteractiveElement as _, Styled as _, TextAlign, TextRun, Window,
 };
 use image::{ImageBuffer, Rgba as ImageRgba};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::waveform_axis::{
+    hover_axis_at_y, hover_axis_quantize, pane_bounds_for_lane, peak_axis_layout,
+    peak_ticks_for_layout, spectrum_axis_layout, spectrum_ticks_for_layout, PeakAxisLayout,
+    SpectrumAxisLayout, WaveformHoverAxis,
+};
 use crate::waveform_data::{
     clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
     MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
@@ -47,6 +52,10 @@ const MIN_LANE_HEIGHT_COMBINED: f32 = 128.0;
 const MIN_THUMB: f32 = 24.0;
 const SCROLLBAR_HEIGHT: f32 = 14.0;
 const DRAG_MOVE_THRESHOLD_PX: f32 = 3.0;
+/// Channel header column width (px).
+const LANE_HEADER_PX: f32 = 48.0;
+/// Left/right vertical scale gutter width (px).
+const SCALE_GUTTER_PX: f32 = 32.0;
 /// Painted thickness of the peaks/spectrum separator (layout gap matches).
 const SPLITTER_PX: f32 = 1.0;
 /// Hit-test half-height around the shared peaks/spectrum splitter.
@@ -66,6 +75,10 @@ const MARKER_TRIANGLE_HEIGHT: f32 = 5.0;
 /// Fraction of the visible timeline used as the marker snap latch and
 /// release radius.
 const MARKER_SNAP_VIEWPORT_FRACTION: f64 = 0.01;
+/// Plot-style axis label font size (matches [`crate::waveform_axis::AXIS_LABEL_FONT_PX`]).
+const AXIS_TEXT_SIZE: f32 = crate::waveform_axis::AXIS_LABEL_FONT_PX;
+/// Tick mark length into the gutter from the content edge.
+const AXIS_TICK_LEN: f32 = 4.0;
 
 enum Drag {
     SelectRegion {
@@ -124,6 +137,8 @@ where
     scrollbar_width: f32,
     drag: Option<Drag>,
     hover_sample: Option<usize>,
+    /// Y-axis value under the pointer (dB on peaks, Hz on spectrum).
+    hover_axis: Option<WaveformHoverAxis>,
     /// Last pointer position used for [`Self::hover_sample`], so auto-scroll /
     /// pan can remap the ghost bar to stay under the cursor.
     hover_pointer: Option<(f32, f32)>,
@@ -138,6 +153,9 @@ where
     /// In-progress peaks/spectrum split (avoids document notify + spectrum
     /// rebuilds on every mouse move while dragging the shared splitter).
     live_peaks_spectrum_split: Option<f32>,
+    /// Shared axis layouts from the first channel this frame (all lanes match).
+    shared_peak_axis: Option<PeakAxisLayout>,
+    shared_spectrum_axis: Option<SpectrumAxisLayout>,
 }
 
 impl<D> WaveformDisplay<D>
@@ -165,6 +183,7 @@ where
             scrollbar_width: 0.0,
             drag: None,
             hover_sample: None,
+            hover_axis: None,
             hover_pointer: None,
             hovered_edit: None,
             pointer_over: false,
@@ -173,6 +192,8 @@ where
             spectrum_tiles: HashMap::new(),
             lane_canvas: HashMap::new(),
             live_peaks_spectrum_split: None,
+            shared_peak_axis: None,
+            shared_spectrum_axis: None,
         }
     }
 
@@ -190,6 +211,11 @@ where
     /// Sample under the pointer, if any.
     pub fn hover_sample(&self) -> Option<usize> {
         self.hover_sample
+    }
+
+    /// Y-axis value under the pointer (peaks dB or spectrum Hz), if any.
+    pub fn hover_axis(&self) -> Option<WaveformHoverAxis> {
+        self.hover_axis
     }
 
     /// Whether the pointer is over this view (for keymap scoping).
@@ -364,6 +390,7 @@ where
     pub fn reset_view(&mut self, cx: &mut Context<Self>) {
         self.drag = None;
         self.hover_sample = None;
+        self.hover_axis = None;
         self.hover_pointer = None;
         self.hovered_edit = None;
         self.live_peaks_spectrum_split = None;
@@ -431,6 +458,31 @@ where
         self.start_sample + local * self.samples_per_pixel
     }
 
+    fn resolve_hover_axis(&self, y: f32, cx: &App) -> Option<WaveformHoverAxis> {
+        let doc = self.document.read(cx);
+        let representation = WaveformDataProvider::waveform_representation(doc);
+        let sample_rate = WaveformDataProvider::sample_rate(doc);
+        let split = clamp_peaks_spectrum_split(
+            self.live_peaks_spectrum_split
+                .unwrap_or_else(|| WaveformDataProvider::peaks_spectrum_split(doc)),
+        );
+        for (&_ch, &(lane_top, lane_height)) in &self.lane_canvas {
+            if y < lane_top || y > lane_top + lane_height {
+                continue;
+            }
+            return hover_axis_at_y(
+                representation,
+                split,
+                sample_rate,
+                lane_top,
+                lane_height,
+                SPLITTER_PX,
+                y,
+            );
+        }
+        None
+    }
+
     fn set_hover_at(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
         if self.content_height > 0.0
             && (y < self.content_origin_y || y > self.content_origin_y + self.content_height)
@@ -439,7 +491,7 @@ where
             return;
         }
         self.hover_pointer = Some((x, y));
-        let next = hover_sample_from_x(
+        let next_sample = hover_sample_from_x(
             x,
             self.content_origin_x,
             self.viewport_width,
@@ -447,20 +499,29 @@ where
             self.samples_per_pixel,
             self.frames(cx),
         );
-        if self.hover_sample != next {
-            self.hover_sample = next;
+        let next_axis = self.resolve_hover_axis(y, cx);
+        let sample_changed = self.hover_sample != next_sample;
+        let axis_changed = match (self.hover_axis, next_axis) {
+            (None, None) => false,
+            (Some(a), Some(b)) => hover_axis_quantize(a) != hover_axis_quantize(b),
+            _ => true,
+        };
+        self.hover_sample = next_sample;
+        self.hover_axis = next_axis;
+        if sample_changed || axis_changed {
             cx.notify();
         }
     }
 
     fn clear_hover(&mut self, cx: &mut Context<Self>) {
         self.hover_pointer = None;
-        if self.hover_sample.take().is_some() {
+        let cleared = self.hover_sample.take().is_some() || self.hover_axis.take().is_some();
+        if cleared {
             cx.notify();
         }
     }
 
-    /// Remap [`Self::hover_sample`] from the last pointer X after scroll/zoom.
+    /// Remap hover sample / axis from the last pointer after scroll/zoom.
     fn sync_hover_from_pointer(&mut self, cx: &App) {
         let Some((x, y)) = self.hover_pointer else {
             return;
@@ -469,6 +530,7 @@ where
             && (y < self.content_origin_y || y > self.content_origin_y + self.content_height)
         {
             self.hover_sample = None;
+            self.hover_axis = None;
             return;
         }
         self.hover_sample = hover_sample_from_x(
@@ -479,6 +541,7 @@ where
             self.samples_per_pixel,
             self.frames(cx),
         );
+        self.hover_axis = self.resolve_hover_axis(y, cx);
     }
 
     fn set_pointer_over(&mut self, hovered: bool, cx: &mut Context<Self>) {
@@ -549,6 +612,26 @@ where
             channel,
             (bounds.origin.y.as_f32(), bounds.size.height.as_f32()),
         );
+    }
+
+    /// Capture axis tick selection from the first lane painted this frame.
+    ///
+    /// Later channels reuse these layouts so every gutter shows the same dB / Hz
+    /// labels even when a lower lane is partially clipped.
+    fn ensure_shared_axis_layouts(
+        &mut self,
+        representation: WaveformRepresentation,
+        sample_rate: u32,
+        lane_height: f32,
+        split: f32,
+    ) {
+        if self.shared_peak_axis.is_some() || self.shared_spectrum_axis.is_some() {
+            return;
+        }
+        let (peaks, spectrum) =
+            pane_bounds_for_lane(representation, split, 0.0, lane_height, SPLITTER_PX);
+        self.shared_peak_axis = peaks.map(|(_, h)| peak_axis_layout(h));
+        self.shared_spectrum_axis = spectrum.map(|(_, h)| spectrum_axis_layout(sample_rate, h));
     }
 
     fn try_begin_lane_split(&mut self, channel: usize, y: f32, cx: &App) -> bool {
@@ -771,6 +854,130 @@ fn sample_to_x(sample: f64, start_sample: f64, samples_per_pixel: f64, origin_x:
 fn clamp_bar_x(x: f32, origin_x: f32, width: f32) -> f32 {
     let max_x = (origin_x + width - 1.0).max(origin_x);
     x.clamp(origin_x, max_x)
+}
+
+/// Left scale gutter (right-aligned labels facing the waveform body).
+fn paint_axis_label(
+    text: &str,
+    x: f32,
+    y: f32,
+    align: TextAlign,
+    color: gpui_kit::Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let shared = SharedString::from(text.to_string());
+    let run = TextRun {
+        len: shared.len(),
+        font: window.text_style().font(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(shared, px(AXIS_TEXT_SIZE), &[run], None);
+    let origin = match align {
+        TextAlign::Right => point(px(x) - line.width(), px(y - AXIS_TEXT_SIZE / 2.0)),
+        TextAlign::Left => point(px(x), px(y - AXIS_TEXT_SIZE / 2.0)),
+        _ => point(px(x) - line.width() / 2.0, px(y - AXIS_TEXT_SIZE / 2.0)),
+    };
+    let _ = line.paint(origin, px(AXIS_TEXT_SIZE), align, None, window, cx);
+}
+
+fn paint_scale_gutter(
+    bounds: Bounds<Pixels>,
+    representation: WaveformRepresentation,
+    sample_rate: u32,
+    peaks_spectrum_split: f32,
+    peak_layout: Option<&PeakAxisLayout>,
+    spectrum_layout: Option<&SpectrumAxisLayout>,
+    hover_axis: Option<WaveformHoverAxis>,
+    hover_y: Option<f32>,
+    label_color: gpui_kit::Hsla,
+    tick_color: gpui_kit::Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let width = bounds.size.width.as_f32();
+    let height = bounds.size.height.as_f32();
+    if width < 1.0 || height < 1.0 {
+        return;
+    }
+    let origin_x = bounds.origin.x.as_f32();
+    let origin_y = bounds.origin.y.as_f32();
+    let split = clamp_peaks_spectrum_split(peaks_spectrum_split);
+    let (peaks, spectrum) =
+        pane_bounds_for_lane(representation, split, origin_y, height, SPLITTER_PX);
+
+    let tick_inner_x = origin_x + width;
+    let label_x = origin_x + width - AXIS_TICK_LEN - 2.0;
+    let align = TextAlign::Right;
+
+    let paint_ticks =
+        |ticks: &[crate::waveform_axis::AxisTick], window: &mut Window, cx: &mut App| {
+            for tick in ticks {
+                let mut builder = PathBuilder::stroke(px(1.0));
+                builder.move_to(point(px(tick_inner_x - AXIS_TICK_LEN), px(tick.y)));
+                builder.line_to(point(px(tick_inner_x), px(tick.y)));
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, tick_color);
+                }
+                paint_axis_label(&tick.label, label_x, tick.y, align, label_color, window, cx);
+            }
+        };
+
+    if let Some((top, h)) = peaks {
+        let ticks = match peak_layout {
+            Some(layout) => peak_ticks_for_layout(layout, top, h),
+            None => peak_ticks_for_layout(&peak_axis_layout(h), top, h),
+        };
+        paint_ticks(&ticks, window, cx);
+    }
+    if let Some((top, h)) = spectrum {
+        let ticks = match spectrum_layout {
+            Some(layout) => spectrum_ticks_for_layout(layout, sample_rate, top, h),
+            None => spectrum_ticks_for_layout(
+                &spectrum_axis_layout(sample_rate, h),
+                sample_rate,
+                top,
+                h,
+            ),
+        };
+        paint_ticks(&ticks, window, cx);
+    }
+
+    if representation == WaveformRepresentation::PeaksSpectrum {
+        if let Some((peaks_top, peaks_h)) = peaks {
+            let split_y = peaks_top + peaks_h;
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(origin_x), px(split_y)),
+                    size: size(px(width), px(SPLITTER_PX)),
+                },
+                tick_color,
+            ));
+        }
+    }
+
+    // Hover readout: full-width horizontal tick at pointer Y.
+    if let (Some(_axis), Some(y)) = (hover_axis, hover_y) {
+        let in_pane = peaks
+            .map(|(top, h)| y >= top && y <= top + h)
+            .unwrap_or(false)
+            || spectrum
+                .map(|(top, h)| y >= top && y <= top + h)
+                .unwrap_or(false);
+        if in_pane {
+            let mut builder = PathBuilder::stroke(px(1.0));
+            builder.move_to(point(px(origin_x), px(y)));
+            builder.line_to(point(px(origin_x + width), px(y)));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, GHOST_BAR_COLOR);
+            }
+        }
+    }
 }
 
 fn region_tint(base_color: gpui_kit::Hsla, alpha: f32) -> gpui_kit::Hsla {
@@ -1726,11 +1933,16 @@ where
 {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.clamp_scroll(cx);
+        // First gutter paint this frame establishes shared axis layouts.
+        self.shared_peak_axis = None;
+        self.shared_spectrum_axis = None;
         let theme = cx.theme().clone();
         let document = self.document.clone();
         let start_sample = self.start_sample;
         let samples_per_pixel = self.samples_per_pixel;
         let hover_sample = self.hover_sample;
+        let hover_axis = self.hover_axis;
+        let hover_y = self.hover_pointer.map(|(_, y)| y);
         let (modified_ranges, hover_ranges, markers) = {
             let doc = self.document.read(cx);
             let hovered = self.hovered_edit;
@@ -1837,6 +2049,8 @@ where
                                         document.read(cx),
                                     )
                                     .contains(&ch);
+                                    let label_color = theme.muted_foreground;
+                                    let tick_color = theme.muted_foreground;
                                     h_flex()
                                     .id(SharedString::from(format!("lane-{ch}")))
                                     .w_full()
@@ -1847,7 +2061,7 @@ where
                                     .child(
                                         div()
                                             .id(SharedString::from(format!("lane-header-{ch}")))
-                                            .w(px(48.))
+                                            .w(px(LANE_HEADER_PX))
                                             .flex_none()
                                             .h_full()
                                             .pt(rems(0.5))
@@ -1884,6 +2098,81 @@ where
                                             )
                                             .child(channel_label),
                                     )
+                                    .child({
+                                        let entity = entity.clone();
+                                        div()
+                                            .id(SharedString::from(format!("lane-scale-l-{ch}")))
+                                            .w(px(SCALE_GUTTER_PX))
+                                            .flex_none()
+                                            .h_full()
+                                            .border_r_1()
+                                            .border_color(theme.border)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    move |this, event: &MouseDownEvent, _, cx| {
+                                                        let y = event.position.y.as_f32();
+                                                        if this.try_begin_lane_split(ch, y, cx) {
+                                                            cx.notify();
+                                                        }
+                                                    },
+                                                ),
+                                            )
+                                            .child(
+                                                canvas(
+                                                    move |bounds, _, _cx| bounds,
+                                                    {
+                                                        let entity = entity.clone();
+                                                        move |bounds, _, window, cx| {
+                                                            entity.update(cx, |this, cx| {
+                                                                let (representation, sample_rate, split) = {
+                                                                    let provider =
+                                                                        this.document.read(cx);
+                                                                    (
+                                                                        WaveformDataProvider::waveform_representation(
+                                                                            provider,
+                                                                        ),
+                                                                        WaveformDataProvider::sample_rate(
+                                                                            provider,
+                                                                        ),
+                                                                        this.live_peaks_spectrum_split
+                                                                            .unwrap_or_else(|| {
+                                                                                WaveformDataProvider::peaks_spectrum_split(
+                                                                                    provider,
+                                                                                )
+                                                                            }),
+                                                                    )
+                                                                };
+                                                                this.ensure_shared_axis_layouts(
+                                                                    representation,
+                                                                    sample_rate,
+                                                                    bounds.size.height.as_f32(),
+                                                                    split,
+                                                                );
+                                                                let peak = this.shared_peak_axis.clone();
+                                                                let spectrum =
+                                                                    this.shared_spectrum_axis.clone();
+                                                                paint_scale_gutter(
+                                                                    bounds,
+                                                                    representation,
+                                                                    sample_rate,
+                                                                    split,
+                                                                    peak.as_ref(),
+                                                                    spectrum.as_ref(),
+                                                                    hover_axis,
+                                                                    hover_y,
+                                                                    label_color,
+                                                                    tick_color,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    },
+                                                )
+                                                .size_full(),
+                                            )
+                                    })
                                     .child(
                                         div()
                                             .flex_1()
@@ -2041,7 +2330,15 @@ where
                         .border_color(theme.border)
                         .child(
                             div()
-                                .w(px(48.))
+                                .w(px(LANE_HEADER_PX))
+                                .h_full()
+                                .flex_none()
+                                .border_r_1()
+                                .border_color(theme.border),
+                        )
+                        .child(
+                            div()
+                                .w(px(SCALE_GUTTER_PX))
                                 .h_full()
                                 .flex_none()
                                 .border_r_1()
