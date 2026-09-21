@@ -163,6 +163,7 @@ workflow registration.
 | `output_device` | read/write | Session output device name, or `nil` for System Default. Substring / index match like `--output`. Not saved on `.facomp`; set from `init.lua` to persist across launches. |
 | `output_devices` | read | Current device names. |
 | `theme` | read | Theme colors. See [Theme](#theme). |
+| `ui` | read | Toolbar control constructors. See [Toolbar items](#toolbar-items). |
 | `looping` | read | Transport loop on/off. Prefer `app:command("transport.loop")` to change. |
 | `preview` | read | Status-bar Preview on/off. Prefer `app:command("transport.preview")`. |
 | `explorer` | read | Whether the Compositions dock is open. Prefer `view.show-explorer` / `view.hide-explorer`. |
@@ -220,6 +221,8 @@ app:on("loaded", function(c, elapsed) ... end)          -- composition, seconds
 app:on("saved", function(c, elapsed) ... end)
 app:on("session_loaded", function(s) ... end)
 app:on("session_saved", function(s) ... end)
+app:on("session_selected", function(s) ... end)
+app:on("composition_selected", function(c) ... end)
 app:on("detect_layout", function(c, chosen)             -- return layout name or nil
   return chosen or (c.channels == 2 and "stereo")
 end)
@@ -614,9 +617,9 @@ Installed by Rust on the prototype (inherited by instances):
 | Method | Description |
 | --- | --- |
 | `name()` / `display_name()` / `description()` / `scopes()` | Readers from `__base_properties`. |
-| `on("command", handler)` | Workflow-local command callback; `handler(self, command)`. Last wins. |
+| `on(event, handler)` | Subscribe to an application event while this workflow is running. `handler(self, ...)`. Dropped when the run ends. |
 | `set_toolbar(items)` | Install toolbar rows (`nil` clears). |
-| `set_item(id, props)` | Merge fields onto an existing row (keeps callbacks). |
+| `set_item(id, props)` | Merge fields onto an existing row (keeps `action`). |
 
 Defined in Lua (optional unless noted):
 
@@ -628,6 +631,18 @@ Defined in Lua (optional unless noted):
 | `resume(session)` | New instance after session load when `session.workflow_name` matches. |
 | `finish(session)` / `cancel(session)` | After `app:finish_workflow` / `app:cancel_workflow`. |
 
+`on` accepts the same events as [`app:on`](#app). The handler receives the
+workflow instance first, then the event arguments. `detect_layout` may return
+a layout name; workflow handlers run after `app:on` hooks, and the last valid
+name still wins. Handlers registered on the prototype apply to each run and
+are not called after `finish` or `cancel`.
+
+```lua
+Review:on("composition_selected", function(self, composition)
+  self:update_toolbar()
+end)
+```
+
 ### Start payloads
 
 | Source | Payload |
@@ -638,18 +653,34 @@ Defined in Lua (optional unless noted):
 
 ### Toolbar items
 
-`align` is `"left"` or `"right"` (default `"left"`). The bar shows
-`display_name`, left items, a spacer, then right items.
+`app.ui` is a namespace of constructor **functions** (call them with `.`, not
+`:`). Each returns a control table. `set_toolbar` accepts only those controls;
+a plain `{ command = "next" }` table is an error. `align` is `"left"` or
+`"right"` (default `"left"`). The bar shows `display_name`, left items, a
+spacer, then right items.
 
-| `kind` | Fields |
+| Function | Fields |
 | --- | --- |
-| `button` (or omit when `command` set) | `command`, `label` (defaults to `command`), optional `id` |
-| `path` | `id`, optional `label`, `value`, `browse` (`"file"` / `"directory"` / `false`), optional `on_path(paths)` → string |
-| `toggle` | `id`, `label`, `value`, `on_color`, `off_color`, optional `on_change(current)` → next bool |
-| `message` | `id`, `text`, optional `color` |
-| `divider` | optional `id` |
+| `app.ui.button(props)` | `label` and/or `id` (each defaults to the other), optional `icon` (`"arrow-left"` / `"arrow-right"` / `"check"` / `"circle-check"` / `"circle-x"` / `"circle-alert"`; underscores also accepted — when set, shows icon only and uses `label` for tooltip), optional `align`, optional `action` |
+| `app.ui.toggle(props)` | `id`, optional `label` (defaults to `id`), `value`, `on_color`, optional `off_color` (defaults to ghost-button foreground), optional `on_icon` (same icon names as `button.icon`, default `"check"`), `align`, `action` |
+| `app.ui.message(props)` | `id`, optional `text`, `color`, `align` |
+| `app.ui.text_entry(props)` | `id`, optional `label`, `value`, `align`, `action` |
+| `app.ui.path_entry(props)` | `id`, optional `label`, `value`, `browse` (`"file"` / `"directory"` / `false`), `align`, `action` |
+| `app.ui.divider([props])` | optional `id`, `align` |
 
-Toolbar `command` strings are **not** keymap ids.
+Every `action` is `function(control, workflow)`. The host does not use a return
+value.
+
+- **button:** click. No default if `action` is omitted.
+- **toggle:** click leaves `control.value` as the current value. With no
+  `action`, the host flips it. With an `action`, set `control.value` yourself.
+- **text_entry / path_entry:** the host writes `control.value`, then calls
+  `action`. Browse and drop on a path also set `control.paths` (1-based) for
+  that call and propose `value` from the first path.
+
+Assigning `label`, `value`, `text`, `color`, `on_color`, `off_color`, or
+`align` on a control updates the bar. Hold the control (`self.progress.text =
+"..."`) or use `set_item`. There is no workflow `:on("command")`.
 
 ### Host behavior
 
@@ -678,16 +709,26 @@ function Review:init()
 end
 
 function Review:start(payload)
+  self.progress = app.ui.message({ id = "progress", text = "0 of 0" })
   self:set_toolbar({
-    { command = "next", label = "Next" },
-    { id = "progress", kind = "message", text = "0 of 0" },
-    { command = "finish", label = "Finish", align = "right" },
+    app.ui.button({
+      id = "next",
+      label = "Next",
+      action = function(_, workflow)
+        workflow:go_next()
+      end,
+    }),
+    self.progress,
+    app.ui.button({
+      id = "finish",
+      label = "Finish",
+      align = "right",
+      action = function(_, _)
+        app:finish_workflow()
+      end,
+    }),
   })
 end
-
-Review:on("command", function(self, command)
-  if command == "finish" then app:finish_workflow() end
-end)
 
 function Review:suspend(session)
   local props = session.properties or {}
@@ -703,5 +744,5 @@ Built-in **Add** merges audio/`.facomp` and session documents into the current
 session (dropped directories are expanded with `find_files`). **Replace**
 replaces the session or the active document. **Review** is stateful: menu
 start marks documents `"todo"`; drop expands folders with `find_files`;
-toolbar Previous/Next/Drop/Reviewed/Output/Finish; start and resume enable
+toolbar Previous/Next/Keep/Drop/Output/Finish; start and resume enable
 loop, Preview, and the explorer.
