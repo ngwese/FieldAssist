@@ -83,7 +83,8 @@ Symphonia.
 
 **Encode (render):** WAV, FLAC, and Ogg Vorbis only.
 
-Default window is 1280×760, dark theme. macOS uses the system application menu;
+Default window is 1280×760; launch theme is dark (override from `init.lua` via
+`app.theme.mode` / `app.theme.name`). macOS uses the system application menu;
 Windows and Linux put menus in the title bar and Quit on File. Settings exists
 in the menu and is disabled.
 

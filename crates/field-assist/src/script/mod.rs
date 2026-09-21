@@ -854,6 +854,51 @@ mod tests {
     }
 
     #[test]
+    fn theme_selection_lists_and_sets_name_and_mode() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            assert(type(app.themes) == "table")
+            assert(#app.themes >= 2)
+            assert(app.theme.name == "Default Dark")
+            assert(app.theme.mode == "dark")
+
+            app.theme.mode = "light"
+            assert(app.theme.mode == "light")
+            assert(app.theme.name == "Default Light")
+
+            app.theme.name = "Default Dark"
+            assert(app.theme.name == "Default Dark")
+            assert(app.theme.mode == "dark")
+
+            app.theme.mode = "DARK"
+            assert(app.theme.mode == "dark")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+
+        let unknown = host.eval(r#"app.theme.name = "Nope""#);
+        assert!(
+            unknown
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("unknown theme")),
+            "{:?}",
+            unknown.error
+        );
+
+        let bad_mode = host.eval(r#"app.theme.mode = "system""#);
+        assert!(
+            bad_mode
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("light") && err.contains("dark")),
+            "{:?}",
+            bad_mode.error
+        );
+    }
+
+    #[test]
     fn loaded_hook_receives_elapsed() {
         let (mut host, world) = test_host();
         let out = host.eval(

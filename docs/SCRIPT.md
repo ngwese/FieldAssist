@@ -42,6 +42,7 @@ Use `init.lua` to register layouts, detect hooks, and pin session-level prefs:
 
 ```lua
 app.output_device = "Focusrite"   -- substring match; nil = System Default
+app.theme.mode = "light"          -- or app.theme.name = "Default Light"
 
 app:define_layout({
   name = "stereo",
@@ -79,6 +80,7 @@ flowchart TB
   regions["region"]
   markers["marker"]
   theme["theme<br/>app.theme"]
+  themes["themes[]<br/>app.themes"]
   proto["workflow prototype<br/>create / declare"]
   inst["workflow instance<br/>app.workflow"]
 
@@ -87,6 +89,7 @@ flowchart TB
   app --> comps
   app --> media
   app --> theme
+  app --> themes
   app --> proto
   app --> inst
   session --> comps
@@ -162,7 +165,8 @@ workflow registration.
 | `workflow` | read | Running workflow [instance](#workflow), or `nil`. |
 | `output_device` | read/write | Session output device name, or `nil` for System Default. Substring / index match like `--output`. Not saved on `.facomp`; set from `init.lua` to persist across launches. |
 | `output_devices` | read | Current device names. |
-| `theme` | read | Theme colors. See [Theme](#theme). |
+| `theme` | read/write | Active theme (`name` / `mode`) and colors. See [Theme](#theme). |
+| `themes` | read | Available GPUI theme names. See [Theme](#theme). |
 | `ui` | read | Toolbar control constructors. See [Toolbar items](#toolbar-items). |
 | `looping` | read | Transport loop on/off. Prefer `app:command("transport.loop")` to change. |
 | `preview` | read | Status-bar Preview on/off. Prefer `app:command("transport.preview")`. |
@@ -234,9 +238,24 @@ Hooks run in registration order. For `detect_layout`, the last non-nil
 
 ### Theme
 
-`app.theme.named` and `app.theme.semantic` are live GPUI colors as
-`{ r, g, b, a }` tables (`0..1`). Unknown names error. Values are read when
-accessed, so `declare_workflow` snapshots `drop.color` at registration.
+Pin appearance from `init.lua` (default at launch is dark):
+
+```lua
+app.theme.mode = "light"           -- "light" | "dark" (case-insensitive)
+-- or:
+app.theme.name = "Default Light"   -- exact GPUI registry name
+```
+
+| Field | Access | Description |
+| --- | --- | --- |
+| `app.themes` | read | Available theme names (registry order). Built-ins plus vendored packs (Catppuccin, Gruvbox, Tokyo Night, …). |
+| `app.theme.name` | read/write | Active theme name. Unknown names error with the available list. |
+| `app.theme.mode` | read/write | `"light"` or `"dark"`. Setting mode selects the matching default slot. |
+| `app.theme.named` / `semantic` | read | Live GPUI colors as `{ r, g, b, a }` tables (`0..1`). |
+
+Unknown color names error. Color values are read when accessed, so
+`declare_workflow` snapshots `drop.color` at registration (embedded workflows
+load before `init.lua`, so their drop colors keep the launch theme’s palette).
 
 **Named:** `red`, `red_light`, `green`, `green_light`, `blue`, `blue_light`,
 `yellow`, `yellow_light`, `magenta`, `magenta_light`, `cyan`, `cyan_light`.

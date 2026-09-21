@@ -74,6 +74,7 @@ impl UserData for LuaApp {
             Ok(host.output_devices())
         });
         fields.add_field_method_get("theme", |_, _| Ok(LuaTheme));
+        fields.add_field_method_get("themes", |lua, _| super::theme::themes_table(lua));
         fields.add_field_method_get("ui", |lua, _| super::workflow_toolbar::ui_namespace(lua));
         fields.add_field_method_get("looping", |lua, _| {
             let host = host_from_lua(lua)?;

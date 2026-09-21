@@ -5,6 +5,11 @@
 -- Optional: pin an output device across launches (substring match).
 -- app.output_device = "Focusrite"
 
+-- Optional: choose appearance (default is dark).
+-- app.theme.mode = "light"
+-- app.theme.name = "Catppuccin Mocha"
+-- See app.themes for the full list.
+
 local started = os.clock()
 
 app:define_layout({

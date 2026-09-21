@@ -6369,7 +6369,11 @@ fn workflow_menu(state: &AppMenuState) -> Menu {
     Menu::new("Workflow").items(items)
 }
 
-fn apply_muted_chrome(cx: &mut App) {
+/// Remap chrome foregrounds to muted ink after a theme change.
+///
+/// Saves the real content color in [`ContentForeground`] so widgets can still
+/// read bright text via [`content_foreground`].
+pub(crate) fn apply_muted_chrome(cx: &mut App) {
     let muted = Theme::global(cx).muted_foreground;
     let content = Theme::global(cx).foreground;
     cx.set_global(ContentForeground(content));
@@ -6629,6 +6633,7 @@ pub fn run(
         // borrowed (RefCell panic → abort across the ObjC boundary). That shows
         // up when launching by double-clicking a document.
         gpui_kit::init(cx);
+        crate::themes::register_bundled(cx);
 
         #[cfg(target_os = "macos")]
         {

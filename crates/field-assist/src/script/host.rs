@@ -115,6 +115,9 @@ pub struct TestWorld {
     next_id: u128,
     pub output_device: Option<String>,
     pub output_devices: Vec<String>,
+    pub theme_name: String,
+    pub theme_mode: String,
+    pub themes: Vec<String>,
     pub looping: bool,
     pub preview: bool,
     pub explorer: bool,
@@ -135,6 +138,9 @@ impl TestWorld {
             next_id: 0,
             output_device: None,
             output_devices: Vec::new(),
+            theme_name: "Default Dark".into(),
+            theme_mode: "dark".into(),
+            themes: vec!["Default Light".into(), "Default Dark".into()],
             looping: false,
             preview: false,
             explorer: false,
@@ -706,6 +712,64 @@ impl HostHandle {
         access::with_view(|view, window, cx| view.set_output_device(spec, window, cx))
             .map_err(mlua::Error::runtime)?
             .map_err(mlua::Error::runtime)
+    }
+
+    pub fn theme_names(&self) -> Vec<String> {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().themes.clone();
+        }
+        super::theme::live_theme_names().unwrap_or_default()
+    }
+
+    pub fn theme_name(&self) -> String {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().theme_name.clone();
+        }
+        super::theme::live_theme_name().unwrap_or_else(|_| "Default Dark".into())
+    }
+
+    pub fn theme_mode(&self) -> String {
+        if let Some(test) = &self.inner.borrow().test {
+            return test.borrow().theme_mode.clone();
+        }
+        super::theme::live_theme_mode().unwrap_or_else(|_| "dark".into())
+    }
+
+    pub fn set_theme_name(&self, name: &str) -> mlua::Result<()> {
+        if let Some(test) = &self.inner.borrow().test {
+            let mut world = test.borrow_mut();
+            if !world.themes.iter().any(|theme| theme == name) {
+                let available = world.themes.join(", ");
+                return Err(mlua::Error::runtime(format!(
+                    "unknown theme {name:?}; available: {available}"
+                )));
+            }
+            world.theme_name = name.to_string();
+            world.theme_mode = if name.to_ascii_lowercase().contains("light") {
+                "light".into()
+            } else {
+                "dark".into()
+            };
+            return Ok(());
+        }
+        super::theme::apply_theme_name(name).map_err(mlua::Error::runtime)
+    }
+
+    pub fn set_theme_mode(&self, mode: &str) -> mlua::Result<()> {
+        let parsed = super::theme::parse_theme_mode(mode).map_err(mlua::Error::runtime)?;
+        if let Some(test) = &self.inner.borrow().test {
+            let mut world = test.borrow_mut();
+            world.theme_mode = parsed.name().to_string();
+            let want_light = parsed.name() == "light";
+            if let Some(name) = world.themes.iter().find(|theme| {
+                let lower = theme.to_ascii_lowercase();
+                want_light == lower.contains("light")
+            }) {
+                world.theme_name = name.clone();
+            }
+            return Ok(());
+        }
+        super::theme::apply_theme_mode(parsed).map_err(mlua::Error::runtime)
     }
 
     pub fn on_loaded(&self, callback: Function) {
