@@ -294,7 +294,8 @@ Re-clicking the only selected header clears the channel selection. A left
 scale gutter labels peaks panes in dBFS (`-3` near full scale aligned to
 linear amplitude, `-∞` on the zero line) and spectrum panes in log Hz
 (`1k`-style). Tick selection is shared
-across channels from the first lane. Hovering a pane reports the Y value in
+across channels from the first lane. Hovering the waveform body (not the
+channel header, scale gutter, or side docks) reports the Y value in
 the header and draws a horizontal readout tick in the gutter. Overview
 paint uses peak bins (256 samples per bin) built on a background thread with
 progress.

@@ -483,6 +483,12 @@ where
         None
     }
 
+    fn pointer_over_waveform_body(&self, x: f32) -> bool {
+        self.viewport_width > 0.0
+            && x >= self.content_origin_x
+            && x <= self.content_origin_x + self.viewport_width
+    }
+
     fn set_hover_at(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
         if self.content_height > 0.0
             && (y < self.content_origin_y || y > self.content_origin_y + self.content_height)
@@ -499,7 +505,13 @@ where
             self.samples_per_pixel,
             self.frames(cx),
         );
-        let next_axis = self.resolve_hover_axis(y, cx);
+        // dB/Hz readout only while over the waveform canvas, not lane headers,
+        // scale gutters, or side docks that share the same Y range.
+        let next_axis = if self.pointer_over_waveform_body(x) {
+            self.resolve_hover_axis(y, cx)
+        } else {
+            None
+        };
         let sample_changed = self.hover_sample != next_sample;
         let axis_changed = match (self.hover_axis, next_axis) {
             (None, None) => false,
@@ -541,7 +553,11 @@ where
             self.samples_per_pixel,
             self.frames(cx),
         );
-        self.hover_axis = self.resolve_hover_axis(y, cx);
+        self.hover_axis = if self.pointer_over_waveform_body(x) {
+            self.resolve_hover_axis(y, cx)
+        } else {
+            None
+        };
     }
 
     fn set_pointer_over(&mut self, hovered: bool, cx: &mut Context<Self>) {
