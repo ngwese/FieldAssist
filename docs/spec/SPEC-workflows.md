@@ -204,8 +204,8 @@ message, Output directory, Finish.
 
 - Previous / Next cycle `todo` (wrap)
 - Drop moves the active document to `drop`
-- Reviewed on → `reviewed` and advance like Next if other todos remain;
-  off → `todo`
+- Reviewed on → `reviewed`; off → `todo`. Does not change the active
+  document.
 - Progress is `{reviewed} of {reviewed + todo} files reviewed`
 - Finish → `app:finish_workflow()`; warns if any documents remain `todo`;
   turns loop and Preview off

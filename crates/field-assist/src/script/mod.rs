@@ -1380,23 +1380,22 @@ mod tests {
                 .and_then(|doc| doc.group.clone()),
             Some("reviewed".into())
         );
-        // Reviewed-on advances like Next to the remaining todo.
-        assert_eq!(world.borrow().active, Some(first));
+        assert_eq!(world.borrow().active, Some(second));
         let snapshot = host.toolbar_snapshot().expect("toolbar");
-        assert_eq!(toggle_value(&snapshot.1[3]), Some(false));
+        assert_eq!(toggle_value(&snapshot.1[3]), Some(true));
         assert_eq!(message_text(&snapshot.1[5]), Some("1 of 2 files reviewed"));
         host.dispatch_workflow_command("drop").expect("drop");
         assert_eq!(
             world
                 .borrow()
                 .session
-                .get(first)
+                .get(second)
                 .and_then(|doc| doc.group.clone()),
             Some("drop".into())
         );
         assert_eq!(
             message_text(&host.toolbar_snapshot().unwrap().1[5]),
-            Some("1 of 1 files reviewed")
+            Some("0 of 1 files reviewed")
         );
     }
 
