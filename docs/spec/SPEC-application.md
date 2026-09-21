@@ -128,7 +128,7 @@ Each **document** is a tagged target:
 - **Composition**: `.facomp` project `url`, recorded `comp:<uuid>`, and optional
   `name` (defaults to the composition file basename)
 - Whether its editor tab is open and pinned
-- Optional `group` (explorer section; Review uses `todo` / `reviewed` / `drop`)
+- Optional `group` (explorer section; Review uses `todo` / `keep` / `drop`)
 - Optional `state` (persisted; unused by built-in Review)
 - String→string `properties` (not written into `.facomp`)
 
