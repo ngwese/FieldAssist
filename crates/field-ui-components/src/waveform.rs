@@ -110,6 +110,8 @@ struct SpectrumTileKey {
     height: u32,
     coverage: u64,
     band_count: usize,
+    /// [`SpectrumGradient::fingerprint`] so gradient edits miss the cache.
+    palette: u64,
 }
 
 struct SpectrumTileCache {
@@ -119,6 +121,150 @@ struct SpectrumTileCache {
     width_px: u32,
     /// Raster height in pixels at cache time.
     height_px: u32,
+}
+
+/// Left edge of the spectrum gradient editor / default stop range (matches
+/// analysis `SPECTRAL_DB_FLOOR`).
+pub const SPECTRUM_GRADIENT_DB_FLOOR: f32 = -80.0;
+
+/// One RGB stop on the spectrum heatmap intensity axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpectrumGradientStop {
+    /// Linear RGB channels in `0..=1`.
+    pub rgb: [f32; 3],
+    /// Intensity in dBFS (`SPECTRUM_GRADIENT_DB_FLOOR..=0`).
+    pub db: f32,
+}
+
+/// Classic heatmap RGB colormap with five editable dB stops.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpectrumGradient {
+    /// Quiet → loud stops (ordered by ascending `db`).
+    pub stops: [SpectrumGradientStop; 5],
+}
+
+impl Default for SpectrumGradient {
+    fn default() -> Self {
+        Self::classic()
+    }
+}
+
+impl SpectrumGradient {
+    /// Built-in heat map: near-black → blue → cyan → yellow → white.
+    pub fn classic() -> Self {
+        let floor = SPECTRUM_GRADIENT_DB_FLOOR;
+        let span = 0.0 - floor;
+        Self {
+            stops: [
+                SpectrumGradientStop {
+                    rgb: [0.02, 0.02, 0.08],
+                    db: floor,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.07, 0.17, 0.63],
+                    db: floor + 0.25 * span,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.12, 0.72, 0.83],
+                    db: floor + 0.5 * span,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.87, 0.92, 0.28],
+                    db: floor + 0.75 * span,
+                },
+                SpectrumGradientStop {
+                    rgb: [1.0, 1.0, 1.0],
+                    db: 0.0,
+                },
+            ],
+        }
+        .normalized()
+    }
+
+    /// Clamp colors and keep stop dB values ordered within the floor…0 range.
+    /// Endpoints stay pinned at the axis ends.
+    pub fn normalized(mut self) -> Self {
+        for stop in &mut self.stops {
+            stop.rgb = [
+                stop.rgb[0].clamp(0.0, 1.0),
+                stop.rgb[1].clamp(0.0, 1.0),
+                stop.rgb[2].clamp(0.0, 1.0),
+            ];
+            stop.db = stop.db.clamp(SPECTRUM_GRADIENT_DB_FLOOR, 0.0);
+        }
+        self.stops[0].db = SPECTRUM_GRADIENT_DB_FLOOR;
+        self.stops[4].db = 0.0;
+        for i in 1..self.stops.len() - 1 {
+            let lo = self.stops[i - 1].db;
+            let hi = self.stops[i + 1].db;
+            self.stops[i].db = self.stops[i].db.clamp(lo, hi);
+        }
+        self
+    }
+
+    /// Cache key covering stop colors and dB positions.
+    pub fn fingerprint(self) -> u64 {
+        let mut hash = 0u64;
+        for stop in &self.stops {
+            for channel in stop.rgb {
+                let byte = (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+                hash = hash.wrapping_mul(31).wrapping_add(u64::from(byte));
+            }
+            // Quantize dB to 0.01 so float noise does not thrash the cache.
+            let db_q = (stop.db * 100.0).round() as i32;
+            hash = hash.wrapping_mul(31).wrapping_add(db_q as u64);
+        }
+        hash
+    }
+
+    /// Piecewise-linear RGB sample at intensity `db` (dBFS).
+    pub fn sample(self, db: f32) -> (u8, u8, u8) {
+        let stops = self.stops;
+        if db <= stops[0].db {
+            return rgb_u8(stops[0].rgb);
+        }
+        if db >= stops[4].db {
+            return rgb_u8(stops[4].rgb);
+        }
+        let mut i = 0usize;
+        while i + 1 < stops.len() && db > stops[i + 1].db {
+            i += 1;
+        }
+        let a = stops[i];
+        let b = stops[(i + 1).min(stops.len() - 1)];
+        let u = if (b.db - a.db).abs() < f32::EPSILON {
+            0.0
+        } else {
+            ((db - a.db) / (b.db - a.db)).clamp(0.0, 1.0)
+        };
+        rgb_u8([
+            a.rgb[0] + (b.rgb[0] - a.rgb[0]) * u,
+            a.rgb[1] + (b.rgb[1] - a.rgb[1]) * u,
+            a.rgb[2] + (b.rgb[2] - a.rgb[2]) * u,
+        ])
+    }
+
+    /// Clamp one stop's dB between its neighbors (and the axis ends).
+    /// Endpoints are fixed at the floor / 0 dB.
+    pub fn clamp_stop_db(self, index: usize, db: f32) -> f32 {
+        if index == 0 {
+            return SPECTRUM_GRADIENT_DB_FLOOR;
+        }
+        if index + 1 >= self.stops.len() {
+            return 0.0;
+        }
+        let lo = self.stops[index - 1].db;
+        let hi = self.stops[index + 1].db;
+        db.clamp(lo, hi)
+    }
+}
+
+fn rgb_u8(rgb: [f32; 3]) -> (u8, u8, u8) {
+    (
+        (rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
+        (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
+        (rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
+    )
 }
 
 /// Multi-lane waveform display driven by host document traits.
@@ -148,6 +294,8 @@ where
     paint_epoch: u64,
     /// Cached spectrum tiles keyed by `(channel, tile_index)`.
     spectrum_tiles: HashMap<(usize, u32), SpectrumTileCache>,
+    /// Heatmap colormap (settings-driven).
+    spectrum_gradient: SpectrumGradient,
     /// Latest canvas `(origin_y, height)` per channel for splitter hit-testing.
     lane_canvas: HashMap<usize, (f32, f32)>,
     /// In-progress peaks/spectrum split (avoids document notify + spectrum
@@ -190,6 +338,7 @@ where
             focus_handle: cx.focus_handle(),
             paint_epoch: 0,
             spectrum_tiles: HashMap::new(),
+            spectrum_gradient: SpectrumGradient::classic(),
             lane_canvas: HashMap::new(),
             live_peaks_spectrum_split: None,
             shared_peak_axis: None,
@@ -206,6 +355,21 @@ where
         self.paint_epoch = self.paint_epoch.wrapping_add(1);
         self.spectrum_tiles.clear();
         cx.notify();
+    }
+
+    /// Replace the spectrum heatmap colormap and invalidate cached tiles.
+    pub fn set_spectrum_gradient(&mut self, gradient: SpectrumGradient, cx: &mut Context<Self>) {
+        let gradient = gradient.normalized();
+        if self.spectrum_gradient == gradient {
+            return;
+        }
+        self.spectrum_gradient = gradient;
+        self.bump_paint_epoch(cx);
+    }
+
+    /// Current spectrum heatmap colormap.
+    pub fn spectrum_gradient(&self) -> SpectrumGradient {
+        self.spectrum_gradient
     }
 
     /// Sample under the pointer, if any.
@@ -1345,6 +1509,7 @@ fn paint_lane(
     hover_ranges: &[(u64, u64)],
     markers: &[(u64, [f32; 4])],
     spectrum_tiles: &mut HashMap<(usize, u32), SpectrumTileCache>,
+    spectrum_gradient: SpectrumGradient,
     live_peaks_spectrum_split: Option<f32>,
     window: &mut Window,
 ) {
@@ -1432,6 +1597,7 @@ fn paint_lane(
                 start_sample,
                 samples_per_pixel,
                 spectrum_tiles,
+                spectrum_gradient,
                 splitting,
                 window,
             );
@@ -1692,6 +1858,7 @@ fn paint_spectrum_body<D>(
     start_sample: f64,
     samples_per_pixel: f64,
     tiles: &mut HashMap<(usize, u32), SpectrumTileCache>,
+    palette: SpectrumGradient,
     stretch_height: bool,
     window: &mut Window,
 ) where
@@ -1727,6 +1894,7 @@ fn paint_spectrum_body<D>(
             height: height_u,
             coverage,
             band_count,
+            palette: palette.fingerprint(),
         };
         let cache_key = (channel, tile);
         // Always rasterize a full tile width. Paint width 1:1 and let the
@@ -1755,6 +1923,7 @@ fn paint_spectrum_body<D>(
                         band_count,
                         height_u,
                         db_floor,
+                        palette,
                     );
                     tiles.insert(
                         cache_key,
@@ -1778,6 +1947,7 @@ fn paint_spectrum_body<D>(
                     band_count,
                     height_u,
                     db_floor,
+                    palette,
                 );
                 tiles.insert(
                     cache_key,
@@ -1815,6 +1985,7 @@ fn rasterize_full_spectrum_tile<D>(
     band_count: usize,
     height_u: u32,
     db_floor: f32,
+    palette: SpectrumGradient,
 ) -> (Arc<RenderImage>, u32, u32)
 where
     D: WaveformDataProvider + WaveformEditor + ?Sized,
@@ -1828,7 +1999,7 @@ where
         samples_per_pixel,
         &mut packed,
     );
-    let image = rasterize_spectrum_tile(&packed, tile_w, band_count, height_u, db_floor);
+    let image = rasterize_spectrum_tile(&packed, tile_w, band_count, height_u, db_floor, palette);
     (image, tile_w as u32, height_u)
 }
 
@@ -1839,6 +2010,7 @@ fn spectrum_key_same_content(a: &SpectrumTileKey, b: &SpectrumTileKey) -> bool {
         && a.spp_bits == b.spp_bits
         && a.coverage == b.coverage
         && a.band_count == b.band_count
+        && a.palette == b.palette
 }
 
 fn rasterize_spectrum_tile(
@@ -1846,7 +2018,8 @@ fn rasterize_spectrum_tile(
     cols: usize,
     band_count: usize,
     height: u32,
-    db_floor: f32,
+    _db_floor: f32,
+    palette: SpectrumGradient,
 ) -> Arc<RenderImage> {
     let width = cols.max(1) as u32;
     let height = height.max(1);
@@ -1856,8 +2029,7 @@ fn rasterize_spectrum_tile(
         let band = ((height - 1 - y) as f32 / band_h).floor() as usize;
         let band = band.min(band_count.saturating_sub(1));
         let db = packed[x as usize * band_count + band];
-        let t = ((db - db_floor) / (0.0 - db_floor)).clamp(0.0, 1.0);
-        let (r, g, b) = spectral_heat_rgb(t);
+        let (r, g, b) = palette.sample(db);
         // GPUI atlases expect BGRA byte order in the Rgba buffer.
         ImageRgba([b, g, r, 255])
     });
@@ -1868,25 +2040,6 @@ fn smallvec_frame(buffer: ImageBuffer<ImageRgba<u8>, Vec<u8>>) -> SmallVec<[imag
     let mut frames = SmallVec::new();
     frames.push(image::Frame::new(buffer));
     frames
-}
-
-/// Dark → blue → cyan → yellow → white colormap for normalized dB `t` in 0..1.
-fn spectral_heat_rgb(t: f32) -> (u8, u8, u8) {
-    let t = t.clamp(0.0, 1.0);
-    let (r, g, b) = if t < 0.25 {
-        let u = t / 0.25;
-        (0.02 + 0.05 * u, 0.02 + 0.15 * u, 0.08 + 0.55 * u)
-    } else if t < 0.5 {
-        let u = (t - 0.25) / 0.25;
-        (0.07 + 0.05 * u, 0.17 + 0.55 * u, 0.63 + 0.2 * u)
-    } else if t < 0.75 {
-        let u = (t - 0.5) / 0.25;
-        (0.12 + 0.75 * u, 0.72 + 0.2 * u, 0.83 - 0.55 * u)
-    } else {
-        let u = (t - 0.75) / 0.25;
-        (0.87 + 0.13 * u, 0.92 + 0.08 * u, 0.28 + 0.72 * u)
-    };
-    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
 fn paint_envelope_overlay<D>(
@@ -2408,6 +2561,8 @@ where
                                                                         let doc =
                                                                             this.document.clone();
                                                                         let provider = doc.read(cx);
+                                                                        let palette =
+                                                                            this.spectrum_gradient;
                                                                         paint_lane(
                                                                             bounds,
                                                                             &*provider,
@@ -2422,6 +2577,7 @@ where
                                                                             &hover_ranges,
                                                                             &markers,
                                                                             &mut this.spectrum_tiles,
+                                                                            palette,
                                                                             this.live_peaks_spectrum_split,
                                                                             window,
                                                                         );
@@ -2950,5 +3106,107 @@ mod tests {
         );
         assert_ne!(pcm[1], pcm[2]);
         assert_ne!(pcm[0], bin_cols[0]);
+    }
+
+    #[test]
+    fn spectrum_gradient_classic_samples_endpoints() {
+        let g = SpectrumGradient::classic();
+        assert_eq!(
+            g.sample(SPECTRUM_GRADIENT_DB_FLOOR),
+            rgb_u8([0.02, 0.02, 0.08])
+        );
+        assert_eq!(g.sample(0.0), rgb_u8([1.0, 1.0, 1.0]));
+        assert_eq!(g.sample(-90.0), rgb_u8([0.02, 0.02, 0.08]));
+        assert_eq!(g.sample(10.0), rgb_u8([1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn spectrum_gradient_lerps_rgb_at_mid_db() {
+        let g = SpectrumGradient {
+            stops: [
+                SpectrumGradientStop {
+                    rgb: [0.0, 0.0, 0.0],
+                    db: -80.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.0, 0.0, 1.0],
+                    db: -60.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.0, 1.0, 1.0],
+                    db: -40.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [1.0, 1.0, 0.0],
+                    db: -20.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [1.0, 1.0, 1.0],
+                    db: 0.0,
+                },
+            ],
+        };
+        assert_eq!(g.sample(-70.0), rgb_u8([0.0, 0.0, 0.5]));
+        assert_eq!(g.sample(-50.0), rgb_u8([0.0, 0.5, 1.0]));
+    }
+
+    #[test]
+    fn spectrum_gradient_normalizes_and_orders_db() {
+        let g = SpectrumGradient {
+            stops: [
+                SpectrumGradientStop {
+                    rgb: [2.0, -1.0, 0.5],
+                    db: -10.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.0, 0.0, 0.0],
+                    db: -40.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.0, 0.0, 0.0],
+                    db: -30.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.0, 0.0, 0.0],
+                    db: -20.0,
+                },
+                SpectrumGradientStop {
+                    rgb: [0.0, 0.0, 0.0],
+                    db: 5.0,
+                },
+            ],
+        }
+        .normalized();
+        assert_eq!(g.stops[0].rgb, [1.0, 0.0, 0.5]);
+        assert_eq!(g.stops[0].db, SPECTRUM_GRADIENT_DB_FLOOR);
+        assert_eq!(g.stops[4].db, 0.0);
+        // Middles stay ordered between the pinned ends.
+        assert!(g.stops[1].db >= g.stops[0].db);
+        assert!(g.stops[2].db >= g.stops[1].db);
+        assert!(g.stops[3].db >= g.stops[2].db);
+        assert!(g.stops[3].db <= g.stops[4].db);
+    }
+
+    #[test]
+    fn spectrum_gradient_clamp_stop_db_respects_neighbors() {
+        let g = SpectrumGradient::classic();
+        assert!((g.clamp_stop_db(2, -100.0) - g.stops[1].db).abs() < 1e-5);
+        assert!((g.clamp_stop_db(2, 10.0) - g.stops[3].db).abs() < 1e-5);
+        assert!((g.clamp_stop_db(0, -100.0) - SPECTRUM_GRADIENT_DB_FLOOR).abs() < 1e-5);
+        assert!((g.clamp_stop_db(4, 10.0) - 0.0).abs() < 1e-5);
+        assert!((g.clamp_stop_db(0, -40.0) - SPECTRUM_GRADIENT_DB_FLOOR).abs() < 1e-5);
+        assert!((g.clamp_stop_db(4, -40.0) - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn spectrum_gradient_fingerprints_differ_when_stops_differ() {
+        let a = SpectrumGradient::classic();
+        let mut b = a;
+        b.stops[1].rgb[0] = 0.9;
+        assert_ne!(a.fingerprint(), b.fingerprint());
+        let mut c = a;
+        c.stops[1].db = -55.0;
+        assert_ne!(a.fingerprint(), c.fingerprint());
+        assert_eq!(a.fingerprint(), a.fingerprint());
     }
 }

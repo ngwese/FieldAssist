@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use field_features::{Feature, FeatureFlags, FeatureRegistry};
 use field_ui_components::{
-    PeakRendering, WaveformRepresentation, DEFAULT_THREADED_RIBBON_DB,
-    DEFAULT_THREADED_SHELL_VALUE_REDUCE,
+    PeakRendering, SpectrumGradient, SpectrumGradientStop, WaveformRepresentation,
+    DEFAULT_THREADED_RIBBON_DB, DEFAULT_THREADED_SHELL_VALUE_REDUCE, SPECTRUM_GRADIENT_DB_FLOOR,
 };
 use gpui_kit::{App, Global};
 use schemars::JsonSchema;
@@ -179,16 +179,58 @@ pub struct WaveformSettings {
     pub threaded_shell_value_reduce: f32,
     /// Ribbon amplitude scale in dBFS for Threaded peak paint.
     pub threaded_ribbon_db: f32,
+    /// Five spectrum heatmap stops (quiet → loud).
+    pub spectrum_gradient: [SpectrumGradientStopSettings; 5],
+}
+
+/// One spectrum heatmap stop stored in `settings.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SpectrumGradientStopSettings {
+    /// Linear RGB in `0..=1`.
+    pub rgb: [f32; 3],
+    /// Intensity in dBFS (`SPECTRUM_GRADIENT_DB_FLOOR..=0`).
+    pub db: f32,
+}
+
+impl Default for SpectrumGradientStopSettings {
+    fn default() -> Self {
+        // Placeholder; array default comes from [`WaveformSettings::default`].
+        Self {
+            rgb: [0.0, 0.0, 0.0],
+            db: SPECTRUM_GRADIENT_DB_FLOOR,
+        }
+    }
+}
+
+impl From<SpectrumGradientStop> for SpectrumGradientStopSettings {
+    fn from(stop: SpectrumGradientStop) -> Self {
+        Self {
+            rgb: stop.rgb,
+            db: stop.db,
+        }
+    }
+}
+
+impl From<SpectrumGradientStopSettings> for SpectrumGradientStop {
+    fn from(stop: SpectrumGradientStopSettings) -> Self {
+        SpectrumGradientStop {
+            rgb: stop.rgb,
+            db: stop.db,
+        }
+    }
 }
 
 impl Default for WaveformSettings {
     fn default() -> Self {
+        let classic = SpectrumGradient::classic();
         Self {
             representation: "peaks".into(),
             follow_playhead: true,
             peak_rendering: "threaded".into(),
             threaded_shell_value_reduce: DEFAULT_THREADED_SHELL_VALUE_REDUCE,
             threaded_ribbon_db: DEFAULT_THREADED_RIBBON_DB,
+            spectrum_gradient: classic.stops.map(SpectrumGradientStopSettings::from),
         }
     }
 }
@@ -247,6 +289,40 @@ impl WaveformSettings {
 
     pub fn set_threaded_ribbon_db(&mut self, value: f32) {
         self.threaded_ribbon_db = field_ui_components::clamp_threaded_ribbon_db(value);
+    }
+
+    /// Convert stored stops into a normalized paint colormap.
+    pub fn spectrum_gradient_enum(&self) -> SpectrumGradient {
+        SpectrumGradient {
+            stops: self.spectrum_gradient.map(SpectrumGradientStop::from),
+        }
+        .normalized()
+    }
+
+    /// Replace the spectrum gradient (normalized) and sync stored stops.
+    pub fn set_spectrum_gradient(&mut self, gradient: SpectrumGradient) {
+        let gradient = gradient.normalized();
+        self.spectrum_gradient = gradient.stops.map(SpectrumGradientStopSettings::from);
+    }
+
+    /// Update one stop's RGB and re-normalize.
+    pub fn set_spectrum_stop_rgb(&mut self, index: usize, rgb: [f32; 3]) {
+        if let Some(stop) = self.spectrum_gradient.get_mut(index) {
+            stop.rgb = rgb;
+            let g = self.spectrum_gradient_enum();
+            self.spectrum_gradient = g.stops.map(SpectrumGradientStopSettings::from);
+        }
+    }
+
+    /// Update one stop's dB (clamped between neighbors) and re-normalize.
+    pub fn set_spectrum_stop_db(&mut self, index: usize, db: f32) {
+        let g = self.spectrum_gradient_enum();
+        let db = g.clamp_stop_db(index, db);
+        if let Some(stop) = self.spectrum_gradient.get_mut(index) {
+            stop.db = db;
+            let g = self.spectrum_gradient_enum();
+            self.spectrum_gradient = g.stops.map(SpectrumGradientStopSettings::from);
+        }
     }
 }
 
@@ -436,6 +512,10 @@ mod tests {
             DEFAULT_THREADED_SHELL_VALUE_REDUCE
         );
         assert_eq!(s.waveform.threaded_ribbon_db, DEFAULT_THREADED_RIBBON_DB);
+        assert_eq!(
+            s.waveform.spectrum_gradient_enum(),
+            SpectrumGradient::classic()
+        );
         assert!(s.selection.zero_crossing);
         assert!(!s.selection.snap_to_marker);
         assert!(s.selection.add_at_hover);
@@ -461,6 +541,16 @@ mod tests {
         assert!(text.contains("\"format_version\": 1"), "{text}");
         let back: AppSettings = serde_json::from_str(&text).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn spectrum_gradient_stop_db_clamps_between_neighbors() {
+        let mut s = AppSettings::default();
+        s.waveform.set_spectrum_stop_db(2, -100.0);
+        let g = s.waveform.spectrum_gradient_enum();
+        assert!((g.stops[2].db - g.stops[1].db).abs() < 1e-5);
+        s.waveform.set_spectrum_stop_rgb(0, [1.0, 0.0, 0.0]);
+        assert_eq!(s.waveform.spectrum_gradient[0].rgb, [1.0, 0.0, 0.0]);
     }
 
     #[test]
