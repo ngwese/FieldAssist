@@ -8,6 +8,8 @@
 | --- | --- | --- |
 | 1 | 2026-09-11 | Initial as-built specification |
 | 2 | 2026-09-12 | Prototype/instance pattern; `app:run_workflow` |
+| 3 | 2026-09-20 | Toolbar controls are `app.ui` constructors with `action(control, workflow)` |
+| 4 | 2026-09-20 | Workflow `:on` for app events; `session_selected` and `composition_selected` |
 
 This document specifies the Lua host, workflow system, and how they support
 incremental review. The Lua surface is defined in [SCRIPT.md](../SCRIPT.md);
@@ -26,7 +28,7 @@ Related:
 
 FieldAssist embeds Lua 5.4 so ingest, layout detection, and multi-file
 review can be scripted instead of hard-coded. The original product tracked
-“what has been reviewed” on a workspace collection. The as-built app does
+keep / drop decisions on a workspace collection. The as-built app does
 that with **session document groups** plus a **stateful Review workflow**,
 not a `review_status` enum or a database.
 
@@ -81,7 +83,7 @@ exist for user scripts.
 
 Document `group`, `state`, and `properties` persist in the `.fasession`.
 They are not written to `.facomp`. Built-in Review uses **`group` only**
-(`todo`, `reviewed`, `drop`). `state` is available to other scripts.
+(`todo`, `keep`, `drop`). `state` is available to other scripts.
 
 `session.properties` is a string→string map (`nil` values rejected). Review
 stores its output directory as `properties.output` on suspend.
@@ -157,13 +159,20 @@ sorted alphabetically.
 ### Toolbar
 
 `:set_toolbar(items)` / `:set_item(id, props)` from `start`, `resume`, or a
-workflow-local command handler. The bar sits between the dock and the status
-bar while a stateful workflow is bound and items are non-empty. It shows
-`display_name`, left-aligned items, a spacer, then right-aligned items.
+control `action`. The bar sits between the dock and the status bar while a
+stateful workflow is bound and items are non-empty. It shows `display_name`,
+left-aligned items, a spacer, then right-aligned items.
 
-Item kinds: `button` (or omitted when `command` is set), `path`, `toggle`,
-`message`, `divider`. Workflow `command` strings are **not** keymap ids.
-`:on("command", handler)` is workflow-local; last registration wins.
+Items come from `app.ui` functions: `button`, `toggle`, `message`,
+`text_entry`, `path_entry`, and `divider`. Each interactive control may set
+`action = function(control, workflow)`. Buttons may set `icon` to show an
+icon-only control (`label` becomes the tooltip). Toggle may set `on_icon`.
+Icon names: `"check"`, `"circle-check"`, `"circle-x"`, `"circle-alert"`,
+`"arrow-left"`, `"arrow-right"` (underscores also accepted). Omitting
+`off_color` uses the same foreground as ghost toolbar buttons. Assigning
+`label`, `value`, `text`, `color`, `on_color`, `off_color`, `icon`,
+`on_icon`, or `align` on that control updates the bar.
+There is no workflow `:on("command")`, and toolbar ids are not keymap ids.
 
 ## Built-in workflows
 
@@ -190,7 +199,7 @@ Exactly one path required; otherwise an alert.
 
 Review is the as-built stand-in for “work through the collection.”
 
-**Groups:** `todo`, `reviewed`, `drop` on `c.group`.
+**Groups:** `todo`, `keep`, `drop` on `c.group`.
 
 **Start:**
 
@@ -199,14 +208,14 @@ Review is the as-built stand-in for “work through the collection.”
   for readable audio / `.facomp` extensions; open each file into `todo`
 
 Start and resume turn transport loop and Preview on, show the explorer, and
-install the toolbar: Previous, Next, Drop, Reviewed toggle, progress
-message, Output directory, Finish.
+install the toolbar: Previous / Next (arrow icons), Keep toggle, Drop
+toggle, progress message, Output directory, Finish.
 
-- Previous / Next cycle `todo` (wrap)
-- Drop moves the active document to `drop`
-- Reviewed on → `reviewed`; off → `todo`. Does not change the active
-  document.
-- Progress is `{reviewed} of {reviewed + todo} files reviewed`
+- Previous / Next (arrow-left / arrow-right) cycle `todo` (wrap)
+- Drop on → `drop` (red, circle-x icon); off → `todo`
+- Keep on → `keep` (circle-check icon); off → `todo`. Does not
+  change the active document.
+- Progress is `{keep} of {keep + drop} kept, {todo} remaining`
 - Finish → `app:finish_workflow()`; warns if any documents remain `todo`;
   turns loop and Preview off
 - `suspend` writes `session.properties.output`; `resume` restores it
@@ -243,7 +252,14 @@ chains.
 | `saved` | `(composition, elapsed_seconds)` |
 | `session_loaded` | `(session)` |
 | `session_saved` | `(session)` |
+| `session_selected` | `(session)` |
+| `composition_selected` | `(composition)` |
 | `detect_layout` | `(composition, chosen) → name or nil` |
+
+`session_selected` fires after the UI session is installed or replaced.
+`composition_selected` fires when the focused composition changes, including
+a click in the compositions pane. A running workflow can subscribe with
+`:on`; those handlers receive `self` first and stop when the run ends.
 
 Unknown `app:on` names are errors. Hook errors from `loaded` / `saved` print
 to the Script panel.
@@ -252,7 +268,7 @@ to the Script panel.
 
 `app:command(id)` runs the same ids as menus and the keymap (see
 [SPEC-application.md](SPEC-application.md)). Unknown ids error. Workflow
-toolbar commands are a separate namespace.
+toolbar actions are separate from `app:command` ids.
 
 Scripts can open, replace, save, and close compositions; save the active
 session; edit markers, regions, collections, and the EDL; set layout and
