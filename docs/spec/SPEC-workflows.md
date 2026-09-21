@@ -10,6 +10,7 @@
 | 2 | 2026-09-12 | Prototype/instance pattern; `app:run_workflow` |
 | 3 | 2026-09-20 | Toolbar controls are `app.ui` constructors with `action(control, workflow)` |
 | 4 | 2026-09-20 | Workflow `:on` for app events; `session_selected` and `composition_selected` |
+| 5 | 2026-09-21 | Composing workflows; link to field-recording pipeline |
 
 This document specifies the Lua host, workflow system, and how they support
 incremental review. The Lua surface is defined in [SCRIPT.md](../SCRIPT.md);
@@ -22,6 +23,8 @@ Related:
   driven by these workflows today)
 - [SPEC-processing.md](SPEC-processing.md) — future processing chains (not
   driven by these workflows today)
+- [SPEC-field-recording.md](SPEC-field-recording.md) — Ingest → Review →
+  Catalog reference pipeline (composing workflows; intended host APIs)
 - [SCRIPT.md](../SCRIPT.md) — API reference
 
 ## Purpose
@@ -136,6 +139,18 @@ Unknown or one-shot names: log, no toolbar, Keep (leave the name) or Clear
 **Suspend** runs before Save Session / Save Session As, and during quit or
 open-session after compositions are clean (before the unsaved-session
 prompt). Return `false` (or error) aborts that save or quit.
+
+### Composing workflows
+
+Larger end-to-end jobs are modeled as **sequential stateful workflows**, not
+one nested script. Only one stateful run may be bound at a time; finish the
+current run, then start the next. The field-recording pipeline (Ingest →
+Review → Catalog) is the reference example: see
+[SPEC-field-recording.md](SPEC-field-recording.md) and the copyable scripts
+under [docs/examples/workflows/field-recording/](../examples/workflows/field-recording/).
+An intended handoff helper (`app:finish_workflow({ next = "…" })`) is
+specified there; until it ships, users start the next stage from the Workflow
+menu.
 
 ### Drop overlay
 

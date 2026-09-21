@@ -3,6 +3,13 @@
 FieldAssist embeds Lua 5.4. Scripts run in the **Script** panel (View → Show
 Script) and from files loaded at startup.
 
+This file documents the **as-built** Lua surface. A reference Ingest → Review
+→ Catalog pipeline and the **intended** host APIs it needs (confirm, `app.url`,
+`app.fs`, SQLite sidecar, metadata, handoff) are specified in
+[spec/SPEC-field-recording.md](spec/SPEC-field-recording.md); copyable example
+scripts live under
+[examples/workflows/field-recording/](examples/workflows/field-recording/).
+
 ## Table of contents
 
 1. [Initilization](#initilization)

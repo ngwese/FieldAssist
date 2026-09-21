@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 1 | 2026-09-11 | Initial draft of the processing layer |
 | 2 | 2026-09-16 | Playback prefetch SRC is bandlimited (not drop-sample) |
+| 3 | 2026-09-21 | Catalog workflow as batch-export consumer; sidecar ledger pointer |
 
 This is a future product layer. The as-built application already has
 **monitor chains** (playback listen DSP) and **File → Render** (one-shot
@@ -22,6 +23,8 @@ Related:
   markers / regions; peaks already ship). Not a substitute for processing
 - [SPEC-workflows.md](SPEC-workflows.md) — Lua review/ingest (how files enter
   and move through a session)
+- [SPEC-field-recording.md](SPEC-field-recording.md) — Catalog workflow is the
+  reference consumer of batch export + processing chains
 
 ## Purpose
 
@@ -165,10 +168,18 @@ Requirements carried from the original product intent:
 File → Render remains the interactive single-composition export. Batch is
 the many-item path that uses processing chains.
 
+The **Catalog** stage of the field-recording pipeline
+([SPEC-field-recording.md](SPEC-field-recording.md)) is the reference workflow
+that walks session `keep` documents, applies each target’s chain (or the
+session default), and writes library files. Until batch export ships, that
+example uses a placeholder `composition:export(spec)`.
+
 ## What this spec does not include
 
 - Third-party plugins (VST, AU, CLAP, …)
-- SQLite or a workspace directory with staged copies
+- Replacing `.fasession` with a database (a sidecar ledger for ingest/catalog
+  is specified in [SPEC-field-recording.md](SPEC-field-recording.md), separate
+  from processing)
 - Replacing or folding monitor DSP into the processing chain
 - Treating Faust monitor parameters as the chain’s gain/normalize
   operations

@@ -7,6 +7,7 @@
 | Revision | Date | Notes |
 | --- | --- | --- |
 | 1 | 2026-09-11 | Initial as-built specification |
+| 2 | 2026-09-21 | Link field-recording pipeline; reframe SQLite/staging as specified-future |
 
 This document describes the shipping desktop application. Where an earlier
 FieldAssist spec used different names or features, this file follows the
@@ -21,6 +22,9 @@ Related:
   are future
 - [SPEC-processing.md](SPEC-processing.md) — future processing chains, preview,
   and batch export. Additive to monitor DSP; not a replacement.
+- [SPEC-field-recording.md](SPEC-field-recording.md) — Ingest → Review →
+  Catalog reference pipeline and intended host APIs (staging, SQLite sidecar,
+  confirm, metadata)
 - [SCRIPT.md](../SCRIPT.md) — Lua API reference
 - [BUILDING.md](../BUILDING.md) — build and packaging
 
@@ -487,11 +491,15 @@ file at the path the user chose. Temp spill is under the OS temp directory.
 
 ## Out of scope for the as-built application
 
-The following appeared in earlier FieldAssist specs and are **not** in this
-application. Do not treat them as missing bugs of the current build:
+The following are **not shipping** in the current build. Do not treat them as
+bugs of today’s binary; several are **specified future** work elsewhere:
 
-- SQLite (or any database) project store
-- Staging copies of source files into a workspace directory
+- SQLite (or any database) as a **project store** replacing `.fasession` —
+  rejected. A **sidecar SQLite ledger** for resumable ingest/catalog jobs is
+  specified in [SPEC-field-recording.md](SPEC-field-recording.md), not as-built
+- Staging copies of source files into a workspace directory — specified for
+  the Ingest stage in [SPEC-field-recording.md](SPEC-field-recording.md); not
+  in the current host
 - Third-party plugin hosting (VST, AU, CLAP, …)
 - Named processing-chain shelf, default chain, interactive chain preview
 - Background batch over many files or regions with captured chain state
@@ -503,4 +511,5 @@ additions**, not missing bugs of the current build. Overview peaks, Envelope
 Peak overlay, and Transient detection are shipping; see
 [SPEC-analysis.md](SPEC-analysis.md). Incremental review of many files is in
 [SPEC-workflows.md](SPEC-workflows.md) (built-in Review), not a collection
-`review_status` enum.
+`review_status` enum. The Ingest → Review → Catalog composition pattern is in
+[SPEC-field-recording.md](SPEC-field-recording.md).
