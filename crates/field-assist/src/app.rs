@@ -2154,6 +2154,61 @@ impl AppView {
         }
     }
 
+    fn script_tab_visible(&self, cx: &App) -> bool {
+        if !self.script_dock_open(cx) {
+            return false;
+        }
+        let area = self.dock_area.read(cx);
+        let Some(tree) = area.layout(DockPlacement::Bottom) else {
+            return false;
+        };
+        let panel_id = PanelId::from(self.repl.entity_id());
+        let Some(node) = tree.find_panel_node(panel_id) else {
+            return false;
+        };
+        match tree.find_node(node).map(|node| node.kind()) {
+            Some(PaneRef::Tabs { panels, active_ix }) => panels.get(active_ix) == Some(&panel_id),
+            _ => false,
+        }
+    }
+
+    fn toggle_script_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.script_tab_visible(cx) {
+            self.hide_script_dock(window, cx);
+            return;
+        }
+        self.show_script_tab(window, cx);
+    }
+
+    fn show_script_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel_id = PanelId::from(self.repl.entity_id());
+        let dock_open = self.script_dock_open(cx);
+        if !dock_open {
+            self.show_script_dock(window, cx);
+        }
+        self.dock_area.update(cx, |area, cx| {
+            if let Some((node, ix, active_ix)) =
+                Self::panel_tab_slot(area, DockPlacement::Bottom, panel_id)
+            {
+                if ix != active_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        });
+        self.repl.focus_handle(cx).focus(window, cx);
+        self.sync_view_menus(cx);
+        cx.notify();
+    }
+
     fn toggle_messages_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.messages_tab_visible(cx) {
             self.hide_script_dock(window, cx);
@@ -5109,6 +5164,26 @@ impl Render for AppView {
                 }
             }) as Rc<dyn Fn(bool, &mut Window, &mut App)>
         };
+        let on_script = {
+            let app = cx.weak_entity();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |this, cx| {
+                        this.toggle_script_tab(window, cx);
+                    });
+                }
+            }) as Rc<dyn Fn(&mut Window, &mut App)>
+        };
+        let on_media = {
+            let app = cx.weak_entity();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |this, cx| {
+                        this.toggle_media_tab(window, cx);
+                    });
+                }
+            }) as Rc<dyn Fn(&mut Window, &mut App)>
+        };
         let on_preview = {
             let app = cx.weak_entity();
             Rc::new(move |_window: &mut Window, cx: &mut App| {
@@ -5276,6 +5351,10 @@ impl Render for AppView {
                                             .with_progress_message(progress_message)
                                             .with_preview(Some(on_preview))
                                             .with_preview_selected(self.preview_enabled)
+                                            .with_script(Some(on_script))
+                                            .with_script_selected(self.script_tab_visible(cx))
+                                            .with_media(Some(on_media))
+                                            .with_media_selected(self.media_tab_visible(cx))
                                             .with_message_alerts(
                                                 error_count,
                                                 warn_count,

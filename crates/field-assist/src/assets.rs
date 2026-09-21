@@ -65,6 +65,10 @@ const EXTRA_ICONS: &[(&str, &[u8])] = &[
         "icons/square-text.svg",
         include_bytes!("../assets/icons/square-text.svg"),
     ),
+    (
+        "icons/terminal.svg",
+        include_bytes!("../assets/icons/terminal.svg"),
+    ),
 ];
 
 /// App icons first, then the Lucide subset shipped by gpui-kit-assets.

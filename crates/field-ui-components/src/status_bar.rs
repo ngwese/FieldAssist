@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! Session status bar chrome: file metadata, message alerts, layout, monitor.
+//! Session status bar chrome: file metadata, script/messages alerts, layout, monitor.
 
 use std::rc::Rc;
 
@@ -58,6 +58,10 @@ pub struct SessionStatusBar {
     monitor_faulted: bool,
     on_preview: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     preview_selected: bool,
+    on_script: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    script_selected: bool,
+    on_media: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    media_selected: bool,
     error_count: usize,
     warn_count: usize,
     on_messages: Option<Rc<dyn Fn(bool, &mut Window, &mut App)>>,
@@ -75,6 +79,10 @@ impl SessionStatusBar {
             monitor_faulted: false,
             on_preview: None,
             preview_selected: false,
+            on_script: None,
+            script_selected: false,
+            on_media: None,
+            media_selected: false,
             error_count: 0,
             warn_count: 0,
             on_messages: None,
@@ -123,6 +131,30 @@ impl SessionStatusBar {
         self
     }
 
+    /// Attach a Script-panel toggle (prompt icon).
+    pub fn with_script(mut self, on_script: Option<Rc<dyn Fn(&mut Window, &mut App)>>) -> Self {
+        self.on_script = on_script;
+        self
+    }
+
+    /// Whether the Script toggle appears selected.
+    pub fn with_script_selected(mut self, selected: bool) -> Self {
+        self.script_selected = selected;
+        self
+    }
+
+    /// Attach a Media-panel toggle.
+    pub fn with_media(mut self, on_media: Option<Rc<dyn Fn(&mut Window, &mut App)>>) -> Self {
+        self.on_media = on_media;
+        self
+    }
+
+    /// Whether the Media toggle appears selected.
+    pub fn with_media_selected(mut self, selected: bool) -> Self {
+        self.media_selected = selected;
+        self
+    }
+
     /// Show error/warn message counts. Click toggles the Messages tab;
     /// Shift-click clears the counters (`on_click` receives `true` when Shift
     /// was held).
@@ -166,6 +198,12 @@ impl RenderOnce for SessionStatusBar {
                         .map(format_bytes)
                         .unwrap_or_else(|| "—".into()),
                 );
+        }
+        if let Some(on_script) = self.on_script {
+            bar = bar.left(script_button(on_script, self.script_selected, muted));
+        }
+        if let Some(on_media) = self.on_media {
+            bar = bar.left(media_button(on_media, self.media_selected, muted));
         }
         if let Some(on_messages) = self.on_messages {
             bar = bar.left(message_alerts_button(
@@ -215,6 +253,64 @@ impl IconNamed for CirclePlayIcon {
     fn path(self) -> SharedString {
         "icons/circle-play.svg".into()
     }
+}
+
+struct TerminalIcon;
+
+impl IconNamed for TerminalIcon {
+    fn path(self) -> SharedString {
+        "icons/terminal.svg".into()
+    }
+}
+
+struct AudioLinesIcon;
+
+impl IconNamed for AudioLinesIcon {
+    fn path(self) -> SharedString {
+        "icons/audio-lines.svg".into()
+    }
+}
+
+fn script_button(
+    on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+    selected: bool,
+    muted: Hsla,
+) -> impl IntoElement {
+    Button::new("status-script")
+        .ghost()
+        .xsmall()
+        .p_0()
+        .ml_2()
+        .text_color(muted)
+        .child(Icon::new(TerminalIcon).xsmall().text_color(muted))
+        .tooltip(if selected {
+            "Hide Script"
+        } else {
+            "Show Script"
+        })
+        .selected(selected)
+        .on_click(move |_, window, cx| {
+            (on_click)(window, cx);
+        })
+}
+
+fn media_button(
+    on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+    selected: bool,
+    muted: Hsla,
+) -> impl IntoElement {
+    Button::new("status-media")
+        .ghost()
+        .xsmall()
+        .p_0()
+        .ml_2()
+        .text_color(muted)
+        .child(Icon::new(AudioLinesIcon).xsmall().text_color(muted))
+        .tooltip(if selected { "Hide Media" } else { "Show Media" })
+        .selected(selected)
+        .on_click(move |_, window, cx| {
+            (on_click)(window, cx);
+        })
 }
 
 fn message_alerts_button(
