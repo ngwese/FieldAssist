@@ -31,7 +31,9 @@ impl UserData for LuaApp {
             let host = host_from_lua(lua)?;
             Ok(host.active().map(|id| LuaComposition { id }))
         });
-        fields.add_field_method_set("composition", |lua, _, value: Value| {
+        fields.add_field_function_set("composition", |lua, _this, value: Value| {
+            // Do not borrow `app` here. Selecting a composition runs
+            // composition_selected hooks, and those hooks read `app` fields.
             let host = host_from_lua(lua)?;
             let doc = LuaComposition::from_lua(value, lua)?;
             host.set_active(doc.id)
@@ -72,6 +74,7 @@ impl UserData for LuaApp {
             Ok(host.output_devices())
         });
         fields.add_field_method_get("theme", |_, _| Ok(LuaTheme));
+        fields.add_field_method_get("ui", |lua, _| super::workflow_toolbar::ui_namespace(lua));
         fields.add_field_method_get("looping", |lua, _| {
             let host = host_from_lua(lua)?;
             Ok(host.looping())
@@ -213,11 +216,9 @@ impl UserData for LuaApp {
                 "saved" => host.on_saved(callback),
                 "session_loaded" => host.on_session_loaded(callback),
                 "session_saved" => host.on_session_saved(callback),
-                _ => {
-                    return Err(mlua::Error::runtime(format!(
-                        "unknown event `{event}`; expected \"loaded\", \"detect_layout\", \"saved\", \"session_loaded\", or \"session_saved\""
-                    )))
-                }
+                "session_selected" => host.on_session_selected(callback),
+                "composition_selected" => host.on_composition_selected(callback),
+                _ => return Err(mlua::Error::runtime(super::host::unknown_app_event(&event))),
             }
             Ok(())
         });

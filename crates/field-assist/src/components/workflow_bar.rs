@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     tooltip::Tooltip,
-    ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _, Size, StyleSized as _,
-    StyledExt as _,
+    ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Sizable as _, Size,
+    StyleSized as _, StyledExt as _,
 };
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, rems, AppContext as _, Context, Entity, ExternalPaths,
@@ -55,6 +55,24 @@ impl IconNamed for SquareIcon {
     }
 }
 
+/// Lucide `circle-alert` is not in the kit's default icon pack.
+const CIRCLE_ALERT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>"#;
+
+fn toggle_on_icon(name: &str, color: Hsla) -> Icon {
+    toolbar_icon(name).text_color(color)
+}
+
+fn toolbar_icon(name: &str) -> Icon {
+    match name {
+        "circle_check" => Icon::new(IconName::CircleCheck),
+        "circle_x" => Icon::new(IconName::CircleX),
+        "circle_alert" => Icon::default().data(CIRCLE_ALERT_SVG),
+        "arrow_left" => Icon::new(IconName::ArrowLeft),
+        "arrow_right" => Icon::new(IconName::ArrowRight),
+        _ => Icon::new(IconName::Check),
+    }
+}
+
 pub struct WorkflowBar {
     title: SharedString,
     items: Vec<ToolbarItem>,
@@ -91,7 +109,9 @@ impl WorkflowBar {
             .items
             .iter()
             .filter_map(|item| match item {
-                ToolbarItem::Path { id, .. } => Some(id.clone()),
+                ToolbarItem::PathEntry { id, .. } | ToolbarItem::Text { id, .. } => {
+                    Some(id.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -132,14 +152,9 @@ impl WorkflowBar {
                 // Keep local items in sync so blur does not restore a stale
                 // snapshot into the Input.
                 for item in &mut this.items {
-                    if let ToolbarItem::Path {
-                        id, value: stored, ..
-                    } = item
-                    {
-                        if id == &item_id {
-                            *stored = value.clone();
-                            break;
-                        }
+                    if let Some(stored) = entry_value_mut(item, &item_id) {
+                        *stored = value.clone();
+                        break;
                     }
                 }
                 let item_id = item_id.clone();
@@ -149,7 +164,7 @@ impl WorkflowBar {
                 window.defer(cx, move |window, cx| {
                     if let Some(app) = app.upgrade() {
                         app.update(cx, |this, cx| {
-                            this.set_toolbar_path_value(&item_id, &value, window, cx);
+                            this.set_toolbar_entry_value(&item_id, &value, window, cx);
                         });
                     }
                 });
@@ -255,6 +270,148 @@ impl Render for WorkflowBar {
 }
 
 impl WorkflowBar {
+    fn render_entry(
+        &mut self,
+        ix: usize,
+        id: String,
+        label: Option<String>,
+        value: String,
+        browse: Option<PathBrowse>,
+        accept_drop: bool,
+        muted: Hsla,
+        drop_highlight: Hsla,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let input = self.path_input(&id, &value, window, cx);
+        let app = self.app.clone();
+        let field_id = id.clone();
+        let focused = input.read(cx).focus_handle(cx).is_focused(window);
+        let full = input.read(cx).value().to_string();
+        let theme = cx.theme().clone();
+        let row = h_flex()
+            .id(("workflow-path", ix))
+            .gap_2()
+            .items_center()
+            .w(PATH_FIELD_WIDTH)
+            .min_w_0()
+            .when_some(label, |this, label| {
+                this.child(div().flex_none().text_sm().text_color(muted).child(label))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(accept_drop, |this| {
+                        this.can_drop(|data, _, _| {
+                            data.downcast_ref::<ExternalPaths>().is_some()
+                                || data
+                                    .downcast_ref::<CompositionDrag>()
+                                    .is_some_and(|drag| drag.path.is_some())
+                        })
+                        .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_highlight))
+                        .drag_over::<CompositionDrag>(move |style, _, _, _| {
+                            style.bg(drop_highlight)
+                        })
+                        .on_drop({
+                            let app = app.clone();
+                            let field_id = field_id.clone();
+                            move |paths: &ExternalPaths, window, cx| {
+                                let paths: Vec<PathBuf> = paths.paths().to_vec();
+                                let app = app.clone();
+                                let field_id = field_id.clone();
+                                window.defer(cx, move |window, cx| {
+                                    if let Some(app) = app.upgrade() {
+                                        app.update(cx, |this, cx| {
+                                            this.dispatch_toolbar_path(
+                                                &field_id, &paths, window, cx,
+                                            );
+                                        });
+                                    }
+                                });
+                            }
+                        })
+                        .on_drop({
+                            let app = app.clone();
+                            let field_id = field_id.clone();
+                            move |drag: &CompositionDrag, window, cx| {
+                                let Some(path) = drag.path.clone() else {
+                                    return;
+                                };
+                                let app = app.clone();
+                                let field_id = field_id.clone();
+                                window.defer(cx, move |window, cx| {
+                                    if let Some(app) = app.upgrade() {
+                                        app.update(cx, |this, cx| {
+                                            this.dispatch_toolbar_path(
+                                                &field_id,
+                                                &[path],
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                });
+                            }
+                        })
+                    })
+                    .map(|this| {
+                        // Keep a fixed small-input height so focus/blur
+                        // does not resize the toolbar.
+                        this.h_6().map(|this| {
+                            if focused {
+                                this.child(Input::new(&input).small().w_full().h_full())
+                            } else {
+                                let focus = input.read(cx).focus_handle(cx);
+                                let preview = middle_ellipsis(&full, PATH_DISPLAY_CHARS);
+                                this.child(
+                                    div()
+                                        .id(("workflow-path-preview", ix))
+                                        .w_full()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .input_px(Size::Small)
+                                        .rounded(cx.theme().radius)
+                                        .border_1()
+                                        .border_color(theme.input)
+                                        .bg(theme.background)
+                                        .input_text_size(Size::Small)
+                                        .text_color(theme.foreground)
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .cursor_text()
+                                        .tooltip({
+                                            let full = full.clone();
+                                            move |window, cx| {
+                                                Tooltip::new(full.clone()).build(window, cx)
+                                            }
+                                        })
+                                        .child(preview)
+                                        .on_click(move |_, window, cx| {
+                                            focus.focus(window, cx);
+                                        }),
+                                )
+                            }
+                        })
+                    }),
+            )
+            .when_some(browse, |this, browse| {
+                let app_id = id.clone();
+                this.child(
+                    Button::new(("workflow-browse", ix))
+                        .ghost()
+                        .small()
+                        .icon(IconName::FolderOpen)
+                        .tooltip("Browse")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.prompt_browse(app_id.clone(), browse, window, cx);
+                        })),
+                )
+            });
+        row.into_any_element()
+    }
+
     fn render_item(
         &mut self,
         ix: usize,
@@ -265,177 +422,109 @@ impl WorkflowBar {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         match item {
-            ToolbarItem::Button { command, label, .. } => {
+            ToolbarItem::Button {
+                id, label, icon, ..
+            } => {
                 let app = self.app.clone();
-                Button::new(("workflow-cmd", ix))
-                    .ghost()
-                    .small()
-                    .label(label)
+                let mut button = Button::new(("workflow-cmd", ix)).ghost().small();
+                button = match icon {
+                    Some(name) => button
+                        .icon(toolbar_icon(&name))
+                        .tooltip(label.clone())
+                        .accessibility_label(label),
+                    None => button.label(label),
+                };
+                button
                     .on_click(move |_, window, cx| {
                         if let Some(app) = app.upgrade() {
                             app.update(cx, |this, cx| {
-                                this.dispatch_workflow_command(&command, window, cx);
+                                this.dispatch_toolbar_button(&id, window, cx);
                             });
                         }
                     })
                     .into_any_element()
             }
-            ToolbarItem::Path {
+            ToolbarItem::PathEntry {
                 id,
                 label,
                 value,
                 browse,
                 ..
-            } => {
-                let input = self.path_input(&id, &value, window, cx);
-                let app = self.app.clone();
-                let field_id = id.clone();
-                let focused = input.read(cx).focus_handle(cx).is_focused(window);
-                let full = input.read(cx).value().to_string();
-                let theme = cx.theme().clone();
-                let row = h_flex()
-                    .id(("workflow-path", ix))
-                    .gap_2()
-                    .items_center()
-                    .w(PATH_FIELD_WIDTH)
-                    .min_w_0()
-                    .when_some(label, |this, label| {
-                        this.child(div().flex_none().text_sm().text_color(muted).child(label))
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .can_drop(|data, _, _| {
-                                data.downcast_ref::<ExternalPaths>().is_some()
-                                    || data
-                                        .downcast_ref::<CompositionDrag>()
-                                        .is_some_and(|drag| drag.path.is_some())
-                            })
-                            .drag_over::<ExternalPaths>(move |style, _, _, _| {
-                                style.bg(drop_highlight)
-                            })
-                            .drag_over::<CompositionDrag>(move |style, _, _, _| {
-                                style.bg(drop_highlight)
-                            })
-                            .on_drop({
-                                let app = app.clone();
-                                let field_id = field_id.clone();
-                                move |paths: &ExternalPaths, window, cx| {
-                                    let paths: Vec<PathBuf> = paths.paths().to_vec();
-                                    let app = app.clone();
-                                    let field_id = field_id.clone();
-                                    window.defer(cx, move |window, cx| {
-                                        if let Some(app) = app.upgrade() {
-                                            app.update(cx, |this, cx| {
-                                                this.dispatch_toolbar_path(
-                                                    &field_id, &paths, window, cx,
-                                                );
-                                            });
-                                        }
-                                    });
-                                }
-                            })
-                            .on_drop({
-                                let app = app.clone();
-                                let field_id = field_id.clone();
-                                move |drag: &CompositionDrag, window, cx| {
-                                    let Some(path) = drag.path.clone() else {
-                                        return;
-                                    };
-                                    let app = app.clone();
-                                    let field_id = field_id.clone();
-                                    window.defer(cx, move |window, cx| {
-                                        if let Some(app) = app.upgrade() {
-                                            app.update(cx, |this, cx| {
-                                                this.dispatch_toolbar_path(
-                                                    &field_id,
-                                                    &[path],
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                        }
-                                    });
-                                }
-                            })
-                            .map(|this| {
-                                // Keep a fixed small-input height so focus/blur
-                                // does not resize the toolbar.
-                                this.h_6().map(|this| {
-                                    if focused {
-                                        this.child(Input::new(&input).small().w_full().h_full())
-                                    } else {
-                                        let focus = input.read(cx).focus_handle(cx);
-                                        let preview = middle_ellipsis(&full, PATH_DISPLAY_CHARS);
-                                        this.child(
-                                            div()
-                                                .id(("workflow-path-preview", ix))
-                                                .w_full()
-                                                .h_full()
-                                                .flex()
-                                                .items_center()
-                                                .input_px(Size::Small)
-                                                .rounded(cx.theme().radius)
-                                                .border_1()
-                                                .border_color(theme.input)
-                                                .bg(theme.background)
-                                                .input_text_size(Size::Small)
-                                                .text_color(theme.foreground)
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .cursor_text()
-                                                .tooltip({
-                                                    let full = full.clone();
-                                                    move |window, cx| {
-                                                        Tooltip::new(full.clone()).build(window, cx)
-                                                    }
-                                                })
-                                                .child(preview)
-                                                .on_click(move |_, window, cx| {
-                                                    focus.focus(window, cx);
-                                                }),
-                                        )
-                                    }
-                                })
-                            }),
-                    )
-                    .when_some(browse, |this, browse| {
-                        let app_id = id.clone();
-                        this.child(
-                            Button::new(("workflow-browse", ix))
-                                .ghost()
-                                .small()
-                                .icon(IconName::FolderOpen)
-                                .tooltip("Browse")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.prompt_browse(app_id.clone(), browse, window, cx);
-                                })),
-                        )
-                    });
-                row.into_any_element()
-            }
+            } => self.render_entry(
+                ix,
+                id,
+                label,
+                value,
+                browse,
+                true,
+                muted,
+                drop_highlight,
+                window,
+                cx,
+            ),
+            ToolbarItem::Text {
+                id, label, value, ..
+            } => self.render_entry(
+                ix,
+                id,
+                label,
+                value,
+                None,
+                false,
+                muted,
+                drop_highlight,
+                window,
+                cx,
+            ),
             ToolbarItem::Toggle {
                 id,
                 label,
                 value,
                 on_color,
                 off_color,
+                on_icon,
                 ..
             } => {
-                let color = rgba(if value { on_color } else { off_color });
+                // Ghost buttons replace `.text_color` on hover/active with the
+                // theme foreground, which leaves a custom-colored icon while
+                // the label flashes white. Custom keeps the state color on
+                // both, with the same hover wash as Ghost.
+                let color = if value {
+                    rgba(on_color)
+                } else {
+                    // Match ghost toolbar buttons (Previous / Next / …).
+                    off_color
+                        .map(rgba)
+                        .unwrap_or_else(|| cx.theme().secondary_foreground)
+                };
+                let theme = cx.theme();
+                let (hover_bg, active_bg) = if theme.mode.is_dark() {
+                    (
+                        theme.secondary.lighten(0.1).opacity(0.8),
+                        theme.secondary.lighten(0.2).opacity(0.8),
+                    )
+                } else {
+                    (
+                        theme.secondary.darken(0.1).opacity(0.8),
+                        theme.secondary.darken(0.2).opacity(0.8),
+                    )
+                };
                 let icon = if value {
-                    Icon::new(IconName::Check).text_color(color)
+                    toggle_on_icon(&on_icon, color)
                 } else {
                     Icon::new(SquareIcon).text_color(color)
                 };
                 let app = self.app.clone();
                 Button::new(("workflow-toggle", ix))
-                    .ghost()
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .foreground(color)
+                            .hover(hover_bg)
+                            .active(active_bg),
+                    )
                     .small()
                     .icon(icon)
                     .label(label)
-                    .text_color(color)
                     .toggled(value)
                     .on_click(move |_, window, cx| {
                         if let Some(app) = app.upgrade() {
@@ -461,6 +550,18 @@ impl WorkflowBar {
                 .bg(cx.theme().border)
                 .into_any_element(),
         }
+    }
+}
+
+fn entry_value_mut<'a>(item: &'a mut ToolbarItem, id: &str) -> Option<&'a mut String> {
+    match item {
+        ToolbarItem::PathEntry {
+            id: item_id, value, ..
+        }
+        | ToolbarItem::Text {
+            id: item_id, value, ..
+        } if item_id == id => Some(value),
+        _ => None,
     }
 }
 

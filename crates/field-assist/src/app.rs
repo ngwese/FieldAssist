@@ -867,8 +867,11 @@ impl AppView {
             self.flush_script_logs(cx);
         }
         if let Some(id) = last_id {
-            self.session.focus(id);
+            let changed = self.session.focus(id).is_some();
             self.apply_active(window, cx);
+            if changed {
+                self.fire_composition_selected_script(window, cx);
+            }
         }
         self.refresh_explorer(cx);
         cx.notify();
@@ -925,8 +928,11 @@ impl AppView {
             self.script.fire_detect_layout(id);
             self.flush_script_logs(cx);
         }
-        self.session.focus(id);
+        let changed = self.session.focus(id).is_some();
         self.apply_active(window, cx);
+        if changed {
+            self.fire_composition_selected_script(window, cx);
+        }
         self.refresh_explorer(cx);
         cx.notify();
     }
@@ -1319,6 +1325,7 @@ impl AppView {
             return;
         }
         self.apply_active(window, cx);
+        self.fire_composition_selected_script(window, cx);
     }
 
     fn center_tab_slot(area: &DockArea, panel_id: PanelId) -> Option<(NodeId, usize, usize)> {
@@ -2605,8 +2612,11 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Result<Vec<DocumentId>, String> {
         if self.session.active() != Some(id) {
-            self.session.focus(id);
+            let changed = self.session.focus(id).is_some();
             self.apply_active(window, cx);
+            if changed {
+                self.fire_composition_selected_script(window, cx);
+            }
         }
         let before: HashSet<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
         self.break_out_regions(window, cx);
@@ -2628,8 +2638,11 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Result<DocumentId, String> {
         if self.session.active() != Some(id) {
-            self.session.focus(id);
+            let changed = self.session.focus(id).is_some();
             self.apply_active(window, cx);
+            if changed {
+                self.fire_composition_selected_script(window, cx);
+            }
         }
         if let Some(channels) = channels {
             if let Some(views) = self.views.get(&id) {
@@ -2788,16 +2801,16 @@ impl AppView {
         cx.notify();
     }
 
-    pub(crate) fn dispatch_workflow_command(
+    pub(crate) fn dispatch_toolbar_button(
         &mut self,
-        command: &str,
+        id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let _guard = crate::script::enter(self, window, cx);
-        if let Err(err) = self.script.dispatch_workflow_command(command) {
+        if let Err(err) = self.script.dispatch_toolbar_button(id) {
             self.repl.update(cx, |repl, cx| {
-                repl.append_error(&format!("workflow command `{command}`: {err}"), cx);
+                repl.append_error(&format!("toolbar button `{id}`: {err}"), cx);
             });
         }
         let prints = self.script.take_prints();
@@ -2873,7 +2886,7 @@ impl AppView {
         cx.notify();
     }
 
-    pub(crate) fn set_toolbar_path_value(
+    pub(crate) fn set_toolbar_entry_value(
         &mut self,
         id: &str,
         value: &str,
@@ -2881,9 +2894,9 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let _guard = crate::script::enter(self, window, cx);
-        if let Err(err) = self.script.set_toolbar_path_value(id, value) {
+        if let Err(err) = self.script.set_toolbar_entry_value(id, value) {
             self.repl.update(cx, |repl, cx| {
-                repl.append_error(&format!("toolbar path `{id}`: {err}"), cx);
+                repl.append_error(&format!("toolbar entry `{id}`: {err}"), cx);
             });
         }
         // Sync the AppView snapshot only. Do not refresh WorkflowBar here: the
@@ -4648,6 +4661,7 @@ impl AppView {
         self.sync_view_menus(cx);
         self.fire_session_loaded_script(window, cx);
         self.resume_bound_workflow(window, cx);
+        self.fire_session_selected_script(window, cx);
         cx.notify();
         Ok(())
     }
@@ -4668,6 +4682,7 @@ impl AppView {
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
         self.fire_session_loaded_script(window, cx);
+        self.fire_session_selected_script(window, cx);
         cx.notify();
     }
 
@@ -4772,9 +4787,26 @@ impl AppView {
         self.flush_script_logs(cx);
     }
 
+    fn fire_session_selected_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_session_selected();
+        self.flush_script_hook_output(cx);
+    }
+
+    fn fire_composition_selected_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.session.active();
+        let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_composition_selected(id);
+        self.flush_script_hook_output(cx);
+    }
+
     fn fire_session_saved_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let _guard = crate::script::enter(self, window, cx);
         self.script.fire_session_saved();
+        self.flush_script_hook_output(cx);
+    }
+
+    fn flush_script_hook_output(&mut self, cx: &mut Context<Self>) {
         let prints = self.script.take_prints();
         if !prints.is_empty() {
             let output = EvalOutput {

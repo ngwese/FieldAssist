@@ -142,13 +142,26 @@ fn prototype_on(
     lua: &mlua::Lua,
     (this, event, handler): (Table, String, Function),
 ) -> mlua::Result<()> {
-    if event != "command" {
-        return Err(mlua::Error::runtime(format!(
-            "unknown workflow event `{event}`; expected \"command\""
-        )));
+    if !super::host::is_app_event(&event) {
+        return Err(mlua::Error::runtime(super::host::unknown_app_event(&event)));
     }
-    this.set("__fa_command", handler)?;
-    let _ = lua;
+    let hooks = match this.raw_get::<Value>("__fa_hooks")? {
+        Value::Table(table) => table,
+        _ => {
+            let table = lua.create_table()?;
+            this.raw_set("__fa_hooks", table.clone())?;
+            table
+        }
+    };
+    let list = match hooks.raw_get::<Value>(event.as_str())? {
+        Value::Table(table) => table,
+        _ => {
+            let table = lua.create_table()?;
+            hooks.raw_set(event.as_str(), table.clone())?;
+            table
+        }
+    };
+    list.raw_set(list.raw_len() + 1, handler)?;
     Ok(())
 }
 

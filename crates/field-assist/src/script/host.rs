@@ -30,7 +30,9 @@ use super::workflow::{
 use super::workflow_app::{
     layout_drop_targets, workflows_for_menu, DropLayout, SCOPE_DRAG_DROP, SCOPE_MENU,
 };
-use super::workflow_toolbar::{toolbar_from_table, toolbar_row, ToolbarItem};
+use super::workflow_toolbar::{
+    control_store, invoke_action, toolbar_from_table, toolbar_row, ToolbarItem,
+};
 
 pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
 const EMBEDDED_WORKFLOW_ADD: &str = include_str!("../../assets/workflow_add.lua");
@@ -83,6 +85,8 @@ struct HostInner {
     saved: Vec<Function>,
     session_loaded: Vec<Function>,
     session_saved: Vec<Function>,
+    session_selected: Vec<Function>,
+    composition_selected: Vec<Function>,
     detect_layout: Vec<Function>,
     layouts: Vec<ChannelLayoutDef>,
     workflows: BTreeMap<String, WorkflowDef>,
@@ -212,6 +216,8 @@ impl ScriptHost {
                 saved: Vec::new(),
                 session_loaded: Vec::new(),
                 session_saved: Vec::new(),
+                session_selected: Vec::new(),
+                composition_selected: Vec::new(),
                 detect_layout: Vec::new(),
                 layouts: Vec::new(),
                 workflows: BTreeMap::new(),
@@ -359,8 +365,8 @@ impl ScriptHost {
         Ok(payload)
     }
 
-    pub fn dispatch_workflow_command(&self, command: &str) -> Result<(), String> {
-        self.handle.dispatch_workflow_command(command)
+    pub fn dispatch_toolbar_button(&self, id: &str) -> Result<(), String> {
+        self.handle.dispatch_toolbar_button(id)
     }
 
     pub fn dispatch_toolbar_path(&self, id: &str, paths: &[PathBuf]) -> Result<String, String> {
@@ -375,9 +381,9 @@ impl ScriptHost {
             .map_err(|err| err.to_string())
     }
 
-    pub fn set_toolbar_path_value(&self, id: &str, value: &str) -> Result<(), String> {
+    pub fn set_toolbar_entry_value(&self, id: &str, value: &str) -> Result<(), String> {
         self.handle
-            .set_toolbar_path_value(id, value)
+            .set_toolbar_entry_value(id, value)
             .map_err(|err| err.to_string())
     }
 
@@ -416,13 +422,10 @@ impl ScriptHost {
         let handle = LuaComposition { id };
         for hook in hooks {
             if let Err(err) = hook.call::<()>((handle, elapsed)) {
-                self.handle
-                    .inner
-                    .borrow_mut()
-                    .prints
-                    .push(format!("loaded hook error: {err}"));
+                self.handle.note_hook_error("loaded", &err);
             }
         }
+        self.handle.fire_workflow_document("loaded", id, elapsed);
     }
 
     pub fn fire_saved(&self, id: DocumentId, elapsed: f64) {
@@ -430,39 +433,44 @@ impl ScriptHost {
         let handle = LuaComposition { id };
         for hook in hooks {
             if let Err(err) = hook.call::<()>((handle, elapsed)) {
-                self.handle
-                    .inner
-                    .borrow_mut()
-                    .prints
-                    .push(format!("saved hook error: {err}"));
+                self.handle.note_hook_error("saved", &err);
             }
         }
+        self.handle.fire_workflow_document("saved", id, elapsed);
     }
 
     pub fn fire_session_loaded(&self) {
         let hooks = self.handle.inner.borrow().session_loaded.clone();
         for hook in hooks {
             if let Err(err) = hook.call::<()>(LuaSession::active()) {
-                self.handle
-                    .inner
-                    .borrow_mut()
-                    .prints
-                    .push(format!("session_loaded hook error: {err}"));
+                self.handle.note_hook_error("session_loaded", &err);
             }
         }
+        self.handle.fire_workflow_session("session_loaded");
     }
 
     pub fn fire_session_saved(&self) {
         let hooks = self.handle.inner.borrow().session_saved.clone();
         for hook in hooks {
             if let Err(err) = hook.call::<()>(LuaSession::active()) {
-                self.handle
-                    .inner
-                    .borrow_mut()
-                    .prints
-                    .push(format!("session_saved hook error: {err}"));
+                self.handle.note_hook_error("session_saved", &err);
             }
         }
+        self.handle.fire_workflow_session("session_saved");
+    }
+
+    pub fn fire_session_selected(&self) {
+        let hooks = self.handle.inner.borrow().session_selected.clone();
+        for hook in hooks {
+            if let Err(err) = hook.call::<()>(LuaSession::active()) {
+                self.handle.note_hook_error("session_selected", &err);
+            }
+        }
+        self.handle.fire_workflow_session("session_selected");
+    }
+
+    pub fn fire_composition_selected(&self, id: Option<DocumentId>) {
+        self.handle.emit_composition_selected(id);
     }
 
     pub fn fire_detect_layout(&self, id: DocumentId) {
@@ -525,13 +533,23 @@ impl HostHandle {
     }
 
     pub fn set_active(&self, id: DocumentId) -> mlua::Result<()> {
-        if let Some(test) = self.inner.borrow().test.clone() {
-            let mut world = test.borrow_mut();
-            if world.session.get(id).is_none() {
-                return Err(mlua::Error::runtime("composition is not open"));
+        // Clone before the branch so the host borrow ends before the
+        // composition_selected hooks run. An `if let` scrutinee temporary
+        // would otherwise stay alive for the whole body.
+        let test = self.inner.borrow().test.clone();
+        if let Some(test) = test {
+            let changed = {
+                let mut world = test.borrow_mut();
+                if world.session.get(id).is_none() {
+                    return Err(mlua::Error::runtime("composition is not open"));
+                }
+                let changed = world.session.focus(id).is_some();
+                world.active = Some(id);
+                changed
+            };
+            if changed {
+                self.emit_composition_selected(Some(id));
             }
-            world.session.focus(id);
-            world.active = Some(id);
             return Ok(());
         }
         access::with_view(|view, window, cx| view.script_activate_document(id, window, cx))
@@ -706,8 +724,70 @@ impl HostHandle {
         self.inner.borrow_mut().session_saved.push(callback);
     }
 
+    pub fn on_session_selected(&self, callback: Function) {
+        self.inner.borrow_mut().session_selected.push(callback);
+    }
+
+    pub fn on_composition_selected(&self, callback: Function) {
+        self.inner.borrow_mut().composition_selected.push(callback);
+    }
+
     pub fn on_detect_layout(&self, callback: Function) {
         self.inner.borrow_mut().detect_layout.push(callback);
+    }
+
+    fn note_hook_error(&self, event: &str, err: &mlua::Error) {
+        self.inner
+            .borrow_mut()
+            .prints
+            .push(format!("{event} hook error: {err}"));
+    }
+
+    fn workflow_handlers(&self, event: &str) -> Vec<(Table, Function)> {
+        let Some(instance) = self.inner.borrow().active.clone() else {
+            return Vec::new();
+        };
+        let mut funcs = Vec::new();
+        if let Some(meta) = instance.metatable() {
+            collect_event_hooks(&meta, event, &mut funcs);
+        }
+        collect_event_hooks(&instance, event, &mut funcs);
+        funcs
+            .into_iter()
+            .map(|func| (instance.clone(), func))
+            .collect()
+    }
+
+    fn fire_workflow_document(&self, event: &str, id: DocumentId, elapsed: f64) {
+        let composition = LuaComposition { id };
+        for (instance, hook) in self.workflow_handlers(event) {
+            if let Err(err) = hook.call::<()>((instance, composition, elapsed)) {
+                self.note_hook_error(event, &err);
+            }
+        }
+    }
+
+    fn fire_workflow_session(&self, event: &str) {
+        let session = LuaSession::active();
+        for (instance, hook) in self.workflow_handlers(event) {
+            if let Err(err) = hook.call::<()>((instance, session)) {
+                self.note_hook_error(event, &err);
+            }
+        }
+    }
+
+    pub fn emit_composition_selected(&self, id: Option<DocumentId>) {
+        let hooks = self.inner.borrow().composition_selected.clone();
+        for hook in hooks {
+            if let Err(err) = call_composition(&hook, id) {
+                self.note_hook_error("composition_selected", &err);
+            }
+        }
+        for (instance, hook) in self.workflow_handlers("composition_selected") {
+            if let Err(err) = call_workflow_composition(&hook, &instance, id) {
+                self.note_hook_error("composition_selected", &err);
+            }
+        }
     }
 
     pub fn log(&self, level: LogLevel, topic: String, message: String) {
@@ -848,11 +928,24 @@ impl HostHandle {
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    self.inner
-                        .borrow_mut()
-                        .prints
-                        .push(format!("detect_layout hook error: {err}"));
+                    self.note_hook_error("detect_layout", &err);
                 }
+            }
+        }
+        for (instance, hook) in self.workflow_handlers("detect_layout") {
+            match hook.call::<Option<String>>((instance, handle, chosen.clone())) {
+                Ok(Some(name)) => {
+                    if self.layout(&name).is_some() {
+                        last = Some(name);
+                    } else {
+                        self.inner
+                            .borrow_mut()
+                            .prints
+                            .push(format!("detect_layout hook error: unknown layout `{name}`"));
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => self.note_hook_error("detect_layout", &err),
             }
         }
         if let Err(err) = self.apply_effective_layout(id, last.as_deref()) {
@@ -1176,18 +1269,12 @@ impl HostHandle {
         Ok(())
     }
 
-    pub fn dispatch_workflow_command(&self, command: &str) -> Result<(), String> {
-        let instance = self.inner.borrow().active.clone();
-        let Some(instance) = instance else {
+    pub fn dispatch_toolbar_button(&self, id: &str) -> Result<(), String> {
+        let Some((instance, row)) = self.toolbar_target(id).map_err(|err| err.to_string())? else {
             return Ok(());
         };
-        let handler = match instance.get::<Value>("__fa_command") {
-            Ok(Value::Function(func)) => func,
-            _ => return Ok(()),
-        };
-        handler
-            .call::<()>((instance, command))
-            .map_err(|err| err.to_string())
+        invoke_action(&row, &instance).map_err(|err| err.to_string())?;
+        Ok(())
     }
 
     pub fn dispatch_toolbar_path(
@@ -1196,83 +1283,52 @@ impl HostHandle {
         id: &str,
         paths: &[PathBuf],
     ) -> mlua::Result<String> {
-        let row = self.toolbar_row(id)?;
-        let value = match row.get::<Value>("on_path")? {
-            Value::Function(func) => {
-                let table = lua.create_table()?;
-                for (index, path) in paths.iter().enumerate() {
-                    table.set(index + 1, path.display().to_string())?;
-                }
-                match func.call::<Value>(table)? {
-                    Value::Nil => first_path_string(paths),
-                    Value::String(text) => text.to_str()?.to_owned(),
-                    other => {
-                        return Err(mlua::Error::runtime(format!(
-                            "on_path must return a string or nil, got {}",
-                            other.type_name()
-                        )))
-                    }
-                }
-            }
-            Value::Nil => first_path_string(paths),
-            other => {
-                return Err(mlua::Error::runtime(format!(
-                    "on_path must be a function, got {}",
-                    other.type_name()
-                )))
-            }
+        let Some((instance, row)) = self.toolbar_target(id)? else {
+            return Ok(first_path_string(paths));
         };
-        row.set("value", value.as_str())?;
-        Ok(value)
+        let store = control_store(&row)?;
+        let table = lua.create_table()?;
+        for (index, path) in paths.iter().enumerate() {
+            table.set(index + 1, path.display().to_string())?;
+        }
+        store.raw_set("paths", table)?;
+        store.raw_set("value", first_path_string(paths))?;
+        let result = invoke_action(&row, &instance);
+        store.raw_set("paths", Value::Nil)?;
+        result?;
+        control_string(&row, "value")
     }
 
     pub fn dispatch_toolbar_toggle(&self, id: &str) -> mlua::Result<bool> {
-        let row = self.toolbar_row(id)?;
-        let current = match row.get::<Value>("value")? {
-            Value::Nil => false,
-            Value::Boolean(value) => value,
-            other => {
-                return Err(mlua::Error::runtime(format!(
-                    "toggle value must be a boolean, got {}",
-                    other.type_name()
-                )))
-            }
+        let Some((instance, row)) = self.toolbar_target(id)? else {
+            return Ok(false);
         };
-        let next = match row.get::<Value>("on_change")? {
-            Value::Function(func) => match func.call::<Value>(current)? {
-                Value::Boolean(value) => value,
-                Value::Nil => !current,
-                other => {
-                    return Err(mlua::Error::runtime(format!(
-                        "on_change must return a boolean, got {}",
-                        other.type_name()
-                    )))
-                }
-            },
-            Value::Nil => !current,
-            other => {
-                return Err(mlua::Error::runtime(format!(
-                    "on_change must be a function, got {}",
-                    other.type_name()
-                )))
-            }
-        };
-        row.set("value", next)?;
-        Ok(next)
+        let current = control_bool(&row, "value", false)?;
+        if !invoke_action(&row, &instance)? {
+            let next = !current;
+            control_store(&row)?.raw_set("value", next)?;
+            self.toolbar_changed(&instance)?;
+            return Ok(next);
+        }
+        control_bool(&row, "value", false)
     }
 
-    pub fn set_toolbar_path_value(&self, id: &str, value: &str) -> mlua::Result<()> {
-        let row = self.toolbar_row(id)?;
-        row.set("value", value)?;
+    pub fn set_toolbar_entry_value(&self, id: &str, value: &str) -> mlua::Result<()> {
+        let Some((instance, row)) = self.toolbar_target(id)? else {
+            return Ok(());
+        };
+        control_store(&row)?.raw_set("value", value)?;
+        invoke_action(&row, &instance)?;
         Ok(())
     }
 
-    fn toolbar_row(&self, id: &str) -> mlua::Result<Table> {
+    fn toolbar_target(&self, id: &str) -> mlua::Result<Option<(Table, Table)>> {
         let instance = self.inner.borrow().active.clone();
         let Some(instance) = instance else {
-            return Err(mlua::Error::runtime("no workflow is running"));
+            return Ok(None);
         };
-        toolbar_row(&instance, id)
+        let row = toolbar_row(&instance, id)?;
+        Ok(Some((instance, row)))
     }
 
     pub fn finish_workflow(&self) -> Result<(), String> {
@@ -1828,11 +1884,84 @@ fn is_workflow_filename(name: &str) -> bool {
     lower.starts_with("workflow_") && lower.ends_with(".lua")
 }
 
+pub fn is_app_event(event: &str) -> bool {
+    matches!(
+        event,
+        "loaded"
+            | "saved"
+            | "detect_layout"
+            | "session_loaded"
+            | "session_saved"
+            | "session_selected"
+            | "composition_selected"
+    )
+}
+
+pub fn unknown_app_event(event: &str) -> String {
+    format!(
+        "unknown event `{event}`; expected \"loaded\", \"detect_layout\", \"saved\", \"session_loaded\", \"session_saved\", \"session_selected\", or \"composition_selected\""
+    )
+}
+
+fn collect_event_hooks(table: &Table, event: &str, out: &mut Vec<Function>) {
+    let Ok(Value::Table(hooks)) = table.raw_get::<Value>("__fa_hooks") else {
+        return;
+    };
+    let Ok(Value::Table(list)) = hooks.raw_get::<Value>(event) else {
+        return;
+    };
+    for value in list.sequence_values::<Value>() {
+        if let Ok(Value::Function(func)) = value {
+            out.push(func);
+        }
+    }
+}
+
+fn call_composition(hook: &Function, id: Option<DocumentId>) -> mlua::Result<()> {
+    match id {
+        Some(id) => hook.call(LuaComposition { id }),
+        None => hook.call(Value::Nil),
+    }
+}
+
+fn call_workflow_composition(
+    hook: &Function,
+    instance: &Table,
+    id: Option<DocumentId>,
+) -> mlua::Result<()> {
+    match id {
+        Some(id) => hook.call((instance.clone(), LuaComposition { id })),
+        None => hook.call((instance.clone(), Value::Nil)),
+    }
+}
+
 fn first_path_string(paths: &[PathBuf]) -> String {
     paths
         .first()
         .map(|path| path.display().to_string())
         .unwrap_or_default()
+}
+
+fn control_bool(row: &Table, key: &str, default: bool) -> mlua::Result<bool> {
+    match control_store(row)?.raw_get::<Value>(key)? {
+        Value::Nil => Ok(default),
+        Value::Boolean(value) => Ok(value),
+        other => Err(mlua::Error::runtime(format!(
+            "{key} must be a boolean, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn control_string(row: &Table, key: &str) -> mlua::Result<String> {
+    match control_store(row)?.raw_get::<Value>(key)? {
+        Value::Nil => Ok(String::new()),
+        Value::String(text) => Ok(text.to_str()?.to_owned()),
+        other => Err(mlua::Error::runtime(format!(
+            "{key} must be a string, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn open_in_test(test: &Rc<RefCell<TestWorld>>, path: &Path) -> mlua::Result<DocumentId> {
