@@ -12,10 +12,13 @@ config directory **overrides** the embedded `review` registration.
 
 | File | Role |
 | --- | --- |
-| `shared.lua` | Property helpers, media expand, group filter, and comments for intended `app.url` / `app.fs` / `app.sqlite` |
+| `shared.lua` | Property helpers, media expand, group filter, and comments for intended `field.url` / `field.fs` / sqlite |
 | `workflow_ingest.lua` | Stateful Ingest: backup, convert to staging, verify, optional source delete |
 | `workflow_review.lua` | Stateful Review: Keep / Drop (no Output field; library path is Catalog’s) |
 | `workflow_catalog.lua` | Stateful Catalog: export `keep` documents, then optional staging cleanup |
+
+Workflows load helpers with `field.include("shared.lua")` and use the `field.*`
+namespace (`field.workflow`, `field.session.shared()`, `field.ui`, …).
 
 ## How to try them
 

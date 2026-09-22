@@ -1,15 +1,19 @@
 -- Built-in workflow: review session documents.
 --
--- create_workflow builds a prototype table; it is not registered until
--- declare_workflow at the bottom of this file. Defining :suspend or :resume
--- makes it stateful: after :start the host sets app.session.workflow_name = "review".
+-- field.workflow.create builds a prototype table; it is not registered until
+-- field.workflow.declare at the bottom of this file. Defining :suspend or
+-- :resume makes it stateful: after :start the host sets
+-- field.session.shared().workflow_name = "review".
 
-local Review = app:create_workflow({
+local drop_color = (app.theme and app.theme.semantic and app.theme.semantic.info)
+  or field.ui.semantic.info
+
+local Review = field.workflow.create({
   name = "review",
   display_name = "Review",
   description = "Review session documents",
   scopes = { "drag-drop", "menu" },
-  drop = { row = 2, priority = 1, color = app.theme.semantic.info },
+  drop = { row = 2, priority = 1, color = drop_color },
 })
 
 -- Readable audio plus composition projects. find_files matches these
@@ -40,11 +44,11 @@ local function is_session_path(path)
   return string.lower(path):match("%.fasession$") ~= nil
 end
 
--- Directories are expanded with app:find_files; a file path fails that call
--- and is kept as a single item.
+-- Directories are expanded with field.fs.find_files; a file path fails that
+-- call and is kept as a single item.
 local function expand_item(path)
   local ok, found = pcall(function()
-    return app:find_files(path, MEDIA_EXTS)
+    return field.fs.find_files(path, MEDIA_EXTS)
   end)
   if not ok then
     return { path }
@@ -97,7 +101,7 @@ end
 -- Dropped when the run ends. A click in the compositions pane focuses that
 -- document and should refresh the Keep toggle.
 Review:on("composition_selected", function(self, _composition)
-  self:update_toolbar(app.session)
+  self:update_toolbar(field.session.shared())
 end)
 
 local function todo_docs(session)
@@ -182,58 +186,59 @@ function Review:set_keep(session, on)
 end
 
 function Review:build_toolbar(session)
-  local success = app.theme.semantic.success
-  local danger = app.theme.semantic.danger
+  local theme = app.theme or field.ui
+  local success = theme.semantic.success
+  local danger = theme.semantic.danger
 
   -- Set these on the workflow instance so that they can be updated by other methods.
-  self.progress = app.ui.message({
+  self.progress = field.ui.message({
     id = "progress",
     text = "-",
-    color = app.theme.semantic.muted_foreground,
+    color = theme.semantic.muted_foreground,
   })
-  self.kept = app.ui.toggle({
+  self.kept = field.ui.toggle({
     id = "keep",
     label = "Keep",
     value = false,
     on_color = success,
     on_icon = "circle-check",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_keep(app.session, not ctrl.value)
+      ctrl.value = workflow:set_keep(field.session.shared(), not ctrl.value)
     end,
   })
-  self.dropped = app.ui.toggle({
+  self.dropped = field.ui.toggle({
     id = "drop",
     label = "Drop",
     value = false,
     on_color = danger,
     on_icon = "circle-x",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_dropped(app.session, not ctrl.value)
+      ctrl.value = workflow:set_dropped(field.session.shared(), not ctrl.value)
     end,
   })
 
   self:set_toolbar({
-    app.ui.button({
+    field.ui.button({
       id = "previous",
       label = "Previous",
       icon = "arrow-left",
       action = function(_, workflow)
-        workflow:go_previous(app.session)
+        workflow:go_previous(field.session.shared())
       end,
     }),
-    app.ui.button({
+    field.ui.button({
       id = "next",
       label = "Next",
       icon = "arrow-right",
       action = function(_, workflow)
-        workflow:go_next(app.session)
+        workflow:go_next(field.session.shared())
       end,
     }),
     self.kept,
     self.dropped,
-    app.ui.divider(),
+    field.ui.divider(),
     self.progress,
-    app.ui.path_entry({
+    field.ui.path_entry({
       id = "output",
       label = "Output",
       value = self.output or "",
@@ -243,12 +248,12 @@ function Review:build_toolbar(session)
         workflow.output = ctrl.value or ""
       end,
     }),
-    app.ui.button({
+    field.ui.button({
       id = "finish",
       label = "Finish",
       align = "right",
       action = function(_, _)
-        app:finish_workflow()
+        field.workflow.finish()
       end,
     }),
   })
@@ -280,8 +285,8 @@ end
 -- expanded to readable audio/.facomp files. After this returns, the host binds
 -- the session.
 function Review:start(payload)
-  app:info("review", "starting")
-  local session = app.session
+  field.log.info("review", "starting")
+  local session = field.session.shared()
   self:restore_output(session)
   local scope = payload.scope or "?"
   if scope == "menu" then
@@ -289,19 +294,21 @@ function Review:start(payload)
     for _, doc in ipairs(docs) do
       doc.group = "todo"
     end
-    app:info("review", string.format("via menu: %d document(s) marked todo", #docs))
+    field.log.info("review", string.format("via menu: %d document(s) marked todo", #docs))
     self:build_toolbar(session)
     self:set_review_playback(true)
-    app:command("view.show-explorer")
+    if app.name == "field-assist" and app.command then
+      app:command("view.show-explorer")
+    end
     return
   end
   local incoming = payload.paths or {}
-  app:info("review", string.format("via drop: %d path(s), scope=%s", #incoming, scope))
+  field.log.info("review", string.format("via drop: %d path(s), scope=%s", #incoming, scope))
   if #incoming == 0 then
-    app:info("review", "(none)")
+    field.log.info("review", "(none)")
   else
     for i, item in ipairs(incoming) do
-      app:info("review", string.format("%d. %s", i, item))
+      field.log.info("review", string.format("%d. %s", i, item))
       for _, path in ipairs(expand_item(item)) do
         open_todo(session, path)
       end
@@ -309,7 +316,9 @@ function Review:start(payload)
   end
   self:build_toolbar(session)
   self:set_review_playback(true)
-  app:command("view.show-explorer")
+  if app.name == "field-assist" and app.command then
+    app:command("view.show-explorer")
+  end
 end
 
 -- Host calls :suspend before Save Session / Save Session As, and during quit
@@ -334,28 +343,30 @@ function Review:resume(session)
   if total > 0 then
     pct = math.floor((done * 100 / total) + 0.5)
   end
-  app:info("review", string.format("%d%% (%d/%d)", pct, done, total))
+  field.log.info("review", string.format("%d%% (%d/%d)", pct, done, total))
   self:build_toolbar(session)
   self:set_review_playback(true)
-  app:command("view.show-explorer")
+  if app.name == "field-assist" and app.command then
+    app:command("view.show-explorer")
+  end
 end
 
 -- Host calls :cancel when the running session is discarded (replaced by
 -- another .fasession without keeping this run) or when a script calls
--- app:cancel_workflow().
+-- field.workflow.cancel().
 function Review:cancel(_session)
-  app:info("review", "canceled")
+  field.log.info("review", "canceled")
 end
 
--- Host calls :finish after app:finish_workflow() (here, the Finish button).
+-- Host calls :finish after field.workflow.finish() (here, the Finish button).
 -- Then the host clears session.workflow_name and hides the toolbar.
 function Review:finish(session)
   self:set_review_playback(false)
   local n = session:group_count("todo")
   if n > 0 then
-    app:warn("review", string.format("%d document(s) still in todo", n))
+    field.log.warn("review", string.format("%d document(s) still in todo", n))
   end
 end
 
 -- Register last so later user workflow_review.lua can override this name.
-app:declare_workflow(Review)
+field.workflow.declare(Review)

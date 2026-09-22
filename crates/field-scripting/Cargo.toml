@@ -1,0 +1,25 @@
+[package]
+name = "field-scripting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared Lua host for FieldAssist, field-batch, and related tools"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+field-audio-io = { path = "../field-audio-io" }
+field-audio-model = { path = "../field-audio-model", features = ["serde"] }
+field-audio-playback = { path = "../field-audio-playback" }
+field-composition = { path = "../field-composition" }
+field-core = { path = "../field-core" }
+field-session = { path = "../field-session" }
+mlua = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

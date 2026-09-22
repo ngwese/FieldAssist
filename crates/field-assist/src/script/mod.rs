@@ -4,6 +4,7 @@
 mod access;
 mod app;
 mod composition;
+mod field_ns;
 mod files;
 mod host;
 mod layout;
@@ -85,6 +86,14 @@ mod tests {
     }
 
     #[test]
+    fn app_name_is_field_assist() {
+        let (mut host, _) = test_host();
+        let out = host.eval("return app.name");
+        assert_eq!(out.result.as_deref(), Some("field-assist"));
+        assert!(out.error.is_none(), "{:?}", out.error);
+    }
+
+    #[test]
     fn print_is_captured() {
         let (mut host, _) = test_host();
         let out = host.eval(r#"print("hello")"#);
@@ -110,7 +119,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.composition
+            local c = field.session.shared().composition
             c:select(0, 100)
             local region = c:add_region({
               start = 10,
@@ -137,7 +146,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.composition
+            local c = field.session.shared().composition
             c:clear_selection()
             c:add_region({ start = 5, stop = 15, label = "sel" })
             local silent = c:collection("silent")
@@ -169,7 +178,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.composition
+            local c = field.session.shared().composition
             local a = c:add_marker({ frame = 40, type = "Blue", note = "cue" })
             local b = c:add_marker(40, "Yellow")
             local dup = c:add_marker(40, "Blue")
@@ -195,7 +204,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.composition
+            local c = field.session.shared().composition
             c:add_marker(10, "Blue")
             c:add_marker(20, "Blue")
             c:add_marker(30, "Yellow")
@@ -225,7 +234,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = app.composition
+            local c = field.session.shared().composition
             local m = c:add_marker({ frame = 10, type = "Red", color = {1, 0, 0, 1} })
             return m.type, m.color[1], m.color[2], m.color[3], #c.marker_types
             "#,
@@ -254,13 +263,13 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:define_layout({
+            field.layouts.define({
               name = "stereo",
               description = "Left / Right",
               channels = { [0] = "L", [1] = "R" },
               monitor = { kind = "passthrough" },
             })
-            app:on("detect_layout", function(c)
+            field.on("detect_layout", function(c)
               if c.channels == 2 then return "stereo" end
             end)
             "#,
@@ -293,17 +302,17 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:define_layout({
+            field.layouts.define({
               name = "stereo",
               description = "Left / Right",
               channels = { [0] = "L", [1] = "R" },
             })
-            app:define_layout({
+            field.layouts.define({
               name = "MS",
               description = "Mid / Side",
               channels = { [0] = "M", [1] = "S" },
             })
-            app:on("detect_layout", function(c, chosen)
+            field.on("detect_layout", function(c, chosen)
               if chosen then return chosen end
               return "stereo"
             end)
@@ -332,15 +341,15 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:define_layout({
+            field.layouts.define({
               name = "stereo",
               description = "Left / Right",
               channels = { [0] = "L", [1] = "R" },
             })
-            app:on("detect_layout", function()
+            field.on("detect_layout", function()
               return "not-a-layout"
             end)
-            app:on("detect_layout", function()
+            field.on("detect_layout", function()
               return "stereo"
             end)
             "#,
@@ -366,13 +375,13 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:define_layout({
+            field.layouts.define({
               name = "MS",
               description = "Mid / Side",
               channels = { [0] = "M", [1] = "S" },
             })
-            app.composition.channel_layout = "MS"
-            return app.composition.channel_layout
+            field.session.shared().composition.channel_layout = "MS"
+            return field.session.shared().composition.channel_layout
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -395,13 +404,13 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:define_layout({
+            field.layouts.define({
               name = "MS",
               description = "Mid / Side",
               channels = { [0] = "M", [1] = "S" },
               monitor = { chain = "ms" },
             })
-            local c = app.composition
+            local c = field.session.shared().composition
             c.channel_layout = "MS"
             assert(c.monitor_chain == "ms")
             c.monitor_chain = "stereo"
@@ -424,8 +433,8 @@ mod tests {
         assert_eq!(channels.as_deref(), Some(&[1][..]));
         let out = host.eval(
             r#"
-            app.composition.playback_channels = "all"
-            app.composition.monitor_chain = nil
+            field.session.shared().composition.playback_channels = "all"
+            field.session.shared().composition.monitor_chain = nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -446,7 +455,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local c = app.composition
+            local c = field.session.shared().composition
             return c.codec, c.bit_depth, c.basename, c.dirname, c.channels, c.sample_rate
             "#,
         );
@@ -484,7 +493,7 @@ mod tests {
     #[test]
     fn app_media_lists_fixture_pool() {
         let (mut host, _) = test_host();
-        let out = host.eval("return #app.media, app.media[1].channels, app.media[1].sample_rate");
+        let out = host.eval("local p=field.media.shared_pool(); return #p:list(), p:list()[1].channels, p:list()[1].sample_rate");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("1\t2\t44100"));
     }
@@ -497,12 +506,13 @@ mod tests {
         let path_lua = path.to_string_lossy().replace('\\', "\\\\");
         let out = host.eval(&format!(
             r#"
-            local before = #app.media
-            local m = app:add_media("{path_lua}")
+            local pool = field.media.shared_pool()
+            local before = #pool:list()
+            local m = pool:add("{path_lua}")
             assert(m.id and m.path and m.basename)
-            assert(#app.media == before + 1)
-            app:remove_media(m)
-            return #app.media, before
+            assert(#pool:list() == before + 1)
+            pool:remove(m)
+            return #pool:list(), before
             "#
         ));
         let _ = std::fs::remove_file(&path);
@@ -515,8 +525,9 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local id = app.media[1].id
-            local ok, err = pcall(function() app:remove_media(id) end)
+            local pool = field.media.shared_pool()
+            local id = pool:list()[1].id
+            local ok, err = pcall(function() pool:remove(id) end)
             return ok, tostring(err)
             "#,
         );
@@ -663,7 +674,7 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-            app:define_layout({
+            field.layouts.define({
               name = "custom",
               description = "User",
               channels = { [0] = "A", [1] = "B" },
@@ -681,7 +692,7 @@ mod tests {
     #[test]
     fn unknown_event_is_an_error() {
         let (mut host, _) = test_host();
-        let out = host.eval(r#"app:on("nope", function() end)"#);
+        let out = host.eval(r#"field.on("nope", function() end)"#);
         assert!(
             out.error
                 .as_deref()
@@ -704,8 +715,8 @@ mod tests {
         host.invoke_menu_workflow("review").expect("review");
         let marked = host.eval(
             r#"
-            app.compositions[1].group = "keep"
-            return app.composition.id == app.compositions[2].id
+            field.session.shared().compositions[1].group = "keep"
+            return field.session.shared().composition.id == field.session.shared().compositions[2].id
             "#,
         );
         assert!(marked.error.is_none(), "{:?}", marked.error);
@@ -714,7 +725,8 @@ mod tests {
             toggle_value(&host.toolbar_snapshot().unwrap().1[2]),
             Some(false)
         );
-        let switched = host.eval("app.composition = app.compositions[1]");
+        let switched = host
+            .eval("field.session.shared().composition = field.session.shared().compositions[1]");
         assert!(switched.error.is_none(), "{:?}", switched.error);
         assert!(
             switched.prints.is_empty(),
@@ -726,7 +738,8 @@ mod tests {
             Some(true)
         );
         host.finish_workflow().expect("finish");
-        let again = host.eval("app.composition = app.compositions[2]");
+        let again = host
+            .eval("field.session.shared().composition = field.session.shared().compositions[2]");
         assert!(again.error.is_none(), "{:?}", again.error);
         assert!(host.toolbar_snapshot().is_none());
     }
@@ -744,14 +757,14 @@ mod tests {
             r#"
             hits = 0
             app_hits = 0
-            app:on("composition_selected", function()
+            field.on("composition_selected", function()
               app_hits = app_hits + 1
             end)
-            app:on("session_selected", function(session)
+            field.on("session_selected", function(session)
               app_hits = app_hits + 10
               print(session.id)
             end)
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               scopes = { "menu" },
             })
@@ -763,7 +776,7 @@ mod tests {
             local ok, err = pcall(function()
               W:on("nope", function() end)
             end)
-            app:declare_workflow(W)
+            field.workflow.declare(W)
             return ok, tostring(err)
             "#,
         );
@@ -772,11 +785,11 @@ mod tests {
         assert!(result.starts_with("false\t"), "{result}");
         assert!(result.contains("unknown event"), "{result}");
         host.invoke_workflow("stateful", &[]).expect("start");
-        let switched = host.eval("app.composition = app.compositions[1] return hits, app_hits");
+        let switched = host.eval("field.session.shared().composition = field.session.shared().compositions[1] return hits, app_hits");
         assert!(switched.error.is_none(), "{:?}", switched.error);
         assert_eq!(switched.result.as_deref(), Some("1\t1"));
         host.finish_workflow().expect("finish");
-        let again = host.eval("app.composition = app.compositions[2] return hits, app_hits");
+        let again = host.eval("field.session.shared().composition = field.session.shared().compositions[2] return hits, app_hits");
         assert!(again.error.is_none(), "{:?}", again.error);
         assert_eq!(again.result.as_deref(), Some("1\t2"));
         host.fire_session_selected();
@@ -789,9 +802,9 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app:info("layout", "stereo")
-            app:warn("load", "slow")
-            app:error("save", "disk full")
+            field.log.info("layout", "stereo")
+            field.log.warn("load", "slow")
+            field.log.error("save", "disk full")
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -824,7 +837,7 @@ mod tests {
             check(app.theme.semantic.success)
             check(app.theme.semantic.warning)
             check(app.theme.semantic.info)
-            app:declare_workflow({
+            field.workflow.declare({
               name = "themed",
               scopes = { "drag-drop" },
               drop = { color = app.theme.named.green },
@@ -903,8 +916,8 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:on("loaded", function(c, elapsed)
-              app:info("load", string.format("%s %.3f", c.name, elapsed))
+            field.on("loaded", function(c, elapsed)
+              field.log.info("load", string.format("%s %.3f", c.name, elapsed))
             end)
             "#,
         );
@@ -923,8 +936,8 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:on("saved", function(c, elapsed)
-              app:info("save", string.format("%s %.3f", c.name, elapsed))
+            field.on("saved", function(c, elapsed)
+              field.log.info("save", string.format("%s %.3f", c.name, elapsed))
             end)
             "#,
         );
@@ -1004,16 +1017,16 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local s = app.session
+            local s = field.session.shared()
             s.workflow_name = "review"
             s.capture_ui = false
             s.properties = { batch = "2026-09" }
-            local c = app.composition
+            local c = field.session.shared().composition
             c.group = "day1"
             c.state = "reviewed"
             c.properties = { reviewer = "greg" }
             return s.id ~= nil, s.workflow_name, s.capture_ui, s.properties.batch,
-                   c.id, c.group, c.state, c.properties.reviewer, #app.compositions, #s.compositions
+                   c.id, c.group, c.state, c.properties.reviewer, #field.session.shared().compositions, #s.compositions
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1048,12 +1061,12 @@ mod tests {
 
         let out = host.eval(
             r#"
-            app.session.workflow_name = nil
-            app.composition.group = nil
-            app.composition.state = nil
-            app.composition.properties = {}
-            return app.session.workflow_name == nil, app.composition.group == nil,
-                   app.composition.state == nil, app.composition.properties.reviewer == nil
+            field.session.shared().workflow_name = nil
+            field.session.shared().composition.group = nil
+            field.session.shared().composition.state = nil
+            field.session.shared().composition.properties = {}
+            return field.session.shared().workflow_name == nil, field.session.shared().composition.group == nil,
+                   field.session.shared().composition.state == nil, field.session.shared().composition.properties.reviewer == nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1065,8 +1078,8 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app.composition.group = "todo"
-            return app.session:group_count("todo"), app.session:group_count("other")
+            field.session.shared().composition.group = "todo"
+            return field.session.shared():group_count("todo"), field.session.shared():group_count("other")
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1099,7 +1112,7 @@ mod tests {
 
         let out = host.eval(
             r#"
-            local s = app.session
+            local s = field.session.shared()
             s:move(s.compositions[2], 1)
             return s.compositions[1].id, s.compositions[2].id
             "#,
@@ -1120,7 +1133,8 @@ mod tests {
             vec![second, first]
         );
 
-        let out = host.eval("app.session:move(app.compositions[1], 0)");
+        let out =
+            host.eval("field.session.shared():move(field.session.shared().compositions[1], 0)");
         assert!(
             out.error
                 .as_deref()
@@ -1128,7 +1142,8 @@ mod tests {
             "{:?}",
             out.error
         );
-        let out = host.eval("app.session:move(app.compositions[1], 3)");
+        let out =
+            host.eval("field.session.shared():move(field.session.shared().compositions[1], 3)");
         assert!(
             out.error
                 .as_deref()
@@ -1141,7 +1156,7 @@ mod tests {
     #[test]
     fn session_properties_reject_non_strings() {
         let (mut host, _) = test_host();
-        let out = host.eval(r#"app.session.properties = { batch = 1 }"#);
+        let out = host.eval(r#"field.session.shared().properties = { batch = 1 }"#);
         assert!(
             out.error
                 .as_deref()
@@ -1155,7 +1170,7 @@ mod tests {
     fn composition_close_removes_from_session() {
         let (mut host, world) = test_host();
         let out =
-            host.eval("app.composition:close(); return app.composition == nil, #app.compositions");
+            host.eval("field.session.shared().composition:close(); return field.session.shared().composition == nil, #field.session.shared().compositions");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\t0"));
         assert!(world.borrow().session.is_empty());
@@ -1177,9 +1192,9 @@ mod tests {
         let path_lua = path.to_string_lossy().replace('\\', "/");
         let out = host.eval(&format!(
             r#"
-            app.session.workflow_name = "review"
-            app.session:save_as("{path_lua}")
-            return app.session.path ~= nil
+            field.session.shared().workflow_name = "review"
+            field.session.shared():save_as("{path_lua}")
+            return field.session.shared().path ~= nil
             "#
         ));
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1197,8 +1212,8 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app:on("session_loaded", function(s)
-              app:info("session", s.id)
+            field.on("session_loaded", function(s)
+              field.log.info("session", s.id)
             end)
             "#,
         );
@@ -1215,11 +1230,11 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app:declare_workflow({
+            field.workflow.declare({
               name = "add",
               scopes = { "drag-drop" },
             }, function() end)
-            app:declare_workflow({
+            field.workflow.declare({
               name = "add",
               display_name = "Merge",
               scopes = { "drag-drop" },
@@ -1343,11 +1358,11 @@ mod tests {
         let out = host.eval(&format!(
             r#"
             local dir = "{path_lua}"
-            local by_ext = app:find_files(dir, {{ "wav", ".FLAC", "facomp" }})
-            local by_fn = app:find_files(dir, function(dirname, basename)
+            local by_ext = field.fs.find_files(dir, {{ "wav", ".FLAC", "facomp" }})
+            local by_fn = field.fs.find_files(dir, function(dirname, basename)
               return basename:match("%.txt$") ~= nil and dirname == "nested"
             end)
-            return table.concat(by_ext, ","), table.concat(by_fn, ","), #app:find_files(dir)
+            return table.concat(by_ext, ","), table.concat(by_fn, ","), #field.fs.find_files(dir)
             "#
         ));
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1406,17 +1421,17 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app:declare_workflow({
+            field.workflow.declare({
               name = "zeta",
               display_name = "Zebra",
               scopes = { "menu" },
             }, function() end)
-            app:declare_workflow({
+            field.workflow.declare({
               name = "alpha",
               display_name = "Apple",
               scopes = { "drag-drop", "menu" },
             }, function() end)
-            app:declare_workflow({
+            field.workflow.declare({
               name = "drop",
               display_name = "Drop Only",
               scopes = { "drag-drop" },
@@ -1437,13 +1452,13 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app:declare_workflow({
+            field.workflow.declare({
               name = "probe",
               display_name = "Probe",
               scopes = { "menu" },
             }, function(payload)
-              app:info("probe", payload.scope)
-              app:info("probe", tostring(payload.paths))
+              field.log.info("probe", payload.scope)
+              field.log.info("probe", tostring(payload.paths))
             end)
             "#,
         );
@@ -1612,7 +1627,7 @@ mod tests {
     fn review_resume_shows_explorer() {
         let (mut host, world) = test_host();
         host.load_init_from(None).expect("embedded init");
-        let out = host.eval(r#"app.session.workflow_name = "review""#);
+        let out = host.eval(r#"field.session.shared().workflow_name = "review""#);
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(
             host.resume_workflow().expect("resume"),
@@ -1628,25 +1643,25 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               display_name = "Stateful",
               scopes = { "drag-drop" },
             })
             function W:start(_payload)
               self:set_toolbar({
-                app.ui.button({
+                field.ui.button({
                   id = "go",
                   label = "Go",
                   action = function(_, workflow)
                     workflow:set_item("m", { text = "b" })
                   end,
                 }),
-                app.ui.message({ id = "m", text = "a" }),
+                field.ui.message({ id = "m", text = "a" }),
               })
             end
             function W:suspend(_session) return true end
-            app:declare_workflow(W)
+            field.workflow.declare(W)
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1667,14 +1682,14 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               scopes = { "menu" },
             })
             function W:start(_payload)
-              self.note = app.ui.message({ id = "note", text = "idle" })
+              self.note = field.ui.message({ id = "note", text = "idle" })
               self:set_toolbar({
-                app.ui.button({
+                field.ui.button({
                   id = "go",
                   label = "Go",
                   action = function(ctrl, workflow)
@@ -1683,15 +1698,15 @@ mod tests {
                     workflow.seen = workflow == self
                   end,
                 }),
-                app.ui.toggle({
+                field.ui.toggle({
                   id = "flag",
                   value = false,
                   action = function(ctrl, _)
                     ctrl.value = true
                   end,
                 }),
-                app.ui.toggle({ id = "flip", value = false }),
-                app.ui.path_entry({
+                field.ui.toggle({ id = "flip", value = false }),
+                field.ui.path_entry({
                   id = "out",
                   value = "",
                   action = function(ctrl, workflow)
@@ -1699,12 +1714,12 @@ mod tests {
                     workflow.value_during = ctrl.value
                   end,
                 }),
-                app.ui.text_entry({ id = "note-entry", value = "" }),
+                field.ui.text_entry({ id = "note-entry", value = "" }),
                 self.note,
               })
             end
             function W:suspend(_session) return true end
-            app:declare_workflow(W)
+            field.workflow.declare(W)
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1755,14 +1770,14 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               scopes = { "menu" },
             })
             function W:start(_payload)
               self.calls = 0
               self:set_toolbar({
-                app.ui.button({
+                field.ui.button({
                   id = "go",
                   label = "Go",
                   action = function(ctrl, workflow)
@@ -1774,8 +1789,8 @@ mod tests {
               self:set_item("go", { label = "Still" })
             end
             function W:suspend(_session) return true end
-            app:declare_workflow(W)
-            local bad = app:create_workflow({
+            field.workflow.declare(W)
+            local bad = field.workflow.create({
               name = "bad",
               scopes = { "menu" },
             })
@@ -1783,8 +1798,8 @@ mod tests {
               self:set_toolbar({ { command = "go", label = "Go" } })
             end
             function bad:suspend(_session) return true end
-            app:declare_workflow(bad)
-            local missing = app:create_workflow({
+            field.workflow.declare(bad)
+            local missing = field.workflow.create({
               name = "missing",
               scopes = { "menu" },
             })
@@ -1806,7 +1821,7 @@ mod tests {
         assert_eq!(calls.result.as_deref(), Some("1"));
         host.finish_workflow().expect("finish");
         let err = host.invoke_workflow("bad", &[]).expect_err("plain row");
-        assert!(err.contains("app.ui"), "{err}");
+        assert!(err.contains("field.ui") || err.contains("app.ui"), "{err}");
     }
 
     #[test]
@@ -1814,11 +1829,11 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            app:declare_workflow({
+            field.workflow.declare({
               name = "oneshot",
               scopes = { "drag-drop" },
             }, function(payload)
-              app:info("oneshot", payload.scope)
+              field.log.info("oneshot", payload.scope)
             end)
             "#,
         );
@@ -1835,7 +1850,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               display_name = "Stateful",
               scopes = { "drag-drop" },
@@ -1843,8 +1858,8 @@ mod tests {
             function W:start(_payload) end
             function W:suspend(_session) return true end
             function W:resume(_session) end
-            W:set_toolbar({ app.ui.button({ id = "go", label = "Go" }) })
-            app:declare_workflow(W)
+            W:set_toolbar({ field.ui.button({ id = "go", label = "Go" }) })
+            field.workflow.declare(W)
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1872,13 +1887,13 @@ mod tests {
         let out = host.eval(
             r#"
             local function make(name)
-              local W = app:create_workflow({
+              local W = field.workflow.create({
                 name = name,
                 scopes = { "drag-drop" },
               })
               function W:start(_payload) end
               function W:suspend(_session) return true end
-              app:declare_workflow(W)
+              field.workflow.declare(W)
             end
             make("alpha")
             make("beta")
@@ -1901,13 +1916,13 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "block",
               scopes = { "drag-drop" },
             })
             function W:start(_payload) end
             function W:suspend(_session) return false end
-            app:declare_workflow(W)
+            field.workflow.declare(W)
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1921,7 +1936,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               display_name = "Stateful",
               scopes = { "drag-drop" },
@@ -1929,12 +1944,12 @@ mod tests {
             function W:start(_payload) end
             function W:suspend(_session) return true end
             function W:resume(session)
-              app:info("stateful", session.properties.note or "")
-              self:set_toolbar({ app.ui.button({ id = "go", label = "Go" }) })
+              field.log.info("stateful", session.properties.note or "")
+              self:set_toolbar({ field.ui.button({ id = "go", label = "Go" }) })
             end
-            app:declare_workflow(W)
-            app.session.workflow_name = "stateful"
-            app.session.properties = { note = "hello" }
+            field.workflow.declare(W)
+            field.session.shared().workflow_name = "stateful"
+            field.session.shared().properties = { note = "hello" }
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1954,7 +1969,7 @@ mod tests {
     #[test]
     fn unknown_resume_logs_error_and_does_not_clear() {
         let (mut host, world) = test_host();
-        let out = host.eval(r#"app.session.workflow_name = "ghost""#);
+        let out = host.eval(r#"field.session.shared().workflow_name = "ghost""#);
         assert!(out.error.is_none(), "{:?}", out.error);
         let result = host.resume_workflow().expect("resume");
         assert_eq!(
@@ -1979,7 +1994,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "probe",
               display_name = "Probe",
               description = "A probe",
@@ -2001,7 +2016,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "inited",
               scopes = { "drag-drop" },
             })
@@ -2009,11 +2024,11 @@ mod tests {
               self.flag = "yes"
             end
             function W:start(payload)
-              app:info("inited", self.flag .. ":" .. (payload.scope or ""))
+              field.log.info("inited", self.flag .. ":" .. (payload.scope or ""))
             end
             function W:suspend(_session) return true end
-            app:declare_workflow(W)
-            app:run_workflow("inited")
+            field.workflow.declare(W)
+            field.workflow.run("inited")
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -2030,14 +2045,14 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            app:declare_workflow({
+            field.workflow.declare({
               name = "probe",
               scopes = { "drag-drop" },
             }, function(payload)
-              app:info("probe", payload.scope)
-              app:info("probe", tostring(payload.paths and payload.paths[1]))
+              field.log.info("probe", payload.scope)
+              field.log.info("probe", tostring(payload.paths and payload.paths[1]))
             end)
-            app:run_workflow("probe", { scope = "drag-drop", paths = { "take.wav" } })
+            field.workflow.run("probe", { scope = "drag-drop", paths = { "take.wav" } })
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -2054,7 +2069,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               scopes = { "drag-drop" },
             })
@@ -2063,12 +2078,12 @@ mod tests {
             end
             function W:start(_payload)
               self.n = self.n + 1
-              app:info("stateful", tostring(self.n))
+              field.log.info("stateful", tostring(self.n))
             end
             function W:suspend(_session) return true end
-            app:declare_workflow(W)
-            app:run_workflow("stateful")
-            app:run_workflow("stateful")
+            field.workflow.declare(W)
+            field.workflow.run("stateful")
+            field.workflow.run("stateful")
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -2085,17 +2100,17 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local W = app:create_workflow({
+            local W = field.workflow.create({
               name = "stateful",
               scopes = { "drag-drop" },
             })
             function W:start(_payload) end
             function W:suspend(_session) return true end
-            app:declare_workflow(W)
+            field.workflow.declare(W)
             assert(app.workflow == nil)
-            app:run_workflow("stateful")
-            return app.workflow ~= nil, app.workflow:name(), app.session.workflow_name,
-                   app.session.composition ~= nil
+            field.workflow.run("stateful")
+            return app.workflow ~= nil, app.workflow:name(), field.session.shared().workflow_name,
+                   field.session.shared().composition ~= nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -2104,7 +2119,8 @@ mod tests {
             Some("true\tstateful\tstateful\ttrue")
         );
         host.finish_workflow().expect("finish");
-        let out = host.eval("return app.workflow == nil, app.session.workflow_name == nil");
+        let out =
+            host.eval("return app.workflow == nil, field.session.shared().workflow_name == nil");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\ttrue"));
     }
@@ -2113,11 +2129,11 @@ mod tests {
     fn user_workflow_file_overrides_builtin() {
         let dir = std::env::temp_dir().join("fieldassist-workflow-override");
         std::fs::create_dir_all(&dir).expect("temp dir");
-        std::fs::write(dir.join("init.lua"), "app:info('init', 'user')\n").expect("init");
+        std::fs::write(dir.join("init.lua"), "field.log.info('init', 'user')\n").expect("init");
         std::fs::write(
             dir.join("workflow_add.lua"),
             r#"
-            app:declare_workflow({
+            field.workflow.declare({
               name = "add",
               display_name = "Custom Add",
               scopes = { "drag-drop" },
@@ -2157,10 +2173,10 @@ mod tests {
         let path_lua = session_path.to_string_lossy().replace('\\', "/");
         let out = host.eval(&format!(
             r#"
-            local incoming = app:load_session("{path_lua}")
-            local active = app.session.id
+            local incoming = field.session.open("{path_lua}")
+            local active = field.session.shared().id
             incoming:close()
-            return incoming.id ~= active, active, #app.sessions
+            return incoming.id ~= active, active
             "#
         ));
         assert!(out.error.is_none(), "{:?}", out.error);

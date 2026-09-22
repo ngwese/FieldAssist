@@ -21,7 +21,7 @@ Related:
   export (Catalog’s render path)
 - [SPEC-application.md](SPEC-application.md) — session, render, non-destructive
   rule
-- [SCRIPT.md](../SCRIPT.md) — as-built Lua API (this file’s intended APIs are
+- [SCRIPTING.md](../SCRIPTING.md) — as-built Lua API (this file’s intended APIs are
   **not** in SCRIPT until they ship)
 - Example scripts: [docs/examples/workflows/field-recording/](../examples/workflows/field-recording/)
 
@@ -204,7 +204,7 @@ Until processing chains and Lua export ship, the example calls a placeholder
 ## Intended Lua host surface
 
 These APIs are **requirements** implied by the pipeline. They are not in
-[SCRIPT.md](../SCRIPT.md) until implemented. Example scripts call them as if
+[SCRIPTING.md](../SCRIPTING.md) until implemented. Example scripts call them as if
 they exist.
 
 ### Progress and confirmation

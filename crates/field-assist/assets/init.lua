@@ -12,42 +12,42 @@
 
 local started = os.clock()
 
-app:define_layout({
+field.layouts.define({
   name = "mono",
   description = "Single channel",
   channels = { [0] = "Mono" },
   monitor = { chain = "mono" },
 })
 
-app:define_layout({
+field.layouts.define({
   name = "stereo",
   description = "Left / Right",
   channels = { [0] = "L", [1] = "R" },
   monitor = { chain = "stereo" },
 })
 
-app:define_layout({
+field.layouts.define({
   name = "MS",
   description = "Mid / Side",
   channels = { [0] = "M", [1] = "S" },
   monitor = { chain = "ms" },
 })
 
-app:define_layout({
+field.layouts.define({
   name = "B-Format (AmbiX)",
   description = "First-order Ambisonics (Ambix ACN/SN3D)",
   channels = { [0] = "W", [1] = "Y", [2] = "Z", [3] = "X" },
   monitor = { chain = "foa" },
 })
 
-app:define_layout({
+field.layouts.define({
   name = "B-Format (FuMa)",
   description = "First-order Ambisonics (Furse-Malham)",
   channels = { [0] = "W", [1] = "X", [2] = "Y", [3] = "Z" },
   monitor = { chain = "foa_fuma" },
 })
 
-app:define_layout({
+field.layouts.define({
   name = "2OA",
   description = "Second-order Ambisonics (Ambix)",
   channels = {
@@ -63,12 +63,12 @@ app:define_layout({
   },
 })
 
-app:on("detect_layout", function(c, chosen)
+field.on("detect_layout", function(c, chosen)
   if chosen == "1OA" then
     chosen = "B-Format (AmbiX)"
   end
   if chosen then
-    app:info("layout", chosen)
+    field.log.info("layout", chosen)
     return chosen
   end
   local n = c.channels
@@ -88,19 +88,19 @@ app:on("detect_layout", function(c, chosen)
     name = "2OA"
   end
   if name then
-    app:info("layout", name)
+    field.log.info("layout", name)
   else
-    app:info("layout", "none")
+    field.log.info("layout", "none")
   end
   return name
 end)
 
-app:on("loaded", function(c, elapsed)
-  app:info("load", string.format("%s in %.2f ms", c.name, elapsed * 1000))
+field.on("loaded", function(c, elapsed)
+  field.log.info("load", string.format("%s in %.2f ms", c.name, elapsed * 1000))
 end)
 
-app:on("saved", function(c, elapsed)
-  app:info("save", string.format("%s in %.2f ms", c.name, elapsed * 1000))
+field.on("saved", function(c, elapsed)
+  field.log.info("save", string.format("%s in %.2f ms", c.name, elapsed * 1000))
 end)
 
-app:info("init", string.format("evaluated in %.2f ms", (os.clock() - started) * 1000))
+field.log.info("init", string.format("evaluated in %.2f ms", (os.clock() - started) * 1000))

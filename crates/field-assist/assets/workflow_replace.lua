@@ -4,12 +4,15 @@ local function is_session_path(path)
   return string.lower(path):match("%.fasession$") ~= nil
 end
 
-app:declare_workflow({
+local drop_color = (app.theme and app.theme.semantic and app.theme.semantic.warning)
+  or field.ui.semantic.warning
+
+field.workflow.declare({
   name = "replace",
   display_name = "Replace",
   description = "Replace the active session or the active document",
   scopes = { "drag-drop" },
-  drop = { row = 1, priority = 1, color = app.theme.semantic.warning },
+  drop = { row = 1, priority = 1, color = drop_color },
 }, function(payload)
   local paths = payload.paths or {}
   if #paths ~= 1 then
@@ -20,14 +23,15 @@ app:declare_workflow({
     return
   end
   local path = paths[1]
+  local session = field.session.shared()
   if is_session_path(path) then
-    app.session:open(path)
+    session:open(path)
     return
   end
-  local active = app.composition
+  local active = session.composition
   if active then
     active:replace(path)
   else
-    app.session:open(path)
+    session:open(path)
   end
 end)

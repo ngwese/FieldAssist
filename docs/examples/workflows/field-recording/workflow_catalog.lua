@@ -3,21 +3,15 @@
 --
 -- NOT embedded. NOT expected to run until intended host APIs ship:
 --   app:confirm, app.url, app.fs, app.sqlite, composition:export / processing
---   chains, background jobs, app:finish_workflow({ next = "…" })
+--   chains, background jobs, field.workflow.finish({ next = "…" })
 --
 -- Copy into the FieldAssist config directory next to init.lua.
 -- Requires shared.lua in the same directory.
 -- Run after Review (example or built-in) has marked documents keep / drop.
 
-local shared
-do
-  local info = debug.getinfo(1, "S")
-  local src = info and info.source or ""
-  local dir = src:match("^@(.*[/\\])") or ""
-  shared = dofile(dir .. "shared.lua")
-end
+local shared = field.include("shared.lua")
 
-local Catalog = app:create_workflow({
+local Catalog = field.workflow.create({
   name = "catalog",
   display_name = "Catalog",
   description = "Export kept takes into the library and clean staging",
@@ -59,7 +53,7 @@ function Catalog:kept_docs(session)
 end
 
 function Catalog:build_toolbar(session)
-  self.progress = app.ui.message({
+  self.progress = field.ui.message({
     id = "progress",
     text = "-",
     color = app.theme.semantic.muted_foreground,
@@ -69,7 +63,7 @@ function Catalog:build_toolbar(session)
   self.progress.text = string.format("%d kept", kept)
 
   self:set_toolbar({
-    app.ui.path_entry({
+    field.ui.path_entry({
       id = "catalog_root",
       label = "Library",
       value = self.catalog_root or "",
@@ -78,7 +72,7 @@ function Catalog:build_toolbar(session)
         workflow.catalog_root = ctrl.value or ""
       end,
     }),
-    app.ui.text_entry({
+    field.ui.text_entry({
       id = "format",
       label = "Format",
       value = self.format or "flac",
@@ -86,9 +80,9 @@ function Catalog:build_toolbar(session)
         workflow.format = (ctrl.value or "flac"):lower()
       end,
     }),
-    app.ui.divider(),
+    field.ui.divider(),
     self.progress,
-    app.ui.button({
+    field.ui.button({
       id = "export",
       label = "Export kept",
       align = "right",
@@ -96,12 +90,12 @@ function Catalog:build_toolbar(session)
         workflow:run_catalog()
       end,
     }),
-    app.ui.button({
+    field.ui.button({
       id = "finish",
       label = "Finish",
       align = "right",
       action = function(_, _)
-        app:finish_workflow()
+        field.workflow.finish()
       end,
     }),
   })
@@ -122,7 +116,7 @@ function Catalog:export_one(doc, index, total)
   --   })
   --
   -- Until that ships, File → Render remains the interactive single-file path.
-  app:info(
+  field.log.info(
     "catalog",
     string.format("export (intended) %s → %s", doc.name or doc.path or "?", self.catalog_root)
   )
@@ -148,7 +142,7 @@ function Catalog:cleanup_staging()
   --   app.fs.remove(staging_url)
   --   set catalog_status = staging_removed
 
-  app:info(
+  field.log.info(
     "catalog",
     "staging cleanup skipped (app:confirm / app.fs not available): " .. self.staging_root
   )
@@ -158,7 +152,7 @@ function Catalog:run_catalog()
   if self.busy then
     return
   end
-  local session = app.session
+  local session = field.session.shared()
   self:persist(session)
 
   if not self.catalog_root or self.catalog_root == "" then
@@ -180,7 +174,7 @@ function Catalog:run_catalog()
     end)
     if not ok then
       failed = failed + 1
-      app:error("catalog", tostring(err))
+      field.log.error("catalog", tostring(err))
     end
   end
   self.busy = false
@@ -190,12 +184,12 @@ function Catalog:run_catalog()
     self:cleanup_staging()
   else
     self:set_progress(string.format("%d failed of %d", failed, #docs))
-    app:warn("catalog", "Fix failures before removing staging.")
+    field.log.warn("catalog", "Fix failures before removing staging.")
   end
 end
 
 function Catalog:start(_payload)
-  local session = app.session
+  local session = field.session.shared()
   self:restore(session)
   self:build_toolbar(session)
   app:command("view.show-explorer")
@@ -212,12 +206,12 @@ function Catalog:resume(session)
 end
 
 function Catalog:cancel(_session)
-  app:info("catalog", "canceled")
+  field.log.info("catalog", "canceled")
 end
 
 function Catalog:finish(session)
   self:persist(session)
-  app:info("catalog", "finished")
+  field.log.info("catalog", "finished")
 end
 
-app:declare_workflow(Catalog)
+field.workflow.declare(Catalog)

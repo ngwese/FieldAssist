@@ -25,7 +25,7 @@ Related:
 - [SPEC-field-recording.md](SPEC-field-recording.md) — Ingest → Review →
   Catalog reference pipeline and intended host APIs (staging, SQLite sidecar,
   confirm, metadata)
-- [SCRIPT.md](../SCRIPT.md) — Lua API reference
+- [SCRIPTING.md](../SCRIPTING.md) — Lua API reference
 - [BUILDING.md](../BUILDING.md) — build and packaging
 
 ## Purpose
@@ -286,7 +286,7 @@ The Script panel is a Lua REPL. `print` goes to the transcript. `app:info`,
 The Messages tab has no badge; totals appear on the status bar. The Media tab
 lists every entry in the window-shared media pool (descriptor fields plus
 resolved path). Pool-only entries added via Lua are shown there but are not
-persisted in `.fasession`. See [SCRIPT.md](../SCRIPT.md).
+persisted in `.fasession`. See [SCRIPTING.md](../SCRIPTING.md).
 
 ## Review editor
 

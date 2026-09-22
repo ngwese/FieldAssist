@@ -28,11 +28,11 @@ local function is_session_path(path)
   return string.lower(path):match("%.fasession$") ~= nil
 end
 
--- Directories are expanded with app:find_files; a file path fails that call
--- and is kept as a single item.
+-- Directories are expanded with field.fs.find_files; a file path fails that
+-- call and is kept as a single item.
 local function expand_item(path)
   local ok, found = pcall(function()
-    return app:find_files(path, MEDIA_EXTS)
+    return field.fs.find_files(path, MEDIA_EXTS)
   end)
   if not ok then
     return { path }
@@ -57,26 +57,30 @@ local function session_has_path(session, path)
 end
 
 local function add_path(path)
+  local session = field.session.shared()
   if is_session_path(path) then
-    local incoming = app:load_session(path)
+    local incoming = field.session.open(path)
     for _, doc in ipairs(incoming.compositions) do
       local doc_path = doc.path
-      if doc_path and not session_has_path(app.session, doc_path) then
-        app.session:open(doc_path)
+      if doc_path and not session_has_path(session, doc_path) then
+        session:open(doc_path)
       end
     end
     incoming:close()
   else
-    app.session:open(path)
+    session:open(path)
   end
 end
 
-app:declare_workflow({
+local drop_color = (app.theme and app.theme.semantic and app.theme.semantic.success)
+  or field.ui.semantic.success
+
+field.workflow.declare({
   name = "add",
   display_name = "Add",
   description = "Add audio, compositions, or merge a session into the current session",
   scopes = { "drag-drop" },
-  drop = { row = 1, priority = 1, color = app.theme.semantic.success },
+  drop = { row = 1, priority = 1, color = drop_color },
 }, function(payload)
   local paths = payload.paths or {}
   for _, item in ipairs(paths) do

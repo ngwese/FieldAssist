@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/field-assist",
+    "crates/field-batch",
+    "crates/field-scripting",
     "crates/field-core",
     "crates/field-audio-model",
     "crates/field-audio-io",
@@ -41,6 +43,7 @@ rubato = { version = "5", features = ["fft_resampler"] }
 realfft = "3"
 dasp = { version = "0.11", features = ["std", "slice", "envelope", "envelope-peak"] }
 thiserror = "2"
+url = "2"
 image = { version = "0.25", default-features = false }
 embed-resource = "3"
 

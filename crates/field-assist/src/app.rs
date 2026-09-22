@@ -2574,6 +2574,7 @@ impl AppView {
         self.session.active()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn session_document_ids(&self) -> Vec<DocumentId> {
         self.session.documents().iter().map(|doc| doc.id).collect()
     }

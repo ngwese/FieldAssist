@@ -13,7 +13,7 @@
 | 5 | 2026-09-21 | Composing workflows; link to field-recording pipeline |
 
 This document specifies the Lua host, workflow system, and how they support
-incremental review. The Lua surface is defined in [SCRIPT.md](../SCRIPT.md);
+incremental review. The Lua surface is defined in [SCRIPTING.md](../SCRIPTING.md);
 this file is the product contract.
 
 Related:
@@ -25,7 +25,7 @@ Related:
   driven by these workflows today)
 - [SPEC-field-recording.md](SPEC-field-recording.md) — Ingest → Review →
   Catalog reference pipeline (composing workflows; intended host APIs)
-- [SCRIPT.md](../SCRIPT.md) — API reference
+- [SCRIPTING.md](../SCRIPTING.md) — API reference
 
 ## Purpose
 

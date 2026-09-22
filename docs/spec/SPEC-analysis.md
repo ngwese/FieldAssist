@@ -30,7 +30,7 @@ Related:
 - [SPEC-processing.md](SPEC-processing.md) — future processing chains (transform
   for preview/export; not analysis)
 - [SPEC-workflows.md](SPEC-workflows.md) — Lua review/ingest
-- [SCRIPT.md](../SCRIPT.md) — Lua API reference (analysis methods land when
+- [SCRIPTING.md](../SCRIPTING.md) — Lua API reference (analysis methods land when
   implemented)
 
 ## Purpose
@@ -301,7 +301,7 @@ Other analysis jobs use the same progress pattern and cancel semantics.
 
 Scripts **invoke** built-in analysis; they do not register custom analyzers or
 consume PCM buffers from Lua (same plugin stance as processing). Full method
-tables belong in [SCRIPT.md](../SCRIPT.md) when implemented. Product contract:
+tables belong in [SCRIPTING.md](../SCRIPTING.md) when implemented. Product contract:
 
 ```lua
 c:analyze("peaks")

@@ -21,6 +21,7 @@ use field_session::placeholder_media_descriptor;
 use super::access;
 use super::app::bind_app;
 use super::composition::LuaComposition;
+use super::field_ns::bind_field;
 use super::layout::ChannelLayoutDef;
 use super::session::LuaSession;
 use super::workflow::{
@@ -234,6 +235,7 @@ impl ScriptHost {
         };
         lua.set_app_data(handle.clone());
         bind_app(&lua)?;
+        bind_field(&lua)?;
         install_print(&lua, handle.clone())?;
         Ok(Self { lua, handle })
     }
@@ -529,6 +531,7 @@ impl ScriptHost {
 }
 
 impl HostHandle {
+    #[allow(dead_code)]
     pub fn active(&self) -> Option<DocumentId> {
         if let Some(test) = &self.inner.borrow().test {
             return test.borrow().active;
@@ -584,6 +587,7 @@ impl HostHandle {
         access::with_view(|view, _, cx| view.explorer_dock_open(cx)).unwrap_or(false)
     }
 
+    #[allow(dead_code)]
     pub fn documents(&self) -> Vec<DocumentId> {
         if let Some(test) = &self.inner.borrow().test {
             return test
@@ -1233,6 +1237,7 @@ impl HostHandle {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn sessions(&self) -> Vec<LuaSession> {
         let mut sessions = vec![LuaSession::active()];
         let mut detached: Vec<SessionId> = self

@@ -1,0 +1,21 @@
+[package]
+name = "field-batch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless Lua batch runtime for FieldAssist sessions and workflows"
+publish = false
+
+[[bin]]
+name = "field-batch"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+field-scripting = { path = "../field-scripting" }
+mlua = { workspace = true }
+rustyline = "15"
+
+[dev-dependencies]
+tempfile = "3"

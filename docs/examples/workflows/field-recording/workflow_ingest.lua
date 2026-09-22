@@ -3,20 +3,14 @@
 --
 -- NOT embedded. NOT expected to run until intended host APIs ship:
 --   app:confirm, app.url, app.fs, app.sqlite, media convert/tags,
---   background jobs, app:finish_workflow({ next = "…" })
+--   background jobs, field.workflow.finish({ next = "…" })
 --
 -- Copy into the FieldAssist config directory next to init.lua.
--- Requires shared.lua in the same directory (loaded via dofile below).
+-- Requires shared.lua in the same directory (via field.include).
 
-local shared
-do
-  local info = debug.getinfo(1, "S")
-  local src = info and info.source or ""
-  local dir = src:match("^@(.*[/\\])") or ""
-  shared = dofile(dir .. "shared.lua")
-end
+local shared = field.include("shared.lua")
 
-local Ingest = app:create_workflow({
+local Ingest = field.workflow.create({
   name = "ingest",
   display_name = "Ingest",
   description = "Copy/convert field recordings into backup and staging",
@@ -57,14 +51,14 @@ function Ingest:set_progress(text)
 end
 
 function Ingest:build_toolbar()
-  self.progress = app.ui.message({
+  self.progress = field.ui.message({
     id = "progress",
     text = "Idle",
     color = app.theme.semantic.muted_foreground,
   })
 
   self:set_toolbar({
-    app.ui.path_entry({
+    field.ui.path_entry({
       id = "source",
       label = "Source",
       value = self.source or "",
@@ -73,7 +67,7 @@ function Ingest:build_toolbar()
         workflow.source = ctrl.value or ""
       end,
     }),
-    app.ui.path_entry({
+    field.ui.path_entry({
       id = "backup",
       label = "Backup",
       value = self.backup_root or "",
@@ -82,7 +76,7 @@ function Ingest:build_toolbar()
         workflow.backup_root = ctrl.value or ""
       end,
     }),
-    app.ui.path_entry({
+    field.ui.path_entry({
       id = "staging",
       label = "Staging",
       value = self.staging_root or "",
@@ -91,7 +85,7 @@ function Ingest:build_toolbar()
         workflow.staging_root = ctrl.value or ""
       end,
     }),
-    app.ui.text_entry({
+    field.ui.text_entry({
       id = "format",
       label = "Format",
       value = self.format or "flac",
@@ -99,9 +93,9 @@ function Ingest:build_toolbar()
         workflow.format = (ctrl.value or "flac"):lower()
       end,
     }),
-    app.ui.divider(),
+    field.ui.divider(),
     self.progress,
-    app.ui.button({
+    field.ui.button({
       id = "run",
       label = "Run",
       align = "right",
@@ -109,7 +103,7 @@ function Ingest:build_toolbar()
         workflow:run_ingest()
       end,
     }),
-    app.ui.button({
+    field.ui.button({
       id = "finish",
       label = "Finish → Review",
       align = "right",
@@ -156,7 +150,7 @@ function Ingest:process_one(source_path, index, total)
     -- app.fs.mkdir(backup.parent, { recursive = true })
     -- app.fs.copy(src, backup)
     -- assert(app.fs.checksum(src) == app.fs.checksum(backup))
-    app:info("ingest", "backup (intended): " .. source_path)
+    field.log.info("ingest", "backup (intended): " .. source_path)
   end
 
   -- Convert to preferred format in staging (not bit-exact):
@@ -168,11 +162,11 @@ function Ingest:process_one(source_path, index, total)
   -- local sum = app.fs.checksum(dest)
   -- ledger insert: source_url, backup_url, staging_url, checksums, status=verified
 
-  app:info("ingest", string.format("stage (intended) → %s: %s", self.format, source_path))
+  field.log.info("ingest", string.format("stage (intended) → %s: %s", self.format, source_path))
 
   local ok, doc = pcall(function()
     -- When convert exists, open the staging path instead of the source.
-    return app.session:open(source_path)
+    return field.session.shared():open(source_path)
   end)
   if ok and doc then
     doc.group = "todo"
@@ -183,7 +177,7 @@ function Ingest:run_ingest()
   if self.busy then
     return
   end
-  local session = app.session
+  local session = field.session.shared()
   self:persist(session)
 
   if not self.staging_root or self.staging_root == "" then
@@ -209,7 +203,7 @@ function Ingest:run_ingest()
       self:process_one(path, i, #paths)
     end)
     if not ok then
-      app:error("ingest", tostring(err))
+      field.log.error("ingest", tostring(err))
     end
   end
   self.busy = false
@@ -225,7 +219,7 @@ function Ingest:run_ingest()
     -- ) then
     --   for each verified source: app.fs.remove(src)
     -- end
-    app:info(
+    field.log.info(
       "ingest",
       "source delete skipped (app:confirm not available); use Finish when ready"
     )
@@ -235,11 +229,11 @@ function Ingest:run_ingest()
 end
 
 function Ingest:finish_to_review()
-  self:persist(app.session)
+  self:persist(field.session.shared())
   -- Intended handoff:
-  --   app:finish_workflow({ next = "review" })
+  --   field.workflow.finish({ next = "review" })
   -- Until that ships, finish and prompt the user.
-  app:finish_workflow()
+  field.workflow.finish()
   app:alert(
     "Ingest complete",
     "Start Review from the Workflow menu to continue the pipeline."
@@ -247,7 +241,7 @@ function Ingest:finish_to_review()
 end
 
 function Ingest:start(payload)
-  local session = app.session
+  local session = field.session.shared()
   self:restore(session)
   self.queue = self:collect_sources(payload or {})
   if #self.queue > 0 and (not self.source or self.source == "") then
@@ -275,12 +269,12 @@ function Ingest:resume(session)
 end
 
 function Ingest:cancel(_session)
-  app:info("ingest", "canceled")
+  field.log.info("ingest", "canceled")
 end
 
 function Ingest:finish(session)
   self:persist(session)
-  app:info("ingest", "finished")
+  field.log.info("ingest", "finished")
 end
 
-app:declare_workflow(Ingest)
+field.workflow.declare(Ingest)

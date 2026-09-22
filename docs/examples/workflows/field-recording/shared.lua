@@ -67,7 +67,7 @@ end
 function M.expand_media(path, exts)
   exts = exts or MEDIA_EXTS
   local ok, found = pcall(function()
-    return app:find_files(path, exts)
+    return field.fs.find_files(path, exts)
   end)
   if not ok then
     return { path }

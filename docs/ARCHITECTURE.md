@@ -7,7 +7,8 @@ supply adapters.
 
 Product behavior is described in [docs/spec/](spec/) (application, workflows,
 [analysis](spec/SPEC-analysis.md), [processing](spec/SPEC-processing.md)). This
-file covers only crate boundaries and composition patterns.
+file covers only crate boundaries and composition patterns. The shared Lua
+surface is documented in [SCRIPTING.md](SCRIPTING.md).
 
 ## Crate DAG
 
@@ -21,15 +22,17 @@ field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
     ├── field-session   (depends on field-core + field-audio-model serde;
     │                    DocumentId `doc:`, SessionId `session:`; no
     │                    field-composition edge)
-    └── (used by most crates)
+    └── field-audio-playback     (device list for field.audio_devices)
 
 field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
-field-audio-playback    (cpal engine; PlaybackDataProvider + MonitorProcess)
 field-ui-components     (gpui widgets + host traits / DTOs)
 
-field-play              (example CLI: composition → default device + monitor)
-field-assist (package name FieldAssist)
-    depends on all of the above (except field-play)
+field-scripting         (mlua host; NO gpui, NO field-ui-components)
+    ├── field-batch     (CLI: REPL + script + shebang)
+    └── FieldAssist     (GPUI app; also monitor, ui-components, playback)
+
+field-play              (example CLI: composition → default device + monitor;
+                         no Lua)
 ```
 
 | Crate | Level | Responsibility |
@@ -43,8 +46,15 @@ field-assist (package name FieldAssist)
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
 | `field-composition` | high | `.facomp` I/O (v8), EDL, clip tree; re-exports `CompositionId` |
 | `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
+| `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `HeadlessWorld` |
+| `field-batch` | app | Headless REPL / script runner / Unix shebang over `field-scripting` |
 | `field-play` | example | Headless composition playback on the default output |
-| `FieldAssist` | app | Document editor, Lua, docks, shared session `MediaStore`, `PlaybackSession`, adapters |
+| `FieldAssist` | app | Document editor, GPUI host bridge, docks, playback; embeds workflows |
+
+`field-scripting` sits at the same layer as the app hosts: it may depend on
+both `field-session` and `field-composition`. FieldAssist keeps GPUI-only
+script bridges (`access`, theme, toolbar rendering) and binds host-only `app`
+fields (`name`, `theme`, `command`, chrome flags).
 
 ## Trait-at-leaf composition
 
@@ -111,24 +121,24 @@ live parameters track the audible playhead (not ring depth). Composition
 prefetch thread. Direct bypasses Faust only — rate conversion still applies
 whenever source and device rates differ.
 
-## Future binaries
+## Binaries
 
-A CLI or mobile tool can depend on a subset, for example:
-
-- probe/peaks CLI: `field-audio-io` + `field-audio-process`
-- session batch tool: `field-session` + `field-composition` + I/O (no GPUI, no Faust)
+- **`field-batch`**: headless Lua (`field.*`) — REPL with no args, script file +
+  `app.args`, Unix shebang (`#!/usr/bin/env field-batch`). Does not auto-load
+  Add/Replace/Review (those stay FieldAssist-embedded).
 - **`field-play`**: `field-composition` + `field-audio-playback` +
   `field-audio-monitor` — plays a composition on the system default device
   (no session). Loads a `.facomp`, or builds one from a media file with
   `Composition::from_media_path`. Uses the composition's monitoring chain
   when set, otherwise Direct.
+- **`FieldAssist`**: desktop app (`crates/field-assist`).
 
 ```bash
+cargo run -p field-batch -- --eval 'return app.name'
+cargo run -p field-batch -- script.lua arg1
 cargo run -p field-play -- path/to/project.facomp
 cargo run -p field-play -- path/to/take.wav
 ```
-
-The desktop app remains `crates/field-assist` (Cargo package `FieldAssist`).
 
 ## Docs
 

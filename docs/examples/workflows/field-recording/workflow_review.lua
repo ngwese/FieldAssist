@@ -8,15 +8,9 @@
 -- built-in `review` name. Requires shared.lua in the same directory.
 -- Runs on today's host (no future APIs required for Keep / Drop).
 
-local shared
-do
-  local info = debug.getinfo(1, "S")
-  local src = info and info.source or ""
-  local dir = src:match("^@(.*[/\\])") or ""
-  shared = dofile(dir .. "shared.lua")
-end
+local shared = field.include("shared.lua")
 
-local Review = app:create_workflow({
+local Review = field.workflow.create({
   name = "review",
   display_name = "Review",
   description = "Review session documents",
@@ -56,7 +50,7 @@ function Review:update_toolbar(session)
 end
 
 Review:on("composition_selected", function(self, _composition)
-  self:update_toolbar(app.session)
+  self:update_toolbar(field.session.shared())
 end)
 
 function Review:todo_index(session, todos)
@@ -142,54 +136,54 @@ function Review:build_toolbar(session)
   local success = app.theme.semantic.success
   local danger = app.theme.semantic.danger
 
-  self.progress = app.ui.message({
+  self.progress = field.ui.message({
     id = "progress",
     text = "-",
     color = app.theme.semantic.muted_foreground,
   })
-  self.kept = app.ui.toggle({
+  self.kept = field.ui.toggle({
     id = "keep",
     label = "Keep",
     value = false,
     on_color = success,
     on_icon = "circle-check",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_keep(app.session, not ctrl.value)
+      ctrl.value = workflow:set_keep(field.session.shared(), not ctrl.value)
     end,
   })
-  self.dropped = app.ui.toggle({
+  self.dropped = field.ui.toggle({
     id = "drop",
     label = "Drop",
     value = false,
     on_color = danger,
     on_icon = "circle-x",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_dropped(app.session, not ctrl.value)
+      ctrl.value = workflow:set_dropped(field.session.shared(), not ctrl.value)
     end,
   })
 
   self:set_toolbar({
-    app.ui.button({
+    field.ui.button({
       id = "previous",
       label = "Previous",
       icon = "arrow-left",
       action = function(_, workflow)
-        workflow:go_previous(app.session)
+        workflow:go_previous(field.session.shared())
       end,
     }),
-    app.ui.button({
+    field.ui.button({
       id = "next",
       label = "Next",
       icon = "arrow-right",
       action = function(_, workflow)
-        workflow:go_next(app.session)
+        workflow:go_next(field.session.shared())
       end,
     }),
     self.kept,
     self.dropped,
-    app.ui.divider(),
+    field.ui.divider(),
     self.progress,
-    app.ui.button({
+    field.ui.button({
       id = "finish",
       label = "Finish → Catalog",
       align = "right",
@@ -203,15 +197,15 @@ function Review:build_toolbar(session)
 end
 
 function Review:finish_to_catalog()
-  local session = app.session
+  local session = field.session.shared()
   self:set_review_playback(false)
   local n = session:group_count("todo")
   if n > 0 then
-    app:warn("review", string.format("%d document(s) still in todo", n))
+    field.log.warn("review", string.format("%d document(s) still in todo", n))
   end
   -- Intended handoff:
-  --   app:finish_workflow({ next = "catalog" })
-  app:finish_workflow()
+  --   field.workflow.finish({ next = "catalog" })
+  field.workflow.finish()
   app:alert(
     "Review complete",
     "Start Catalog from the Workflow menu to export kept takes."
@@ -219,27 +213,27 @@ function Review:finish_to_catalog()
 end
 
 function Review:start(payload)
-  app:info("review", "starting")
-  local session = app.session
+  field.log.info("review", "starting")
+  local session = field.session.shared()
   local scope = payload.scope or "?"
   if scope == "menu" then
     local docs = session.compositions or {}
     for _, doc in ipairs(docs) do
       doc.group = "todo"
     end
-    app:info("review", string.format("via menu: %d document(s) marked todo", #docs))
+    field.log.info("review", string.format("via menu: %d document(s) marked todo", #docs))
     self:build_toolbar(session)
     self:set_review_playback(true)
     app:command("view.show-explorer")
     return
   end
   local incoming = payload.paths or {}
-  app:info("review", string.format("via drop: %d path(s), scope=%s", #incoming, scope))
+  field.log.info("review", string.format("via drop: %d path(s), scope=%s", #incoming, scope))
   if #incoming == 0 then
-    app:info("review", "(none)")
+    field.log.info("review", "(none)")
   else
     for i, item in ipairs(incoming) do
-      app:info("review", string.format("%d. %s", i, item))
+      field.log.info("review", string.format("%d. %s", i, item))
       for _, path in ipairs(shared.expand_media(item, shared.review_exts())) do
         self:open_todo(session, path)
       end
@@ -261,22 +255,22 @@ function Review:resume(session)
   if total > 0 then
     pct = math.floor((done * 100 / total) + 0.5)
   end
-  app:info("review", string.format("%d%% (%d/%d)", pct, done, total))
+  field.log.info("review", string.format("%d%% (%d/%d)", pct, done, total))
   self:build_toolbar(session)
   self:set_review_playback(true)
   app:command("view.show-explorer")
 end
 
 function Review:cancel(_session)
-  app:info("review", "canceled")
+  field.log.info("review", "canceled")
 end
 
 function Review:finish(session)
   self:set_review_playback(false)
   local n = session:group_count("todo")
   if n > 0 then
-    app:warn("review", string.format("%d document(s) still in todo", n))
+    field.log.warn("review", string.format("%d document(s) still in todo", n))
   end
 end
 
-app:declare_workflow(Review)
+field.workflow.declare(Review)
