@@ -15,6 +15,7 @@ use rustyline::DefaultEditor;
 #[derive(Parser, Debug)]
 #[command(
     name = "field-batch",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Headless Lua runtime for FieldAssist sessions and workflows",
     long_about = "Runs Lua against the shared field.* scripting host. With no \
 script argument, opens an interactive REPL. On Unix, usable as a shebang \
@@ -94,8 +95,9 @@ fn run() -> Result<ExitCode> {
 
 fn repl(host: &mut ScriptHost) -> Result<()> {
     println!(
-        "field-batch {} — type expressions, Ctrl-D to exit",
-        host.host_name()
+        "field-batch {} ({}) — type expressions, Ctrl-D to exit",
+        env!("CARGO_PKG_VERSION"),
+        build_revision()
     );
     let mut editor = DefaultEditor::new()?;
     loop {
@@ -119,6 +121,15 @@ fn repl(host: &mut ScriptHost) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn build_revision() -> String {
+    let revision = env!("GIT_REVISION");
+    if env!("GIT_DIRTY") == "true" {
+        format!("{revision}-dirty")
+    } else {
+        revision.to_string()
+    }
 }
 
 fn flush_alerts(host: &ScriptHost) {
