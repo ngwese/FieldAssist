@@ -124,7 +124,8 @@ whenever source and device rates differ.
 ## Binaries
 
 - **`field-batch`**: headless Lua (`field.*`) — REPL with no args, script file +
-  `app.args`, Unix shebang (`#!/usr/bin/env field-batch`). Does not auto-load
+  `app.args`, Unix shebang (`#!/usr/bin/env field-batch`). Loads user
+  `init.lua` else the shared embedded default. Does not auto-load
   Add/Replace/Review (those stay FieldAssist-embedded).
 - **`field-play`**: `field-composition` + `field-audio-playback` +
   `field-audio-monitor` + `field-scripting` — plays a composition on the

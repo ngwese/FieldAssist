@@ -19,7 +19,8 @@ use rustyline::DefaultEditor;
     about = "Headless Lua runtime for FieldAssist sessions and workflows",
     long_about = "Runs Lua against the shared field.* scripting host. With no \
 script argument, opens an interactive REPL. On Unix, usable as a shebang \
-interpreter (`#!/usr/bin/env field-batch`)."
+interpreter (`#!/usr/bin/env field-batch`). Startup loads init.lua (user \
+config else embedded); does not load FieldAssist workflow bundles."
 )]
 struct Args {
     /// Lua script to run. When omitted, open a REPL.
@@ -29,7 +30,8 @@ struct Args {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     script_args: Vec<String>,
 
-    /// Config directory for `field.include` and optional user `init.lua`.
+    /// Config directory for `field.include` and `init.lua` (default: FieldAssist
+    /// config dir; user file else embedded default).
     #[arg(long)]
     config_dir: Option<PathBuf>,
 
@@ -53,17 +55,13 @@ fn run() -> Result<ExitCode> {
     let config_dir = args.config_dir.or_else(field_scripting::user_config_dir);
     let mut host = ScriptHost::new(HostProfile {
         name: "field-batch",
-        config_dir: config_dir.clone(),
+        config_dir,
     })
     .map_err(|err| anyhow::anyhow!("create script host: {err}"))?;
 
-    if let Some(dir) = config_dir.as_ref() {
-        let init = dir.join("init.lua");
-        if init.is_file() {
-            host.load_file(&init)
-                .map_err(|err| anyhow::anyhow!("load {}: {err}", init.display()))?;
-        }
-    }
+    host.load_init()
+        .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
+    flush_alerts(&host);
 
     if let Some(expr) = args.eval.as_ref() {
         host.set_args(args.script_args.clone());

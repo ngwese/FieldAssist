@@ -95,8 +95,8 @@ system Lua paths or native C modules.
 ### field-batch
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
-user `init.lua` if present. Does **not** fall back to the embedded default,
-and does **not** auto-load Add / Replace / Review.
+user `init.lua` if present, else the shared embedded default. Does **not**
+auto-load Add / Replace / Review.
 
 ### field-play
 
@@ -105,6 +105,7 @@ user `init.lua` if present, else the shared embedded default (layouts +
 `detect_layout`). Does **not** load workflow bundles. After opening the
 path, fires `detect_layout` once so unset `monitor_chain` values pick up
 the layout default before playback.
+
 ## Conventions
 
 - **Access:** **ro** = read-only from Lua; **rw** = get and set.
