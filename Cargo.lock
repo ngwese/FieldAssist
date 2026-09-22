@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "FieldAssist"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-io"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "field-audio-model",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-model"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2180,7 +2180,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-monitor"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "arc-swap",
  "serde",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-playback"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2199,7 +2199,7 @@ dependencies = [
 
 [[package]]
 name = "field-audio-process"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "dasp",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "field-batch"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2222,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "field-composition"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "field-audio-io",
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "field-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "field-play"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "field-scripting"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "field-session"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "field-audio-model",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "field-ui-components"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "gpui-kit",
  "image",
