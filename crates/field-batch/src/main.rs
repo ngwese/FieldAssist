@@ -61,9 +61,9 @@ fn run() -> Result<ExitCode> {
 
     host.load_init()
         .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
-    flush_alerts(&host);
 
     if let Some(expr) = args.eval.as_ref() {
+        flush_alerts(&host);
         host.set_args(args.script_args.clone());
         let out = host.eval(expr);
         for line in &out.prints {
@@ -80,6 +80,7 @@ fn run() -> Result<ExitCode> {
     }
 
     if let Some(script) = args.script.as_ref() {
+        flush_alerts(&host);
         host.set_args(args.script_args.clone());
         host.load_file(script)
             .map_err(|err| anyhow::anyhow!("load {}: {err}", script.display()))?;
@@ -97,6 +98,8 @@ fn repl(host: &mut ScriptHost) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         build_revision()
     );
+    // After the banner so init.lua field.log lines do not precede it.
+    flush_alerts(host);
     let mut editor = DefaultEditor::new()?;
     loop {
         match editor.readline("> ") {

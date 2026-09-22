@@ -107,3 +107,31 @@ fn eval_session_new() {
     assert!(output.status.success(), "{:?}", output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("v"));
 }
+
+#[test]
+fn repl_banner_precedes_init_logs() {
+    let config = empty_config_dir();
+    let bin = env!("CARGO_BIN_EXE_field-batch");
+    // stdin EOF exits the REPL immediately after startup.
+    let output = Command::new(bin)
+        .args(["--config-dir", config.path().to_str().unwrap()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("spawn field-batch");
+    assert!(output.status.success(), "{:?}", output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout
+            .lines()
+            .next()
+            .is_some_and(|l| l.starts_with("field-batch ")),
+        "banner should be first on stdout, got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("info [init]"),
+        "init.lua should still log after banner, got stderr:\n{stderr}"
+    );
+}
