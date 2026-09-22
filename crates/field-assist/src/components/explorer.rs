@@ -296,6 +296,17 @@ fn group_sections<'a>(
             items: named.remove(name).unwrap_or_default(),
         });
     }
+    // Documents whose group is missing from the session registry still need a
+    // home (e.g. older saves or a script that assigned `doc.group` without
+    // ensure_group). Append leftovers alphabetically so they stay visible.
+    let mut leftovers: Vec<_> = named.into_iter().collect();
+    leftovers.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, items) in leftovers {
+        sections.push(ExplorerSection {
+            key: SectionKey::Named(name),
+            items,
+        });
+    }
     sections
 }
 
@@ -2361,6 +2372,23 @@ mod tests {
                 ("session".into(), vec![1, 5]),
                 ("done".into(), vec![3]),
                 ("todo".into(), vec![2, 4]),
+            ]
+        );
+    }
+
+    #[test]
+    fn orphan_groups_still_appear_after_registry() {
+        let items = [
+            item(1, "a.wav", Some("todo")),
+            item(2, "b.wav", Some("orphan")),
+            item(3, "c.wav", None),
+        ];
+        assert_eq!(
+            section_names(&items, &["todo"]),
+            vec![
+                ("session".into(), vec![3]),
+                ("todo".into(), vec![1]),
+                ("orphan".into(), vec![2]),
             ]
         );
     }

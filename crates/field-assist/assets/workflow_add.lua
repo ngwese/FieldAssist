@@ -57,7 +57,7 @@ local function session_has_path(session, path)
 end
 
 local function add_path(path)
-  local session = field.session.shared()
+  local session = field.session.focused()
   if is_session_path(path) then
     local incoming = field.session.open(path)
     for _, doc in ipairs(incoming.compositions) do

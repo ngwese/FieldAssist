@@ -2570,6 +2570,7 @@ impl AppView {
         &mut self.session
     }
 
+    #[allow(dead_code)]
     pub(crate) fn session_active(&self) -> Option<DocumentId> {
         self.session.active()
     }
@@ -2598,6 +2599,7 @@ impl AppView {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn script_save_document(
         &mut self,
         id: DocumentId,
@@ -2646,21 +2648,25 @@ impl AppView {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn script_composition_uuid(&self, id: DocumentId, _cx: &App) -> Option<String> {
         self.views
             .get(&id)
             .map(|views| views.composition.read().unwrap().id().to_string())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn script_composition_parent(&self, id: DocumentId, cx: &App) -> Option<DocumentId> {
         self.lineage_tree(cx).parent(id)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn script_composition_children(&self, id: DocumentId, cx: &App) -> Vec<DocumentId> {
         let ordered: Vec<DocumentId> = self.session.documents().iter().map(|d| d.id).collect();
         self.lineage_tree(cx).children(id, &ordered)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn script_break_out_regions(
         &mut self,
         id: DocumentId,
@@ -2686,6 +2692,7 @@ impl AppView {
         Ok(created)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn script_break_out_channels(
         &mut self,
         id: DocumentId,

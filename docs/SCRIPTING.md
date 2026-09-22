@@ -46,23 +46,22 @@ field-batch script.lua a b      # app.args = { "a", "b" }
 #!/usr/bin/env field-batch      # script path is argv[1]
 ```
 
-**Host coverage.** Unless a row says otherwise, the tables below describe the
-shared surface implemented in `field-scripting` (field-batch). FieldAssist
-binds the same names where noted; some modules are thinner on the desktop host
-until the GPUI bridge fully shares the crate.
+**Host coverage.** The `field.*` surface is shared by `field-scripting` and is
+fully available in FieldAssist. FieldAssist supplies a desktop
+`ScriptBackend`, its host-only `app` facade, and GPUI toolbar paint glue.
 
 | Module | field-batch / field-scripting | FieldAssist today |
 | --- | --- | --- |
 | `field.log` / `field.on` | full | full |
-| `field.include` | path or `field.url`; cache + search stack | path string only |
+| `field.include` | path or `field.url`; cache + search stack | full |
 | `field.scripting` | full | full |
-| `field.url` | full | **not bound** |
-| `field.fs` | full | **`find_files` only** |
-| `field.session` | `shared` / `new` / `open` | `shared` / `open` (no `new`) |
-| `field.composition` | baseline userdata | baseline **plus** desktop chrome fields/methods |
+| `field.url` | full | full |
+| `field.fs` | full | full |
+| `field.session` | `focused` / `new` / `open` | `focused` / `new` / `open` |
+| `field.composition` | baseline userdata | full, plus desktop chrome fields/methods |
 | `field.media` / `field.workflow` / `field.ui` | full | full |
-| `field.layouts` | `define` + `shared_registry` | `define` only |
-| `field.audio_devices` | full | full (`index` is 1-based row) |
+| `field.layouts` | `define` + `shared_registry` | `define` + `shared_registry` |
+| `field.audio_devices` | full | full |
 
 ## Initialization
 
@@ -370,9 +369,16 @@ groups, properties, open compositions).
 
 | Function | Arguments | Returns | Hosts | Description |
 | --- | --- | --- | --- | --- |
-| `shared` | — | session | all | Process / UI-active session |
-| `new` | — | session | field-scripting | Empty headless session |
-| `open` | `path: string` | session | all | Load a `.fasession` (FieldAssist may return a detached session) |
+| `focused` | — | session | all | Process / UI-active session |
+| `new` | — | session | all | Create an empty detached session |
+| `open` | `path: string` | session | all | Load a `.fasession` as a detached session |
+
+`field.session.focused()` is the host's current world/UI session. In contrast,
+`field.session.new()` and `field.session.open(path)` create or load detached
+sessions: they do not replace the active FieldAssist session, do not open
+their documents in the desktop, and are intended for manifest inspection or
+metadata work. To load a `.fasession` into the focused desktop session, call
+`field.session.focused():open(path)`.
 
 ### Returned type: session
 
@@ -645,15 +651,18 @@ A workflow is **stateful** when the prototype defines `suspend` and/or
 
 ## `field.ui`
 
-Toolbar control constructors (data tables, not GPUI widgets) plus a default
-RGBA palette. FieldAssist may prefer live colors from `app.theme`.
+Toolbar control constructors (data tables, not GPUI widgets) plus RGBA
+palettes. In FieldAssist, `field.ui.named` and `field.ui.semantic` are
+overridden after the shared namespace is bound, so every named and semantic
+color is read from the live GPUI theme. Headless hosts use the portable
+defaults.
 
 ### Properties
 
 | Property | Access | Type | Description |
 | --- | --- | --- | --- |
-| `named` | **ro** | palette userdata | Fixed named colors |
-| `semantic` | **ro** | palette userdata | Fixed semantic colors |
+| `named` | **ro** | palette userdata | Live GPUI named colors in FieldAssist; defaults headlessly |
+| `semantic` | **ro** | palette userdata | Live GPUI semantic colors in FieldAssist; defaults headlessly |
 
 ### Functions
 
@@ -806,7 +815,7 @@ Region list returned by `composition.selection` or `composition:collection(name)
 ## Migration from `app:*`
 | Old | New |
 | --- | --- |
-| `app.session` | `field.session.shared()` |
+| `app.session` | `field.session.focused()` |
 | `app:find_files` | `field.fs.find_files` |
 | `app:define_layout` | `field.layouts.define` |
 | `app:on` / `app:info` | `field.on` / `field.log.info` |

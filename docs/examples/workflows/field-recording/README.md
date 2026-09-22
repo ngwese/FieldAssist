@@ -18,7 +18,7 @@ config directory **overrides** the embedded `review` registration.
 | `workflow_catalog.lua` | Stateful Catalog: export `keep` documents, then optional staging cleanup |
 
 Workflows load helpers with `field.include("shared.lua")` and use the `field.*`
-namespace (`field.workflow`, `field.session.shared()`, `field.ui`, …).
+namespace (`field.workflow`, `field.session.focused()`, `field.ui`, …).
 
 ## How to try them
 

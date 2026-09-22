@@ -6,8 +6,7 @@ use gpui_kit::{Hsla, Rgba};
 use mlua::{Lua, Table, UserData, UserDataFields, Value};
 
 use super::access;
-use super::host::host_from_lua;
-use super::marker::color_to_lua;
+use super::backend::backend_from_lua;
 
 pub struct LuaTheme;
 pub struct LuaThemeNamed;
@@ -17,12 +16,8 @@ impl UserData for LuaTheme {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("named", |_, _| Ok(LuaThemeNamed));
         fields.add_field_method_get("semantic", |_, _| Ok(LuaThemeSemantic));
-        fields.add_field_method_get("name", |lua, _| {
-            let host = host_from_lua(lua)?;
-            Ok(host.theme_name())
-        });
+        fields.add_field_method_get("name", |lua, _| Ok(backend_from_lua(lua)?.theme_name()));
         fields.add_field_method_set("name", |lua, _, value: Value| {
-            let host = host_from_lua(lua)?;
             let name = match value {
                 Value::String(s) => s.to_str()?.to_owned(),
                 other => {
@@ -32,14 +27,10 @@ impl UserData for LuaTheme {
                     )))
                 }
             };
-            host.set_theme_name(&name)
+            backend_from_lua(lua)?.set_theme_name(&name)
         });
-        fields.add_field_method_get("mode", |lua, _| {
-            let host = host_from_lua(lua)?;
-            Ok(host.theme_mode())
-        });
+        fields.add_field_method_get("mode", |lua, _| Ok(backend_from_lua(lua)?.theme_mode()));
         fields.add_field_method_set("mode", |lua, _, value: Value| {
-            let host = host_from_lua(lua)?;
             let mode = match value {
                 Value::String(s) => s.to_str()?.to_owned(),
                 other => {
@@ -49,7 +40,7 @@ impl UserData for LuaTheme {
                     )))
                 }
             };
-            host.set_theme_mode(&mode)
+            backend_from_lua(lua)?.set_theme_mode(&mode)
         });
     }
 }
@@ -138,8 +129,7 @@ impl UserData for LuaThemeSemantic {
 }
 
 pub(super) fn themes_table(lua: &Lua) -> mlua::Result<Table> {
-    let host = host_from_lua(lua)?;
-    let names = host.theme_names();
+    let names = backend_from_lua(lua)?.theme_names();
     let table = lua.create_table_with_capacity(names.len(), 0)?;
     for (index, name) in names.into_iter().enumerate() {
         table.set(index + 1, name)?;
@@ -224,5 +214,10 @@ fn hsla_to_rgba(color: Hsla) -> [f32; 4] {
 }
 
 fn lua_theme_color(lua: &Lua, color: Hsla) -> mlua::Result<Table> {
-    color_to_lua(lua, hsla_to_rgba(color))
+    let color = hsla_to_rgba(color);
+    let table = lua.create_table_with_capacity(4, 0)?;
+    for (index, value) in color.into_iter().enumerate() {
+        table.set(index + 1, value)?;
+    }
+    Ok(table)
 }

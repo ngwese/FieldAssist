@@ -46,13 +46,14 @@ field-play              (example CLI: composition → default device + monitor;
 | `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
 | `field-composition` | high | `.facomp` I/O (v8), EDL, clip tree; re-exports `CompositionId` |
 | `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
-| `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `HeadlessWorld` |
+| `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `ScriptBackend` / `HeadlessWorld` ([README](../crates/field-scripting/README.md)) |
 | `field-batch` | app | Headless REPL / script runner / Unix shebang over `field-scripting` |
 | `field-play` | example | Headless composition playback on the default output |
 | `FieldAssist` | app | Document editor, GPUI host bridge, docks, playback; embeds workflows |
 
 `field-scripting` sits at the same layer as the app hosts: it may depend on
-both `field-session` and `field-composition`. FieldAssist keeps GPUI-only
+both `field-session` and `field-composition`. Its `ScriptBackend` trait lets
+each host supply session/document/media storage. FieldAssist keeps GPUI-only
 script bridges (`access`, theme, toolbar rendering) and binds host-only `app`
 fields (`name`, `theme`, `command`, chrome flags).
 

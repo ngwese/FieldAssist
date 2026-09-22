@@ -152,7 +152,7 @@ function Catalog:run_catalog()
   if self.busy then
     return
   end
-  local session = field.session.shared()
+  local session = field.session.focused()
   self:persist(session)
 
   if not self.catalog_root or self.catalog_root == "" then
@@ -189,7 +189,7 @@ function Catalog:run_catalog()
 end
 
 function Catalog:start(_payload)
-  local session = field.session.shared()
+  local session = field.session.focused()
   self:restore(session)
   self:build_toolbar(session)
   app:command("view.show-explorer")

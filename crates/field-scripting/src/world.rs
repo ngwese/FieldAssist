@@ -53,6 +53,37 @@ impl OpenDocument {
         }
     }
 
+    /// Wrap existing shared arcs (e.g. from a DesktopBackend's BufferDocument).
+    ///
+    /// Selection is empty; callers should set `selection`, `position`, and
+    /// `collections` from the source document before running callbacks.
+    pub fn from_shared(
+        composition: Arc<RwLock<Composition>>,
+        buffer: Arc<RwLock<Buffer>>,
+        name: impl Into<String>,
+        path: Option<PathBuf>,
+        next_region_id: u64,
+    ) -> Self {
+        Self {
+            composition,
+            buffer,
+            selection: RegionCollection::new(SELECTION_COLLECTION),
+            collections: HashMap::new(),
+            name: name.into(),
+            path,
+            position: Some(SamplePosition {
+                sample: 0,
+                channels: ChannelScope::all(),
+            }),
+            next_region_id: next_region_id.max(1),
+        }
+    }
+
+    /// Current next-region-id counter (used by DesktopBackend to sync back).
+    pub fn next_region_id(&self) -> u64 {
+        self.next_region_id
+    }
+
     /// Timeline length in samples.
     pub fn frames(&self) -> usize {
         self.composition.read().unwrap().frames() as usize

@@ -19,9 +19,9 @@ pub use field_composition::{
     MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
 };
 pub use field_session as session;
+#[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_session::{
-    is_fasession_path, DocumentId, Session, SessionDocksUi, SessionDocument, SessionId, SessionUi,
-    SessionWindowUi,
+    is_fasession_path, DocumentId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
 };
 
 /// Compatibility shim for `crate::model::file_url`.

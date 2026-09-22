@@ -95,11 +95,7 @@ fn bind_on(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
                 "session_selected" => inner.session_selected.push(callback),
                 "composition_selected" => inner.composition_selected.push(callback),
                 "detect_layout" => inner.detect_layout.push(callback),
-                other => {
-                    return Err(mlua::Error::runtime(format!(
-                        "unknown field.on event `{other}`"
-                    )))
-                }
+                other => return Err(mlua::Error::runtime(format!("unknown event `{other}`"))),
             }
             Ok(())
         })?,

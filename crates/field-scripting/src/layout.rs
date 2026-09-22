@@ -33,6 +33,7 @@ impl ChannelLayoutDef {
     }
 }
 
+/// Parse a layout definition table from Lua.
 pub fn layout_from_lua(table: Table) -> mlua::Result<ChannelLayoutDef> {
     let name: String = table.get("name")?;
     if name.is_empty() {
@@ -178,67 +179,55 @@ pub fn bind_layouts(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
 }
 
 impl HostHandle {
+    /// Register or replace a channel layout definition.
     pub(crate) fn define_layout(&self, layout: ChannelLayoutDef) {
         let mut inner = self.inner.borrow_mut();
-        if let Some(existing) = inner
-            .layouts
-            .iter_mut()
-            .find(|defined| defined.name == layout.name)
-        {
+        if let Some(existing) = inner.layouts.iter_mut().find(|l| l.name == layout.name) {
             *existing = layout;
         } else {
             inner.layouts.push(layout);
         }
     }
 
-    #[allow(dead_code)]
+    /// Look up a registered layout by name.
     pub(crate) fn layout(&self, name: &str) -> Option<ChannelLayoutDef> {
         self.inner
             .borrow()
             .layouts
             .iter()
-            .find(|layout| layout.name == name)
+            .find(|l| l.name == name)
             .cloned()
     }
 
+    /// Names of all registered layouts.
     pub(crate) fn layout_names(&self) -> Vec<String> {
         self.inner
             .borrow()
             .layouts
             .iter()
-            .map(|layout| layout.name.clone())
+            .map(|l| l.name.clone())
             .collect()
     }
 
-    #[allow(dead_code)]
+    /// Apply a named layout to a document (`None` clears the chosen layout).
     pub(crate) fn choose_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
-        let (labels, default_chain) = match name {
-            Some(name) => {
-                let layout = self.layout(name);
-                let labels = layout
-                    .as_ref()
-                    .map(|layout| layout.channels.clone())
-                    .unwrap_or_default();
-                let chain = layout
-                    .as_ref()
-                    .and_then(|layout| layout.monitor_chain_id().map(str::to_string));
-                (labels, chain)
-            }
-            None => (BTreeMap::new(), None),
+        let name_owned = name.map(str::to_string);
+        let (labels, default_chain) = if let Some(ref name_str) = name_owned {
+            let layout = self.layout(name_str).ok_or_else(|| {
+                mlua::Error::runtime(format!("unknown channel layout `{name_str}`"))
+            })?;
+            let chain = layout.monitor_chain_id().map(str::to_string);
+            (layout.channels, chain)
+        } else {
+            (BTreeMap::new(), None)
         };
-        self.with_world_mut(|world| {
-            let doc = world
-                .docs
-                .get_mut(&id)
-                .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
-            let mut composition = doc.composition.write().unwrap();
-            composition.apply_channel_layout(name.map(str::to_string), labels);
-            if composition.monitor_chain().is_none() {
-                if let Some(chain) = default_chain {
-                    composition.set_monitor_chain(Some(chain));
-                }
-            }
-            Ok(())
+        self.with_backend_mut(|backend| {
+            backend.with_open_document_mut(id, &mut |doc| {
+                let mut composition = doc.composition.write().unwrap();
+                composition.choose_channel_layout(name_owned.clone(), labels.clone());
+                composition.set_monitor_chain(default_chain.clone());
+                Ok(())
+            })
         })
     }
 }

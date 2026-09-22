@@ -118,6 +118,134 @@ impl UserData for LuaComposition {
                 Ok(table)
             })
         });
+        // ── Desktop-compatible media / channel-layout fields ─────────────────
+        fields.add_field_method_get("codec", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc.composition.read().unwrap().codec())
+            })
+        });
+        fields.add_field_method_get("bit_depth", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .bit_depth()
+                    .map(|b| b as i64))
+            })
+        });
+        fields.add_field_method_get("basename", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let path = doc
+                    .path
+                    .as_ref()
+                    .filter(|p| !p.to_string_lossy().starts_with("memory:"));
+                Ok(path.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())))
+            })
+        });
+        fields.add_field_method_get("dirname", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let path = doc
+                    .path
+                    .as_ref()
+                    .filter(|p| !p.to_string_lossy().starts_with("memory:"));
+                Ok(path.and_then(|p| {
+                    p.parent()
+                        .map(|parent| parent.to_string_lossy().into_owned())
+                        .filter(|s| !s.is_empty())
+                }))
+            })
+        });
+        fields.add_field_method_get("duration", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let sample_rate = doc.sample_rate();
+                let frames = doc.frames();
+                if sample_rate == 0 {
+                    return Ok(0.0f64);
+                }
+                Ok(frames as f64 / sample_rate as f64)
+            })
+        });
+        fields.add_field_method_get("channel_layout", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .channel_layout()
+                    .map(str::to_string))
+            })
+        });
+        fields.add_field_method_set("channel_layout", |lua, this, value: mlua::Value| {
+            let name = optional_lua_string(value)?;
+            host_from_lua(lua)?.choose_layout(this.id, name.as_deref())
+        });
+        fields.add_field_method_get("monitor_chain", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .monitor_chain()
+                    .map(str::to_string))
+            })
+        });
+        fields.add_field_method_set("monitor_chain", |lua, this, value: mlua::Value| {
+            with_document_mut(lua, this.id, |doc| {
+                let chain = optional_lua_string(value)?;
+                doc.composition.write().unwrap().set_monitor_chain(chain);
+                Ok(())
+            })
+        });
+        fields.add_field_method_get("playback_channels", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                Ok(doc
+                    .composition
+                    .read()
+                    .unwrap()
+                    .playback_channels()
+                    .map(|ch| ch.to_vec()))
+            })
+        });
+        fields.add_field_method_set("playback_channels", |lua, this, value: mlua::Value| {
+            with_document_mut(lua, this.id, |doc| {
+                let channels: Option<Vec<usize>> = match value {
+                    mlua::Value::Nil => None,
+                    mlua::Value::String(s) if s.to_str()? == "all" => None,
+                    mlua::Value::Table(t) => {
+                        let mut ch = Vec::new();
+                        for v in t.sequence_values::<mlua::Value>() {
+                            match v? {
+                                mlua::Value::Integer(i) => ch.push(i.max(0) as usize),
+                                mlua::Value::Number(n) => ch.push(n.max(0.0) as usize),
+                                other => {
+                                    return Err(mlua::Error::runtime(format!(
+                                        "playback_channels entries must be integers, got {}",
+                                        other.type_name()
+                                    )))
+                                }
+                            }
+                        }
+                        if ch.is_empty() {
+                            None
+                        } else {
+                            Some(ch)
+                        }
+                    }
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "playback_channels must be a table, \"all\", or nil, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                doc.composition
+                    .write()
+                    .unwrap()
+                    .set_playback_channels(channels);
+                Ok(())
+            })
+        });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
@@ -320,35 +448,43 @@ pub fn bind_composition_module(lua: &Lua, field: &Table) -> mlua::Result<()> {
 }
 
 /// Read-only access to an open document.
+///
+/// Delegates to [`crate::backend::ScriptBackend::with_open_document`].
 pub fn with_document<R>(
     lua: &Lua,
     id: DocumentId,
     f: impl FnOnce(&OpenDocument) -> mlua::Result<R>,
 ) -> mlua::Result<R> {
     let host = host_from_lua(lua)?;
-    host.with_world(|world| {
-        let doc = world
-            .docs
-            .get(&id)
-            .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
-        f(doc)
-    })
+    let mut f = Some(f);
+    let mut result: Option<mlua::Result<R>> = None;
+    host.with_backend(|backend| {
+        backend.with_open_document(id, &mut |doc| {
+            result = Some(f.take().unwrap()(doc));
+            Ok(())
+        })
+    })?;
+    result.unwrap_or_else(|| Err(mlua::Error::runtime("composition is not open")))
 }
 
 /// Mutable access to an open document.
+///
+/// Delegates to [`crate::backend::ScriptBackend::with_open_document_mut`].
 pub fn with_document_mut<R>(
     lua: &Lua,
     id: DocumentId,
     f: impl FnOnce(&mut OpenDocument) -> mlua::Result<R>,
 ) -> mlua::Result<R> {
     let host = host_from_lua(lua)?;
-    host.with_world_mut(|world| {
-        let doc = world
-            .docs
-            .get_mut(&id)
-            .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
-        f(doc)
-    })
+    let mut f = Some(f);
+    let mut result: Option<mlua::Result<R>> = None;
+    host.with_backend_mut(|backend| {
+        backend.with_open_document_mut(id, &mut |doc| {
+            result = Some(f.take().unwrap()(doc));
+            Ok(())
+        })
+    })?;
+    result.unwrap_or_else(|| Err(mlua::Error::runtime("composition is not open")))
 }
 
 fn apply_selection(lua: &Lua, doc: &mut OpenDocument, value: Value) -> mlua::Result<()> {

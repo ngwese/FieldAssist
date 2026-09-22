@@ -4,26 +4,35 @@
 //! Session userdata and `field.session` module.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
-use field_composition::Composition;
-use field_session::{is_fasession_path, DocumentId, Session, SessionDocument};
+use field_session::{DocumentId, SessionId};
 
 use crate::composition::LuaComposition;
 use crate::host::{host_from_lua, HostHandle};
 use crate::util::{optional_lua_string, string_map_from_lua, string_map_to_lua};
-use crate::world::HeadlessWorld;
 
-/// Handle to the headless [`HeadlessWorld`] session.
+/// Handle to a session in the scripting backend.
+///
+/// `detached_id = None` → the focused world/UI session (what
+/// `field.session.focused()` returns).
+///
+/// `detached_id = Some(id)` → a session from `field.session.new()` /
+/// `field.session.open()`; it lives in the backend's detached map and does
+/// not replace the focused session. In Phase 1 its documents are
+/// session-manifest entries only and are not opened into the world.
 #[derive(Clone, Copy, Debug)]
-pub struct LuaSession;
+pub struct LuaSession {
+    /// `None` = focused world session; `Some(id)` = detached session.
+    pub(crate) detached_id: Option<SessionId>,
+}
 
 impl LuaSession {
-    /// Active shared session in the host world.
-    pub fn shared() -> Self {
-        Self
+    /// Focused world/UI session (`field.session.focused()`).
+    pub fn focused() -> Self {
+        Self { detached_id: None }
     }
 }
 
@@ -38,93 +47,102 @@ impl FromLua for LuaSession {
 
 impl UserData for LuaSession {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("id", |lua, _| {
+        fields.add_field_method_get("id", |lua, this| {
             let host = host_from_lua(lua)?;
-            Ok(host.session_id())
+            Ok(host.session_id(this.detached_id))
         });
-        fields.add_field_method_get("path", |lua, _| Ok(host_from_lua(lua)?.session_path()));
-        fields.add_field_method_get("workflow_name", |lua, _| {
-            Ok(host_from_lua(lua)?.session_workflow())
+        fields.add_field_method_get("path", |lua, this| {
+            Ok(host_from_lua(lua)?.session_path(this.detached_id))
         });
-        fields.add_field_method_set("workflow_name", |lua, _, value: Value| {
-            host_from_lua(lua)?.set_session_workflow(optional_lua_string(value)?)
+        fields.add_field_method_get("workflow_name", |lua, this| {
+            Ok(host_from_lua(lua)?.session_workflow(this.detached_id))
         });
-        fields.add_field_method_get("capture_ui", |lua, _| {
-            Ok(host_from_lua(lua)?.session_capture_ui())
+        fields.add_field_method_set("workflow_name", |lua, this, value: Value| {
+            host_from_lua(lua)?.set_session_workflow(this.detached_id, optional_lua_string(value)?)
         });
-        fields.add_field_method_set("capture_ui", |lua, _, value: bool| {
-            host_from_lua(lua)?.set_session_capture_ui(value)
+        fields.add_field_method_get("capture_ui", |lua, this| {
+            Ok(host_from_lua(lua)?.session_capture_ui(this.detached_id))
         });
-        fields.add_field_method_get("properties", |lua, _| {
-            string_map_to_lua(lua, &host_from_lua(lua)?.session_properties())
+        fields.add_field_method_set("capture_ui", |lua, this, value: bool| {
+            host_from_lua(lua)?.set_session_capture_ui(this.detached_id, value)
         });
-        fields.add_field_method_set("properties", |lua, _, value: Value| {
-            host_from_lua(lua)?.set_session_properties(string_map_from_lua(value)?)
+        fields.add_field_method_get("properties", |lua, this| {
+            string_map_to_lua(
+                lua,
+                &host_from_lua(lua)?.session_properties(this.detached_id),
+            )
         });
-        fields.add_field_method_get("composition", |lua, _| {
+        fields.add_field_method_set("properties", |lua, this, value: Value| {
+            host_from_lua(lua)?
+                .set_session_properties(this.detached_id, string_map_from_lua(value)?)
+        });
+        fields.add_field_method_get("composition", |lua, this| {
             Ok(host_from_lua(lua)?
-                .session_active_document()
+                .session_active_document(this.detached_id)
                 .map(|id| LuaComposition { id }))
         });
-        fields.add_field_method_set("composition", |lua, _, value: Value| {
+        fields.add_field_method_set("composition", |lua, this, value: Value| {
             let doc = LuaComposition::from_lua(value, lua)?;
-            host_from_lua(lua)?.set_active_document(doc.id)
+            host_from_lua(lua)?.set_active_document(this.detached_id, doc.id)
         });
-        fields.add_field_method_get("compositions", |lua, _| {
+        fields.add_field_method_get("compositions", |lua, this| {
             let docs: Vec<LuaComposition> = host_from_lua(lua)?
-                .session_documents()
+                .session_documents(this.detached_id)
                 .into_iter()
                 .map(|id| LuaComposition { id })
                 .collect();
             Ok(docs)
         });
-        fields.add_field_method_get("groups", |lua, _| {
-            let groups = host_from_lua(lua)?.session_groups();
+        fields.add_field_method_get("groups", |lua, this| {
+            let groups = host_from_lua(lua)?.session_groups(this.detached_id);
             let table = lua.create_table()?;
             for (index, name) in groups.into_iter().enumerate() {
                 table.set(index + 1, name)?;
             }
             Ok(table)
         });
-        fields.add_field_method_set("groups", |lua, _, value: Value| {
-            host_from_lua(lua)?.set_session_groups(string_list_from_lua(value)?)
+        fields.add_field_method_set("groups", |lua, this, value: Value| {
+            host_from_lua(lua)?.set_session_groups(this.detached_id, string_list_from_lua(value)?)
         });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("group_count", |lua, _, group: String| {
-            Ok(host_from_lua(lua)?.session_group_count(&group) as i64)
+        methods.add_method("group_count", |lua, this, group: String| {
+            Ok(host_from_lua(lua)?.session_group_count(this.detached_id, &group) as i64)
         });
-        methods.add_method("add_group", |lua, _, name: String| {
-            host_from_lua(lua)?.add_session_group(name)
+        methods.add_method("add_group", |lua, this, name: String| {
+            host_from_lua(lua)?.add_session_group(this.detached_id, name)
         });
-        methods.add_method("rename_group", |lua, _, (old, new): (String, String)| {
-            host_from_lua(lua)?.rename_session_group(old, new)
+        methods.add_method("rename_group", |lua, this, (old, new): (String, String)| {
+            host_from_lua(lua)?.rename_session_group(this.detached_id, old, new)
         });
-        methods.add_method("delete_group", |lua, _, name: String| {
-            host_from_lua(lua)?.delete_session_group(name)
+        methods.add_method("delete_group", |lua, this, name: String| {
+            host_from_lua(lua)?.delete_session_group(this.detached_id, name)
         });
-        methods.add_method("move_group", |lua, _, (name, index): (String, i64)| {
-            host_from_lua(lua)?.move_session_group(name, index)
+        methods.add_method("move_group", |lua, this, (name, index): (String, i64)| {
+            host_from_lua(lua)?.move_session_group(this.detached_id, name, index)
         });
-        methods.add_method("move", |lua, _, (doc, index): (LuaComposition, i64)| {
-            host_from_lua(lua)?.move_session_document(doc.id, index)
+        methods.add_method("move", |lua, this, (doc, index): (LuaComposition, i64)| {
+            host_from_lua(lua)?.move_session_document(this.detached_id, doc.id, index)
         });
         methods.add_method("open", |lua, _, path: String| {
+            // `session.open(path)` opens a *document* into the **focused** session.
+            // To open a .fasession file, use `field.session.open("…")` (module-level).
             host_from_lua(lua)?
                 .open_path(&path)
                 .map(|id| LuaComposition { id })
         });
-        methods.add_method("save", |lua, _, ()| {
-            host_from_lua(lua)?.save_session_stub(None)
+        methods.add_method("save", |lua, this, ()| {
+            host_from_lua(lua)?.save_session(this.detached_id, None)
         });
-        methods.add_method("save_as", |lua, _, path: String| {
-            host_from_lua(lua)?.save_session_stub(Some(path))
+        methods.add_method("save_as", |lua, this, path: String| {
+            host_from_lua(lua)?.save_session(this.detached_id, Some(path))
         });
-        methods.add_method("close", |_lua, _, ()| -> mlua::Result<()> {
-            Err(mlua::Error::runtime(
-                "session.close is not available in the headless host",
-            ))
+        methods.add_method("close", |lua, this, ()| -> mlua::Result<()> {
+            let Some(id) = this.detached_id else {
+                return Err(mlua::Error::runtime("cannot close the focused session"));
+            };
+            host_from_lua(lua)?.close_detached_session(id)
         });
     }
 }
@@ -133,179 +151,205 @@ impl UserData for LuaSession {
 pub fn bind_session_module(lua: &Lua, field: &Table) -> mlua::Result<()> {
     let session = lua.create_table()?;
     session.set(
-        "shared",
-        lua.create_function(|_, ()| Ok(LuaSession::shared()))?,
+        "focused",
+        lua.create_function(|_, ()| Ok(LuaSession::focused()))?,
     )?;
     session.set(
         "new",
         lua.create_function(|lua, ()| {
-            host_from_lua(lua)?.reset_session()?;
-            Ok(LuaSession::shared())
+            Ok(LuaSession {
+                detached_id: Some(host_from_lua(lua)?.new_detached_session()),
+            })
         })?,
     )?;
     session.set(
         "open",
         lua.create_function(|lua, path: String| {
-            host_from_lua(lua)?.load_session_file(&path)?;
-            Ok(LuaSession::shared())
+            // `field.session.open` loads a .fasession into the detached map
+            // and returns a LuaSession identified by that session's id.
+            // The focused world session is NOT replaced.
+            // To replace the focused session (batch style), use
+            // `field.session.load(path)` (internal / Phase-2 API).
+            let detached_id = host_from_lua(lua)?.open_detached_session(&path)?;
+            Ok(LuaSession {
+                detached_id: Some(detached_id),
+            })
         })?,
     )?;
     field.set("session", session)?;
     Ok(())
 }
 
+// ── HostHandle session methods ────────────────────────────────────────────────
+
 impl HostHandle {
-    pub(crate) fn session_id(&self) -> String {
-        self.with_world(|world| world.session.id().to_string())
+    pub(crate) fn session_id(&self, which: Option<SessionId>) -> String {
+        self.with_backend(|b| b.session_id(which))
     }
 
-    pub(crate) fn session_path(&self) -> Option<String> {
-        self.with_world(|world| world.session.path().map(|path| path.display().to_string()))
+    pub(crate) fn session_path(&self, which: Option<SessionId>) -> Option<String> {
+        self.with_backend(|b| b.session_path(which))
     }
 
-    pub(crate) fn session_workflow(&self) -> Option<String> {
-        self.with_world(|world| world.session.workflow().map(str::to_string))
+    pub(crate) fn session_workflow(&self, which: Option<SessionId>) -> Option<String> {
+        self.with_backend(|b| b.session_workflow(which))
     }
 
-    pub(crate) fn set_session_workflow(&self, workflow: Option<String>) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.set_workflow(workflow));
-        Ok(())
+    pub(crate) fn set_session_workflow(
+        &self,
+        which: Option<SessionId>,
+        workflow: Option<String>,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.set_session_workflow(which, workflow))
     }
 
-    pub(crate) fn session_capture_ui(&self) -> bool {
-        self.with_world(|world| world.session.capture_ui())
+    pub(crate) fn session_capture_ui(&self, which: Option<SessionId>) -> bool {
+        self.with_backend(|b| b.session_capture_ui(which))
     }
 
-    pub(crate) fn set_session_capture_ui(&self, capture_ui: bool) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.set_capture_ui(capture_ui));
-        Ok(())
+    pub(crate) fn set_session_capture_ui(
+        &self,
+        which: Option<SessionId>,
+        capture_ui: bool,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.set_session_capture_ui(which, capture_ui))
     }
 
-    pub(crate) fn session_properties(&self) -> BTreeMap<String, String> {
-        self.with_world(|world| world.session.properties().clone())
+    pub(crate) fn session_properties(&self, which: Option<SessionId>) -> BTreeMap<String, String> {
+        self.with_backend(|b| b.session_properties(which))
     }
 
     pub(crate) fn set_session_properties(
         &self,
+        which: Option<SessionId>,
         properties: BTreeMap<String, String>,
     ) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.set_properties(properties));
-        Ok(())
+        self.with_backend_mut(|b| b.set_session_properties(which, properties))
     }
 
-    pub(crate) fn session_active_document(&self) -> Option<DocumentId> {
-        self.with_world(|world| world.session.active())
+    pub(crate) fn session_active_document(&self, which: Option<SessionId>) -> Option<DocumentId> {
+        self.with_backend(|b| b.session_active_document(which))
     }
 
-    pub(crate) fn session_documents(&self) -> Vec<DocumentId> {
-        self.with_world(|world| world.session.documents().iter().map(|doc| doc.id).collect())
+    pub(crate) fn session_documents(&self, which: Option<SessionId>) -> Vec<DocumentId> {
+        self.with_backend(|b| b.session_documents(which))
     }
 
-    pub(crate) fn session_group_count(&self, group: &str) -> usize {
-        self.with_world(|world| world.session.group_count(group))
+    pub(crate) fn session_group_count(&self, which: Option<SessionId>, group: &str) -> usize {
+        self.with_backend(|b| b.session_group_count(which, group))
     }
 
-    pub(crate) fn session_groups(&self) -> Vec<String> {
-        self.with_world(|world| world.session.groups().to_vec())
+    pub(crate) fn session_groups(&self, which: Option<SessionId>) -> Vec<String> {
+        self.with_backend(|b| b.session_groups(which))
     }
 
-    pub(crate) fn set_session_groups(&self, groups: Vec<String>) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.set_groups(groups));
-        Ok(())
+    pub(crate) fn set_session_groups(
+        &self,
+        which: Option<SessionId>,
+        groups: Vec<String>,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.set_session_groups(which, groups))
     }
 
-    pub(crate) fn add_session_group(&self, name: String) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.add_group(name));
-        Ok(())
+    pub(crate) fn add_session_group(
+        &self,
+        which: Option<SessionId>,
+        name: String,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.add_session_group(which, name))
     }
 
-    pub(crate) fn rename_session_group(&self, old: String, new: String) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.rename_group(&old, &new));
-        Ok(())
+    pub(crate) fn rename_session_group(
+        &self,
+        which: Option<SessionId>,
+        old: String,
+        new: String,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.rename_session_group(which, old, new))
     }
 
-    pub(crate) fn delete_session_group(&self, name: String) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.delete_group(&name));
-        Ok(())
+    pub(crate) fn delete_session_group(
+        &self,
+        which: Option<SessionId>,
+        name: String,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.delete_session_group(which, name))
     }
 
-    pub(crate) fn move_session_group(&self, name: String, index: i64) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.move_group(&name, index.max(0) as usize));
-        Ok(())
+    pub(crate) fn move_session_group(
+        &self,
+        which: Option<SessionId>,
+        name: String,
+        index: i64,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.move_session_group(which, name, index.max(0) as usize))
     }
 
-    pub(crate) fn move_session_document(&self, id: DocumentId, index: i64) -> mlua::Result<()> {
-        self.with_world_mut(|world| world.session.move_document(id, index.max(0) as usize));
-        Ok(())
-    }
-
-    pub(crate) fn set_active_document(&self, id: DocumentId) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            if world.docs.get(&id).is_none() {
-                return Err(mlua::Error::runtime("composition is not open"));
-            }
-            world.set_active(id);
-            Ok(())
+    pub(crate) fn move_session_document(
+        &self,
+        which: Option<SessionId>,
+        id: DocumentId,
+        index: i64,
+    ) -> mlua::Result<()> {
+        let len = self.with_backend(|b| b.session_documents(which).len());
+        if index < 1 || (len > 0 && index as usize > len) {
+            return Err(mlua::Error::runtime(format!(
+                "move index must be between 1 and {len}"
+            )));
+        }
+        self.with_backend_mut(|b| {
+            b.move_session_document(which, id, index.saturating_sub(1) as usize)
         })
+    }
+
+    pub(crate) fn set_active_document(
+        &self,
+        which: Option<SessionId>,
+        id: DocumentId,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.set_session_active_document(which, id))?;
+        // Fire composition_selected for the shared session only.
+        if which.is_none() {
+            self.emit_composition_selected(Some(id));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn close_detached_session(&self, id: SessionId) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.close_detached_session(id))
     }
 
     pub(crate) fn open_path(&self, path: &str) -> mlua::Result<DocumentId> {
         let path = PathBuf::from(path);
-        if is_fasession_path(&path) {
-            return Err(mlua::Error::runtime(
-                "use field.session.open for .fasession files",
-            ));
-        }
-        self.with_world_mut(|world| {
-            if let Some(id) = world.session.find_by_path(&path) {
-                world.set_active(id);
-                return Ok(id);
-            }
-            world
-                .open_path(&path)
-                .map_err(|err| mlua::Error::runtime(err.to_string()))
-        })
+        self.with_backend_mut(|b| b.open_path(&path))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn reset_session(&self) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            world.docs.clear();
-            world.session = Session::new();
-        });
+        self.with_backend_mut(|b| b.reset_session())?;
         self.inner.borrow_mut().active = None;
         Ok(())
     }
 
-    pub(crate) fn load_session_file(&self, path: &str) -> mlua::Result<()> {
+    pub(crate) fn open_detached_session(&self, path: &str) -> mlua::Result<SessionId> {
         let path = PathBuf::from(path);
-        if !is_fasession_path(&path) {
-            return Err(mlua::Error::runtime(
-                "field.session.open expects a .fasession file",
-            ));
-        }
-        let json =
-            std::fs::read_to_string(&path).map_err(|err| mlua::Error::runtime(err.to_string()))?;
-        let loaded = Session::from_json(&json, Some(&path))
-            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
-        self.with_world_mut(|world| {
-            world.docs.clear();
-            world.session = loaded.session;
-            world.session.set_path(Some(path));
-            hydrate_session_documents(world)
-        })?;
-        self.inner.borrow_mut().active = None;
-        Ok(())
+        self.with_backend_mut(|b| b.open_detached_session(&path))
     }
 
-    pub(crate) fn save_session_stub(&self, path: Option<String>) -> mlua::Result<()> {
-        let _ = path;
-        Err(mlua::Error::runtime(
-            "session save is not implemented in the headless host",
-        ))
+    pub(crate) fn new_detached_session(&self) -> SessionId {
+        self.with_backend_mut(|b| b.new_detached_session())
+    }
+
+    pub(crate) fn save_session(
+        &self,
+        which: Option<SessionId>,
+        path: Option<String>,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.save_session(which, path.map(PathBuf::from)))
     }
 
     pub(crate) fn document_group(&self, id: DocumentId) -> mlua::Result<Option<String>> {
-        Ok(self.with_world(|world| world.session.get(id).and_then(|doc| doc.group.clone())))
+        self.with_backend(|b| b.document_group(id))
     }
 
     pub(crate) fn set_document_group(
@@ -313,18 +357,11 @@ impl HostHandle {
         id: DocumentId,
         group: Option<String>,
     ) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            let Some(doc) = world.session.get_mut(id) else {
-                return Err(mlua::Error::runtime("composition is not open"));
-            };
-            doc.group = group;
-            world.session.mark_dirty();
-            Ok(())
-        })
+        self.with_backend_mut(|b| b.set_document_group(id, group))
     }
 
     pub(crate) fn document_state(&self, id: DocumentId) -> mlua::Result<Option<String>> {
-        Ok(self.with_world(|world| world.session.get(id).and_then(|doc| doc.state.clone())))
+        self.with_backend(|b| b.document_state(id))
     }
 
     pub(crate) fn set_document_state(
@@ -332,27 +369,14 @@ impl HostHandle {
         id: DocumentId,
         state: Option<String>,
     ) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            let Some(doc) = world.session.get_mut(id) else {
-                return Err(mlua::Error::runtime("composition is not open"));
-            };
-            doc.state = state;
-            world.session.mark_dirty();
-            Ok(())
-        })
+        self.with_backend_mut(|b| b.set_document_state(id, state))
     }
 
     pub(crate) fn document_properties(
         &self,
         id: DocumentId,
     ) -> mlua::Result<BTreeMap<String, String>> {
-        Ok(self.with_world(|world| {
-            world
-                .session
-                .get(id)
-                .map(|doc| doc.properties.clone())
-                .unwrap_or_default()
-        }))
+        self.with_backend(|b| b.document_properties(id))
     }
 
     pub(crate) fn set_document_properties(
@@ -360,73 +384,27 @@ impl HostHandle {
         id: DocumentId,
         properties: BTreeMap<String, String>,
     ) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            let Some(doc) = world.session.get_mut(id) else {
-                return Err(mlua::Error::runtime("composition is not open"));
-            };
-            doc.properties = properties;
-            world.session.mark_dirty();
-            Ok(())
-        })
+        self.with_backend_mut(|b| b.set_document_properties(id, properties))
     }
 
     pub(crate) fn display_name(&self, id: DocumentId) -> Option<String> {
-        self.with_world(|world| {
-            world.docs.get(&id).map(|doc| doc.name.clone()).or_else(|| {
-                world.session.get(id).and_then(|doc| {
-                    doc.name.clone().or_else(|| {
-                        doc.file_path()
-                            .and_then(|path| path.file_stem())
-                            .map(|stem| stem.to_string_lossy().into_owned())
-                    })
-                })
-            })
-        })
+        self.with_backend(|b| b.display_name(id))
     }
 
     pub(crate) fn set_display_name(&self, id: DocumentId, name: String) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            if let Some(doc) = world.docs.get_mut(&id) {
-                doc.name = name.clone();
-            }
-            if let Some(doc) = world.session.get_mut(id) {
-                doc.name = Some(name);
-                world.session.mark_dirty();
-            }
-            Ok(())
-        })
+        self.with_backend_mut(|b| b.set_display_name(id, name))
     }
 
     pub(crate) fn document_path(&self, id: DocumentId) -> Option<PathBuf> {
-        self.with_world(|world| {
-            world
-                .docs
-                .get(&id)
-                .and_then(|doc| doc.path.clone())
-                .or_else(|| {
-                    world
-                        .session
-                        .get(id)
-                        .and_then(|doc| doc.file_path().map(Path::to_path_buf))
-                })
-        })
+        self.with_backend(|b| b.document_path(id))
     }
 
     pub(crate) fn composition_id_string(&self, id: DocumentId) -> mlua::Result<String> {
-        self.with_world(|world| {
-            let doc = world
-                .docs
-                .get(&id)
-                .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
-            Ok(doc.composition.read().unwrap().id().to_string())
-        })
+        self.with_backend(|b| b.composition_id_string(id))
     }
 
     pub(crate) fn close_composition(&self, id: DocumentId) -> mlua::Result<()> {
-        self.with_world_mut(|world| {
-            world.close(id);
-            Ok(())
-        })
+        self.with_backend_mut(|b| b.close_composition(id))
     }
 
     pub(crate) fn replace_composition(
@@ -435,54 +413,8 @@ impl HostHandle {
         path: &str,
     ) -> mlua::Result<DocumentId> {
         let path = PathBuf::from(path);
-        self.with_world_mut(|world| {
-            world
-                .replace(id, &path)
-                .map_err(|err| mlua::Error::runtime(err.to_string()))
-        })
+        self.with_backend_mut(|b| b.replace_composition(id, &path))
     }
-}
-
-fn hydrate_session_documents(world: &mut HeadlessWorld) -> mlua::Result<()> {
-    let docs: Vec<SessionDocument> = world.session.documents().to_vec();
-    for session_doc in docs {
-        let name = session_doc
-            .name
-            .clone()
-            .or_else(|| {
-                session_doc.file_path().and_then(|path| {
-                    path.file_stem()
-                        .map(|stem| stem.to_string_lossy().into_owned())
-                })
-            })
-            .unwrap_or_else(|| session_doc.id.to_string());
-        if world.docs.contains_key(&session_doc.id) {
-            continue;
-        }
-        if let Some(path) = session_doc.file_path() {
-            if path.exists() && !is_fasession_path(path) {
-                if let Ok(composition) = if field_composition::is_facomp_path(path) {
-                    Composition::load_facomp(path).map(|(c, _)| c)
-                } else {
-                    Composition::from_media_path(path, None)
-                } {
-                    let doc = crate::world::OpenDocument::new(
-                        composition,
-                        name,
-                        Some(path.to_path_buf()),
-                    );
-                    world.docs.insert(session_doc.id, doc);
-                    continue;
-                }
-            }
-        }
-        let composition = Composition::new(48_000, 2);
-        world.docs.insert(
-            session_doc.id,
-            crate::world::OpenDocument::new(composition, name, None),
-        );
-    }
-    Ok(())
 }
 
 fn string_list_from_lua(value: Value) -> mlua::Result<Vec<String>> {
@@ -516,14 +448,14 @@ mod tests {
     use crate::host::{HostProfile, ScriptHost};
 
     #[test]
-    fn session_shared_exposes_id_and_properties() {
+    fn session_focused_exposes_id_and_properties() {
         let mut host = ScriptHost::new(HostProfile {
             name: "field-batch",
             config_dir: None,
         })
         .unwrap();
         let out = host.eval(
-            r#"(function() local s=field.session.shared(); s.properties={mode="test"}; return s.properties.mode, s.id~=nil end)()"#,
+            r#"(function() local s=field.session.focused(); s.properties={mode="test"}; return s.properties.mode, s.id~=nil end)()"#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("test\ttrue"), "{:?}", out.error);

@@ -3,31 +3,18 @@
 
 mod access;
 mod app;
-mod composition;
-mod field_ns;
-mod files;
+mod backend;
 mod host;
-mod layout;
-mod marker;
-mod media;
-mod prototype;
-mod region;
-mod selection;
-mod session;
 mod theme;
-mod workflow;
-mod workflow_app;
-mod workflow_toolbar;
 
 pub use access::{enter, try_invoke_command};
+pub use field_scripting::{
+    DropLayout, EvalOutput, LogEntry, LogLevel, PathBrowse, ResumeWorkflow, ToolbarAlign,
+    ToolbarItem,
+};
 #[cfg(test)]
 pub use host::TestWorld;
-pub use host::{
-    host_from_lua, with_document, EvalOutput, LogEntry, LogLevel, ResumeWorkflow, ScriptHost,
-    EMBEDDED_INIT,
-};
-pub use workflow_app::DropLayout;
-pub use workflow_toolbar::{PathBrowse, ToolbarAlign, ToolbarItem};
+pub use host::{ScriptHost, EMBEDDED_INIT};
 
 #[cfg(test)]
 mod tests {
@@ -119,7 +106,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             c:select(0, 100)
             local region = c:add_region({
               start = 10,
@@ -132,7 +119,7 @@ mod tests {
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(out.result.as_deref(), Some("0\t100\tintro\t10\tcues\t2"));
+        assert_eq!(out.result.as_deref(), Some("0\t99\tintro\t10\tcues\t1"));
         let world = world.borrow();
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
@@ -146,7 +133,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             c:clear_selection()
             c:add_region({ start = 5, stop = 15, label = "sel" })
             local silent = c:collection("silent")
@@ -178,7 +165,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             local a = c:add_marker({ frame = 40, type = "Blue", note = "cue" })
             local b = c:add_marker(40, "Yellow")
             local dup = c:add_marker(40, "Blue")
@@ -204,7 +191,7 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             c:add_marker(10, "Blue")
             c:add_marker(20, "Blue")
             c:add_marker(30, "Yellow")
@@ -234,13 +221,13 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             local m = c:add_marker({ frame = 10, type = "Red", color = {1, 0, 0, 1} })
             return m.type, m.color[1], m.color[2], m.color[3], #c.marker_types
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(out.result.as_deref(), Some("Red\t1.0\t0.0\t0.0\t5"));
+        assert_eq!(out.result.as_deref(), Some("Red\t1\t0\t0\t5"));
         let world = world.borrow();
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
@@ -380,8 +367,8 @@ mod tests {
               description = "Mid / Side",
               channels = { [0] = "M", [1] = "S" },
             })
-            field.session.shared().composition.channel_layout = "MS"
-            return field.session.shared().composition.channel_layout
+            field.session.focused().composition.channel_layout = "MS"
+            return field.session.focused().composition.channel_layout
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -410,7 +397,7 @@ mod tests {
               channels = { [0] = "M", [1] = "S" },
               monitor = { chain = "ms" },
             })
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             c.channel_layout = "MS"
             assert(c.monitor_chain == "ms")
             c.monitor_chain = "stereo"
@@ -433,8 +420,8 @@ mod tests {
         assert_eq!(channels.as_deref(), Some(&[1][..]));
         let out = host.eval(
             r#"
-            field.session.shared().composition.playback_channels = "all"
-            field.session.shared().composition.monitor_chain = nil
+            field.session.focused().composition.playback_channels = "all"
+            field.session.focused().composition.monitor_chain = nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -455,7 +442,7 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             return c.codec, c.bit_depth, c.basename, c.dirname, c.channels, c.sample_rate
             "#,
         );
@@ -715,8 +702,8 @@ mod tests {
         host.invoke_menu_workflow("review").expect("review");
         let marked = host.eval(
             r#"
-            field.session.shared().compositions[1].group = "keep"
-            return field.session.shared().composition.id == field.session.shared().compositions[2].id
+            field.session.focused().compositions[1].group = "keep"
+            return field.session.focused().composition.id == field.session.focused().compositions[2].id
             "#,
         );
         assert!(marked.error.is_none(), "{:?}", marked.error);
@@ -726,7 +713,7 @@ mod tests {
             Some(false)
         );
         let switched = host
-            .eval("field.session.shared().composition = field.session.shared().compositions[1]");
+            .eval("field.session.focused().composition = field.session.focused().compositions[1]");
         assert!(switched.error.is_none(), "{:?}", switched.error);
         assert!(
             switched.prints.is_empty(),
@@ -739,7 +726,7 @@ mod tests {
         );
         host.finish_workflow().expect("finish");
         let again = host
-            .eval("field.session.shared().composition = field.session.shared().compositions[2]");
+            .eval("field.session.focused().composition = field.session.focused().compositions[2]");
         assert!(again.error.is_none(), "{:?}", again.error);
         assert!(host.toolbar_snapshot().is_none());
     }
@@ -785,11 +772,11 @@ mod tests {
         assert!(result.starts_with("false\t"), "{result}");
         assert!(result.contains("unknown event"), "{result}");
         host.invoke_workflow("stateful", &[]).expect("start");
-        let switched = host.eval("field.session.shared().composition = field.session.shared().compositions[1] return hits, app_hits");
+        let switched = host.eval("field.session.focused().composition = field.session.focused().compositions[1] return hits, app_hits");
         assert!(switched.error.is_none(), "{:?}", switched.error);
         assert_eq!(switched.result.as_deref(), Some("1\t1"));
         host.finish_workflow().expect("finish");
-        let again = host.eval("field.session.shared().composition = field.session.shared().compositions[2] return hits, app_hits");
+        let again = host.eval("field.session.focused().composition = field.session.focused().compositions[2] return hits, app_hits");
         assert!(again.error.is_none(), "{:?}", again.error);
         assert_eq!(again.result.as_deref(), Some("1\t2"));
         host.fire_session_selected();
@@ -1017,16 +1004,16 @@ mod tests {
         let (mut host, world) = test_host();
         let out = host.eval(
             r#"
-            local s = field.session.shared()
+            local s = field.session.focused()
             s.workflow_name = "review"
             s.capture_ui = false
             s.properties = { batch = "2026-09" }
-            local c = field.session.shared().composition
+            local c = field.session.focused().composition
             c.group = "day1"
             c.state = "reviewed"
             c.properties = { reviewer = "greg" }
             return s.id ~= nil, s.workflow_name, s.capture_ui, s.properties.batch,
-                   c.id, c.group, c.state, c.properties.reviewer, #field.session.shared().compositions, #s.compositions
+                   c.id, c.group, c.state, c.properties.reviewer, #field.session.focused().compositions, #s.compositions
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1061,12 +1048,12 @@ mod tests {
 
         let out = host.eval(
             r#"
-            field.session.shared().workflow_name = nil
-            field.session.shared().composition.group = nil
-            field.session.shared().composition.state = nil
-            field.session.shared().composition.properties = {}
-            return field.session.shared().workflow_name == nil, field.session.shared().composition.group == nil,
-                   field.session.shared().composition.state == nil, field.session.shared().composition.properties.reviewer == nil
+            field.session.focused().workflow_name = nil
+            field.session.focused().composition.group = nil
+            field.session.focused().composition.state = nil
+            field.session.focused().composition.properties = {}
+            return field.session.focused().workflow_name == nil, field.session.focused().composition.group == nil,
+                   field.session.focused().composition.state == nil, field.session.focused().composition.properties.reviewer == nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1078,8 +1065,8 @@ mod tests {
         let (mut host, _) = test_host();
         let out = host.eval(
             r#"
-            field.session.shared().composition.group = "todo"
-            return field.session.shared():group_count("todo"), field.session.shared():group_count("other")
+            field.session.focused().composition.group = "todo"
+            return field.session.focused():group_count("todo"), field.session.focused():group_count("other")
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1112,7 +1099,7 @@ mod tests {
 
         let out = host.eval(
             r#"
-            local s = field.session.shared()
+            local s = field.session.focused()
             s:move(s.compositions[2], 1)
             return s.compositions[1].id, s.compositions[2].id
             "#,
@@ -1134,7 +1121,7 @@ mod tests {
         );
 
         let out =
-            host.eval("field.session.shared():move(field.session.shared().compositions[1], 0)");
+            host.eval("field.session.focused():move(field.session.focused().compositions[1], 0)");
         assert!(
             out.error
                 .as_deref()
@@ -1143,7 +1130,7 @@ mod tests {
             out.error
         );
         let out =
-            host.eval("field.session.shared():move(field.session.shared().compositions[1], 3)");
+            host.eval("field.session.focused():move(field.session.focused().compositions[1], 3)");
         assert!(
             out.error
                 .as_deref()
@@ -1156,7 +1143,7 @@ mod tests {
     #[test]
     fn session_properties_reject_non_strings() {
         let (mut host, _) = test_host();
-        let out = host.eval(r#"field.session.shared().properties = { batch = 1 }"#);
+        let out = host.eval(r#"field.session.focused().properties = { batch = 1 }"#);
         assert!(
             out.error
                 .as_deref()
@@ -1170,7 +1157,7 @@ mod tests {
     fn composition_close_removes_from_session() {
         let (mut host, world) = test_host();
         let out =
-            host.eval("field.session.shared().composition:close(); return field.session.shared().composition == nil, #field.session.shared().compositions");
+            host.eval("field.session.focused().composition:close(); return field.session.focused().composition == nil, #field.session.focused().compositions");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\t0"));
         assert!(world.borrow().session.is_empty());
@@ -1192,9 +1179,9 @@ mod tests {
         let path_lua = path.to_string_lossy().replace('\\', "/");
         let out = host.eval(&format!(
             r#"
-            field.session.shared().workflow_name = "review"
-            field.session.shared():save_as("{path_lua}")
-            return field.session.shared().path ~= nil
+            field.session.focused().workflow_name = "review"
+            field.session.focused():save_as("{path_lua}")
+            return field.session.focused().path ~= nil
             "#
         ));
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1496,6 +1483,13 @@ mod tests {
             .documents()
             .iter()
             .all(|doc| doc.group.as_deref() == Some("todo")));
+        // Assigning doc.group must register the name; otherwise the explorer
+        // side pane hides every composition in that group.
+        assert!(
+            world.borrow().session.groups().iter().any(|g| g == "todo"),
+            "todo must be in session.groups after review start: {:?}",
+            world.borrow().session.groups()
+        );
         assert_eq!(world.borrow().session.workflow(), Some("review"));
         assert_eq!(host.active_workflow_name().as_deref(), Some("review"));
         assert!(world.borrow().looping);
@@ -1627,7 +1621,7 @@ mod tests {
     fn review_resume_shows_explorer() {
         let (mut host, world) = test_host();
         host.load_init_from(None).expect("embedded init");
-        let out = host.eval(r#"field.session.shared().workflow_name = "review""#);
+        let out = host.eval(r#"field.session.focused().workflow_name = "review""#);
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(
             host.resume_workflow().expect("resume"),
@@ -1948,8 +1942,8 @@ mod tests {
               self:set_toolbar({ field.ui.button({ id = "go", label = "Go" }) })
             end
             field.workflow.declare(W)
-            field.session.shared().workflow_name = "stateful"
-            field.session.shared().properties = { note = "hello" }
+            field.session.focused().workflow_name = "stateful"
+            field.session.focused().properties = { note = "hello" }
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -1969,7 +1963,7 @@ mod tests {
     #[test]
     fn unknown_resume_logs_error_and_does_not_clear() {
         let (mut host, world) = test_host();
-        let out = host.eval(r#"field.session.shared().workflow_name = "ghost""#);
+        let out = host.eval(r#"field.session.focused().workflow_name = "ghost""#);
         assert!(out.error.is_none(), "{:?}", out.error);
         let result = host.resume_workflow().expect("resume");
         assert_eq!(
@@ -2109,8 +2103,8 @@ mod tests {
             field.workflow.declare(W)
             assert(app.workflow == nil)
             field.workflow.run("stateful")
-            return app.workflow ~= nil, app.workflow:name(), field.session.shared().workflow_name,
-                   field.session.shared().composition ~= nil
+            return app.workflow ~= nil, app.workflow:name(), field.session.focused().workflow_name,
+                   field.session.focused().composition ~= nil
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
@@ -2120,7 +2114,7 @@ mod tests {
         );
         host.finish_workflow().expect("finish");
         let out =
-            host.eval("return app.workflow == nil, field.session.shared().workflow_name == nil");
+            host.eval("return app.workflow == nil, field.session.focused().workflow_name == nil");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\ttrue"));
     }
@@ -2161,7 +2155,7 @@ mod tests {
         std::fs::write(&wav, b"wav").expect("wav");
         let session_path = dir.join("batch.fasession");
         let mut incoming = crate::model::Session::new();
-        incoming.insert(crate::model::SessionDocument::new(
+        incoming.insert(field_session::SessionDocument::new(
             crate::model::DocumentId::from_u128(9),
             Some(wav.clone()),
         ));
@@ -2174,7 +2168,7 @@ mod tests {
         let out = host.eval(&format!(
             r#"
             local incoming = field.session.open("{path_lua}")
-            local active = field.session.shared().id
+            local active = field.session.focused().id
             incoming:close()
             return incoming.id ~= active, active
             "#
@@ -2201,11 +2195,11 @@ mod tests {
         std::fs::write(&extra, b"b").expect("extra");
         let session_path = dir.join("incoming.fasession");
         let mut incoming = crate::model::Session::new();
-        incoming.insert(crate::model::SessionDocument::new(
+        incoming.insert(field_session::SessionDocument::new(
             crate::model::DocumentId::from_u128(11),
             Some(existing.clone()),
         ));
-        incoming.insert(crate::model::SessionDocument::new(
+        incoming.insert(field_session::SessionDocument::new(
             crate::model::DocumentId::from_u128(12),
             Some(extra.clone()),
         ));

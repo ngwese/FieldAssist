@@ -51,6 +51,7 @@ pub struct MediaPoolRow {
 
 impl MediaPoolRow {
     /// Duration in seconds when `sample_rate > 0`.
+    #[allow(dead_code)]
     pub fn duration_secs(&self) -> Option<f64> {
         if self.sample_rate == 0 {
             None

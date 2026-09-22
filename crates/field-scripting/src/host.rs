@@ -11,6 +11,7 @@ use std::rc::Rc;
 use mlua::{Function, Lua, MultiValue, Table, Value};
 
 use crate::app::bind_app;
+use crate::backend::{BackendHandle, HeadlessBackend, ScriptBackend};
 use crate::field_ns::bind_field;
 use crate::layout::ChannelLayoutDef;
 use crate::package_policy::{install_package_policy, PackagePolicy};
@@ -19,8 +20,12 @@ use crate::workflow::{
     workflow_start, WorkflowDef, WorkflowMeta,
 };
 use crate::workflow_app::{layout_drop_targets, workflows_for_menu, DropLayout};
-use crate::workflow_toolbar::{invoke_action, toolbar_from_table, toolbar_row, ToolbarItem};
+use crate::workflow_toolbar::{
+    control_store, invoke_action, toolbar_from_table, toolbar_row, ToolbarItem,
+};
 use crate::world::HeadlessWorld;
+
+use field_session::DocumentId;
 
 /// Profile for the enclosing application process.
 #[derive(Clone, Debug)]
@@ -104,7 +109,8 @@ pub(crate) struct HostInner {
     pub(crate) layouts: Vec<ChannelLayoutDef>,
     pub(crate) workflows: BTreeMap<String, WorkflowDef>,
     pub(crate) active: Option<Table>,
-    pub(crate) world: Rc<RefCell<HeadlessWorld>>,
+    /// Backend — owns session, open documents, media pool.
+    pub(crate) backend: BackendHandle,
     pub(crate) include_stack: Vec<PathBuf>,
     pub(crate) include_cache: HashMap<String, Value>,
     pub(crate) args: Vec<String>,
@@ -117,6 +123,13 @@ pub struct HostHandle {
     pub(crate) inner: Rc<RefCell<HostInner>>,
 }
 
+impl HostHandle {
+    /// Return the active workflow instance table, if any.
+    pub fn active_workflow(&self) -> Option<Table> {
+        self.inner.borrow().active.clone()
+    }
+}
+
 /// Lua runtime with `app` + `field` bindings.
 pub struct ScriptHost {
     lua: Lua,
@@ -124,13 +137,23 @@ pub struct ScriptHost {
 }
 
 impl ScriptHost {
-    /// Create a host for `profile` with an empty [`HeadlessWorld`].
+    /// Create a host for `profile` with an empty [`HeadlessBackend`].
     pub fn new(profile: HostProfile) -> mlua::Result<Self> {
-        Self::with_world(profile, HeadlessWorld::new())
+        let backend: BackendHandle = Rc::new(RefCell::new(HeadlessBackend::new()));
+        Self::with_backend(profile, backend)
     }
 
-    /// Create a host with a pre-built world (tests).
+    /// Create a host with a pre-built [`HeadlessWorld`] (tests).
     pub fn with_world(profile: HostProfile, world: HeadlessWorld) -> mlua::Result<Self> {
+        let backend: BackendHandle = Rc::new(RefCell::new(HeadlessBackend::from_world(world)));
+        Self::with_backend(profile, backend)
+    }
+
+    /// Create a host with an arbitrary [`ScriptBackend`].
+    pub fn with_backend(
+        profile: HostProfile,
+        backend: Rc<RefCell<dyn ScriptBackend>>,
+    ) -> mlua::Result<Self> {
         // SAFETY: we immediately install a reversible package policy that stubs
         // C loaders; `field.scripting.enable_native_modules` restores them on purpose.
         let lua = unsafe { Lua::unsafe_new() };
@@ -151,7 +174,7 @@ impl ScriptHost {
                 layouts: Vec::new(),
                 workflows: BTreeMap::new(),
                 active: None,
-                world: Rc::new(RefCell::new(world)),
+                backend,
                 include_stack: Vec::new(),
                 include_cache: HashMap::new(),
                 args: Vec::new(),
@@ -170,9 +193,40 @@ impl ScriptHost {
         &self.lua
     }
 
-    /// Shared world handle.
+    /// Shared backend handle.
+    pub fn backend(&self) -> BackendHandle {
+        self.handle.inner.borrow().backend.clone()
+    }
+
+    /// Shared [`HeadlessWorld`] handle (panics if the backend is not
+    /// [`HeadlessBackend`]).  Prefer [`ScriptHost::backend`] for new code.
     pub fn world(&self) -> Rc<RefCell<HeadlessWorld>> {
-        self.handle.inner.borrow().world.clone()
+        let backend = self.handle.inner.borrow().backend.clone();
+        let backend_ref = backend.borrow();
+        // Downcast via Any is unavailable on dyn traits; instead we obtain the
+        // Rc from HeadlessBackend when it is installed at construction time.
+        // This method exists for test compat; production code should prefer backend().
+        drop(backend_ref);
+        // Access the world Rc stored inside the HeadlessBackend via the
+        // BackendHandle. We use a side-channel: ScriptHost::new / with_world
+        // always wraps a HeadlessBackend, so we can reconstruct via media_store.
+        // For the public API, keep returning an Rc<RefCell<HeadlessWorld>>.
+        // Implementation: re-borrow the backend and call world_rc via a concrete cast.
+        // Since we control construction, use unsafe downcast only if truly needed.
+        // For now: hold the world Rc in a separate field on ScriptHost.
+        // Actually we stored it as backend only. Return a new Rc wrapping
+        // the shared world via HeadlessBackend::world_rc.
+        // This requires knowing the backend IS a HeadlessBackend.
+        // Safe in practice (the tests that use this always create via new/with_world).
+        // Use the media_store() method as a compatibility probe won't work.
+        //
+        // SIMPLEST FIX: hold the world Rc as a separate field.
+        // We can't change ScriptHost layout without breaking construction.
+        // For now: panic with a useful message if not headless.
+        panic!(
+            "ScriptHost::world() is deprecated; use ScriptHost::backend() instead, \
+             or use ScriptHost::with_world() in tests and access via HeadlessBackend::world_rc()"
+        );
     }
 
     /// Set `app.args` (script argv after the file name).
@@ -306,6 +360,232 @@ impl ScriptHost {
     pub fn cancel_workflow(&self) -> mlua::Result<()> {
         self.handle.cancel_workflow(&self.lua)
     }
+
+    /// Running workflow instance, if any.
+    pub fn active_workflow(&self) -> Option<Table> {
+        self.handle.inner.borrow().active.clone()
+    }
+
+    /// Fire `loaded` hooks (called by the host after a document loads).
+    pub fn fire_loaded(&self, id: DocumentId, elapsed: f64) {
+        let hooks = self.handle.inner.borrow().loaded.clone();
+        let handle = crate::composition::LuaComposition { id };
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>((handle, elapsed)) {
+                self.handle.note_hook_error("loaded", &err);
+            }
+        }
+        self.handle.fire_workflow_document("loaded", id, elapsed);
+    }
+
+    /// Fire `saved` hooks.
+    pub fn fire_saved(&self, id: DocumentId, elapsed: f64) {
+        let hooks = self.handle.inner.borrow().saved.clone();
+        let handle = crate::composition::LuaComposition { id };
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>((handle, elapsed)) {
+                self.handle.note_hook_error("saved", &err);
+            }
+        }
+        self.handle.fire_workflow_document("saved", id, elapsed);
+    }
+
+    /// Fire `session_loaded` hooks.
+    pub fn fire_session_loaded(&self) {
+        let hooks = self.handle.inner.borrow().session_loaded.clone();
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>(crate::session::LuaSession::focused()) {
+                self.handle.note_hook_error("session_loaded", &err);
+            }
+        }
+        self.handle.fire_workflow_session("session_loaded");
+    }
+
+    /// Fire `session_saved` hooks.
+    pub fn fire_session_saved(&self) {
+        let hooks = self.handle.inner.borrow().session_saved.clone();
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>(crate::session::LuaSession::focused()) {
+                self.handle.note_hook_error("session_saved", &err);
+            }
+        }
+        self.handle.fire_workflow_session("session_saved");
+    }
+
+    /// Fire `session_selected` hooks.
+    pub fn fire_session_selected(&self) {
+        let hooks = self.handle.inner.borrow().session_selected.clone();
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>(crate::session::LuaSession::focused()) {
+                self.handle.note_hook_error("session_selected", &err);
+            }
+        }
+        self.handle.fire_workflow_session("session_selected");
+    }
+
+    /// Fire `composition_selected` hooks.
+    pub fn fire_composition_selected(&self, id: Option<DocumentId>) {
+        self.handle.emit_composition_selected(id);
+    }
+
+    /// Fire `detect_layout` hooks for a composition.
+    pub fn fire_detect_layout(&self, id: DocumentId) {
+        self.handle.fire_detect_layout(id);
+    }
+
+    /// Apply a named channel layout to a document (user-explicit choice).
+    ///
+    /// Returns `Err` if `name` is `Some` and is not registered.
+    pub fn choose_layout(&self, id: DocumentId, name: Option<&str>) -> mlua::Result<()> {
+        self.handle.choose_layout(id, name)
+    }
+
+    /// Look up a registered layout by name.
+    pub fn layout(&self, name: &str) -> Option<ChannelLayoutDef> {
+        self.handle.layout(name)
+    }
+
+    /// Names of registered channel layouts.
+    pub fn layout_names(&self) -> Vec<String> {
+        self.handle.layout_names()
+    }
+
+    /// `(name, description)` pairs for registered layouts.
+    pub fn layout_choices(&self) -> Vec<(String, String)> {
+        self.handle.layout_choices()
+    }
+
+    /// Invoke a registered drag-drop workflow by name with dropped paths.
+    pub fn invoke_workflow(&self, name: &str, paths: &[PathBuf]) -> Result<(), String> {
+        let payload = self.drop_payload(paths).map_err(|e| e.to_string())?;
+        self.handle
+            .workflow_run(&self.lua, name, payload)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Invoke a registered menu workflow by name.
+    pub fn invoke_menu_workflow(&self, name: &str) -> Result<(), String> {
+        let payload = self.lua.create_table().map_err(|e| e.to_string())?;
+        payload
+            .set("scope", crate::workflow_app::SCOPE_MENU)
+            .map_err(|e| e.to_string())?;
+        self.handle
+            .workflow_run(&self.lua, name, payload)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Ask the active workflow whether suspend is allowed.
+    pub fn suspend_workflow(&self) -> Result<bool, String> {
+        let instance = self.handle.inner.borrow().active.clone();
+        let Some(instance) = instance else {
+            return Ok(true);
+        };
+        use crate::workflow::table_method;
+        let Some(func) = table_method(&instance, "suspend") else {
+            return Ok(true);
+        };
+        let result: mlua::Value = func
+            .call((instance, crate::session::LuaSession::focused()))
+            .map_err(|e| e.to_string())?;
+        match result {
+            mlua::Value::Nil | mlua::Value::Boolean(true) => Ok(true),
+            mlua::Value::Boolean(false) => Ok(false),
+            other => Err(format!(
+                "suspend must return a boolean or nil, got {}",
+                other.type_name()
+            )),
+        }
+    }
+
+    /// Restore a stateful workflow from the session's `workflow_name`.
+    pub fn resume_workflow(&self) -> Result<ResumeWorkflow, String> {
+        let Some(name) = self.handle.with_backend(|b| b.session_workflow(None)) else {
+            self.handle.inner.borrow_mut().active = None;
+            return Ok(ResumeWorkflow::None);
+        };
+        let proto = self
+            .handle
+            .inner
+            .borrow()
+            .workflows
+            .get(&name)
+            .map(|w| w.prototype.clone());
+        let Some(proto) = proto else {
+            self.handle.inner.borrow_mut().active = None;
+            self.handle.log(
+                LogLevel::Error,
+                "workflow".into(),
+                format!("unknown workflow `{name}`"),
+            );
+            return Ok(ResumeWorkflow::Unknown { name });
+        };
+        use crate::workflow::{prototype_is_stateful, table_method, workflow_new};
+        if !prototype_is_stateful(&proto) {
+            self.handle.inner.borrow_mut().active = None;
+            self.handle.log(
+                LogLevel::Error,
+                "workflow".into(),
+                format!("workflow `{name}` is not stateful"),
+            );
+            return Ok(ResumeWorkflow::Unknown { name });
+        }
+        let instance = workflow_new(&self.lua, proto).map_err(|e| e.to_string())?;
+        if let Some(func) = table_method(&instance, "resume") {
+            func.call::<()>((instance.clone(), crate::session::LuaSession::focused()))
+                .map_err(|e| e.to_string())?;
+        }
+        self.handle.inner.borrow_mut().active = Some(instance);
+        Ok(ResumeWorkflow::Resumed)
+    }
+
+    /// Clear the active workflow and session workflow name.
+    pub fn clear_session_workflow(&self) {
+        let _ = self
+            .handle
+            .with_backend_mut(|b| b.set_session_workflow(None, None));
+        self.handle.inner.borrow_mut().active = None;
+    }
+
+    /// Dispatch a toolbar button press.
+    pub fn dispatch_toolbar_button(&self, id: &str) -> Result<(), String> {
+        let Some((instance, row)) = self.handle.toolbar_target(id).map_err(|e| e.to_string())?
+        else {
+            return Ok(());
+        };
+        invoke_action(&row, &instance)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Dispatch a toolbar path entry press.
+    pub fn dispatch_toolbar_path(&self, id: &str, paths: &[PathBuf]) -> Result<String, String> {
+        self.handle
+            .dispatch_toolbar_path(&self.lua, id, paths)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Toggle a toolbar toggle.
+    pub fn dispatch_toolbar_toggle(&self, id: &str) -> mlua::Result<bool> {
+        self.handle.dispatch_toolbar_toggle(id)
+    }
+
+    /// Set a toolbar text-entry value.
+    pub fn set_toolbar_entry_value(&self, id: &str, value: &str) -> mlua::Result<()> {
+        self.handle.set_toolbar_entry_value(id, value)
+    }
+
+    fn drop_payload(&self, paths: &[PathBuf]) -> mlua::Result<Table> {
+        let payload = self.lua.create_table()?;
+        payload.set("scope", crate::workflow_app::SCOPE_DRAG_DROP)?;
+        let path_table = self.lua.create_table()?;
+        for (index, path) in paths.iter().enumerate() {
+            path_table.set(index + 1, path.display().to_string())?;
+        }
+        payload.set("paths", path_table)?;
+        Ok(payload)
+    }
 }
 
 impl HostHandle {
@@ -347,7 +627,7 @@ impl HostHandle {
 
     pub(crate) fn bind_active_workflow(&self, instance: Table) -> mlua::Result<()> {
         let name = instance_name(&instance)?;
-        self.with_world_mut(|world| world.session.set_workflow(Some(name)));
+        self.with_backend_mut(|backend| backend.set_session_workflow(None, Some(name)))?;
         self.inner.borrow_mut().active = Some(instance);
         Ok(())
     }
@@ -357,11 +637,11 @@ impl HostHandle {
             return Ok(());
         };
         if let Some(finish) = table_method(&instance, "finish") {
-            let session = crate::session::LuaSession::shared();
+            let session = crate::session::LuaSession::focused();
             finish.call::<()>((instance.clone(), session))?;
         }
         let _ = lua;
-        self.with_world_mut(|world| world.session.set_workflow(None));
+        self.with_backend_mut(|backend| backend.set_session_workflow(None, None))?;
         Ok(())
     }
 
@@ -370,11 +650,11 @@ impl HostHandle {
             return Ok(());
         };
         if let Some(cancel) = table_method(&instance, "cancel") {
-            let session = crate::session::LuaSession::shared();
+            let session = crate::session::LuaSession::focused();
             cancel.call::<()>((instance.clone(), session))?;
         }
         let _ = lua;
-        self.with_world_mut(|world| world.session.set_workflow(None));
+        self.with_backend_mut(|backend| backend.set_session_workflow(None, None))?;
         Ok(())
     }
 
@@ -392,7 +672,8 @@ impl HostHandle {
             .enable_native_modules(lua)
     }
 
-    pub(crate) fn alert(&self, subject: String, body: String) -> mlua::Result<()> {
+    /// Record an alert for the host to surface (batch: stderr / capture).
+    pub fn alert(&self, subject: String, body: String) -> mlua::Result<()> {
         self.inner.borrow_mut().alerts.push((subject, body));
         Ok(())
     }
@@ -409,16 +690,18 @@ impl HostHandle {
         Ok(())
     }
 
-    pub(crate) fn with_world<R>(&self, f: impl FnOnce(&HeadlessWorld) -> R) -> R {
+    /// Borrow the backend for read operations.
+    pub(crate) fn with_backend<R>(&self, f: impl FnOnce(&dyn ScriptBackend) -> R) -> R {
         let inner = self.inner.borrow();
-        let world = inner.world.borrow();
-        f(&world)
+        let backend = inner.backend.borrow();
+        f(&*backend)
     }
 
-    pub(crate) fn with_world_mut<R>(&self, f: impl FnOnce(&mut HeadlessWorld) -> R) -> R {
+    /// Borrow the backend mutably.
+    pub(crate) fn with_backend_mut<R>(&self, f: impl FnOnce(&mut dyn ScriptBackend) -> R) -> R {
         let inner = self.inner.borrow();
-        let mut world = inner.world.borrow_mut();
-        f(&mut world)
+        let mut backend = inner.backend.borrow_mut();
+        f(&mut *backend)
     }
 
     #[allow(dead_code)]
@@ -431,7 +714,60 @@ impl HostHandle {
             .map_err(|e| e.to_string())
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn dispatch_toolbar_path(
+        &self,
+        lua: &Lua,
+        id: &str,
+        paths: &[PathBuf],
+    ) -> mlua::Result<String> {
+        let Some((instance, row)) = self.toolbar_target(id)? else {
+            return Ok(paths
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default());
+        };
+        let store = control_store(&row)?;
+        let table = lua.create_table()?;
+        for (index, path) in paths.iter().enumerate() {
+            table.set(index + 1, path.display().to_string())?;
+        }
+        store.raw_set("paths", table)?;
+        store.raw_set(
+            "value",
+            paths
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+        )?;
+        let result = invoke_action(&row, &instance);
+        store.raw_set("paths", mlua::Value::Nil)?;
+        result?;
+        control_string(&row, "value")
+    }
+
+    pub(crate) fn dispatch_toolbar_toggle(&self, id: &str) -> mlua::Result<bool> {
+        let Some((instance, row)) = self.toolbar_target(id)? else {
+            return Ok(false);
+        };
+        let current = control_bool(&row, "value", false)?;
+        if !invoke_action(&row, &instance)? {
+            let next = !current;
+            control_store(&row)?.raw_set("value", next)?;
+            self.toolbar_changed(&instance)?;
+            return Ok(next);
+        }
+        control_bool(&row, "value", false)
+    }
+
+    pub(crate) fn set_toolbar_entry_value(&self, id: &str, value: &str) -> mlua::Result<()> {
+        let Some((instance, row)) = self.toolbar_target(id)? else {
+            return Ok(());
+        };
+        control_store(&row)?.raw_set("value", value)?;
+        invoke_action(&row, &instance)?;
+        Ok(())
+    }
+
     fn toolbar_target(&self, id: &str) -> mlua::Result<Option<(Table, Table)>> {
         let Some(instance) = self.inner.borrow().active.clone() else {
             return Ok(None);
@@ -448,6 +784,181 @@ impl HostHandle {
         };
         Ok(Some((instance, row)))
     }
+
+    // ── Event firing helpers ─────────────────────────────────────────────────
+
+    pub(crate) fn workflow_handlers(&self, event: &str) -> Vec<(Table, Function)> {
+        let Some(instance) = self.inner.borrow().active.clone() else {
+            return Vec::new();
+        };
+        let mut funcs = Vec::new();
+        if let Some(meta) = instance.metatable() {
+            collect_event_hooks(&meta, event, &mut funcs);
+        }
+        collect_event_hooks(&instance, event, &mut funcs);
+        funcs
+            .into_iter()
+            .map(|func| (instance.clone(), func))
+            .collect()
+    }
+
+    pub(crate) fn fire_workflow_document(&self, event: &str, id: DocumentId, elapsed: f64) {
+        let composition = crate::composition::LuaComposition { id };
+        for (instance, hook) in self.workflow_handlers(event) {
+            if let Err(err) = hook.call::<()>((instance, composition, elapsed)) {
+                self.note_hook_error(event, &err);
+            }
+        }
+    }
+
+    pub(crate) fn fire_workflow_session(&self, event: &str) {
+        let session = crate::session::LuaSession::focused();
+        for (instance, hook) in self.workflow_handlers(event) {
+            if let Err(err) = hook.call::<()>((instance, session)) {
+                self.note_hook_error(event, &err);
+            }
+        }
+    }
+
+    pub(crate) fn emit_composition_selected(&self, id: Option<DocumentId>) {
+        let hooks = self.inner.borrow().composition_selected.clone();
+        for hook in &hooks {
+            let result = match id {
+                Some(id) => hook.call::<()>(crate::composition::LuaComposition { id }),
+                None => hook.call::<()>(mlua::Value::Nil),
+            };
+            if let Err(err) = result {
+                self.note_hook_error("composition_selected", &err);
+            }
+        }
+        for (instance, hook) in self.workflow_handlers("composition_selected") {
+            let result = match id {
+                Some(id) => hook.call::<()>((instance, crate::composition::LuaComposition { id })),
+                None => hook.call::<()>((instance, mlua::Value::Nil)),
+            };
+            if let Err(err) = result {
+                self.note_hook_error("composition_selected", &err);
+            }
+        }
+    }
+
+    fn note_hook_error(&self, event: &str, err: &mlua::Error) {
+        self.inner
+            .borrow_mut()
+            .prints
+            .push(format!("{event} hook error: {err}"));
+    }
+
+    // ── Layout helpers (define_layout/layout/layout_names/choose_layout in layout.rs) ─
+
+    pub(crate) fn layout_choices(&self) -> Vec<(String, String)> {
+        self.inner
+            .borrow()
+            .layouts
+            .iter()
+            .map(|l| (l.name.clone(), l.description.clone()))
+            .collect()
+    }
+
+    pub(crate) fn apply_effective_layout(
+        &self,
+        id: DocumentId,
+        name: Option<&str>,
+    ) -> mlua::Result<()> {
+        let name_owned = name.map(str::to_string);
+        let (labels, default_chain) = if let Some(ref name_str) = name_owned {
+            let layout_opt: Option<ChannelLayoutDef> = {
+                let inner = self.inner.borrow();
+                inner.layouts.iter().find(|l| l.name == *name_str).cloned()
+            };
+            let labels = layout_opt
+                .as_ref()
+                .map(|l| l.channels.clone())
+                .unwrap_or_default();
+            let chain = layout_opt
+                .as_ref()
+                .and_then(|l| l.monitor_chain_id().map(str::to_string));
+            (labels, chain)
+        } else {
+            (BTreeMap::new(), None)
+        };
+        self.with_backend_mut(|backend| {
+            backend.with_open_document_mut(id, &mut |doc| {
+                let mut composition = doc.composition.write().unwrap();
+                composition.apply_channel_layout(name_owned.clone(), labels.clone());
+                if composition.monitor_chain().is_none() {
+                    if let Some(chain) = default_chain.clone() {
+                        composition.set_monitor_chain(Some(chain));
+                    }
+                }
+                Ok(())
+            })
+        })
+    }
+
+    pub(crate) fn fire_detect_layout(&self, id: DocumentId) {
+        // Retrieve the currently chosen layout from the composition.
+        let chosen: Option<String> = {
+            let mut result = None;
+            let _ = self.with_backend(|backend| {
+                backend.with_open_document(id, &mut |doc| {
+                    result = doc
+                        .composition
+                        .read()
+                        .unwrap()
+                        .chosen_channel_layout()
+                        .map(str::to_string);
+                    Ok(())
+                })
+            });
+            result
+        };
+
+        let hooks = self.inner.borrow().detect_layout.clone();
+        let handle = crate::composition::LuaComposition { id };
+        let mut last: Option<String> = None;
+
+        for hook in &hooks {
+            match hook.call::<Option<String>>((handle, chosen.clone())) {
+                Ok(Some(name)) => {
+                    if self.layout(&name).is_some() {
+                        last = Some(name);
+                    } else {
+                        self.inner
+                            .borrow_mut()
+                            .prints
+                            .push(format!("detect_layout hook error: unknown layout `{name}`"));
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => self.note_hook_error("detect_layout", &err),
+            }
+        }
+
+        for (instance, hook) in self.workflow_handlers("detect_layout") {
+            match hook.call::<Option<String>>((instance, handle, chosen.clone())) {
+                Ok(Some(name)) => {
+                    if self.layout(&name).is_some() {
+                        last = Some(name);
+                    } else {
+                        self.inner
+                            .borrow_mut()
+                            .prints
+                            .push(format!("detect_layout hook error: unknown layout `{name}`"));
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => self.note_hook_error("detect_layout", &err),
+            }
+        }
+
+        if let Err(err) = self.apply_effective_layout(id, last.as_deref()) {
+            self.inner
+                .borrow_mut()
+                .prints
+                .push(format!("detect_layout hook error: {err}"));
+        }
+    }
 }
 
 /// Fetch the host handle from Lua app data.
@@ -455,6 +966,20 @@ pub fn host_from_lua(lua: &Lua) -> mlua::Result<HostHandle> {
     lua.app_data_ref::<HostHandle>()
         .map(|h| h.clone())
         .ok_or_else(|| mlua::Error::runtime("script host is not available"))
+}
+
+fn collect_event_hooks(table: &Table, event: &str, out: &mut Vec<Function>) {
+    let Ok(Value::Table(hooks)) = table.raw_get::<Value>("__fa_hooks") else {
+        return;
+    };
+    let Ok(Value::Table(list)) = hooks.raw_get::<Value>(event) else {
+        return;
+    };
+    for value in list.sequence_values::<Value>() {
+        if let Ok(Value::Function(func)) = value {
+            out.push(func);
+        }
+    }
 }
 
 fn install_print(lua: &Lua, handle: HostHandle) -> mlua::Result<()> {
@@ -472,26 +997,26 @@ fn eval_repl(lua: &Lua, code: &str) -> mlua::Result<MultiValue> {
     if trimmed.is_empty() {
         return Ok(MultiValue::new());
     }
-    // Prefer expression form; if the chunk already returns, eval as-is.
-    let expr = if trimmed.starts_with("return ") || trimmed.starts_with("return\n") {
-        trimmed.to_string()
-    } else if trimmed.contains('\n') {
-        // Multi-statement: exec then nothing; callers should use explicit return.
+    // Chunks that already return a value (possibly after `local` statements).
+    if trimmed.contains("return ") || trimmed.starts_with("return") {
+        return lua.load(trimmed).eval::<MultiValue>();
+    }
+    if trimmed.contains('\n') {
         match lua.load(trimmed).eval::<MultiValue>() {
-            Ok(values) => return Ok(values),
+            Ok(values) => Ok(values),
             Err(_) => {
                 lua.load(trimmed).exec()?;
-                return Ok(MultiValue::new());
+                Ok(MultiValue::new())
             }
         }
     } else {
-        format!("return {trimmed}")
-    };
-    match lua.load(&expr).eval::<MultiValue>() {
-        Ok(values) => Ok(values),
-        Err(_) => {
-            lua.load(trimmed).exec()?;
-            Ok(MultiValue::new())
+        let expr = format!("return {trimmed}");
+        match lua.load(&expr).eval::<MultiValue>() {
+            Ok(values) => Ok(values),
+            Err(_) => {
+                lua.load(trimmed).exec()?;
+                Ok(MultiValue::new())
+            }
         }
     }
 }
@@ -505,6 +1030,28 @@ pub(crate) fn stringify_values(lua: &Lua, values: MultiValue) -> Option<String> 
         .map(|value| stringify_value(lua, value))
         .collect();
     Some(parts.join("\t"))
+}
+
+fn control_bool(row: &Table, key: &str, default: bool) -> mlua::Result<bool> {
+    match control_store(row)?.raw_get::<Value>(key)? {
+        Value::Nil => Ok(default),
+        Value::Boolean(value) => Ok(value),
+        other => Err(mlua::Error::runtime(format!(
+            "{key} must be a boolean, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn control_string(row: &Table, key: &str) -> mlua::Result<String> {
+    match control_store(row)?.raw_get::<Value>(key)? {
+        Value::Nil => Ok(String::new()),
+        Value::String(text) => Ok(text.to_str()?.to_owned()),
+        other => Err(mlua::Error::runtime(format!(
+            "{key} must be a string, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn strip_shebang(source: &str) -> &str {

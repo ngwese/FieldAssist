@@ -50,7 +50,7 @@ function Review:update_toolbar(session)
 end
 
 Review:on("composition_selected", function(self, _composition)
-  self:update_toolbar(field.session.shared())
+  self:update_toolbar(field.session.focused())
 end)
 
 function Review:todo_index(session, todos)
@@ -148,7 +148,7 @@ function Review:build_toolbar(session)
     on_color = success,
     on_icon = "circle-check",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_keep(field.session.shared(), not ctrl.value)
+      ctrl.value = workflow:set_keep(field.session.focused(), not ctrl.value)
     end,
   })
   self.dropped = field.ui.toggle({
@@ -158,7 +158,7 @@ function Review:build_toolbar(session)
     on_color = danger,
     on_icon = "circle-x",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_dropped(field.session.shared(), not ctrl.value)
+      ctrl.value = workflow:set_dropped(field.session.focused(), not ctrl.value)
     end,
   })
 
@@ -168,7 +168,7 @@ function Review:build_toolbar(session)
       label = "Previous",
       icon = "arrow-left",
       action = function(_, workflow)
-        workflow:go_previous(field.session.shared())
+        workflow:go_previous(field.session.focused())
       end,
     }),
     field.ui.button({
@@ -176,7 +176,7 @@ function Review:build_toolbar(session)
       label = "Next",
       icon = "arrow-right",
       action = function(_, workflow)
-        workflow:go_next(field.session.shared())
+        workflow:go_next(field.session.focused())
       end,
     }),
     self.kept,
@@ -197,7 +197,7 @@ function Review:build_toolbar(session)
 end
 
 function Review:finish_to_catalog()
-  local session = field.session.shared()
+  local session = field.session.focused()
   self:set_review_playback(false)
   local n = session:group_count("todo")
   if n > 0 then
@@ -214,7 +214,7 @@ end
 
 function Review:start(payload)
   field.log.info("review", "starting")
-  local session = field.session.shared()
+  local session = field.session.focused()
   local scope = payload.scope or "?"
   if scope == "menu" then
     local docs = session.compositions or {}

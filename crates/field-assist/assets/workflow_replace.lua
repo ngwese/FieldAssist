@@ -23,7 +23,7 @@ field.workflow.declare({
     return
   end
   local path = paths[1]
-  local session = field.session.shared()
+  local session = field.session.focused()
   if is_session_path(path) then
     session:open(path)
     return

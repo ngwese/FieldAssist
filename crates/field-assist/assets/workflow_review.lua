@@ -3,7 +3,7 @@
 -- field.workflow.create builds a prototype table; it is not registered until
 -- field.workflow.declare at the bottom of this file. Defining :suspend or
 -- :resume makes it stateful: after :start the host sets
--- field.session.shared().workflow_name = "review".
+-- field.session.focused().workflow_name = "review".
 
 local drop_color = (app.theme and app.theme.semantic and app.theme.semantic.info)
   or field.ui.semantic.info
@@ -101,7 +101,7 @@ end
 -- Dropped when the run ends. A click in the compositions pane focuses that
 -- document and should refresh the Keep toggle.
 Review:on("composition_selected", function(self, _composition)
-  self:update_toolbar(field.session.shared())
+  self:update_toolbar(field.session.focused())
 end)
 
 local function todo_docs(session)
@@ -203,7 +203,7 @@ function Review:build_toolbar(session)
     on_color = success,
     on_icon = "circle-check",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_keep(field.session.shared(), not ctrl.value)
+      ctrl.value = workflow:set_keep(field.session.focused(), not ctrl.value)
     end,
   })
   self.dropped = field.ui.toggle({
@@ -213,7 +213,7 @@ function Review:build_toolbar(session)
     on_color = danger,
     on_icon = "circle-x",
     action = function(ctrl, workflow)
-      ctrl.value = workflow:set_dropped(field.session.shared(), not ctrl.value)
+      ctrl.value = workflow:set_dropped(field.session.focused(), not ctrl.value)
     end,
   })
 
@@ -223,7 +223,7 @@ function Review:build_toolbar(session)
       label = "Previous",
       icon = "arrow-left",
       action = function(_, workflow)
-        workflow:go_previous(field.session.shared())
+        workflow:go_previous(field.session.focused())
       end,
     }),
     field.ui.button({
@@ -231,7 +231,7 @@ function Review:build_toolbar(session)
       label = "Next",
       icon = "arrow-right",
       action = function(_, workflow)
-        workflow:go_next(field.session.shared())
+        workflow:go_next(field.session.focused())
       end,
     }),
     self.kept,
@@ -286,7 +286,7 @@ end
 -- the session.
 function Review:start(payload)
   field.log.info("review", "starting")
-  local session = field.session.shared()
+  local session = field.session.focused()
   self:restore_output(session)
   local scope = payload.scope or "?"
   if scope == "menu" then

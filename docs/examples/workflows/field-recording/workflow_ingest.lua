@@ -166,7 +166,7 @@ function Ingest:process_one(source_path, index, total)
 
   local ok, doc = pcall(function()
     -- When convert exists, open the staging path instead of the source.
-    return field.session.shared():open(source_path)
+    return field.session.focused():open(source_path)
   end)
   if ok and doc then
     doc.group = "todo"
@@ -177,7 +177,7 @@ function Ingest:run_ingest()
   if self.busy then
     return
   end
-  local session = field.session.shared()
+  local session = field.session.focused()
   self:persist(session)
 
   if not self.staging_root or self.staging_root == "" then
@@ -229,7 +229,7 @@ function Ingest:run_ingest()
 end
 
 function Ingest:finish_to_review()
-  self:persist(field.session.shared())
+  self:persist(field.session.focused())
   -- Intended handoff:
   --   field.workflow.finish({ next = "review" })
   -- Until that ships, finish and prompt the user.
@@ -241,7 +241,7 @@ function Ingest:finish_to_review()
 end
 
 function Ingest:start(payload)
-  local session = field.session.shared()
+  local session = field.session.focused()
   self:restore(session)
   self.queue = self:collect_sources(payload or {})
   if #self.queue > 0 and (not self.source or self.source == "") then

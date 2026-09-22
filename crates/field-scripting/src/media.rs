@@ -90,32 +90,23 @@ impl UserData for LuaMediaPool {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("add", |lua, _, path: String| {
             let host = host_from_lua(lua)?;
-            host.with_world_mut(|world| {
-                let id = world
-                    .add_media(std::path::Path::new(&path))
-                    .map_err(|err| mlua::Error::runtime(err.to_string()))?;
-                Ok(LuaMedia { id })
-            })
+            let id = host.with_backend_mut(|b| b.add_media(std::path::Path::new(&path)))?;
+            Ok(LuaMedia { id })
         });
         methods.add_method("remove", |lua, _, value: Value| {
             let media = LuaMedia::from_lua(value, lua)?;
             let host = host_from_lua(lua)?;
-            let removed = host.with_world_mut(|world| {
-                world.media_store.lock().unwrap().remove(media.id).is_some()
-            });
-            Ok(removed)
+            host.with_backend_mut(|b| b.remove_media(media.id))?;
+            Ok(())
         });
         methods.add_method("list", |lua, _, ()| {
             let host = host_from_lua(lua)?;
-            host.with_world(|world| {
-                let store = world.media_store.lock().unwrap();
-                let refs: Vec<_> = store.pool().iter().collect();
-                let table = lua.create_table_with_capacity(refs.len(), 0)?;
-                for (index, media) in refs.into_iter().enumerate() {
-                    table.set(index + 1, LuaMedia { id: media.id })?;
-                }
-                Ok(table)
-            })
+            let ids = host.with_backend(|b| b.list_media());
+            let table = lua.create_table_with_capacity(ids.len(), 0)?;
+            for (index, id) in ids.into_iter().enumerate() {
+                table.set(index + 1, LuaMedia { id })?;
+            }
+            Ok(table)
         });
     }
 }
@@ -131,14 +122,8 @@ fn with_media<R>(
     f: impl FnOnce(&MediaRef) -> mlua::Result<R>,
 ) -> mlua::Result<R> {
     let host = host_from_lua(lua)?;
-    host.with_world(|world| {
-        let store = world.media_store.lock().unwrap();
-        let media = store
-            .pool()
-            .get(id)
-            .ok_or_else(|| mlua::Error::runtime(format!("media no longer exists: {id}")))?;
-        f(media)
-    })
+    let media = host.with_backend(|b| b.get_media(id))?;
+    f(&media)
 }
 
 /// Install `field.media`.

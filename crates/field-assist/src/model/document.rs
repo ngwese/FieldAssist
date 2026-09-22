@@ -280,6 +280,16 @@ impl BufferDocument {
         self.composition.write().unwrap().set_next_region_id(next);
     }
 
+    /// Counter used when allocating regions through the scripting bridge.
+    pub(crate) fn next_region_id(&self) -> u64 {
+        self.peek_next_region_id()
+    }
+
+    /// Synchronize a region allocation counter from the scripting bridge.
+    pub(crate) fn set_next_region_id(&mut self, next: u64) {
+        self.commit_next_region_id(next);
+    }
+
     fn push_selection_region(
         &mut self,
         start: usize,
@@ -418,6 +428,7 @@ impl BufferDocument {
         self.set_current_position_sample(sample, scope);
     }
 
+    #[allow(dead_code)]
     pub fn add_labeled_region(
         &mut self,
         start: usize,
@@ -456,6 +467,7 @@ impl BufferDocument {
         false
     }
 
+    #[allow(dead_code)]
     pub fn collection_names(&self) -> Vec<String> {
         let mut names = vec![SELECTION_COLLECTION.to_string()];
         for collection in self.composition.read().unwrap().collections() {
@@ -464,12 +476,15 @@ impl BufferDocument {
         names
     }
 
+    #[allow(dead_code)]
     pub fn ensure_named_collection(&mut self, name: &str) {
         if name != SELECTION_COLLECTION {
             self.composition.write().unwrap().ensure_collection(name);
         }
     }
 
+    #[allow(dead_code)] // retained for non-script UI/tooling
+    #[allow(dead_code)]
     pub fn adopt_collection_as_selection(&mut self, name: &str) {
         if name == SELECTION_COLLECTION {
             return;
@@ -602,6 +617,8 @@ impl BufferDocument {
         self.composition.read().unwrap().marker_types().to_vec()
     }
 
+    #[allow(dead_code)] // retained for non-script UI/tooling
+    #[allow(dead_code)]
     pub fn add_marker_type(&mut self, name: &str, color: [f32; 4]) -> bool {
         self.composition
             .write()
@@ -609,6 +626,7 @@ impl BufferDocument {
             .add_marker_type(name, color)
     }
 
+    #[allow(dead_code)]
     pub fn remove_marker_type(&mut self, name: &str) -> bool {
         self.composition.write().unwrap().remove_marker_type(name)
     }
@@ -617,6 +635,7 @@ impl BufferDocument {
         self.composition.write().unwrap().remove_marker(id)
     }
 
+    #[allow(dead_code)]
     pub fn remove_marker_at(&mut self, sample: usize) -> bool {
         self.composition
             .write()
@@ -624,6 +643,7 @@ impl BufferDocument {
             .remove_marker_at(sample as u64)
     }
 
+    #[allow(dead_code)]
     pub fn remove_marker_at_type(&mut self, sample: usize, marker_type: &str) -> bool {
         self.composition
             .write()
@@ -631,6 +651,8 @@ impl BufferDocument {
             .remove_marker_at_type(sample as u64, marker_type)
     }
 
+    #[allow(dead_code)] // retained for non-script UI/tooling
+    #[allow(dead_code)]
     pub fn remove_marker_by_type(&mut self, marker_type: &str) -> usize {
         self.composition
             .write()
@@ -874,6 +896,8 @@ impl BufferDocument {
         self.after_tree_changed(from);
     }
 
+    #[allow(dead_code)] // retained for non-script UI/tooling
+    #[allow(dead_code)]
     pub(crate) fn find_region(&self, id: RegionId) -> Option<(String, crate::model::Region)> {
         if let Some(region) = self.selection.get(id) {
             return Some((SELECTION_COLLECTION.into(), region.clone()));
