@@ -307,9 +307,11 @@ impl HostHandle {
         which: Option<SessionId>,
         id: DocumentId,
     ) -> mlua::Result<()> {
-        self.with_backend_mut(|b| b.set_session_active_document(which, id))?;
-        // Fire composition_selected for the shared session only.
-        if which.is_none() {
+        // Clone-before-hooks: with_backend_mut releases HostInner before the
+        // backend runs, so desktop focus_document can fire composition_selected
+        // without RefCell re-borrow panics.
+        let should_emit = self.with_backend_mut(|b| b.set_session_active_document(which, id))?;
+        if which.is_none() && should_emit {
             self.emit_composition_selected(Some(id));
         }
         Ok(())

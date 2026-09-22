@@ -478,12 +478,13 @@ impl ScriptBackend for DesktopBackend {
         &mut self,
         which: Option<SessionId>,
         id: DocumentId,
-    ) -> mlua::Result<()> {
+    ) -> mlua::Result<bool> {
         if which.is_some() {
-            return self.with_session_kind_mut(which, |s| {
+            self.with_session_kind_mut(which, |s| {
                 s.focus(id);
                 Ok(())
-            });
+            })?;
+            return Ok(false);
         }
         if let Some(test) = self.test() {
             let mut world = test.borrow_mut();
@@ -491,13 +492,17 @@ impl ScriptBackend for DesktopBackend {
                 return Err(mlua::Error::runtime("composition is not open"));
             }
             // `focus` returns None when already active; that is still success.
-            let _ = world.session.focus(id);
+            let changed = world.session.focus(id).is_some();
             world.active = Some(id);
-            return Ok(());
+            return Ok(changed);
         }
-        access::with_view(|view, window, cx| view.script_activate_document(id, window, cx))
-            .map_err(mlua::Error::runtime)?
-            .map_err(mlua::Error::runtime)
+        // Live desktop: activate without firing hooks under the backend
+        // borrow; HostHandle emits composition_selected after release.
+        let changed =
+            access::with_view(|view, window, cx| view.script_activate_document(id, window, cx))
+                .map_err(mlua::Error::runtime)?
+                .map_err(mlua::Error::runtime)?;
+        Ok(changed)
     }
 
     fn open_path(&mut self, path: &Path) -> mlua::Result<DocumentId> {

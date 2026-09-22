@@ -691,16 +691,28 @@ impl HostHandle {
     }
 
     /// Borrow the backend for read operations.
+    ///
+    /// Clones the backend handle and releases [`HostInner`] before calling
+    /// `f`, so Lua callbacks that re-enter the host (hooks, composition
+    /// fields) do not deadlock on the `HostInner` `RefCell`.
     pub(crate) fn with_backend<R>(&self, f: impl FnOnce(&dyn ScriptBackend) -> R) -> R {
-        let inner = self.inner.borrow();
-        let backend = inner.backend.borrow();
+        let backend = {
+            let inner = self.inner.borrow();
+            Rc::clone(&inner.backend)
+        };
+        let backend = backend.borrow();
         f(&*backend)
     }
 
     /// Borrow the backend mutably.
+    ///
+    /// Same release-before-callback rule as [`Self::with_backend`].
     pub(crate) fn with_backend_mut<R>(&self, f: impl FnOnce(&mut dyn ScriptBackend) -> R) -> R {
-        let inner = self.inner.borrow();
-        let mut backend = inner.backend.borrow_mut();
+        let backend = {
+            let inner = self.inner.borrow();
+            Rc::clone(&inner.backend)
+        };
+        let mut backend = backend.borrow_mut();
         f(&mut *backend)
     }
 

@@ -255,16 +255,20 @@ pub trait ScriptBackend {
 
     /// Make a document the active one on the session.
     ///
+    /// Returns `true` when focus changed and the caller should fire
+    /// `composition_selected` hooks **after** releasing the backend borrow
+    /// (hooks often re-enter the host). Detached focus never emits.
+    ///
     /// For detached sessions this is a metadata-only update; the document need
     /// not be open in the world.
     fn set_session_active_document(
         &mut self,
         which: Option<SessionId>,
         id: DocumentId,
-    ) -> mlua::Result<()>;
+    ) -> mlua::Result<bool>;
 
     /// Compatibility convenience for the shared session.
-    fn set_shared_active_document(&mut self, id: DocumentId) -> mlua::Result<()> {
+    fn set_shared_active_document(&mut self, id: DocumentId) -> mlua::Result<bool> {
         self.set_session_active_document(None, id)
     }
 
@@ -768,23 +772,23 @@ impl ScriptBackend for HeadlessBackend {
         &mut self,
         which: Option<SessionId>,
         id: DocumentId,
-    ) -> mlua::Result<()> {
+    ) -> mlua::Result<bool> {
         match which {
             None => {
                 let mut world = self.world.borrow_mut();
                 if world.docs.get(&id).is_none() {
                     return Err(mlua::Error::runtime("composition is not open"));
                 }
-                world.set_active(id);
+                Ok(world.session.focus(id).is_some())
             }
             Some(sid) => {
                 // Detached: just record the focus; documents are not open in world.
                 if let Some(s) = self.detached_sessions.get_mut(&sid) {
-                    s.focus(id);
+                    let _ = s.focus(id);
                 }
+                Ok(false)
             }
         }
-        Ok(())
     }
 
     // ── world-session-only ops ──────────────────────────────────────────────

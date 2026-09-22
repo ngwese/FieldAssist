@@ -1303,6 +1303,19 @@ impl AppView {
     }
 
     fn focus_document(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.focus_document_with_hooks(id, true, window, cx);
+    }
+
+    /// Focus `id`. Returns whether the active document changed. When
+    /// `fire_hooks` is false, skips `composition_selected` so a Lua caller
+    /// can emit after releasing the script backend borrow.
+    fn focus_document_with_hooks(
+        &mut self,
+        id: DocumentId,
+        fire_hooks: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if let Some(old_id) = self.session.focus(id) {
             self.commit_monitor_for_id(old_id, cx);
             if self.playback.transport_state() == TransportState::Playing {
@@ -1322,10 +1335,13 @@ impl AppView {
         } else {
             self.refresh_explorer(cx);
             self.update_window_title(window, cx);
-            return;
+            return false;
         }
         self.apply_active(window, cx);
-        self.fire_composition_selected_script(window, cx);
+        if fire_hooks {
+            self.fire_composition_selected_script(window, cx);
+        }
+        true
     }
 
     fn center_tab_slot(area: &DockArea, panel_id: PanelId) -> Option<(NodeId, usize, usize)> {
@@ -1442,26 +1458,28 @@ impl AppView {
     }
 
     fn ensure_tab(&mut self, id: DocumentId, window: &mut Window, cx: &mut Context<Self>) {
-        self.ensure_tab_at(id, None, window, cx);
+        self.ensure_tab_at(id, None, true, window, cx);
     }
 
     fn ensure_tab_at(
         &mut self,
         id: DocumentId,
         insert_ix: Option<usize>,
+        fire_hooks: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(views) = self.views.get(&id).cloned() else {
-            return;
+            return false;
         };
-        self.focus_document(id, window, cx);
+        let changed = self.focus_document_with_hooks(id, fire_hooks, window, cx);
         let workspace = views.workspace.clone();
         self.dock_area.update(cx, |area, cx| {
             Self::show_workspace_tab(area, workspace, insert_ix, window, cx);
         });
         self.session.ensure_tab(id);
         self.remove_placeholder(window, cx);
+        changed
     }
 
     fn activate_or_replace_tab(
@@ -1470,15 +1488,23 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let _ = self.activate_or_replace_tab_with(id, true, window, cx);
+    }
+
+    fn activate_or_replace_tab_with(
+        &mut self,
+        id: DocumentId,
+        fire_hooks: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.session.get(id).is_some_and(|doc| doc.tab_open) {
-            self.ensure_tab(id, window, cx);
-            return;
+            return self.ensure_tab_at(id, None, fire_hooks, window, cx);
         }
         if let Some(transient) = self.first_transient_id(cx) {
-            self.replace_transient_tab(transient, id, window, cx);
-            return;
+            return self.replace_transient_tab_with(transient, id, fire_hooks, window, cx);
         }
-        self.ensure_tab(id, window, cx);
+        self.ensure_tab_at(id, None, fire_hooks, window, cx)
     }
 
     fn replace_transient_tab(
@@ -1488,12 +1514,23 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let _ = self.replace_transient_tab_with(old_id, new_id, true, window, cx);
+    }
+
+    fn replace_transient_tab_with(
+        &mut self,
+        old_id: DocumentId,
+        new_id: DocumentId,
+        fire_hooks: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let insert_ix = self.views.get(&old_id).and_then(|views| {
             let panel_id = PanelId::from(views.workspace.entity_id());
             Self::center_tab_slot(&self.dock_area.read(cx), panel_id).map(|(_, ix, _)| ix)
         });
         self.close_tab(old_id, window, cx);
-        self.ensure_tab_at(new_id, insert_ix, window, cx);
+        self.ensure_tab_at(new_id, insert_ix, fire_hooks, window, cx)
     }
 
     fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1537,13 +1574,15 @@ impl AppView {
         id: DocumentId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         if self.session.get(id).is_none() {
             return Err("composition is not open".into());
         }
-        self.activate_or_replace_tab(id, window, cx);
+        // Skip composition_selected here; HostHandle emits after the script
+        // backend RefCell is released so hooks can re-enter the host safely.
+        let changed = self.activate_or_replace_tab_with(id, false, window, cx);
         self.apply_preview_if_enabled(cx);
-        Ok(())
+        Ok(changed)
     }
 
     fn apply_preview_if_enabled(&mut self, cx: &mut Context<Self>) {
