@@ -404,15 +404,15 @@ impl HeadlessWorld {
     }
 
     /// Open audio or `.facomp` into the session.
+    ///
+    /// Uses [`Composition::load_from_path_with_warnings`] so media files get a
+    /// Symphonia block decoder (via spill dir). Opening with bare
+    /// [`Composition::from_media_path`] leaves a null decoder and silent reads.
     pub fn open_path(&mut self, path: &Path) -> anyhow::Result<DocumentId> {
         if is_fasession_path(path) {
             anyhow::bail!("use field.session.open for .fasession files");
         }
-        let (composition, _warnings) = if is_facomp_path(path) {
-            Composition::load_facomp(path)?
-        } else {
-            (Composition::from_media_path(path, None)?, Vec::new())
-        };
+        let (composition, _warnings) = Composition::load_from_path_with_warnings(path)?;
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -498,3 +498,158 @@ impl Default for HeadlessWorld {
 /// Persistable string map type used by session / document properties.
 #[allow(dead_code)]
 pub type PropMap = BTreeMap<String, String>;
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::f32::consts::TAU;
+    use std::io::Write;
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::backend::{BackendHandle, HeadlessBackend};
+    use crate::host::{HostProfile, ScriptHost};
+
+    fn write_stereo_sine(path: &Path, frames: u32, sample_rate: u32) {
+        let channels: u16 = 2;
+        let bits_per_sample: u16 = 16;
+        let block_align = channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut out = std::fs::File::create(path).unwrap();
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&channels.to_le_bytes()).unwrap();
+        out.write_all(&sample_rate.to_le_bytes()).unwrap();
+        out.write_all(&byte_rate.to_le_bytes()).unwrap();
+        out.write_all(&block_align.to_le_bytes()).unwrap();
+        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        for i in 0..frames {
+            let t = i as f32 / sample_rate as f32;
+            let sample = (0.5 * (TAU * 440.0 * t).sin() * i16::MAX as f32) as i16;
+            for _ in 0..channels {
+                out.write_all(&sample.to_le_bytes()).unwrap();
+            }
+        }
+    }
+
+    fn peak(buf: &[f32]) -> f32 {
+        buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
+    }
+
+    #[test]
+    fn open_path_media_file_decodes_pcm() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("open_path_decode.wav");
+        write_stereo_sine(&path, 512, 44_100);
+        let mut world = HeadlessWorld::new();
+        let id = world.open_path(&path).expect("open");
+        let composition = world.docs.get(&id).expect("doc").composition.clone();
+        let ch = composition.read().unwrap().channel_count();
+        let mut buf = vec![0.0f32; 256 * ch];
+        composition
+            .read()
+            .unwrap()
+            .read_interleaved(0, 256, &mut buf)
+            .expect("decode");
+        assert!(
+            peak(&buf) > 0.1,
+            "expected audible PCM after open_path, peak={}",
+            peak(&buf)
+        );
+    }
+
+    #[test]
+    fn open_path_after_detect_layout_still_decodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("detect_and_decode.wav");
+        write_stereo_sine(&path, 512, 44_100);
+
+        let world = Rc::new(RefCell::new(HeadlessWorld::new()));
+        let backend: BackendHandle =
+            Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world.clone())));
+        let mut host = ScriptHost::with_backend(
+            HostProfile {
+                name: "field-play",
+                config_dir: None,
+            },
+            backend,
+        )
+        .expect("host");
+        host.load_init().expect("init");
+
+        let id = world.borrow_mut().open_path(&path).expect("open");
+        host.fire_detect_layout(id);
+
+        let composition = world.borrow().docs.get(&id).unwrap().composition.clone();
+        let (layout, chain, ch) = {
+            let c = composition.read().unwrap();
+            (
+                c.channel_layout().map(str::to_string),
+                c.monitor_chain().map(str::to_string),
+                c.channel_count(),
+            )
+        };
+        assert_eq!(layout.as_deref(), Some("stereo"));
+        assert_eq!(chain.as_deref(), Some("stereo"));
+
+        let mut buf = vec![0.0f32; 256 * ch];
+        composition
+            .read()
+            .unwrap()
+            .read_interleaved(0, 256, &mut buf)
+            .expect("decode after detect_layout");
+        assert!(
+            peak(&buf) > 0.1,
+            "detect_layout must not leave a null decoder, peak={}",
+            peak(&buf)
+        );
+    }
+
+    #[test]
+    fn lua_session_open_media_decodes_pcm() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lua_open_decode.wav");
+        write_stereo_sine(&path, 512, 44_100);
+        let path_lit = path.display().to_string().replace('\\', "\\\\");
+
+        let world = Rc::new(RefCell::new(HeadlessWorld::new()));
+        let backend: BackendHandle =
+            Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world.clone())));
+        let mut host = ScriptHost::with_backend(
+            HostProfile {
+                name: "field-batch",
+                config_dir: None,
+            },
+            backend,
+        )
+        .expect("host");
+        host.load_init().expect("init");
+        let out = host.eval(&format!(
+            r#"(function()
+              local c = field.session.focused():open("{path_lit}")
+              assert(c.channels == 2)
+              return c.channels
+            end)()"#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+
+        let id = world.borrow().active().expect("active");
+        let composition = world.borrow().docs.get(&id).unwrap().composition.clone();
+        let ch = composition.read().unwrap().channel_count();
+        let mut buf = vec![0.0f32; 256 * ch];
+        composition
+            .read()
+            .unwrap()
+            .read_interleaved(0, 256, &mut buf)
+            .expect("decode via session:open");
+        assert!(peak(&buf) > 0.1, "peak={}", peak(&buf));
+    }
+}

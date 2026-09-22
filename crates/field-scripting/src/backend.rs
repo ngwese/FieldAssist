@@ -1129,11 +1129,7 @@ pub(crate) fn hydrate_session_documents(world: &mut HeadlessWorld) -> mlua::Resu
         }
         if let Some(path) = session_doc.file_path() {
             if path.exists() && !is_fasession_path(path) {
-                let loaded = if field_composition::is_facomp_path(path) {
-                    Composition::load_facomp(path).map(|(c, _)| c)
-                } else {
-                    Composition::from_media_path(path, None)
-                };
+                let loaded = Composition::load_from_path_with_warnings(path).map(|(c, _)| c);
                 if let Ok(composition) = loaded {
                     world.docs.insert(
                         session_doc.id,

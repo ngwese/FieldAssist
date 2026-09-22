@@ -2256,6 +2256,7 @@ dependencies = [
  "field-audio-playback",
  "field-composition",
  "field-scripting",
+ "tempfile",
 ]
 
 [[package]]

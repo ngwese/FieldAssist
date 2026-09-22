@@ -5366,6 +5366,36 @@ mod tests {
         }
     }
 
+    fn write_sine_wav_i16(path: &std::path::Path, channels: u16, frames: u32, sample_rate: u32) {
+        use std::f32::consts::TAU;
+        use std::io::Write;
+        let bits_per_sample: u16 = 16;
+        let block_align = channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut out = std::fs::File::create(path).unwrap();
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&channels.to_le_bytes()).unwrap();
+        out.write_all(&sample_rate.to_le_bytes()).unwrap();
+        out.write_all(&byte_rate.to_le_bytes()).unwrap();
+        out.write_all(&block_align.to_le_bytes()).unwrap();
+        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        for i in 0..frames {
+            let t = i as f32 / sample_rate as f32;
+            let sample = (0.5 * (TAU * 440.0 * t).sin() * i16::MAX as f32) as i16;
+            for _ in 0..channels {
+                out.write_all(&sample.to_le_bytes()).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn from_media_path_without_session_store() {
         let path = std::env::temp_dir().join("snd-from-media-path-none.wav");
@@ -5373,6 +5403,34 @@ mod tests {
         let comp = Composition::from_media_path(&path, None).unwrap();
         assert_eq!(comp.frames(), 8);
         assert_eq!(comp.pool().len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn from_media_path_cannot_decode_without_spill_dir() {
+        let path = std::env::temp_dir().join("snd-from-media-no-decoder.wav");
+        write_sine_wav_i16(&path, 2, 512, 44_100);
+        let comp = Composition::from_media_path(&path, None).unwrap();
+        let mut buf = vec![0.0f32; 256 * comp.channel_count()];
+        let err = comp
+            .read_interleaved(0, 256, &mut buf)
+            .expect_err("null block source must reject file-backed reads");
+        assert!(
+            err.to_string().contains("no block decoder"),
+            "unexpected error: {err:#}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_from_path_installs_decoder_and_reads_pcm() {
+        let path = std::env::temp_dir().join("snd-load-from-path-decoder.wav");
+        write_sine_wav_i16(&path, 2, 512, 44_100);
+        let (comp, _) = Composition::load_from_path_with_warnings(&path).unwrap();
+        let mut buf = vec![0.0f32; 256 * comp.channel_count()];
+        comp.read_interleaved(0, 256, &mut buf).expect("decode");
+        let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.1, "expected sine PCM, peak={peak}");
         let _ = std::fs::remove_file(path);
     }
 
