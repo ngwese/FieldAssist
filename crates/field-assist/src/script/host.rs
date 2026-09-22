@@ -12,7 +12,8 @@ use mlua::Lua;
 
 use crate::model::{is_facomp_path, Buffer, BufferDocument, Composition, MediaStore};
 
-pub const EMBEDDED_INIT: &str = include_str!("../../assets/init.lua");
+pub use field_scripting::EMBEDDED_INIT;
+
 const EMBEDDED_WORKFLOW_ADD: &str = include_str!("../../assets/workflow_add.lua");
 const EMBEDDED_WORKFLOW_REPLACE: &str = include_str!("../../assets/workflow_replace.lua");
 const EMBEDDED_WORKFLOW_REVIEW: &str = include_str!("../../assets/workflow_review.lua");
@@ -153,16 +154,7 @@ impl ScriptHost {
         self.load_init_from(crate::commands::user_config_dir().as_deref())
     }
     pub fn load_init_from(&mut self, config: Option<&Path>) -> Result<(), String> {
-        if let Some(path) = config.map(|d| d.join("init.lua")).filter(|p| p.is_file()) {
-            self.inner.load_file(&path)?
-        } else {
-            self.inner
-                .lua()
-                .load(EMBEDDED_INIT)
-                .set_name("@<embedded>/init.lua")
-                .exec()
-                .map_err(|e| format!("init.lua: {e}"))?;
-        }
+        self.inner.load_init_from(config)?;
         for (source, name) in [
             (EMBEDDED_WORKFLOW_ADD, "workflow_add.lua"),
             (EMBEDDED_WORKFLOW_REPLACE, "workflow_replace.lua"),

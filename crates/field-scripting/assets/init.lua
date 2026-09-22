@@ -1,4 +1,4 @@
--- Default FieldAssist init script.
+-- Default FieldAssist / field-play init script.
 -- Dump with: FieldAssist --dump-init
 -- Copy to the app config directory to customize.
 --

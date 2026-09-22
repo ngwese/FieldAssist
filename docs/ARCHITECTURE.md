@@ -29,10 +29,9 @@ field-ui-components     (gpui widgets + host traits / DTOs)
 
 field-scripting         (mlua host; NO gpui, NO field-ui-components)
     ├── field-batch     (CLI: REPL + script + shebang)
+    ├── field-play      (example CLI: composition → default device + monitor;
+    │                    init.lua + detect_layout)
     └── FieldAssist     (GPUI app; also monitor, ui-components, playback)
-
-field-play              (example CLI: composition → default device + monitor;
-                         no Lua)
 ```
 
 | Crate | Level | Responsibility |
@@ -48,7 +47,7 @@ field-play              (example CLI: composition → default device + monitor;
 | `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
 | `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `ScriptBackend` / `HeadlessWorld` ([README](../crates/field-scripting/README.md)) |
 | `field-batch` | app | Headless REPL / script runner / Unix shebang over `field-scripting` |
-| `field-play` | example | Headless composition playback on the default output |
+| `field-play` | example | Headless composition playback; `init.lua` + `detect_layout` for monitor chain |
 | `FieldAssist` | app | Document editor, GPUI host bridge, docks, playback; embeds workflows |
 
 `field-scripting` sits at the same layer as the app hosts: it may depend on
@@ -128,10 +127,10 @@ whenever source and device rates differ.
   `app.args`, Unix shebang (`#!/usr/bin/env field-batch`). Does not auto-load
   Add/Replace/Review (those stay FieldAssist-embedded).
 - **`field-play`**: `field-composition` + `field-audio-playback` +
-  `field-audio-monitor` — plays a composition on the system default device
-  (no session). Loads a `.facomp`, or builds one from a media file with
-  `Composition::from_media_path`. Uses the composition's monitoring chain
-  when set, otherwise Direct.
+  `field-audio-monitor` + `field-scripting` — plays a composition on the
+  system default device (no session). Loads user `init.lua` else the shared
+  embedded default, runs `detect_layout` once after open, then uses the
+  composition's monitoring chain when set (otherwise Direct).
 - **`FieldAssist`**: desktop app (`crates/field-assist`).
 
 ```bash

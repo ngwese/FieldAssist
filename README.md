@@ -48,8 +48,9 @@ cargo run -p field-play -- path/to/take.wav
 ```
 
 `field-play` loads a `.facomp`, or builds a composition from a media file,
-then plays it on the system default output. Compositions use their monitoring
-chain when set; otherwise audio is sent Direct.
+runs `init.lua` (user config else embedded) and `detect_layout` for the
+monitoring chain, then plays on the system default output. Persisted
+`monitor_chain` values win; otherwise Direct if detect leaves the chain unset.
 
 ## License
 

@@ -4,13 +4,16 @@
 //! Example CLI: open a `.facomp` (or build one from a media file) and play it
 //! on the system default output.
 //!
-//! Uses the composition's stored monitoring chain when set; otherwise plays
-//! direct (channel map only, no Faust DSP). No session crate is involved.
+//! Loads `init.lua` (user config else embedded) via `field-scripting`, runs
+//! `detect_layout` to choose a channel layout / monitor chain when unset, then
+//! plays through the composition's monitoring chain (or Direct).
 
 mod monitor_process;
 mod provider;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,7 +25,8 @@ use field_audio_playback::{
     output_device_name, resolve_output_device, MonitorProcess, PlaybackEngine, PlaybackStats,
     TransportState,
 };
-use field_composition::{is_facomp_path, Composition, PagerStats};
+use field_composition::{Composition, PagerStats};
+use field_scripting::{BackendHandle, HeadlessBackend, HeadlessWorld, HostProfile, ScriptHost};
 
 use monitor_process::MonitorHostProcess;
 use provider::CompositionProvider;
@@ -33,8 +37,10 @@ use provider::CompositionProvider;
     about = "Play a .facomp or media file through the default audio device",
     long_about = "Loads a FieldAssist composition and plays it on the system \
 default output. A media file is opened as a single-clip composition (no \
-session). When the composition defines a monitoring chain, that Faust listen \
-path is used; otherwise audio is sent direct."
+session). Startup loads init.lua (user config else embedded) and runs \
+detect_layout so the default monitoring chain matches FieldAssist. When the \
+composition already defines a monitoring chain, that Faust listen path is \
+kept; otherwise Direct is used if detect leaves the chain unset."
 )]
 struct Args {
     /// Path to a `.facomp` composition or media file.
@@ -51,44 +57,50 @@ struct Args {
     /// Seek to this timeline position in seconds before playing.
     #[arg(long)]
     start: Option<f64>,
+
+    /// Config directory for `init.lua` (default: FieldAssist config dir).
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let (composition, warnings) = if is_facomp_path(&args.path) {
-        Composition::load_facomp(&args.path)
-            .with_context(|| format!("load {}", args.path.display()))?
-    } else {
-        (
-            Composition::from_media_path(&args.path, None)
-                .with_context(|| format!("open media {}", args.path.display()))?,
-            Vec::new(),
-        )
-    };
-    for warning in &warnings {
-        eprintln!("warning: {warning}");
-    }
+    let composition = open_with_detect(&args.path, args.config_dir.clone())?;
 
-    let chain = composition.monitor_chain().and_then(MonitorChain::parse);
-    let playback_channels = composition.playback_channels().map(|ch| ch.to_vec());
+    let chain = composition
+        .read()
+        .unwrap()
+        .monitor_chain()
+        .and_then(MonitorChain::parse);
+    let playback_channels = composition
+        .read()
+        .unwrap()
+        .playback_channels()
+        .map(|ch| ch.to_vec());
     let monitor_label = chain
         .map(|c| c.label().to_string())
         .unwrap_or_else(|| "Direct".to_string());
-    let sample_rate = composition.sample_rate().max(1);
-    let frames = composition.frames();
+    let sample_rate = composition.read().unwrap().sample_rate().max(1);
+    let frames = composition.read().unwrap().frames();
     let start_sample = args
         .start
         .map(|secs| ((secs * f64::from(sample_rate)).round() as u64).min(frames.saturating_sub(1)))
         .unwrap_or(0);
 
-    eprintln!(
-        "Playing {} — {:.2}s · {} Hz · {} ch · {} clips · monitor: {monitor_label}",
-        composition.display_name(),
-        composition.duration_secs(),
-        sample_rate,
-        composition.channel_count(),
-        composition.clip_count(),
-    );
+    {
+        let c = composition.read().unwrap();
+        eprintln!(
+            "Playing {} — {:.2}s · {} Hz · {} ch · {} clips · monitor: {monitor_label}",
+            c.display_name(),
+            c.duration_secs(),
+            sample_rate,
+            c.channel_count(),
+            c.clip_count(),
+        );
+        if let Some(layout) = c.channel_layout() {
+            eprintln!("Channel layout: {layout}");
+        }
+    }
     if start_sample > 0 {
         eprintln!(
             "Start at {:.2}s (sample {start_sample})",
@@ -99,7 +111,6 @@ fn main() -> Result<()> {
         eprintln!("Playback channel subset: {channels:?}");
     }
 
-    let composition = Arc::new(RwLock::new(composition));
     let provider = Arc::new(CompositionProvider::new(composition.clone()));
 
     let device = resolve_output_device(None).context("resolve default output device")?;
@@ -154,6 +165,62 @@ fn main() -> Result<()> {
 
     eprintln!("Done.");
     Ok(())
+}
+
+/// Load path into a headless script world, run init + `detect_layout`, return
+/// the shared composition (monitor chain may have been filled by layout defaults).
+fn open_with_detect(
+    path: &PathBuf,
+    config_dir: Option<PathBuf>,
+) -> Result<Arc<RwLock<Composition>>> {
+    let config_dir = config_dir.or_else(field_scripting::user_config_dir);
+    let world = Rc::new(RefCell::new(HeadlessWorld::new()));
+    let backend: BackendHandle =
+        Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world.clone())));
+    let mut host = ScriptHost::with_backend(
+        HostProfile {
+            name: "field-play",
+            config_dir,
+        },
+        backend,
+    )
+    .map_err(|err| anyhow::anyhow!("create script host: {err}"))?;
+
+    host.load_init()
+        .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
+    flush_script_output(&host);
+
+    let id = world
+        .borrow_mut()
+        .open_path(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    host.fire_detect_layout(id);
+    flush_script_output(&host);
+
+    let composition = world
+        .borrow()
+        .docs
+        .get(&id)
+        .map(|doc| doc.composition.clone())
+        .context("document missing after open")?;
+    Ok(composition)
+}
+
+fn flush_script_output(host: &ScriptHost) {
+    for line in host.take_prints() {
+        eprintln!("{line}");
+    }
+    for (subject, body) in host.take_alerts() {
+        eprintln!("alert: {subject}: {body}");
+    }
+    for entry in host.take_logs() {
+        eprintln!(
+            "{} [{}] {}",
+            entry.level.as_str(),
+            entry.topic,
+            entry.message
+        );
+    }
 }
 
 fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, position: usize) {

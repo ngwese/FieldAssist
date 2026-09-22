@@ -1,9 +1,9 @@
 # Scripting
 
-As-built Lua 5.4 reference for FieldAssist and **field-batch**. Both hosts share
-the `field-scripting` API shape under the global **`field`** namespace. The
-global **`app`** object is a thin host facade; `app.name` identifies the
-process.
+As-built Lua 5.4 reference for FieldAssist, **field-batch**, and **field-play**.
+Hosts share the `field-scripting` API shape under the global **`field`**
+namespace. The global **`app`** object is a thin host facade; `app.name`
+identifies the process.
 
 This document describes **what is implemented today**. Intended-but-missing
 APIs (confirm dialogs, SQLite, C2PA, handoff) live in
@@ -39,36 +39,42 @@ examples are under
 | --- | --- | --- |
 | FieldAssist desktop | `"field-assist"` | GPUI app; embedded Add / Replace / Review workflows |
 | field-batch CLI | `"field-batch"` | Headless REPL / script / Unix shebang over `field-scripting` |
+| field-play CLI | `"field-play"` | Headless playback; `init.lua` + one-shot `detect_layout` |
 
 ```bash
 field-batch                     # interactive REPL
 field-batch script.lua a b      # app.args = { "a", "b" }
 #!/usr/bin/env field-batch      # script path is argv[1]
+field-play take.wav             # init.lua → detect_layout → play
+field-play --config-dir DIR …   # optional init override
 ```
 
 **Host coverage.** The `field.*` surface is shared by `field-scripting` and is
 fully available in FieldAssist. FieldAssist supplies a desktop
 `ScriptBackend`, its host-only `app` facade, and GPUI toolbar paint glue.
+field-play uses the headless backend only long enough to load init and fire
+`detect_layout`; it does not run workflows or a REPL.
 
-| Module | field-batch / field-scripting | FieldAssist today |
-| --- | --- | --- |
-| `field.log` / `field.on` | full | full |
-| `field.include` | path or `field.url`; cache + search stack | full |
-| `field.scripting` | full | full |
-| `field.url` | full | full |
-| `field.fs` | full | full |
-| `field.session` | `focused` / `new` / `open` | `focused` / `new` / `open` |
-| `field.composition` | baseline userdata | full, plus desktop chrome fields/methods |
-| `field.media` / `field.workflow` / `field.ui` | full | full |
-| `field.layouts` | `define` + `shared_registry` | `define` + `shared_registry` |
-| `field.audio_devices` | full | full |
+| Module | field-batch / field-scripting | field-play | FieldAssist today |
+| --- | --- | --- | --- |
+| `field.log` / `field.on` | full | init + detect | full |
+| `field.include` | path or `field.url`; cache + search stack | via init | full |
+| `field.scripting` | full | via init | full |
+| `field.url` | full | via init | full |
+| `field.fs` | full | via init | full |
+| `field.session` | `focused` / `new` / `open` | open via host | `focused` / `new` / `open` |
+| `field.composition` | baseline userdata | baseline | full, plus desktop chrome fields/methods |
+| `field.media` / `field.workflow` / `field.ui` | full | unused at play | full |
+| `field.layouts` | `define` + `shared_registry` | via init | `define` + `shared_registry` |
+| `field.audio_devices` | full | unused at play | full |
 
 ## Initialization
 
 ### FieldAssist
 
-1. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
-2. `init.lua` — user config file if present, else embedded default
+1. `init.lua` — user config file if present, else embedded default
+   (`field_scripting::EMBEDDED_INIT`)
+2. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
 3. User `workflow_*.lua` next to `init.lua` (sorted by name)
 
 | OS | Config directory |
@@ -77,8 +83,9 @@ fully available in FieldAssist. FieldAssist supplies a desktop
 | Windows | `%APPDATA%\FieldAssist\` |
 | Linux | `$XDG_CONFIG_HOME/FieldAssist/` or `~/.config/FieldAssist/` |
 
-Resolved by `field_scripting::user_config_dir()` (shared by FieldAssist and
-field-batch). Dump the embedded default with `FieldAssist --dump-init`.
+Resolved by `field_scripting::user_config_dir()` (shared by FieldAssist,
+field-batch, and field-play). Dump the embedded default with
+`FieldAssist --dump-init`.
 
 `require` search paths default to this config directory plus the process
 cwd (see [field.scripting](#field-scripting)). Call
@@ -88,8 +95,16 @@ system Lua paths or native C modules.
 ### field-batch
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
-user `init.lua` if present. Does **not** auto-load Add / Replace / Review.
+user `init.lua` if present. Does **not** fall back to the embedded default,
+and does **not** auto-load Add / Replace / Review.
 
+### field-play
+
+Optional `--config-dir` (default: same FieldAssist config directory). Loads
+user `init.lua` if present, else the shared embedded default (layouts +
+`detect_layout`). Does **not** load workflow bundles. After opening the
+path, fires `detect_layout` once so unset `monitor_chain` values pick up
+the layout default before playback.
 ## Conventions
 
 - **Access:** **ro** = read-only from Lua; **rw** = get and set.
@@ -115,7 +130,7 @@ APIs live under `field.*`, not here.
 
 | Property | Access | Hosts | Type | Description |
 | --- | --- | --- | --- | --- |
-| `name` | **ro** | all | `string` | Stable process id (`"field-assist"` / `"field-batch"`) |
+| `name` | **ro** | all | `string` | Stable process id (`"field-assist"` / `"field-batch"` / `"field-play"`) |
 | `args` | **ro** | field-batch | `{ string, … }` | Script argv after the file / `--` |
 | `workflow` | **ro** | all | `table` or `nil` | Active workflow instance |
 | `theme` | **ro** | FieldAssist | theme userdata | Live GPUI theme (see below) |

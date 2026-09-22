@@ -56,7 +56,7 @@ pub use config_dir::user_config_dir;
 pub use fs::bind_fs;
 pub use host::{
     host_from_lua, EvalOutput, HostHandle, HostProfile, LogEntry, LogLevel, ResumeWorkflow,
-    ScriptHost,
+    ScriptHost, EMBEDDED_INIT,
 };
 pub use layout::ChannelLayoutDef;
 pub use package_policy::{install_package_policy, PackagePolicy};

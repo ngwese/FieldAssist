@@ -27,10 +27,17 @@ use crate::world::HeadlessWorld;
 
 use field_session::DocumentId;
 
+/// Embedded default `init.lua` (layouts + `detect_layout`).
+///
+/// Loaded when `{config_dir}/init.lua` is absent. Dump via FieldAssist
+/// `--dump-init`.
+pub const EMBEDDED_INIT: &str = include_str!("../assets/init.lua");
+
 /// Profile for the enclosing application process.
 #[derive(Clone, Debug)]
 pub struct HostProfile {
-    /// Read-only `app.name` (e.g. `"field-assist"`, `"field-batch"`).
+    /// Read-only `app.name` (e.g. `"field-assist"`, `"field-batch"`,
+    /// `"field-play"`).
     pub name: &'static str,
     /// Optional config directory for `field.include` and user scripts.
     pub config_dir: Option<PathBuf>,
@@ -250,6 +257,28 @@ impl ScriptHost {
                 result: None,
                 error: Some(err.to_string()),
             },
+        }
+    }
+
+    /// Load user `{config_dir}/init.lua` if present, else [`EMBEDDED_INIT`].
+    ///
+    /// Uses the host profile's `config_dir`. Does not load workflow bundles
+    /// (FieldAssist loads those after this).
+    pub fn load_init(&mut self) -> Result<(), String> {
+        let config = self.config_dir();
+        self.load_init_from(config.as_deref())
+    }
+
+    /// Load `{config}/init.lua` if it is a file, else [`EMBEDDED_INIT`].
+    pub fn load_init_from(&mut self, config: Option<&Path>) -> Result<(), String> {
+        if let Some(path) = config.map(|d| d.join("init.lua")).filter(|p| p.is_file()) {
+            self.load_file(&path)
+        } else {
+            self.lua
+                .load(EMBEDDED_INIT)
+                .set_name("@<embedded>/init.lua")
+                .exec()
+                .map_err(|err| format!("init.lua: {err}"))
         }
     }
 

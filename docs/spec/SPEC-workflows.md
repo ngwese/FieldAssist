@@ -58,9 +58,9 @@ indices are 0-based samples.
 
 ### Load order at startup
 
-1. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
-2. `init.lua`: the user file in the config directory if it exists, otherwise
-   the embedded default
+1. `init.lua`: the user file in the config directory if it exists, otherwise
+   the embedded default (`field_scripting::EMBEDDED_INIT`)
+2. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
 3. User `workflow_*.lua` next to `init.lua`, sorted by path
 
 `app:declare_workflow` with an existing `name` replaces the previous
