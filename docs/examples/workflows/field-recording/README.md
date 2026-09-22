@@ -3,41 +3,38 @@
 Copyable Lua for the **Ingest → Review → Catalog** reference pipeline specified
 in [SPEC-field-recording.md](../../spec/SPEC-field-recording.md).
 
-These scripts are **not** embedded in the FieldAssist binary and are **not**
-expected to run until the intended host APIs ship (`app:confirm`, `app.url`,
-`app.fs`, `app.sqlite`, metadata/encode, background jobs, and
-`app:finish_workflow({ next = … })`).
+These scripts are **not** embedded in the FieldAssist binary. Ingest and Catalog
+call intended host APIs that do not ship yet. The Review example matches the
+built-in’s Keep / Drop behavior and runs on today’s host; copying it into the
+config directory **overrides** the embedded `review` registration.
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| `shared.lua` | Property helpers and comments for the intended `app.url` / `app.fs` / `app.sqlite` surface |
+| `shared.lua` | Property helpers, media expand, group filter, and comments for intended `app.url` / `app.fs` / `app.sqlite` |
 | `workflow_ingest.lua` | Stateful Ingest: backup, convert to staging, verify, optional source delete |
+| `workflow_review.lua` | Stateful Review: Keep / Drop (no Output field; library path is Catalog’s) |
 | `workflow_catalog.lua` | Stateful Catalog: export `keep` documents, then optional staging cleanup |
 
-**Review** is the built-in workflow already shipped with the app. Do not copy a
-fork of `workflow_review.lua`; after Ingest, start **Review** from the Workflow
-menu (or via the intended handoff).
+## How to try them
 
-## How to try them (once APIs exist)
-
-1. Copy `shared.lua`, `workflow_ingest.lua`, and `workflow_catalog.lua` into
-   the FieldAssist config directory (same place as `init.lua` /
-   `workflow_*.lua`). On macOS that is
+1. Copy `shared.lua` and the three `workflow_*.lua` files into the FieldAssist
+   config directory (same place as `init.lua`). On macOS that is
    `~/Library/Application Support/FieldAssist/`.
 2. Restart FieldAssist (or reload scripts if a future host supports that).
 3. Ingest: drop a recorder folder on the Ingest overlay, or start Ingest from
-   the Workflow menu and set Source / Backup / Staging paths.
-4. Review: built-in Keep / Drop pass on staged documents; set Output to your
-   library folder if desired.
-5. Catalog: start Catalog from the menu; it defaults `catalog_root` from
-   Review’s `output`.
+   the Workflow menu and set Source / Backup / Staging paths. Finish hands off
+   to Review (menu prompt until `finish_workflow({ next = … })` ships).
+4. Review: Keep / Drop pass. Finish prompts to start Catalog.
+5. Catalog: set Library (`catalog_root`), export kept takes; optional staging
+   cleanup once confirm / fs APIs exist.
 
-Until the host APIs land, declaring these workflows may error at first use of
-an undefined method. That is expected for a spec example.
+Until the host APIs land, Ingest and Catalog may error at first use of an
+undefined method. That is expected for those stages.
 
 ## Shared session properties
 
-See the spec. In brief: `ingest_source`, `backup_root`, `staging_root`,
-`catalog_root`, and Review’s `output`.
+See the spec. In brief: `ingest_source`, `backup_root`, `staging_root`, and
+`catalog_root`. (The shipping built-in Review still uses `output`; the pipeline
+example does not.)

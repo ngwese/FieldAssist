@@ -6,13 +6,23 @@
 
 local M = {}
 
+-- Readable audio. Review also expands `.facomp` via `review_exts`.
 local MEDIA_EXTS = {
   "wav", "wave", "aif", "aiff", "flac", "ogg", "oga",
   "mp3", "mp2", "m4a", "aac", "caf", "w64",
 }
 
+local REVIEW_EXTS = {
+  "wav", "wave", "aif", "aiff", "flac", "ogg", "oga",
+  "mp3", "mp2", "m4a", "aac", "caf", "w64", "facomp",
+}
+
 function M.media_exts()
   return MEDIA_EXTS
+end
+
+function M.review_exts()
+  return REVIEW_EXTS
 end
 
 function M.get_prop(session, key, default)
@@ -54,9 +64,10 @@ function M.is_session_path(path)
   return string.lower(path or ""):match("%.fasession$") ~= nil
 end
 
-function M.expand_media(path)
+function M.expand_media(path, exts)
+  exts = exts or MEDIA_EXTS
   local ok, found = pcall(function()
-    return app:find_files(path, MEDIA_EXTS)
+    return app:find_files(path, exts)
   end)
   if not ok then
     return { path }
@@ -66,6 +77,23 @@ function M.expand_media(path)
     paths[#paths + 1] = M.join_path(path, rel)
   end
   return paths
+end
+
+function M.docs_in_group(session, group)
+  local docs = {}
+  for _, doc in ipairs(session.compositions or {}) do
+    if doc.group == group then
+      docs[#docs + 1] = doc
+    end
+  end
+  return docs
+end
+
+function M.ensure_command_flag(id, want)
+  local current = (id == "transport.loop") and app.looping or app.preview
+  if current ~= want then
+    app:command(id)
+  end
 end
 
 -- Intended ledger layout (app.sqlite.open under staging_root or next to session):

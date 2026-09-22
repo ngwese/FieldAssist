@@ -7,7 +7,7 @@
 --
 -- Copy into the FieldAssist config directory next to init.lua.
 -- Requires shared.lua in the same directory.
--- Run after built-in Review has marked documents keep / drop.
+-- Run after Review (example or built-in) has marked documents keep / drop.
 
 local shared
 do
@@ -35,7 +35,6 @@ function Catalog:restore(session)
   local props = session.properties or {}
   self.catalog_root = self.catalog_root ~= "" and self.catalog_root
     or props.catalog_root
-    or props.output
     or ""
   self.staging_root = self.staging_root ~= "" and self.staging_root
     or props.staging_root
@@ -56,13 +55,7 @@ function Catalog:set_progress(text)
 end
 
 function Catalog:kept_docs(session)
-  local docs = {}
-  for _, doc in ipairs(session.compositions or {}) do
-    if doc.group == "keep" then
-      docs[#docs + 1] = doc
-    end
-  end
-  return docs
+  return shared.docs_in_group(session, "keep")
 end
 
 function Catalog:build_toolbar(session)
@@ -169,7 +162,7 @@ function Catalog:run_catalog()
   self:persist(session)
 
   if not self.catalog_root or self.catalog_root == "" then
-    app:alert("Catalog", "Set a Library directory (defaults from Review Output).")
+    app:alert("Catalog", "Set a Library directory before exporting.")
     return
   end
 

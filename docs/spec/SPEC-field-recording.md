@@ -7,6 +7,7 @@
 | Revision | Date | Notes |
 | --- | --- | --- |
 | 1 | 2026-09-21 | Initial Ingest → Review → Catalog reference |
+| 2 | 2026-09-21 | Example Review beside Ingest/Catalog |
 
 This document specifies a **reference end-to-end pipeline** built from three
 separate workflows. It is the product vehicle for composing larger jobs under
@@ -30,7 +31,8 @@ Field recordings typically move through three jobs:
 
 1. **Ingest** — get unmodified captures off a recorder (or other source drive),
    optionally back them up bit-exactly, convert and stage copies for review
-2. **Review** — keep or drop each staged take (as-built built-in Review)
+2. **Review** — keep or drop each staged take (same contract as built-in Review;
+   example restates it in the shared pipeline shape)
 3. **Catalog** — render kept takes into a library location, then clean staging
 
 Each job is its own named workflow prototype. They do **not** nest and do not
@@ -63,7 +65,7 @@ flowchart LR
 | Workflow | Kind | Role |
 | --- | --- | --- |
 | **Ingest** | stateful | Copy/convert off the source into backup + staging; optional source delete after confirm |
-| **Review** | stateful (shipping) | Keep / drop on staged session documents |
+| **Review** | stateful (example + shipping built-in) | Keep / drop on staged session documents |
 | **Catalog** | stateful | Process + encode kept items into the library; then remove staging |
 
 ### Shared session properties
@@ -76,8 +78,8 @@ pipeline uses:
 | `ingest_source` | Ingest | Last source root (recorder / drive) |
 | `backup_root` | Ingest | Optional bit-exact backup directory (empty = skip backup) |
 | `staging_root` | Ingest | Local folder of converted review copies |
-| `catalog_root` | Catalog (or Review) | Destination library directory |
-| `output` | Review (as-built) | Review’s Output path; Catalog treats it as the default `catalog_root` |
+| `catalog_root` | Catalog | Destination library directory |
+| `output` | Built-in Review only | As-built Review Output path; unused by the pipeline example |
 
 ### Job ledger (SQLite sidecar)
 
@@ -156,23 +158,28 @@ in this revision beyond that placement rule.
 
 ### Review
 
-As-built. See [SPEC-workflows.md](SPEC-workflows.md) (built-in Review) and
-[workflow_review.lua](../../crates/field-assist/assets/workflow_review.lua).
+Same Keep / Drop contract as the shipping built-in
+([SPEC-workflows.md](SPEC-workflows.md),
+[assets/workflow_review.lua](../../crates/field-assist/assets/workflow_review.lua)).
+The pipeline example restates it beside Ingest and Catalog so all three stages
+share structure (`shared.lua`, `:persist` / `:restore`, handoff):
+
+[docs/examples/workflows/field-recording/workflow_review.lua](../examples/workflows/field-recording/workflow_review.lua)
 
 - Groups: `todo`, `keep`, `drop`
-- Toolbar Output → `session.properties.output`
+- No Output path on the example toolbar; Catalog owns `catalog_root`
 - Catalog consumes documents with `group == "keep"`
 - Review does not delete staging files
-
-The field-recording example does **not** fork Review; users run the built-in
-workflow on the staged session.
+- Copying the example into the config directory overrides the embedded `review`
+  name (including the built-in’s Output control); omitting it leaves the
+  built-in in place
 
 ### Catalog
 
 **Inputs**
 
 - Session documents in `keep` (and optionally named regions later)
-- `catalog_root` (default: Review’s `output`)
+- `catalog_root` (set on Catalog; not taken from Review)
 - Processing chain binding per target or session default
   ([SPEC-processing.md](SPEC-processing.md))
 
