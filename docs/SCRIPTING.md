@@ -20,17 +20,18 @@ examples are under
 5. [field.log](#field-log)
 6. [field.on](#field-on)
 7. [field.include](#field-include)
-8. [field.url](#field-url)
-9. [field.fs](#field-fs)
-10. [field.session](#field-session)
-11. [field.composition](#field-composition)
-12. [field.media](#field-media)
-13. [field.layouts](#field-layouts)
-14. [field.workflow](#field-workflow)
-15. [field.ui](#field-ui)
-16. [field.audio_devices](#field-audio-devices)
-17. [Nested types](#nested-types)
-18. [Migration from app:*](#migration-from-app)
+8. [field.scripting](#field-scripting)
+9. [field.url](#field-url)
+10. [field.fs](#field-fs)
+11. [field.session](#field-session)
+12. [field.composition](#field-composition)
+13. [field.media](#field-media)
+14. [field.layouts](#field-layouts)
+15. [field.workflow](#field-workflow)
+16. [field.ui](#field-ui)
+17. [field.audio_devices](#field-audio-devices)
+18. [Nested types](#nested-types)
+19. [Migration from app:*](#migration-from-app)
 
 ## Hosts and scope
 
@@ -54,6 +55,7 @@ until the GPUI bridge fully shares the crate.
 | --- | --- | --- |
 | `field.log` / `field.on` | full | full |
 | `field.include` | path or `field.url`; cache + search stack | path string only |
+| `field.scripting` | full | full |
 | `field.url` | full | **not bound** |
 | `field.fs` | full | **`find_files` only** |
 | `field.session` | `shared` / `new` / `open` | `shared` / `open` (no `new`) |
@@ -76,7 +78,13 @@ until the GPUI bridge fully shares the crate.
 | Windows | `%APPDATA%\FieldAssist\` |
 | Linux | `$XDG_CONFIG_HOME/FieldAssist/` or `~/.config/FieldAssist/` |
 
-Dump the embedded default with `FieldAssist --dump-init`.
+Resolved by `field_scripting::user_config_dir()` (shared by FieldAssist and
+field-batch). Dump the embedded default with `FieldAssist --dump-init`.
+
+`require` search paths default to this config directory plus the process
+cwd (see [field.scripting](#field-scripting)). Call
+`field.scripting.enable_*` at the top of `init.lua` when a script needs
+system Lua paths or native C modules.
 
 ### field-batch
 
@@ -227,6 +235,48 @@ to cwd. Results are cached by resolved path while the host lives.
 
 **`spec` (FieldAssist today):** path `string` only; `lua.load` of that path
 (no URL, no shared include cache).
+
+---
+
+<a id="field-scripting"></a>
+
+## `field.scripting`
+
+Host controls for Lua `require` search paths and native C modules. Paths are
+locked down so workflows stay self-contained by default.
+
+### Properties
+
+*(none)*
+
+### Default `package.path` / `package.cpath`
+
+| Kind | Templates |
+| --- | --- |
+| Lua | `{config}/?.lua`, `{config}/?/init.lua`, `./?.lua`, `./?/init.lua` |
+| C | `{config}/?.so` (`.dll` on Windows), `./?.so` / `./?.dll` |
+
+`{config}` is the host config directory when known. System-wide bundled Lua
+locations (`/usr/local/...`, Windows `!\\...`) and foreign `LUA_PATH*` /
+`LUA_CPATH*` roots are **not** on the path until opted in. C loaders remain
+stubbed until opted in even if a `.so` sits on `package.cpath`.
+
+Prefer [`field.include`](#field-include) for FieldAssist/field-batch Lua that
+should resolve relative to the caller or config dir.
+
+### Functions
+
+| Function | Arguments | Returns | Description |
+| --- | --- | --- | --- |
+| `enable_system_package_paths` | — | — | Append the saved system-wide path/cpath templates (idempotent) |
+| `enable_native_modules` | — | — | Restore `package.loadlib` and C searchers (idempotent) |
+
+Either call is independent. Typical place is the top of user `init.lua`:
+
+```lua
+field.scripting.enable_system_package_paths()
+field.scripting.enable_native_modules()
+```
 
 ---
 

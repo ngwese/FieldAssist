@@ -306,40 +306,11 @@ fn read_user_keymap() -> Option<Result<String, String>> {
 }
 
 pub fn user_config_dir() -> Option<PathBuf> {
-    user_keymap_path()?.parent().map(PathBuf::from)
+    field_scripting::user_config_dir()
 }
 
 fn user_keymap_path() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var_os("HOME")?;
-        Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("FieldAssist")
-                .join("keymap.json"),
-        )
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let appdata = std::env::var_os("APPDATA")?;
-        Some(
-            PathBuf::from(appdata)
-                .join("FieldAssist")
-                .join("keymap.json"),
-        )
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let dir = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                let home = std::env::var_os("HOME")?;
-                Some(PathBuf::from(home).join(".config"))
-            })?;
-        Some(dir.join("FieldAssist").join("keymap.json"))
-    }
+    Some(user_config_dir()?.join("keymap.json"))
 }
 
 fn valid_keystrokes(spec: &str) -> bool {

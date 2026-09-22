@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let args = Args::parse();
-    let config_dir = args.config_dir.or_else(default_config_dir);
+    let config_dir = args.config_dir.or_else(field_scripting::user_config_dir);
     let mut host = ScriptHost::new(HostProfile {
         name: "field-batch",
         config_dir: config_dir.clone(),
@@ -147,30 +147,4 @@ fn flush_alerts(host: &ScriptHost) {
             entry.message
         );
     }
-}
-
-fn default_config_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        dirs_next_home().map(|h| h.join("Library/Application Support/FieldAssist"))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("FieldAssist"))
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            return Some(PathBuf::from(xdg).join("FieldAssist"));
-        }
-        dirs_next_home().map(|h| h.join(".config/FieldAssist"))
-    }
-    #[cfg(not(any(unix, target_os = "windows")))]
-    {
-        None
-    }
-}
-
-fn dirs_next_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }

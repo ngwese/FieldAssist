@@ -13,6 +13,7 @@ use mlua::{Function, Lua, MultiValue, Table, Value};
 use crate::app::bind_app;
 use crate::field_ns::bind_field;
 use crate::layout::ChannelLayoutDef;
+use crate::package_policy::{install_package_policy, PackagePolicy};
 use crate::workflow::{
     instance_display_name, instance_name, prototype_is_stateful, table_method, workflow_new,
     workflow_start, WorkflowDef, WorkflowMeta,
@@ -107,6 +108,7 @@ pub(crate) struct HostInner {
     pub(crate) include_stack: Vec<PathBuf>,
     pub(crate) include_cache: HashMap<String, Value>,
     pub(crate) args: Vec<String>,
+    pub(crate) package_policy: PackagePolicy,
 }
 
 /// Shared handle stored in Lua app data.
@@ -129,7 +131,10 @@ impl ScriptHost {
 
     /// Create a host with a pre-built world (tests).
     pub fn with_world(profile: HostProfile, world: HeadlessWorld) -> mlua::Result<Self> {
-        let lua = Lua::new();
+        // SAFETY: we immediately install a reversible package policy that stubs
+        // C loaders; `field.scripting.enable_native_modules` restores them on purpose.
+        let lua = unsafe { Lua::unsafe_new() };
+        let package_policy = install_package_policy(&lua, profile.config_dir.as_deref())?;
         let handle = HostHandle {
             inner: Rc::new(RefCell::new(HostInner {
                 profile,
@@ -150,6 +155,7 @@ impl ScriptHost {
                 include_stack: Vec::new(),
                 include_cache: HashMap::new(),
                 args: Vec::new(),
+                package_policy,
             })),
         };
         lua.set_app_data(handle.clone());
@@ -370,6 +376,20 @@ impl HostHandle {
         let _ = lua;
         self.with_world_mut(|world| world.session.set_workflow(None));
         Ok(())
+    }
+
+    pub(crate) fn enable_system_package_paths(&self, lua: &Lua) -> mlua::Result<()> {
+        self.inner
+            .borrow_mut()
+            .package_policy
+            .enable_system_package_paths(lua)
+    }
+
+    pub(crate) fn enable_native_modules(&self, lua: &Lua) -> mlua::Result<()> {
+        self.inner
+            .borrow_mut()
+            .package_policy
+            .enable_native_modules(lua)
     }
 
     pub(crate) fn alert(&self, subject: String, body: String) -> mlua::Result<()> {

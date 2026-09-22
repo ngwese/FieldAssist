@@ -29,6 +29,7 @@ field-audio-monitor = { path = "../field-audio-monitor" }
 field-audio-playback = { path = "../field-audio-playback" }
 field-composition = { path = "../field-composition" }
 field-session = { path = "../field-session" }
+field-scripting = { path = "../field-scripting" }
 field-ui-components = { path = "../field-ui-components" }
 
 [target.'cfg(windows)'.dependencies]

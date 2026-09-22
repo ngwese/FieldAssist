@@ -26,6 +26,7 @@ pub fn bind_field(lua: &mlua::Lua) -> mlua::Result<()> {
         "include",
         lua.create_function(|lua, spec: Value| field_include(lua, spec))?,
     )?;
+    bind_scripting(lua, &field)?;
     bind_url(lua, &field)?;
     bind_fs(lua, &field)?;
     bind_session_module(lua, &field)?;
@@ -36,6 +37,20 @@ pub fn bind_field(lua: &mlua::Lua) -> mlua::Result<()> {
     bind_ui(lua, &field)?;
     bind_audio_devices(lua, &field)?;
     lua.globals().set("field", field)?;
+    Ok(())
+}
+
+fn bind_scripting(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
+    let scripting = lua.create_table()?;
+    scripting.set(
+        "enable_system_package_paths",
+        lua.create_function(|lua, ()| host_from_lua(lua)?.enable_system_package_paths(lua))?,
+    )?;
+    scripting.set(
+        "enable_native_modules",
+        lua.create_function(|lua, ()| host_from_lua(lua)?.enable_native_modules(lua))?,
+    )?;
+    field.set("scripting", scripting)?;
     Ok(())
 }
 
@@ -109,5 +124,77 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].topic, "t");
         assert_eq!(logs[0].message, "hello");
+    }
+
+    #[test]
+    fn package_path_defaults_exclude_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: Some(dir.path().to_path_buf()),
+        })
+        .unwrap();
+        let out = host.eval("return package.path");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let path = out.result.unwrap();
+        let config = dir.path().display().to_string();
+        assert!(path.contains(&format!("{config}/?.lua")), "{path}");
+        assert!(path.contains("./?.lua"), "{path}");
+        assert!(!path.contains("/usr/local"), "{path}");
+    }
+
+    #[test]
+    fn enable_system_package_paths_from_lua() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let before = host.eval("return package.path").result.unwrap();
+        let out = host.eval(
+            r#"
+            field.scripting.enable_system_package_paths()
+            field.scripting.enable_system_package_paths()
+            return package.path
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let after = out.result.unwrap();
+        assert!(
+            after.starts_with(&before) || after.contains(&before),
+            "{after}"
+        );
+        assert!(after.len() >= before.len());
+    }
+
+    #[test]
+    fn enable_native_modules_from_lua() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let blocked = host.eval(r#"return require("missing_native_xyz")"#);
+        assert!(blocked.error.is_some());
+        let err = blocked.error.unwrap();
+        assert!(
+            err.contains("can't load C modules until field.scripting.enable_native_modules()"),
+            "{err}"
+        );
+        let out = host.eval(
+            r#"
+            field.scripting.enable_native_modules()
+            field.scripting.enable_native_modules()
+            local ok, err = pcall(require, "missing_native_xyz")
+            return ok, tostring(err)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = out.result.unwrap();
+        assert!(result.starts_with("false"), "{result}");
+        assert!(
+            !result.contains("can't load C modules until field.scripting.enable_native_modules()"),
+            "{result}"
+        );
     }
 }

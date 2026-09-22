@@ -28,6 +28,7 @@ pub fn bind_field(lua: &mlua::Lua) -> mlua::Result<()> {
         "include",
         lua.create_function(|lua, spec: Value| field_include(lua, spec))?,
     )?;
+    bind_scripting(lua, &field)?;
     bind_fs(lua, &field)?;
     bind_session(lua, &field)?;
     bind_composition(lua, &field)?;
@@ -37,6 +38,20 @@ pub fn bind_field(lua: &mlua::Lua) -> mlua::Result<()> {
     bind_ui(lua, &field)?;
     bind_audio_devices(lua, &field)?;
     lua.globals().set("field", field)?;
+    Ok(())
+}
+
+fn bind_scripting(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
+    let scripting = lua.create_table()?;
+    scripting.set(
+        "enable_system_package_paths",
+        lua.create_function(|lua, ()| host_from_lua(lua)?.enable_system_package_paths(lua))?,
+    )?;
+    scripting.set(
+        "enable_native_modules",
+        lua.create_function(|lua, ()| host_from_lua(lua)?.enable_native_modules(lua))?,
+    )?;
+    field.set("scripting", scripting)?;
     Ok(())
 }
 

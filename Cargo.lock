@@ -18,6 +18,7 @@ dependencies = [
  "field-audio-process",
  "field-composition",
  "field-core",
+ "field-scripting",
  "field-session",
  "field-ui-components",
  "flacenc",

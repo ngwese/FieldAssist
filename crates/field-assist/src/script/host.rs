@@ -94,6 +94,7 @@ struct HostInner {
     active: Option<Table>,
     detached_sessions: HashMap<SessionId, Session>,
     test: Option<Rc<RefCell<TestWorld>>>,
+    package_policy: field_scripting::PackagePolicy,
 }
 
 #[derive(Clone)]
@@ -213,7 +214,11 @@ impl ScriptHost {
     }
 
     fn with_test(test: Option<Rc<RefCell<TestWorld>>>) -> mlua::Result<Self> {
-        let lua = Lua::new();
+        // SAFETY: package policy stubs C loaders immediately; enable_native_modules
+        // restores them intentionally.
+        let lua = unsafe { Lua::unsafe_new() };
+        let config_dir = crate::commands::user_config_dir();
+        let package_policy = field_scripting::install_package_policy(&lua, config_dir.as_deref())?;
         let handle = HostHandle {
             inner: Rc::new(RefCell::new(HostInner {
                 prints: Vec::new(),
@@ -231,6 +236,7 @@ impl ScriptHost {
                 active: None,
                 detached_sessions: HashMap::new(),
                 test,
+                package_policy,
             })),
         };
         lua.set_app_data(handle.clone());
@@ -531,6 +537,20 @@ impl ScriptHost {
 }
 
 impl HostHandle {
+    pub fn enable_system_package_paths(&self, lua: &Lua) -> mlua::Result<()> {
+        self.inner
+            .borrow_mut()
+            .package_policy
+            .enable_system_package_paths(lua)
+    }
+
+    pub fn enable_native_modules(&self, lua: &Lua) -> mlua::Result<()> {
+        self.inner
+            .borrow_mut()
+            .package_policy
+            .enable_native_modules(lua)
+    }
+
     #[allow(dead_code)]
     pub fn active(&self) -> Option<DocumentId> {
         if let Some(test) = &self.inner.borrow().test {

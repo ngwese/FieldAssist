@@ -26,6 +26,7 @@
 mod app;
 mod audio_devices;
 mod composition;
+mod config_dir;
 mod field_ns;
 mod fs;
 mod host;
@@ -34,6 +35,7 @@ mod layout;
 mod log;
 mod marker;
 mod media;
+mod package_policy;
 mod prototype;
 mod region;
 mod selection;
@@ -46,8 +48,10 @@ mod workflow_app;
 mod workflow_toolbar;
 mod world;
 
+pub use config_dir::user_config_dir;
 pub use host::{EvalOutput, HostProfile, LogEntry, LogLevel, ResumeWorkflow, ScriptHost};
 pub use layout::ChannelLayoutDef;
+pub use package_policy::{install_package_policy, PackagePolicy};
 pub use workflow::{WorkflowDef, WorkflowMeta};
 pub use workflow_app::{layout_drop_targets, workflows_for_menu, DropLayout};
 pub use workflow_toolbar::{PathBrowse, ToolbarAlign, ToolbarItem};
