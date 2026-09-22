@@ -194,14 +194,21 @@ impl ScriptHost {
     }
 
     /// Load and execute a Lua file.
+    ///
+    /// A leading Unix shebang (`#!…`) is stripped so scripts can use
+    /// `#!/usr/bin/env field-batch`.
     pub fn load_file(&mut self, path: &Path) -> Result<(), String> {
+        let source =
+            std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let chunk = strip_shebang(&source);
         let parent = path.parent().map(Path::to_path_buf);
         if let Some(parent) = parent {
             self.handle.inner.borrow_mut().include_stack.push(parent);
         }
         let result = self
             .lua
-            .load(path)
+            .load(chunk)
+            .set_name(path.display().to_string())
             .exec()
             .map_err(|err| format!("{}: {err}", path.display()));
         if !self.handle.inner.borrow().include_stack.is_empty() {
@@ -480,6 +487,15 @@ pub(crate) fn stringify_values(lua: &Lua, values: MultiValue) -> Option<String> 
     Some(parts.join("\t"))
 }
 
+fn strip_shebang(source: &str) -> &str {
+    let trimmed = source.strip_prefix('\u{feff}').unwrap_or(source);
+    if let Some(rest) = trimmed.strip_prefix("#!") {
+        rest.find('\n').map(|i| &rest[i + 1..]).unwrap_or("")
+    } else {
+        trimmed
+    }
+}
+
 pub(crate) fn stringify_value(lua: &Lua, value: Value) -> String {
     match value {
         Value::Nil => "nil".into(),
@@ -525,5 +541,14 @@ mod tests {
         assert_eq!(out.result.as_deref(), Some("field-batch"));
         let out = host.eval("app.name = 'x'");
         assert!(out.error.is_some());
+    }
+
+    #[test]
+    fn strip_shebang_removes_first_line() {
+        assert_eq!(
+            strip_shebang("#!/usr/bin/env field-batch\nprint(1)\n"),
+            "print(1)\n"
+        );
+        assert_eq!(strip_shebang("print(1)\n"), "print(1)\n");
     }
 }

@@ -4,7 +4,7 @@
 //! Output device enumeration and resolution.
 
 use anyhow::{anyhow, bail, Context, Result};
-use cpal::traits::HostTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::Device;
 
 /// Summarized output device for UI / CLI listing.
@@ -14,15 +14,43 @@ pub struct OutputDeviceInfo {
     pub index: usize,
     /// Display name.
     pub name: String,
+    /// Whether this is the host default output device.
+    pub is_default: bool,
+    /// Default config sample rate in Hz, when available.
+    pub sample_rate: Option<u32>,
+    /// Default config channel count, when available.
+    pub channels: Option<u16>,
+    /// Default config sample format name (`f32`, `i16`, …), when available.
+    pub sample_format: Option<String>,
 }
 
 /// List host output devices.
 pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>> {
     let host = cpal::default_host();
+    let default_name = host
+        .default_output_device()
+        .as_ref()
+        .map(output_device_name);
     let mut devices = Vec::new();
     for (index, device) in host.output_devices()?.enumerate() {
         let name = output_device_name(&device);
-        devices.push(OutputDeviceInfo { index, name });
+        let is_default = default_name.as_ref() == Some(&name);
+        let (sample_rate, channels, sample_format) = match device.default_output_config() {
+            Ok(config) => (
+                Some(config.sample_rate()),
+                Some(config.channels()),
+                Some(format!("{:?}", config.sample_format())),
+            ),
+            Err(_) => (None, None, None),
+        };
+        devices.push(OutputDeviceInfo {
+            index,
+            name,
+            is_default,
+            sample_rate,
+            channels,
+            sample_format,
+        });
     }
     Ok(devices)
 }

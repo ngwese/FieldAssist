@@ -12,10 +12,13 @@ usage() {
 Usage: script/bundle-macos [--install]
 
 Build a macOS application bundle at target/release/FieldAssist.app.
+Also builds release binaries for field-play and field-batch.
 
-      --install   Copy the bundle to ~/Applications/FieldAssist.app and
+      --install   Copy the bundle to ~/Applications/FieldAssist.app,
                   symlink ~/.local/bin/FieldAssist and
-                  ~/.local/bin/field-assist to the bundled binary
+                  ~/.local/bin/field-assist to the bundled binary, and
+                  install release field-play / field-batch into
+                  ~/.local/bin
   -h, --help      Show this help
 EOF
 }
@@ -53,14 +56,18 @@ if [[ -z "$version" ]]; then
   exit 1
 fi
 
-echo "Building FieldAssist ${version} (release)..."
-cargo build --release
+echo "Building FieldAssist ${version}, field-play, and field-batch (release)..."
+cargo build --release -p FieldAssist -p field-play -p field-batch
 
 binary="$root/target/release/FieldAssist"
-if [[ ! -x "$binary" ]]; then
-  echo "error: missing release binary: $binary" >&2
-  exit 1
-fi
+field_play_bin="$root/target/release/field-play"
+field_batch_bin="$root/target/release/field-batch"
+for path in "$binary" "$field_play_bin" "$field_batch_bin"; do
+  if [[ ! -x "$path" ]]; then
+    echo "error: missing release binary: $path" >&2
+    exit 1
+  fi
+done
 
 app="$root/target/release/FieldAssist.app"
 contents="$app/Contents"
@@ -115,6 +122,9 @@ ditto "$app" "$app_dest"
 ln -sfn "$cli_target" "$cli_link"
 ln -sfn "$cli_target" "$cli_link_kebab"
 
+install -m 755 "$field_play_bin" "$bin_dir/field-play"
+install -m 755 "$field_batch_bin" "$bin_dir/field-batch"
+
 if [[ -x "$lsregister" ]]; then
   "$lsregister" -f "$app_dest" >/dev/null 2>&1 || true
 fi
@@ -122,6 +132,8 @@ fi
 echo "Installed $app_dest"
 echo "Linked $cli_link -> $cli_target"
 echo "Linked $cli_link_kebab -> $cli_target"
+echo "Installed $bin_dir/field-play"
+echo "Installed $bin_dir/field-batch"
 
 case ":$PATH:" in
   *":$bin_dir:"*)

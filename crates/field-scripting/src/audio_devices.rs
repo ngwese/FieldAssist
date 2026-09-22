@@ -3,7 +3,7 @@
 
 //! Output device listing for scripts.
 
-use mlua::Table;
+use mlua::{Table, Value};
 
 /// Install `field.audio_devices`.
 pub fn bind_audio_devices(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
@@ -18,6 +18,19 @@ pub fn bind_audio_devices(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
                 let row = lua.create_table()?;
                 row.set("index", info.index as i64)?;
                 row.set("name", info.name)?;
+                row.set("is_default", info.is_default)?;
+                match info.sample_rate {
+                    Some(rate) => row.set("sample_rate", rate as i64)?,
+                    None => row.set("sample_rate", Value::Nil)?,
+                }
+                match info.channels {
+                    Some(n) => row.set("channels", i64::from(n))?,
+                    None => row.set("channels", Value::Nil)?,
+                }
+                match info.sample_format {
+                    Some(fmt) => row.set("sample_format", fmt)?,
+                    None => row.set("sample_format", Value::Nil)?,
+                }
                 table.set(index + 1, row)?;
             }
             Ok(table)
