@@ -68,7 +68,7 @@ impl Focus {
                 cursor_col: None,
             }),
             Focus::ConfirmQuit => Some(PromptDraw {
-                text: "Unsaved changes — quit? [y]es  [n]o  [s]ave".to_string(),
+                text: "Save changes? [y/n]".to_string(),
                 cursor_col: None,
             }),
         }
@@ -256,9 +256,8 @@ fn overwrite_action_from_key(event: KeyEvent) -> Option<UiAction> {
 
 fn quit_confirm_action_from_key(event: KeyEvent) -> Option<UiAction> {
     match event.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => Some(UiAction::QuitDiscard),
-        KeyCode::Char('n') | KeyCode::Char('N') => Some(UiAction::QuitStay),
-        KeyCode::Char('s') | KeyCode::Char('S') => Some(UiAction::QuitSave),
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(UiAction::QuitSave),
+        KeyCode::Char('n') | KeyCode::Char('N') => Some(UiAction::QuitDiscard),
         KeyCode::Esc => Some(UiAction::QuitStay),
         _ => None,
     }
@@ -625,14 +624,14 @@ mod tests {
         let mut quit = Focus::ConfirmQuit;
         assert_eq!(
             apply_key(&mut quit, press(KeyCode::Char('y'), KeyModifiers::NONE)),
-            Some(UiAction::QuitDiscard)
-        );
-        assert_eq!(
-            apply_key(&mut quit, press(KeyCode::Char('s'), KeyModifiers::NONE)),
             Some(UiAction::QuitSave)
         );
         assert_eq!(
             apply_key(&mut quit, press(KeyCode::Char('n'), KeyModifiers::NONE)),
+            Some(UiAction::QuitDiscard)
+        );
+        assert_eq!(
+            apply_key(&mut quit, press(KeyCode::Esc, KeyModifiers::NONE)),
             Some(UiAction::QuitStay)
         );
     }
