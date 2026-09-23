@@ -7,9 +7,13 @@
 //! Loads `init.lua` (user config else embedded) via `field-scripting`, runs
 //! `detect_layout` to choose a channel layout / monitor chain when unset, then
 //! plays through the composition's monitoring chain (or Direct).
+//!
+//! When stdin and stderr are TTYs, shows an in-place playhead and accepts
+//! keyboard transport (space, arrows, q).
 
 mod monitor_process;
 mod provider;
+mod term;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -22,14 +26,15 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use field_audio_monitor::{MonitorChain, MonitorHost};
 use field_audio_playback::{
-    output_device_name, resolve_output_device, MonitorProcess, PlaybackEngine, PlaybackStats,
-    TransportState,
+    output_device_name, resolve_output_device, MonitorProcess, PlaybackEngine, PlaybackShared,
+    PlaybackStats, TransportState,
 };
 use field_composition::{Composition, PagerStats};
 use field_scripting::{BackendHandle, HeadlessBackend, HeadlessWorld, HostProfile, ScriptHost};
 
 use monitor_process::MonitorHostProcess;
 use provider::CompositionProvider;
+use term::{RawModeGuard, TransportAction};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,7 +45,8 @@ default output. A media file is opened as a single-clip composition (no \
 session). Startup loads init.lua (user config else embedded) and runs \
 detect_layout so the default monitoring chain matches FieldAssist. When the \
 composition already defines a monitoring chain, that Faust listen path is \
-kept; otherwise Direct is used if detect leaves the chain unset."
+kept; otherwise Direct is used if detect leaves the chain unset. On an \
+interactive terminal, shows a playhead and accepts keyboard transport."
 )]
 struct Args {
     /// Path to a `.facomp` composition or media file.
@@ -82,6 +88,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "Direct".to_string());
     let sample_rate = composition.read().unwrap().sample_rate().max(1);
     let frames = composition.read().unwrap().frames();
+    let duration_secs = composition.read().unwrap().duration_secs();
     let start_sample = args
         .start
         .map(|secs| ((secs * f64::from(sample_rate)).round() as u64).min(frames.saturating_sub(1)))
@@ -92,7 +99,7 @@ fn main() -> Result<()> {
         eprintln!(
             "Playing {} — {:.2}s · {} Hz · {} ch · {} clips · monitor: {monitor_label}",
             c.display_name(),
-            c.duration_secs(),
+            duration_secs,
             sample_rate,
             c.channel_count(),
             c.clip_count(),
@@ -134,23 +141,25 @@ fn main() -> Result<()> {
     let deadline = args
         .seconds
         .map(|secs| Instant::now() + Duration::from_secs_f64(secs.max(0.0)));
-    let mut last_report = Instant::now();
 
-    while engine.shared.transport() == TransportState::Playing {
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            engine.shared.set_transport(TransportState::Stopped);
-            break;
-        }
-        if args.stats && last_report.elapsed() >= Duration::from_secs(1) {
-            print_stats(
-                &engine.shared.stats(),
-                &composition.read().unwrap().pager_stats(),
-                sample_rate,
-                engine.shared.position(),
-            );
-            last_report = Instant::now();
-        }
-        thread::sleep(Duration::from_millis(50));
+    if term::interactive() {
+        run_interactive(
+            &engine.shared,
+            &composition,
+            sample_rate,
+            frames,
+            duration_secs,
+            args.stats,
+            deadline,
+        )?;
+    } else {
+        run_batch(
+            &engine.shared,
+            &composition,
+            sample_rate,
+            args.stats,
+            deadline,
+        );
     }
 
     if args.stats {
@@ -165,6 +174,109 @@ fn main() -> Result<()> {
 
     eprintln!("Done.");
     Ok(())
+}
+
+fn run_batch(
+    shared: &PlaybackShared,
+    composition: &Arc<RwLock<Composition>>,
+    sample_rate: u32,
+    stats: bool,
+    deadline: Option<Instant>,
+) {
+    let mut last_report = Instant::now();
+    while shared.transport() == TransportState::Playing {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            shared.set_transport(TransportState::Stopped);
+            break;
+        }
+        if stats && last_report.elapsed() >= Duration::from_secs(1) {
+            print_stats(
+                &shared.stats(),
+                &composition.read().unwrap().pager_stats(),
+                sample_rate,
+                shared.position(),
+            );
+            last_report = Instant::now();
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn run_interactive(
+    shared: &PlaybackShared,
+    composition: &Arc<RwLock<Composition>>,
+    sample_rate: u32,
+    frames: u64,
+    duration_secs: f64,
+    stats: bool,
+    deadline: Option<Instant>,
+) -> Result<()> {
+    term::print_key_help();
+    let _raw = RawModeGuard::enter().context("enable terminal raw mode")?;
+    let mut last_report = Instant::now();
+    let tick = Duration::from_millis(50);
+
+    loop {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            shared.set_transport(TransportState::Stopped);
+            break;
+        }
+        if shared.transport() == TransportState::Stopped {
+            break;
+        }
+
+        let actions = term::poll_actions(tick).context("read terminal keys")?;
+        for action in actions {
+            apply_action(shared, action, sample_rate, frames);
+            if shared.transport() == TransportState::Stopped {
+                break;
+            }
+        }
+        if shared.transport() == TransportState::Stopped {
+            break;
+        }
+
+        if stats && last_report.elapsed() >= Duration::from_secs(1) {
+            // Leave the progress row, print stats on their own lines, then redraw.
+            let _ = term::finish_progress_line();
+            print_stats_raw(
+                &shared.stats(),
+                &composition.read().unwrap().pager_stats(),
+                sample_rate,
+                shared.position(),
+            );
+            last_report = Instant::now();
+        }
+
+        let pos_secs = shared.position() as f64 / f64::from(sample_rate);
+        let _ = term::draw_progress(pos_secs, duration_secs, shared.transport());
+    }
+
+    let _ = term::finish_progress_line();
+    Ok(())
+}
+
+fn apply_action(shared: &PlaybackShared, action: TransportAction, sample_rate: u32, frames: u64) {
+    match action {
+        TransportAction::Quit => {
+            shared.set_transport(TransportState::Stopped);
+        }
+        TransportAction::TogglePause => match shared.transport() {
+            TransportState::Playing => shared.set_transport(TransportState::Paused),
+            TransportState::Paused => shared.set_transport(TransportState::Playing),
+            TransportState::Stopped => {}
+        },
+        TransportAction::SeekRel(secs) => {
+            let sample = term::seek_sample_after_rel(shared.position(), secs, sample_rate, frames);
+            shared.seek_to(sample);
+        }
+        TransportAction::SeekStart => {
+            shared.seek_to(0);
+        }
+        TransportAction::SeekEnd => {
+            shared.seek_to(term::clamp_seek_sample(frames as i64, frames));
+        }
+    }
 }
 
 /// Load path into a headless script world, run init + `detect_layout`, return
@@ -224,6 +336,22 @@ fn flush_script_output(host: &ScriptHost) {
 }
 
 fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, position: usize) {
+    eprintln!("{}", format_stats(play, pager, sample_rate, position));
+}
+
+/// Stats line for raw-mode terminals (`\r\n` instead of cooked `\n`).
+fn print_stats_raw(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, position: usize) {
+    let line = format_stats(play, pager, sample_rate, position);
+    let mut stderr = std::io::stderr();
+    let _ = crossterm::execute!(stderr, crossterm::style::Print(format!("{line}\r\n")));
+}
+
+fn format_stats(
+    play: &PlaybackStats,
+    pager: &PagerStats,
+    sample_rate: u32,
+    position: usize,
+) -> String {
     let avg_cb = if play.callbacks == 0 {
         0.0
     } else {
@@ -244,7 +372,7 @@ fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, posit
     } else {
         100.0 * play.last_headroom_ns as f64 / play.last_budget_ns as f64
     };
-    eprintln!(
+    format!(
         "pos={:.2}s  cb={} slow={} underrun={} err={}  max_cb={:.2}ms avg_cb={:.2}ms  \
          budget={:.2}ms last_cb={:.2}ms headroom={:.2}ms ({:.0}%) min_head={:.2}ms frames={}  \
          reads={} max_read={:.2}ms avg_read={:.2}ms  out_frames≤{}  depth={}/{}  \
@@ -275,5 +403,5 @@ fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, posit
         avg_decode,
         pager.decode_ns as f64 / 1e6,
         pager.spill_writes,
-    );
+    )
 }
