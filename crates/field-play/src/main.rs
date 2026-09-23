@@ -285,11 +285,13 @@ fn run_interactive(
 
         let pos_secs = shared.position() as f64 / f64::from(sample_rate);
         let prompt = focus.prompt_line();
+        let looping = shared.looping.load(std::sync::atomic::Ordering::SeqCst);
         let _ = term::redraw(
             &mut display,
             pos_secs,
             duration_secs,
             shared.transport(),
+            looping,
             prompt.as_ref(),
         );
     }
@@ -362,6 +364,11 @@ fn handle_ui_action(
                 force_exit,
                 AfterSave::Stay,
             )?;
+        }
+        UiAction::ToggleLoop => {
+            let next = !shared.looping.load(std::sync::atomic::Ordering::SeqCst);
+            shared.set_looping(next);
+            let _ = term::push_event_line(display, if next { "Looping on" } else { "Looping off" });
         }
         UiAction::CommitNote => {
             let (text, resume) = match focus {

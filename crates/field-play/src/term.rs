@@ -94,6 +94,8 @@ pub enum UiAction {
     StartNote,
     /// Request save.
     Save,
+    /// Toggle whole-composition looping.
+    ToggleLoop,
     /// Commit the note buffer.
     CommitNote,
     /// Cancel note input.
@@ -172,6 +174,7 @@ pub fn transport_action_from_key(event: KeyEvent) -> Option<UiAction> {
         KeyCode::Char('m') | KeyCode::Char('M') => Some(UiAction::AddMarker),
         KeyCode::Char('n') | KeyCode::Char('N') => Some(UiAction::StartNote),
         KeyCode::Char('s') | KeyCode::Char('S') => Some(UiAction::Save),
+        KeyCode::Char('l') | KeyCode::Char('L') => Some(UiAction::ToggleLoop),
         KeyCode::Left => {
             if mods.contains(KeyModifiers::CONTROL) {
                 Some(UiAction::SeekStart)
@@ -292,13 +295,14 @@ pub fn redraw(
     pos_secs: f64,
     dur_secs: f64,
     state: TransportState,
+    looping: bool,
     prompt: Option<&PromptDraw>,
 ) -> io::Result<()> {
     let mut stderr = io::stderr();
     if display.has_prompt_line {
         queue!(stderr, MoveUp(1))?;
     }
-    let progress = format_progress_line(pos_secs, dur_secs, state);
+    let progress = format_progress_line(pos_secs, dur_secs, state, looping);
     queue!(
         stderr,
         MoveToColumn(0),
@@ -362,21 +366,32 @@ pub fn push_event_line(display: &mut DisplayState, line: &str) -> io::Result<()>
 pub fn finish_display(display: &mut DisplayState) -> io::Result<()> {
     let mut stderr = io::stderr();
     if display.has_prompt_line {
-        queue!(stderr, MoveUp(1))?;
+        // Cursor is on the prompt row. Clear it, then the progress row above,
+        // and leave a single blank line for subsequent eprintln! output.
+        execute!(
+            stderr,
+            MoveToColumn(0),
+            Clear(ClearType::CurrentLine),
+            MoveUp(1),
+            MoveToColumn(0),
+            Clear(ClearType::CurrentLine),
+            Print("\r\n")
+        )?;
         display.has_prompt_line = false;
+    } else {
+        execute!(
+            stderr,
+            MoveToColumn(0),
+            Clear(ClearType::CurrentLine),
+            Print("\r\n")
+        )?;
     }
-    execute!(
-        stderr,
-        MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        Print("\r\n")
-    )?;
     Ok(())
 }
 
 /// Print a one-line key hint before the first progress redraw.
 pub fn print_key_help() {
-    eprintln!("Keys: space pause  ←/→ seek  m marker  n note  s save  q quit");
+    eprintln!("Keys: space pause  ←/→ seek  m marker  n note  l loop  s save  q quit");
 }
 
 /// Format a marker / note event line.
@@ -390,7 +405,12 @@ pub fn format_marker_event(secs: f64, marker_type: &str, note: Option<&str>) -> 
 }
 
 /// Pure formatter used by [`redraw`] and unit tests.
-pub fn format_progress_line(pos_secs: f64, dur_secs: f64, state: TransportState) -> String {
+pub fn format_progress_line(
+    pos_secs: f64,
+    dur_secs: f64,
+    state: TransportState,
+    looping: bool,
+) -> String {
     const BAR_WIDTH: usize = 48;
     let dur = dur_secs.max(0.0);
     let pos = pos_secs.clamp(0.0, dur.max(0.0));
@@ -415,7 +435,11 @@ pub fn format_progress_line(pos_secs: f64, dur_secs: f64, state: TransportState)
         TransportState::Paused => "Paused",
         TransportState::Stopped => "Stopped",
     };
-    format!("[{bar}] {pos:6.2} / {dur:6.2}s  {state_label}")
+    if looping {
+        format!("[{bar}] {pos:6.2} / {dur:6.2}s  {state_label}  Loop")
+    } else {
+        format!("[{bar}] {pos:6.2} / {dur:6.2}s  {state_label}")
+    }
 }
 
 /// Clamp a seek target in samples to a valid playhead index.
@@ -489,6 +513,10 @@ mod tests {
         assert_eq!(
             transport_action_from_key(press(KeyCode::Char('s'), KeyModifiers::NONE)),
             Some(UiAction::Save)
+        );
+        assert_eq!(
+            transport_action_from_key(press(KeyCode::Char('l'), KeyModifiers::NONE)),
+            Some(UiAction::ToggleLoop)
         );
         assert_eq!(
             transport_action_from_key(press(KeyCode::Char('c'), KeyModifiers::CONTROL)),
@@ -638,13 +666,16 @@ mod tests {
 
     #[test]
     fn progress_line_contains_times_and_state() {
-        let line = format_progress_line(12.34, 54.0, TransportState::Playing);
+        let line = format_progress_line(12.34, 54.0, TransportState::Playing, false);
         assert!(line.contains("12.34"));
         assert!(line.contains("54.00"));
         assert!(line.contains("Playing"));
+        assert!(!line.contains("Loop"));
         assert!(line.starts_with('['));
         assert!(!line.contains("space pause"));
         assert!(line.contains(&"=".repeat(10)));
+        let looping = format_progress_line(12.34, 54.0, TransportState::Playing, true);
+        assert!(looping.contains("Loop"));
     }
 
     #[test]
