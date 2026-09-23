@@ -293,6 +293,10 @@ field.scripting.enable_system_package_paths()
 field.scripting.enable_native_modules()
 ```
 
+For a worked example that builds a Lua 5.4–compatible `lsqlite3.so` for
+field-batch and indexes audio paths into SQLite, see
+[examples/field-batch/lsqlite-module/](examples/field-batch/lsqlite-module/).
+
 ---
 
 <a id="field-url"></a>

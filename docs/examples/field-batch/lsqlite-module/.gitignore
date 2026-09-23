@@ -1,0 +1,9 @@
+# Local build products from `make` (do not commit).
+/lsqlite3.so
+/lsqlite3_v096.zip
+/lsqlite3_v096/
+/lua-*.tar.gz
+/lua-*/
+/.lsqlite3-src
+/.lua-src
+/*.sqlite

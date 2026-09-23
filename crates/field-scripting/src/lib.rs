@@ -33,6 +33,7 @@ mod field_ns;
 mod fs;
 mod host;
 mod include;
+mod keep_lua_c_api;
 mod layout;
 mod log;
 mod marker;

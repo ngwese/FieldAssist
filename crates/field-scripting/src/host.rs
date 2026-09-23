@@ -161,6 +161,8 @@ impl ScriptHost {
         profile: HostProfile,
         backend: Rc<RefCell<dyn ScriptBackend>>,
     ) -> mlua::Result<Self> {
+        // Keep Lua C API symbols that C modules need but mlua may not call.
+        crate::keep_lua_c_api::retain_for_native_modules();
         // SAFETY: we immediately install a reversible package policy that stubs
         // C loaders; `field.scripting.enable_native_modules` restores them on purpose.
         let lua = unsafe { Lua::unsafe_new() };
