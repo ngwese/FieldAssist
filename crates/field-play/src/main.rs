@@ -9,10 +9,11 @@
 //! plays through the composition's monitoring chain (or Direct).
 //!
 //! When stdin and stderr are TTYs, shows an in-place playhead and accepts
-//! keyboard transport (space, arrows, q).
+//! keyboard transport, markers, notes, and save.
 
 mod monitor_process;
 mod provider;
+mod session;
 mod term;
 
 use std::cell::RefCell;
@@ -29,12 +30,18 @@ use field_audio_playback::{
     output_device_name, resolve_output_device, MonitorProcess, PlaybackEngine, PlaybackShared,
     PlaybackStats, TransportState,
 };
-use field_composition::{Composition, PagerStats};
+use field_composition::{Composition, PagerStats, MARKER_TYPE_BLUE};
 use field_scripting::{BackendHandle, HeadlessBackend, HeadlessWorld, HostProfile, ScriptHost};
 
 use monitor_process::MonitorHostProcess;
 use provider::CompositionProvider;
-use term::{RawModeGuard, TransportAction};
+use session::PlaySession;
+use term::{AfterSave, DisplayState, Focus, RawModeGuard, UiAction};
+
+/// Marker type name for notes entered with `n`.
+const NOTE_MARKER_TYPE: &str = "Note";
+/// Green RGBA for the Note marker type.
+const NOTE_MARKER_COLOR: [f32; 4] = [0.13, 0.77, 0.37, 1.0];
 
 #[derive(Parser, Debug)]
 #[command(
@@ -46,7 +53,8 @@ session). Startup loads init.lua (user config else embedded) and runs \
 detect_layout so the default monitoring chain matches FieldAssist. When the \
 composition already defines a monitoring chain, that Faust listen path is \
 kept; otherwise Direct is used if detect leaves the chain unset. On an \
-interactive terminal, shows a playhead and accepts keyboard transport."
+interactive terminal, shows a playhead and accepts keyboard transport, \
+markers (m), notes (n), and save (s)."
 )]
 struct Args {
     /// Path to a `.facomp` composition or media file.
@@ -71,7 +79,8 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let composition = open_with_detect(&args.path, args.config_dir.clone())?;
+    let mut session = PlaySession::new(args.path.clone());
+    let composition = open_with_detect(session.opened(), args.config_dir.clone())?;
 
     let chain = composition
         .read()
@@ -146,6 +155,7 @@ fn main() -> Result<()> {
         run_interactive(
             &engine.shared,
             &composition,
+            &mut session,
             sample_rate,
             frames,
             duration_secs,
@@ -205,6 +215,7 @@ fn run_batch(
 fn run_interactive(
     shared: &PlaybackShared,
     composition: &Arc<RwLock<Composition>>,
+    session: &mut PlaySession,
     sample_rate: u32,
     frames: u64,
     duration_secs: f64,
@@ -215,74 +226,314 @@ fn run_interactive(
     let _raw = RawModeGuard::enter().context("enable terminal raw mode")?;
     let mut last_report = Instant::now();
     let tick = Duration::from_millis(50);
+    let mut focus = Focus::Transport;
+    let mut display = DisplayState::default();
+    // After discard / save-and-quit, leave even if still dirty.
+    let mut force_exit = false;
 
     loop {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             shared.set_transport(TransportState::Stopped);
-            break;
         }
-        if shared.transport() == TransportState::Stopped {
+
+        if force_exit {
             break;
         }
 
-        let actions = term::poll_actions(tick).context("read terminal keys")?;
-        for action in actions {
-            apply_action(shared, action, sample_rate, frames);
-            if shared.transport() == TransportState::Stopped {
+        // Natural stop / deadline while idle: prompt if dirty, else leave.
+        if shared.transport() == TransportState::Stopped && matches!(focus, Focus::Transport) {
+            if composition.read().unwrap().is_modified() {
+                focus = Focus::ConfirmQuit;
+            } else {
                 break;
             }
         }
-        if shared.transport() == TransportState::Stopped {
+
+        let actions = term::poll_actions(&mut focus, tick).context("read terminal keys")?;
+        for action in actions {
+            handle_ui_action(
+                shared,
+                composition,
+                session,
+                &mut focus,
+                &mut display,
+                &mut force_exit,
+                action,
+                sample_rate,
+                frames,
+            )?;
+            if force_exit {
+                break;
+            }
+        }
+        if force_exit {
             break;
         }
 
         if stats && last_report.elapsed() >= Duration::from_secs(1) {
-            // Leave the progress row, print stats on their own lines, then redraw.
-            let _ = term::finish_progress_line();
-            print_stats_raw(
-                &shared.stats(),
-                &composition.read().unwrap().pager_stats(),
-                sample_rate,
-                shared.position(),
+            let _ = term::push_event_line(
+                &mut display,
+                &format_stats(
+                    &shared.stats(),
+                    &composition.read().unwrap().pager_stats(),
+                    sample_rate,
+                    shared.position(),
+                ),
             );
             last_report = Instant::now();
         }
 
         let pos_secs = shared.position() as f64 / f64::from(sample_rate);
-        let _ = term::draw_progress(pos_secs, duration_secs, shared.transport());
+        let prompt = focus.prompt_line();
+        let _ = term::redraw(
+            &mut display,
+            pos_secs,
+            duration_secs,
+            shared.transport(),
+            prompt.as_ref(),
+        );
     }
 
-    let _ = term::finish_progress_line();
+    let _ = term::finish_display(&mut display);
     Ok(())
 }
 
-fn apply_action(shared: &PlaybackShared, action: TransportAction, sample_rate: u32, frames: u64) {
+fn handle_ui_action(
+    shared: &PlaybackShared,
+    composition: &Arc<RwLock<Composition>>,
+    session: &mut PlaySession,
+    focus: &mut Focus,
+    display: &mut DisplayState,
+    force_exit: &mut bool,
+    action: UiAction,
+    sample_rate: u32,
+    frames: u64,
+) -> Result<()> {
     match action {
-        TransportAction::Quit => {
-            shared.set_transport(TransportState::Stopped);
+        UiAction::RequestQuit => {
+            if composition.read().unwrap().is_modified() {
+                *focus = Focus::ConfirmQuit;
+            } else {
+                shared.set_transport(TransportState::Stopped);
+                *force_exit = true;
+            }
         }
-        TransportAction::TogglePause => match shared.transport() {
+        UiAction::TogglePause => match shared.transport() {
             TransportState::Playing => shared.set_transport(TransportState::Paused),
             TransportState::Paused => shared.set_transport(TransportState::Playing),
             TransportState::Stopped => {}
         },
-        TransportAction::SeekRel(secs) => {
+        UiAction::SeekRel(secs) => {
             let sample = term::seek_sample_after_rel(shared.position(), secs, sample_rate, frames);
             shared.seek_to(sample);
         }
-        TransportAction::SeekStart => {
-            shared.seek_to(0);
-        }
-        TransportAction::SeekEnd => {
+        UiAction::SeekStart => shared.seek_to(0),
+        UiAction::SeekEnd => {
             shared.seek_to(term::clamp_seek_sample(frames as i64, frames));
         }
+        UiAction::AddMarker => {
+            add_marker_at_playhead(
+                shared,
+                composition,
+                display,
+                sample_rate,
+                MARKER_TYPE_BLUE,
+                None,
+            )?;
+        }
+        UiAction::StartNote => {
+            let resume_playing = shared.transport() == TransportState::Playing;
+            if resume_playing {
+                shared.set_transport(TransportState::Paused);
+            }
+            *focus = Focus::NoteInput {
+                buffer: String::new(),
+                cursor: 0,
+                resume_playing,
+            };
+        }
+        UiAction::Save => {
+            begin_save(
+                shared,
+                composition,
+                session,
+                focus,
+                display,
+                force_exit,
+                AfterSave::Stay,
+            )?;
+        }
+        UiAction::CommitNote => {
+            let (text, resume) = match focus {
+                Focus::NoteInput {
+                    buffer,
+                    resume_playing,
+                    ..
+                } => (buffer.clone(), *resume_playing),
+                _ => return Ok(()),
+            };
+            *focus = Focus::Transport;
+            ensure_note_marker_type(composition);
+            add_marker_at_playhead(
+                shared,
+                composition,
+                display,
+                sample_rate,
+                NOTE_MARKER_TYPE,
+                Some(text),
+            )?;
+            if resume {
+                shared.set_transport(TransportState::Playing);
+            }
+        }
+        UiAction::CancelNote => {
+            let resume = match focus {
+                Focus::NoteInput { resume_playing, .. } => *resume_playing,
+                _ => false,
+            };
+            *focus = Focus::Transport;
+            if resume {
+                shared.set_transport(TransportState::Playing);
+            }
+        }
+        UiAction::ConfirmYes => {
+            let after = match focus {
+                Focus::ConfirmOverwrite { path, after } => {
+                    let path = path.clone();
+                    let after = *after;
+                    let saved = perform_save(composition, session, display, &path);
+                    *focus = Focus::Transport;
+                    if saved {
+                        Some(after)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if after == Some(AfterSave::Quit) {
+                shared.set_transport(TransportState::Stopped);
+                *force_exit = true;
+            }
+        }
+        UiAction::ConfirmNo => {
+            let _ = term::push_event_line(display, "Save cancelled");
+            *focus = Focus::Transport;
+        }
+        UiAction::QuitDiscard => {
+            *focus = Focus::Transport;
+            shared.set_transport(TransportState::Stopped);
+            *force_exit = true;
+        }
+        UiAction::QuitStay => {
+            *focus = Focus::Transport;
+            // At EOF, park in Paused so the user can seek / save / resume.
+            if shared.transport() == TransportState::Stopped {
+                shared.set_transport(TransportState::Paused);
+            }
+        }
+        UiAction::QuitSave => {
+            begin_save(
+                shared,
+                composition,
+                session,
+                focus,
+                display,
+                force_exit,
+                AfterSave::Quit,
+            )?;
+        }
     }
+    Ok(())
+}
+
+fn begin_save(
+    shared: &PlaybackShared,
+    composition: &Arc<RwLock<Composition>>,
+    session: &mut PlaySession,
+    focus: &mut Focus,
+    display: &mut DisplayState,
+    force_exit: &mut bool,
+    after: AfterSave,
+) -> Result<()> {
+    let suggested = composition.read().unwrap().suggested_facomp_name();
+    let Some(target) = session.resolve_save_target(&suggested) else {
+        let _ = term::push_event_line(display, "Save failed: no target path");
+        *focus = Focus::Transport;
+        return Ok(());
+    };
+    if target.needs_overwrite_confirm {
+        *focus = Focus::ConfirmOverwrite {
+            path: target.path,
+            after,
+        };
+        return Ok(());
+    }
+    let saved = perform_save(composition, session, display, &target.path);
+    *focus = Focus::Transport;
+    if saved && after == AfterSave::Quit {
+        shared.set_transport(TransportState::Stopped);
+        *force_exit = true;
+    }
+    Ok(())
+}
+
+fn perform_save(
+    composition: &Arc<RwLock<Composition>>,
+    session: &mut PlaySession,
+    display: &mut DisplayState,
+    path: &std::path::Path,
+) -> bool {
+    match composition.write().unwrap().save_to_path(path) {
+        Ok(()) => {
+            session.mark_saved(path.to_path_buf());
+            let _ = term::push_event_line(display, &format!("Saved {}", path.display()));
+            true
+        }
+        Err(err) => {
+            let _ = term::push_event_line(display, &format!("Save failed: {err:#}"));
+            false
+        }
+    }
+}
+
+fn ensure_note_marker_type(composition: &Arc<RwLock<Composition>>) {
+    let mut comp = composition.write().unwrap();
+    if comp.marker_type_color(NOTE_MARKER_TYPE).is_none() {
+        let _ = comp.add_marker_type(NOTE_MARKER_TYPE, NOTE_MARKER_COLOR);
+    }
+}
+
+fn add_marker_at_playhead(
+    shared: &PlaybackShared,
+    composition: &Arc<RwLock<Composition>>,
+    display: &mut DisplayState,
+    sample_rate: u32,
+    marker_type: &str,
+    note: Option<String>,
+) -> Result<()> {
+    let frame = shared.position() as u64;
+    let secs = frame as f64 / f64::from(sample_rate.max(1));
+    let event = term::format_marker_event(secs, marker_type, note.as_deref());
+    let inserted = {
+        let mut comp = composition.write().unwrap();
+        comp.add_marker(frame, marker_type, note).is_some()
+    };
+    if inserted {
+        let _ = term::push_event_line(display, &event);
+    } else {
+        let _ = term::push_event_line(
+            display,
+            &format!("{secs:.2} marker {marker_type} already at frame"),
+        );
+    }
+    Ok(())
 }
 
 /// Load path into a headless script world, run init + `detect_layout`, return
 /// the shared composition (monitor chain may have been filled by layout defaults).
 fn open_with_detect(
-    path: &PathBuf,
+    path: &std::path::Path,
     config_dir: Option<PathBuf>,
 ) -> Result<Arc<RwLock<Composition>>> {
     let config_dir = config_dir.or_else(field_scripting::user_config_dir);
@@ -337,13 +588,6 @@ fn flush_script_output(host: &ScriptHost) {
 
 fn print_stats(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, position: usize) {
     eprintln!("{}", format_stats(play, pager, sample_rate, position));
-}
-
-/// Stats line for raw-mode terminals (`\r\n` instead of cooked `\n`).
-fn print_stats_raw(play: &PlaybackStats, pager: &PagerStats, sample_rate: u32, position: usize) {
-    let line = format_stats(play, pager, sample_rate, position);
-    let mut stderr = std::io::stderr();
-    let _ = crossterm::execute!(stderr, crossterm::style::Print(format!("{line}\r\n")));
 }
 
 fn format_stats(
