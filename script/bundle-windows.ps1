@@ -19,10 +19,12 @@ function Show-Usage {
 Usage: script/bundle-windows.ps1 [--install]
 
 Build a Windows executable at target/release/FieldAssist.exe.
+Also builds release binaries for field-play and field-batch.
 
       --install   Copy the exe to %LOCALAPPDATA%\FieldAssist\FieldAssist.exe,
-                  copy it to %USERPROFILE%\.local\bin\FieldAssist.exe, and
-                  add a Start Menu shortcut
+                  link %USERPROFILE%\.local\bin\FieldAssist.exe to it,
+                  install release field-play / field-batch into
+                  %USERPROFILE%\.local\bin, and add a Start Menu shortcut
   -h, --help      Show this help
 "@
 }
@@ -57,17 +59,22 @@ if ($cargoToml -notmatch '(?m)^version = "([^"]+)"') {
 }
 $version = $Matches[1]
 
-Write-Host "Building FieldAssist $version (release)..."
-cargo build --release
+Write-Host "Building FieldAssist $version, field-play, and field-batch (release)..."
+cargo build --release -p FieldAssist -p field-play -p field-batch
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root "target" }
-$binary = Join-Path $targetDir "release\FieldAssist.exe"
-if (-not (Test-Path -LiteralPath $binary)) {
-    Write-Error "missing release binary: $binary"
-    exit 1
+$releaseDir = Join-Path $targetDir "release"
+$binary = Join-Path $releaseDir "FieldAssist.exe"
+$fieldPlayBin = Join-Path $releaseDir "field-play.exe"
+$fieldBatchBin = Join-Path $releaseDir "field-batch.exe"
+foreach ($path in @($binary, $fieldPlayBin, $fieldBatchBin)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Error "missing release binary: $path"
+        exit 1
+    }
 }
 
 Write-Host "Created $binary"
@@ -80,6 +87,8 @@ $appDestDir = Join-Path $env:LOCALAPPDATA "FieldAssist"
 $appDest = Join-Path $appDestDir "FieldAssist.exe"
 $binDir = Join-Path $env:USERPROFILE ".local\bin"
 $cliLink = Join-Path $binDir "FieldAssist.exe"
+$fieldPlayDest = Join-Path $binDir "field-play.exe"
+$fieldBatchDest = Join-Path $binDir "field-batch.exe"
 
 New-Item -ItemType Directory -Force -Path $appDestDir | Out-Null
 Copy-Item -Force -LiteralPath $binary -Destination $appDest
@@ -92,6 +101,9 @@ try {
 catch {
     Copy-Item -Force -LiteralPath $appDest -Destination $cliLink
 }
+
+Copy-Item -Force -LiteralPath $fieldPlayBin -Destination $fieldPlayDest
+Copy-Item -Force -LiteralPath $fieldBatchBin -Destination $fieldBatchDest
 
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
@@ -106,6 +118,8 @@ $shortcut.Save()
 
 Write-Host "Installed $appDest"
 Write-Host "Linked $cliLink -> $appDest"
+Write-Host "Installed $fieldPlayDest"
+Write-Host "Installed $fieldBatchDest"
 Write-Host "Created Start Menu shortcut $shortcutPath"
 
 $pathEntries = ($env:PATH -split ";") | ForEach-Object { $_.TrimEnd("\") }

@@ -143,19 +143,22 @@ a console:
 .\target\release\FieldAssist.exe path\to\audio.wav
 ```
 
-Install into `%LOCALAPPDATA%\FieldAssist`, put `FieldAssist` on your PATH, and
+Install into `%LOCALAPPDATA%\FieldAssist`, put the CLIs on your PATH, and
 add a Start Menu shortcut (no admin):
 
 ```powershell
 powershell -File script/bundle-windows.ps1 --install
 FieldAssist --help
 FieldAssist path\to\audio.wav
+field-play path\to\take.wav
+field-batch --eval 'return app.name'
 ```
 
 That copies the exe to `%LOCALAPPDATA%\FieldAssist\FieldAssist.exe`, links
-`%USERPROFILE%\.local\bin\FieldAssist.exe` to it, and creates a Start Menu
-shortcut. If `~\.local\bin` is not already on your PATH, add it in PowerShell
-and open a new terminal:
+`%USERPROFILE%\.local\bin\FieldAssist.exe` to it, installs release
+`field-play` and `field-batch` into `%USERPROFILE%\.local\bin`, and creates
+a Start Menu shortcut. If `~\.local\bin` is not already on your PATH, add it
+in PowerShell and open a new terminal:
 
 ```powershell
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
