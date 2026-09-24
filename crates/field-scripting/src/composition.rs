@@ -12,6 +12,7 @@ use crate::host::host_from_lua;
 use crate::marker::{
     color_from_value, color_to_lua, list_markers, marker_id_from_lua, parse_add_marker, LuaMarker,
 };
+use crate::media::LuaMedia;
 use crate::region::LuaRegion;
 use crate::selection::{channels_from_lua, collection_name_from_lua, optional_i64, LuaCollection};
 use crate::util::{optional_lua_string, string_map_from_lua, string_map_to_lua};
@@ -114,6 +115,16 @@ impl UserData for LuaComposition {
                     row.set("name", ty.name.clone())?;
                     row.set("color", color_to_lua(lua, ty.color)?)?;
                     table.set(i + 1, row)?;
+                }
+                Ok(table)
+            })
+        });
+        fields.add_field_method_get("media", |lua, this| {
+            with_document(lua, this.id, |doc| {
+                let refs = doc.composition.read().unwrap().pool().into_refs();
+                let table = lua.create_table_with_capacity(refs.len(), 0)?;
+                for (index, media) in refs.into_iter().enumerate() {
+                    table.set(index + 1, LuaMedia { id: media.id })?;
                 }
                 Ok(table)
             })

@@ -469,6 +469,7 @@ still uses `session:open`.
 | `collections` | **ro** | `{ string, … }` | Named region collection names |
 | `markers` | **ro** | `{ marker, … }` | Marker list |
 | `marker_types` | **ro** | `{ { name, color }, … }` | Registered marker types |
+| `media` | **ro** | `{ media, … }` | Media referenced by this composition |
 
 **FieldAssist-only properties:** `parent`, `children`, `codec`, `bit_depth`,
 `basename`, `dirname`, `channel_layout` (**rw**), `monitor_chain` (**rw**),
@@ -535,7 +536,7 @@ Shared media pool (interned media rows used by compositions).
 | --- | --- | --- | --- |
 | `:add` | `path: string` | [media](#media) | Probe and intern a file |
 | `:remove` | media or id string | `boolean` (headless) | Remove from the pool when unreferenced |
-| `:list` | — | `{ media, … }` | Current pool rows |
+| `:items` | — | `{ media, … }` | Current pool rows |
 
 <a id="media"></a>
 
@@ -578,8 +579,8 @@ Channel layout registry used by detect hooks and composition layout choice.
 
 | Function | Arguments | Returns | Hosts | Description |
 | --- | --- | --- | --- | --- |
-| `define` | `spec: table` | — | all | Register or replace a layout by `name` |
-| `shared_registry` | — | `{ string, … }` | field-scripting | Registered layout names |
+| `define` | `spec: table` | — | all | Sugar for `shared_registry():define(spec)` |
+| `shared_registry` | — | [layout registry](#layout-registry) | field-scripting | Process layout registry |
 
 ### `define(spec)` keys
 
@@ -589,6 +590,39 @@ Channel layout registry used by detect hooks and composition layout choice.
 | `description` | no | `string` | Human label (default `""`) |
 | `channels` | yes | map | **0-based** channel index → label string |
 | `monitor` | no | table | JSON-compatible monitor table (often `{ chain = "…" }`) |
+
+<a id="layout-registry"></a>
+
+### Returned type: layout registry
+
+#### Properties
+
+*(none)*
+
+#### Methods
+
+| Method | Arguments | Returns | Description |
+| --- | --- | --- | --- |
+| `:define` | `spec: table` | — | Register or replace a layout by `name` |
+| `:remove` | layout or name string | — | Drop a registered layout (no-op if missing) |
+| `:items` | — | `{ layout, … }` | Registered layouts in definition order |
+
+<a id="layout"></a>
+
+### Returned type: layout
+
+#### Properties
+
+| Property | Access | Type | Description |
+| --- | --- | --- | --- |
+| `name` | **ro** | `string` | Layout id |
+| `description` | **ro** | `string` | Human label |
+| `channels` | **ro** | map | **0-based** channel index → label string |
+| `monitor` | **ro** | table or `nil` | Monitor table from `define` |
+
+#### Methods
+
+*(none)*
 
 ---
 

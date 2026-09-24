@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn app_media_lists_fixture_pool() {
         let (mut host, _) = test_host();
-        let out = host.eval("local p=field.media.shared_pool(); return #p:list(), p:list()[1].channels, p:list()[1].sample_rate");
+        let out = host.eval("local p=field.media.shared_pool(); return #p:items(), p:items()[1].channels, p:items()[1].sample_rate");
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("1\t2\t44100"));
     }
@@ -494,12 +494,12 @@ mod tests {
         let out = host.eval(&format!(
             r#"
             local pool = field.media.shared_pool()
-            local before = #pool:list()
+            local before = #pool:items()
             local m = pool:add("{path_lua}")
             assert(m.id and m.path and m.basename)
-            assert(#pool:list() == before + 1)
+            assert(#pool:items() == before + 1)
             pool:remove(m)
-            return #pool:list(), before
+            return #pool:items(), before
             "#
         ));
         let _ = std::fs::remove_file(&path);
@@ -513,7 +513,7 @@ mod tests {
         let out = host.eval(
             r#"
             local pool = field.media.shared_pool()
-            local id = pool:list()[1].id
+            local id = pool:items()[1].id
             local ok, err = pcall(function() pool:remove(id) end)
             return ok, tostring(err)
             "#,
@@ -524,6 +524,70 @@ mod tests {
             result.starts_with("false\t") && result.contains("still referenced"),
             "{result}"
         );
+    }
+
+    #[test]
+    fn composition_media_lists_associated_entries() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local c = field.session.focused().composition
+            local media = c.media
+            local pool = field.media.shared_pool():items()
+            assert(#media == 1)
+            assert(media[1].id == pool[1].id)
+            assert(media[1].channels == 2)
+            assert(media[1].sample_rate == 44100)
+            return #media, media[1].id
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = out.result.unwrap_or_default();
+        assert!(
+            result.starts_with("1\t"),
+            "expected one media entry, got {result}"
+        );
+    }
+
+    #[test]
+    fn layout_registry_items_and_remove() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local reg = field.layouts.shared_registry()
+            field.layouts.define({
+              name = "stereo",
+              description = "Left / Right",
+              channels = { [0] = "L", [1] = "R" },
+              monitor = { chain = "stereo" },
+            })
+            reg:define({
+              name = "temp",
+              description = "Temporary",
+              channels = { [0] = "A" },
+            })
+            local items = reg:items()
+            local stereo
+            for _, layout in ipairs(items) do
+              if layout.name == "stereo" then stereo = layout end
+            end
+            assert(stereo)
+            assert(stereo.description == "Left / Right")
+            assert(stereo.channels[0] == "L")
+            assert(stereo.channels[1] == "R")
+            assert(stereo.monitor.chain == "stereo")
+            reg:remove("temp")
+            reg:remove(stereo)
+            local names = {}
+            for _, layout in ipairs(reg:items()) do
+              names[#names + 1] = layout.name
+            end
+            return table.concat(names, ",")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some(""));
+        assert!(host.layout_names().is_empty());
     }
 
     #[test]

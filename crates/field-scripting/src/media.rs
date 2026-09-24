@@ -99,7 +99,7 @@ impl UserData for LuaMediaPool {
             host.with_backend_mut(|b| b.remove_media(media.id))?;
             Ok(())
         });
-        methods.add_method("list", |lua, _, ()| {
+        methods.add_method("items", |lua, _, ()| {
             let host = host_from_lua(lua)?;
             let ids = host.with_backend(|b| b.list_media());
             let table = lua.create_table_with_capacity(ids.len(), 0)?;

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use mlua::{Table, Value};
+use mlua::{FromLua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::host::{host_from_lua, HostHandle};
 use field_session::DocumentId;
@@ -31,6 +31,91 @@ impl ChannelLayoutDef {
             .and_then(|value| value.get("chain"))
             .and_then(|value| value.as_str())
     }
+}
+
+/// Handle to one registered channel layout (looked up live by name).
+#[derive(Clone, Debug)]
+pub struct LuaLayout {
+    name: String,
+}
+
+impl FromLua for LuaLayout {
+    fn from_lua(value: Value, _lua: &mlua::Lua) -> mlua::Result<Self> {
+        match value {
+            Value::UserData(ud) => ud.borrow::<Self>().map(|layout| layout.clone()),
+            Value::String(s) => Ok(Self {
+                name: s.to_str()?.to_owned(),
+            }),
+            other => Err(mlua::Error::runtime(format!(
+                "expected layout userdata or layout name string, got {}",
+                other.type_name()
+            ))),
+        }
+    }
+}
+
+impl UserData for LuaLayout {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
+        fields.add_field_method_get("description", |lua, this| {
+            with_layout(lua, &this.name, |layout| Ok(layout.description.clone()))
+        });
+        fields.add_field_method_get("channels", |lua, this| {
+            with_layout(lua, &this.name, |layout| {
+                let table = lua.create_table_with_capacity(0, layout.channels.len())?;
+                for (index, label) in &layout.channels {
+                    table.set(*index, label.clone())?;
+                }
+                Ok(table)
+            })
+        });
+        fields.add_field_method_get("monitor", |lua, this| {
+            with_layout(lua, &this.name, |layout| match &layout.monitor {
+                Some(value) => json_to_lua(lua, value),
+                None => Ok(Value::Nil),
+            })
+        });
+    }
+}
+
+/// Process-wide channel layout registry.
+#[derive(Clone, Copy, Debug)]
+pub struct LuaLayoutRegistry;
+
+impl UserData for LuaLayoutRegistry {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("define", |lua, _, spec: Table| {
+            let layout = layout_from_lua(spec)?;
+            host_from_lua(lua)?.define_layout(layout);
+            Ok(())
+        });
+        methods.add_method("remove", |lua, _, value: Value| {
+            let layout = LuaLayout::from_lua(value, lua)?;
+            host_from_lua(lua)?.remove_layout(&layout.name);
+            Ok(())
+        });
+        methods.add_method("items", |lua, _, ()| {
+            let host = host_from_lua(lua)?;
+            let names = host.layout_names();
+            let table = lua.create_table_with_capacity(names.len(), 0)?;
+            for (index, name) in names.into_iter().enumerate() {
+                table.set(index + 1, LuaLayout { name })?;
+            }
+            Ok(table)
+        });
+    }
+}
+
+fn with_layout<R>(
+    lua: &mlua::Lua,
+    name: &str,
+    f: impl FnOnce(&ChannelLayoutDef) -> mlua::Result<R>,
+) -> mlua::Result<R> {
+    let host = host_from_lua(lua)?;
+    let layout = host
+        .layout(name)
+        .ok_or_else(|| mlua::Error::runtime(format!("unknown channel layout `{name}`")))?;
+    f(&layout)
 }
 
 /// Parse a layout definition table from Lua.
@@ -146,12 +231,49 @@ fn table_to_json(table: Table) -> mlua::Result<serde_json::Value> {
     Ok(serde_json::Value::Object(object))
 }
 
+fn json_to_lua(lua: &mlua::Lua, value: &serde_json::Value) -> mlua::Result<Value> {
+    match value {
+        serde_json::Value::Null => Ok(Value::Nil),
+        serde_json::Value::Bool(flag) => Ok(Value::Boolean(*flag)),
+        serde_json::Value::Number(number) => {
+            if let Some(i) = number.as_i64() {
+                Ok(Value::Integer(i))
+            } else if let Some(u) = number.as_u64() {
+                if u <= i64::MAX as u64 {
+                    Ok(Value::Integer(u as i64))
+                } else {
+                    Ok(Value::Number(u as f64))
+                }
+            } else if let Some(f) = number.as_f64() {
+                Ok(Value::Number(f))
+            } else {
+                Err(mlua::Error::runtime("monitor number is not representable"))
+            }
+        }
+        serde_json::Value::String(text) => Ok(Value::String(lua.create_string(text)?)),
+        serde_json::Value::Array(items) => {
+            let table = lua.create_table_with_capacity(items.len(), 0)?;
+            for (index, item) in items.iter().enumerate() {
+                table.set(index + 1, json_to_lua(lua, item)?)?;
+            }
+            Ok(Value::Table(table))
+        }
+        serde_json::Value::Object(map) => {
+            let table = lua.create_table_with_capacity(0, map.len())?;
+            for (key, item) in map {
+                table.set(key.as_str(), json_to_lua(lua, item)?)?;
+            }
+            Ok(Value::Table(table))
+        }
+    }
+}
+
 enum JsonKey {
     Index(usize),
     Name(String),
 }
 
-/// Register a layout definition on the host.
+/// Register layout module functions on the host.
 pub fn bind_layouts(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
     let layouts = lua.create_table()?;
     layouts.set(
@@ -164,15 +286,7 @@ pub fn bind_layouts(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
     )?;
     layouts.set(
         "shared_registry",
-        lua.create_function(|lua, ()| {
-            let host = host_from_lua(lua)?;
-            let names = host.layout_names();
-            let table = lua.create_table_with_capacity(names.len(), 0)?;
-            for (index, name) in names.into_iter().enumerate() {
-                table.set(index + 1, name)?;
-            }
-            Ok(table)
-        })?,
+        lua.create_function(|_, ()| Ok(LuaLayoutRegistry))?,
     )?;
     field.set("layouts", layouts)?;
     Ok(())
@@ -187,6 +301,12 @@ impl HostHandle {
         } else {
             inner.layouts.push(layout);
         }
+    }
+
+    /// Remove a registered layout by name. No-op if missing.
+    pub(crate) fn remove_layout(&self, name: &str) {
+        let mut inner = self.inner.borrow_mut();
+        inner.layouts.retain(|layout| layout.name != name);
     }
 
     /// Look up a registered layout by name.
