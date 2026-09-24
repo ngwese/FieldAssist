@@ -1047,20 +1047,36 @@ fn eval_repl(lua: &Lua, code: &str) -> mlua::Result<MultiValue> {
     if trimmed.contains('\n') {
         match lua.load(trimmed).eval::<MultiValue>() {
             Ok(values) => Ok(values),
-            Err(_) => {
+            // Only fall back to statement exec when the chunk is not a valid
+            // expression form — keep runtime errors (e.g. unknown userdata
+            // fields) so the REPL shows the real failure.
+            Err(err) if is_syntax_error(&err) => {
                 lua.load(trimmed).exec()?;
                 Ok(MultiValue::new())
             }
+            Err(err) => Err(err),
         }
     } else {
         let expr = format!("return {trimmed}");
         match lua.load(&expr).eval::<MultiValue>() {
             Ok(values) => Ok(values),
-            Err(_) => {
+            Err(err) if is_syntax_error(&err) => {
                 lua.load(trimmed).exec()?;
                 Ok(MultiValue::new())
             }
+            Err(err) => Err(err),
         }
+    }
+}
+
+/// True when `err` (or a nested cause) is a Lua parse/compile failure.
+fn is_syntax_error(err: &mlua::Error) -> bool {
+    match err {
+        mlua::Error::SyntaxError { .. } => true,
+        mlua::Error::CallbackError { cause, .. } => is_syntax_error(cause),
+        mlua::Error::WithContext { cause, .. } => is_syntax_error(cause),
+        mlua::Error::BadArgument { cause, .. } => is_syntax_error(cause),
+        _ => false,
     }
 }
 
@@ -1154,11 +1170,90 @@ mod tests {
     }
 
     #[test]
+    fn eval_unknown_userdata_field_surfaces_runtime_error() {
+        // LuaMedia is fields-only; mlua errors on unknown fields for that shape.
+        // (Types that also register methods fall back to nil for missing keys.)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.wav");
+        write_minimal_wav(&path);
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let path_lua = path.to_string_lossy().replace('\\', "/");
+        let out = host.eval(&format!(
+            r#"field.media.shared_pool():add("{path_lua}").layout"#
+        ));
+        let err = out.error.expect("expected an error");
+        assert!(
+            err.contains("unknown field") && err.contains("layout"),
+            "expected unknown-field runtime error, got {err}"
+        );
+        assert!(
+            !err.contains("syntax error"),
+            "runtime field error must not be masked as syntax error: {err}"
+        );
+    }
+
+    #[test]
+    fn eval_assignment_still_works_via_syntax_fallback() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval("x = 7");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let out = host.eval("x");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn eval_expression_returns_value() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval("1 + 2");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("3"));
+    }
+
+    #[test]
     fn strip_shebang_removes_first_line() {
         assert_eq!(
             strip_shebang("#!/usr/bin/env field-batch\nprint(1)\n"),
             "print(1)\n"
         );
         assert_eq!(strip_shebang("print(1)\n"), "print(1)\n");
+    }
+
+    fn write_minimal_wav(path: &std::path::Path) {
+        let sample_rate: u32 = 8_000;
+        let channels: u16 = 1;
+        let bits_per_sample: u16 = 16;
+        let frames: u32 = 8;
+        let block_align = channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut out = std::fs::File::create(path).unwrap();
+        use std::io::Write;
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&channels.to_le_bytes()).unwrap();
+        out.write_all(&sample_rate.to_le_bytes()).unwrap();
+        out.write_all(&byte_rate.to_le_bytes()).unwrap();
+        out.write_all(&block_align.to_le_bytes()).unwrap();
+        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        out.write_all(&vec![0u8; data_len as usize]).unwrap();
     }
 }
