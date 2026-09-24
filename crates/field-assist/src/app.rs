@@ -2363,6 +2363,32 @@ impl AppView {
         crate::media_pool::list_media(&self.media_store)
     }
 
+    pub(crate) fn script_get_media(
+        &self,
+        id: crate::model::composition::MediaId,
+    ) -> mlua::Result<crate::model::MediaRef> {
+        for views in self.views.values() {
+            if let Some(media) = views
+                .composition
+                .read()
+                .unwrap()
+                .pool()
+                .iter()
+                .find(|media| media.id == id)
+                .cloned()
+            {
+                return Ok(media);
+            }
+        }
+        self.media_store
+            .lock()
+            .unwrap()
+            .pool()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown media id: {id}")))
+    }
+
     pub(crate) fn script_add_media(
         &mut self,
         path: PathBuf,

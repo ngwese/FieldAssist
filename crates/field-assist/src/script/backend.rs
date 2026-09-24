@@ -816,7 +816,7 @@ impl ScriptBackend for DesktopBackend {
             .unwrap_or_default()
     }
     fn get_media(&self, id: MediaId) -> mlua::Result<MediaRef> {
-        let store: Arc<Mutex<MediaStore>> = if let Some(test) = self.test() {
+        if let Some(test) = self.test() {
             let world = test.borrow();
             for doc in world.docs.values() {
                 if let Some(media) = doc
@@ -831,18 +831,16 @@ impl ScriptBackend for DesktopBackend {
                     return Ok(media);
                 }
             }
-            world.media_store.clone()
-        } else {
-            return Err(mlua::Error::runtime("media lookup requires app access"));
-        };
-        let media = store
-            .lock()
-            .unwrap()
-            .pool()
-            .iter()
-            .find(|m| m.id == id)
-            .cloned();
-        media.ok_or_else(|| mlua::Error::runtime(format!("unknown media id: {id}")))
+            return world
+                .media_store
+                .lock()
+                .unwrap()
+                .pool()
+                .get(id)
+                .cloned()
+                .ok_or_else(|| mlua::Error::runtime(format!("unknown media id: {id}")));
+        }
+        access::with_view(|v, _, _| v.script_get_media(id)).map_err(mlua::Error::runtime)?
     }
     fn media_store(&self) -> Option<Arc<Mutex<MediaStore>>> {
         self.test().map(|t| t.borrow().media_store.clone())
