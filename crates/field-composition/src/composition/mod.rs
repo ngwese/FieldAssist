@@ -771,9 +771,11 @@ impl Composition {
         self.channel_labels = new_labels;
         self.clipboard.channel_count = self.channel_count;
         self.playback_channels = normalize_playback_channels(new_playback, self.channel_count);
-        // Channel topology changed — let detect_layout pick a matching layout.
+        // Channel topology changed — let detect_layout pick a matching layout
+        // and its default monitor chain.
         self.chosen_channel_layout = None;
         self.channel_layout = None;
+        self.set_monitor_chain(None);
         self.analysis_streams = AnalysisStreams::default();
         self.minmax_op = None;
         self.envelope_op = None;
@@ -5331,6 +5333,7 @@ mod tests {
             m.insert(3, "Z".into());
             m
         });
+        parent2.set_monitor_chain(Some("foa".into()));
         let mid = parent2.break_out_channels(&[], Some(&[0, 2, 3])).unwrap();
         assert_eq!(mid.channel_count(), 3);
         assert_eq!(mid.source_channels(), Some(&[0usize, 2, 3][..]));
@@ -5338,6 +5341,7 @@ mod tests {
         assert_eq!(mid.channel_label(1), "Y");
         assert_eq!(mid.channel_label(2), "Z");
         assert!(mid.chosen_channel_layout().is_none());
+        assert!(mid.monitor_chain().is_none());
 
         let nested = mid.break_out_channels(&[], Some(&[0, 2])).unwrap();
         assert_eq!(nested.channel_count(), 2);

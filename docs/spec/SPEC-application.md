@@ -245,8 +245,9 @@ waveform channel-header selection. If a time selection exists, the child is
 also trimmed to those spans (multi-span uses the same concatenation as Trim);
 otherwise the full parent duration is kept. The child stores a
 `source_channels` map (dest → media) and a reduced `channel_count`. Nested
-channel break-outs compose maps. Chosen layout is cleared so `detect_layout`
-can assign a layout that matches the new channel count.
+channel break-outs compose maps. Chosen layout and `monitor_chain` are cleared
+so `detect_layout` can assign a layout (and its default monitor chain) that
+matches the new channel count.
 
 On open, if probed media disagrees with the recorded descriptor (identity
 stats or mtime-only), the app warns (Messages + dialog) and still opens,
