@@ -52,6 +52,9 @@ impl UserData for LuaApp {
                 .command(&id)
                 .map_err(mlua::Error::runtime)
         });
+        methods.add_method("load_settings", |lua, _, ()| {
+            backend_from_lua(lua)?.load_settings()
+        });
         methods.add_method("alert", |lua, _, (subject, body): (Value, Value)| {
             let stringify = |value| match value {
                 Value::String(v) => v.to_string_lossy(),

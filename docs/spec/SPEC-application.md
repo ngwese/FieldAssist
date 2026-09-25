@@ -87,19 +87,30 @@ Symphonia.
 
 **Encode (render):** WAV, FLAC, and Ogg Vorbis only.
 
-Default window is 1280×760; launch theme is dark (override from `init.lua` via
+Default window is 1280×760; launch theme is dark (override from `settings.json`
+via `app:load_settings()` in embedded `init.lua`, or from `init.lua` via
 `app.theme.mode` / `app.theme.name`). macOS uses the system application menu;
-Windows and Linux put menus in the title bar and Quit on File. Settings exists
-in the menu and is disabled.
+Windows and Linux put menus in the title bar and Quit on File.
+
+**Settings** is a standalone utility window (same pattern as About):
+
+- **macOS**: App menu → Settings… (`cmd-,`)
+- **Windows / Linux**: Edit → Settings… (`ctrl-,`)
+
+Preferences live in `settings.json` next to `init.lua` and `keymap.json` in
+the user config directory. Embedded `init.lua` calls `app:load_settings()` when
+`app.name == "field-assist"` so FieldAssist applies them at startup;
+field-batch and field-play skip that call. CLI `--output` wins over the saved
+output device when both are present.
 
 FieldAssist remains a single-editor-window product. On macOS, closing that
 window leaves the process alive (`QuitMode::Default`). Dock reopen and
 File → Open recreate the editor with a **new empty session**, then load any
-chosen paths (audio / `.facomp` / `.fasession`) into it. About is an
-independent utility window (not parented to the editor). Quit with no editor
-window exits immediately. With no editor window, only the application menu
-(About / Quit) and File → Open stay enabled; other menu items are disabled.
-Windows and Linux still quit when the last window closes.
+chosen paths (audio / `.facomp` / `.fasession`) into it. About and Settings are
+independent utility windows (not parented to the editor). Quit with no editor
+window exits immediately. With no editor window, the application menu
+(About / Settings / Quit) and File → Open stay enabled; other menu items are
+disabled. Windows and Linux still quit when the last window closes.
 
 ## Session
 

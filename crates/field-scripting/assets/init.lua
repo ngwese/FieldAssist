@@ -1,7 +1,12 @@
 -- Default FieldAssist / field-play init script.
 -- Dump with: FieldAssist --dump-init
 -- Copy to the app config directory to customize.
---
+
+-- FieldAssist: load settings.json (theme, docks, waveform, selection, device).
+if app.name == "field-assist" then
+  app:load_settings()
+end
+
 -- Optional: pin an output device across launches (substring match).
 -- app.output_device = "Focusrite"
 

@@ -137,7 +137,7 @@ pub(super) fn themes_table(lua: &Lua) -> mlua::Result<Table> {
     Ok(table)
 }
 
-pub(super) fn parse_theme_mode(value: &str) -> Result<ThemeMode, String> {
+pub(crate) fn parse_theme_mode(value: &str) -> Result<ThemeMode, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "light" => Ok(ThemeMode::Light),
         "dark" => Ok(ThemeMode::Dark),
@@ -147,43 +147,67 @@ pub(super) fn parse_theme_mode(value: &str) -> Result<ThemeMode, String> {
     }
 }
 
-pub(super) fn apply_theme_mode(mode: ThemeMode) -> Result<(), String> {
+/// Apply theme mode from any App context (Settings UI, Lua, etc.).
+pub(crate) fn apply_theme_mode_in_app(
+    mode: ThemeMode,
+    window: Option<&mut gpui_kit::Window>,
+    cx: &mut gpui_kit::App,
+) {
+    Theme::change(mode, window, cx);
+    crate::app::apply_muted_chrome(cx);
+    refresh_open_windows(cx);
+}
+
+/// Apply a registered theme by name from any App context.
+pub(crate) fn apply_theme_name_in_app(
+    name: &str,
+    window: Option<&mut gpui_kit::Window>,
+    cx: &mut gpui_kit::App,
+) -> Result<(), String> {
+    let (config, mode) = {
+        let registry = ThemeRegistry::global(cx);
+        let Some(config) = registry.themes().get(name).cloned() else {
+            let available = registry
+                .sorted_themes()
+                .into_iter()
+                .map(|theme| theme.name.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("unknown theme {name:?}; available: {available}"));
+        };
+        let mode = config.mode;
+        (config, mode)
+    };
+    {
+        let theme = Theme::global_mut(cx);
+        if mode.is_dark() {
+            theme.dark_theme = config;
+        } else {
+            theme.light_theme = config;
+        }
+    }
+    Theme::change(mode, window, cx);
+    crate::app::apply_muted_chrome(cx);
+    refresh_open_windows(cx);
+    Ok(())
+}
+
+fn refresh_open_windows(cx: &mut gpui_kit::App) {
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, _| {
+            window.refresh();
+        });
+    }
+}
+
+pub(crate) fn apply_theme_mode(mode: ThemeMode) -> Result<(), String> {
     access::with_view(|_, window, cx| {
-        Theme::change(mode, Some(window), cx);
-        crate::app::apply_muted_chrome(cx);
-        window.refresh();
+        apply_theme_mode_in_app(mode, Some(window), cx);
     })
 }
 
-pub(super) fn apply_theme_name(name: &str) -> Result<(), String> {
-    access::with_view(|_, window, cx| {
-        let (config, mode) = {
-            let registry = ThemeRegistry::global(cx);
-            let Some(config) = registry.themes().get(name).cloned() else {
-                let available = registry
-                    .sorted_themes()
-                    .into_iter()
-                    .map(|theme| theme.name.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(format!("unknown theme {name:?}; available: {available}"));
-            };
-            let mode = config.mode;
-            (config, mode)
-        };
-        {
-            let theme = Theme::global_mut(cx);
-            if mode.is_dark() {
-                theme.dark_theme = config;
-            } else {
-                theme.light_theme = config;
-            }
-        }
-        Theme::change(mode, Some(window), cx);
-        crate::app::apply_muted_chrome(cx);
-        window.refresh();
-        Ok(())
-    })?
+pub(crate) fn apply_theme_name(name: &str) -> Result<(), String> {
+    access::with_view(|_, window, cx| apply_theme_name_in_app(name, Some(window), cx))?
 }
 
 pub(super) fn live_theme_names() -> Result<Vec<String>, String> {

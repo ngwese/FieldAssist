@@ -12,6 +12,7 @@ pub mod media_panel;
 pub mod quick_note;
 pub mod quit_unsaved;
 pub mod render_sheet;
+pub mod settings_window;
 pub mod status_bar;
 pub mod workflow_bar;
 pub mod workspace;

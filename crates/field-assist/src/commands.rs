@@ -128,6 +128,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "app.hide",
     "app.hide_others",
     "app.show_all",
+    "app.settings",
     "help.about",
     "view.fit_all",
     "view.frame",
@@ -366,6 +367,7 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "app.hide" => KeyBinding::new(keystrokes, Hide, Some(context)),
         "app.hide_others" => KeyBinding::new(keystrokes, HideOthers, Some(context)),
         "app.show_all" => KeyBinding::new(keystrokes, ShowAll, Some(context)),
+        "app.settings" => KeyBinding::new(keystrokes, Settings, Some(context)),
         "help.about" => KeyBinding::new(keystrokes, About, Some(context)),
         "view.fit_all" => KeyBinding::new(keystrokes, ViewFitAll, Some(context)),
         "view.frame" => KeyBinding::new(keystrokes, ViewFrame, Some(context)),
@@ -492,6 +494,7 @@ mod tests {
         );
         assert_eq!(map.get("cmd-o").map(String::as_str), Some("file.open"));
         assert_eq!(map.get("cmd-s").map(String::as_str), Some("file.save"));
+        assert_eq!(map.get("cmd-,").map(String::as_str), Some("app.settings"));
         assert_eq!(
             map.get("cmd-shift-s").map(String::as_str),
             Some("file.save_as")
@@ -511,6 +514,20 @@ mod tests {
             Some("edit.remove")
         );
         assert!(map.get("ctrl-o").is_none());
+    }
+
+    #[test]
+    fn settings_accelerator_per_platform() {
+        let macos = parse_and_flatten(DEFAULT_KEYMAP, Platform::Macos).unwrap();
+        assert_eq!(macos.get("cmd-,").map(String::as_str), Some("app.settings"));
+        for platform in [Platform::Linux, Platform::Windows] {
+            let map = parse_and_flatten(DEFAULT_KEYMAP, platform).unwrap();
+            assert_eq!(
+                map.get("ctrl-,").map(String::as_str),
+                Some("app.settings"),
+                "{platform:?}"
+            );
+        }
     }
 
     #[test]

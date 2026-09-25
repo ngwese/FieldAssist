@@ -234,6 +234,29 @@ impl DesktopBackend {
             .map_err(mlua::Error::runtime)
     }
 
+    /// Load `settings.json` into the Global store and apply to the live window.
+    pub(crate) fn load_settings(&mut self) -> mlua::Result<()> {
+        if let Some(test) = self.test() {
+            // Tests do not share the process config dir; apply built-in defaults.
+            let settings = crate::settings::AppSettings::default();
+            test.borrow_mut().theme_name = settings.appearance.theme_name.clone();
+            test.borrow_mut().theme_mode = settings.appearance.theme_mode.clone();
+            if test.borrow().output_device.is_none() {
+                test.borrow_mut().output_device = settings.audio.output_device.clone();
+            }
+            test.borrow_mut().explorer = settings.view.explorer;
+            test.borrow_mut().detail = settings.view.detail_open();
+            test.borrow_mut().script = settings.view.script_open();
+            return Ok(());
+        }
+        access::with_view(|view, window, cx| {
+            crate::settings::ensure_store(cx);
+            crate::settings::reload_from_disk(cx);
+            view.apply_loaded_settings(window, cx);
+        })
+        .map_err(mlua::Error::runtime)
+    }
+
     pub(crate) fn command(&mut self, id: &str) -> Result<(), String> {
         crate::commands::validate_command_id(id)?;
         if let Some(test) = self.test() {

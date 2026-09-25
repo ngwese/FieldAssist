@@ -57,6 +57,7 @@ mod playback;
 mod progress;
 mod render;
 mod script;
+mod settings;
 mod themes;
 
 #[derive(Parser, Debug)]

@@ -580,6 +580,13 @@ impl AppView {
             waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
             follow_playhead: true,
         };
+        crate::settings::ensure_store(cx);
+        {
+            let defaults = crate::settings::store(cx).settings.clone();
+            this.add_marker_at_hover = defaults.selection.add_at_hover;
+            this.waveform_representation = defaults.waveform.representation_enum();
+            this.follow_playhead = defaults.waveform.follow_playhead;
+        }
         this.load_init_lua(window, cx);
         this.refresh_output_devices_cache();
         if let Some(fault) = this.playback.output_fault().map(str::to_string) {
@@ -615,9 +622,12 @@ impl AppView {
         app: WeakEntity<Self>,
         cx: &mut Context<Self>,
     ) -> DocumentViews {
+        let selection = crate::settings::store(cx).settings.selection.clone();
         let document = cx.new(|_| {
             let mut doc = BufferDocument::with_shared(composition.clone(), buffer.clone());
             doc.waveform_representation = waveform_representation;
+            doc.snap_zero_crossings = selection.zero_crossing;
+            doc.snap_to_marker = selection.snap_to_marker;
             doc
         });
         cx.observe(&document, move |this, entity, cx| {
@@ -1902,6 +1912,88 @@ impl AppView {
         }
     }
 
+    /// Apply a settings.json detail preference (`hidden` or tab title).
+    pub(crate) fn apply_detail_preference(
+        &mut self,
+        preference: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if preference == crate::settings::DOCK_HIDDEN {
+            self.set_detail_dock(false, window, cx);
+            return;
+        }
+        let panel_id = match preference {
+            DETAIL_TAB_REGIONS => PanelId::from(self.regions.entity_id()),
+            DETAIL_TAB_HISTORY => PanelId::from(self.edits.entity_id()),
+            DETAIL_TAB_MONITOR => PanelId::from(self.monitor.entity_id()),
+            _ => PanelId::from(self.markers.entity_id()),
+        };
+        self.activate_detail_tab(panel_id, window, cx);
+    }
+
+    /// Apply a settings.json script-dock preference (`hidden` or tab title).
+    pub(crate) fn apply_script_preference(
+        &mut self,
+        preference: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if preference == crate::settings::DOCK_HIDDEN {
+            self.hide_script_dock(window, cx);
+            return;
+        }
+        match preference {
+            crate::dock_titles::BOTTOM_TAB_MESSAGES => self.show_messages_tab(window, cx),
+            crate::dock_titles::BOTTOM_TAB_MEDIA => self.show_media_tab(window, cx),
+            _ => self.show_script_tab(window, cx),
+        }
+    }
+
+    fn activate_detail_tab(
+        &mut self,
+        panel_id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dock_open = self.detail_dock_open(cx);
+        let already_active = dock_open
+            && Self::panel_tab_slot(&self.dock_area.read(cx), DockPlacement::Right, panel_id)
+                .is_some_and(|(_, ix, active_ix)| ix == active_ix);
+        if already_active {
+            return;
+        }
+        if !dock_open {
+            self.dock_area.update(cx, |area, cx| {
+                area.toggle_dock(DockPlacement::Right, window, cx);
+            });
+        }
+        self.dock_area.update(cx, |area, cx| {
+            if let Some((node, ix, active_ix)) =
+                Self::panel_tab_slot(area, DockPlacement::Right, panel_id)
+            {
+                if ix != active_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        });
+        if panel_id == PanelId::from(self.monitor.entity_id()) {
+            self.refresh_output_devices_cache();
+            self.monitor.update(cx, |_, cx| cx.notify());
+        }
+        self.sync_view_menus(cx);
+        cx.notify();
+    }
+
     /// Keep tool docks at least as wide as their combined tabs.
     /// gpui-component only floors at `PANEL_MIN_SIZE` (100px) during splitter
     /// drags, so we re-clamp on every dock notify (and again on LayoutChanged).
@@ -2090,6 +2182,42 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+    }
+
+    /// Apply the Global settings store to this window (theme, docks, device, defaults).
+    pub(crate) fn apply_loaded_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (appearance, view, waveform, selection, audio, cli_locked) = {
+            let store = crate::settings::store(cx);
+            (
+                store.settings.appearance.clone(),
+                store.settings.view.clone(),
+                store.settings.waveform.clone(),
+                store.settings.selection.clone(),
+                store.settings.audio.clone(),
+                store.cli_output_locked,
+            )
+        };
+
+        let _ = crate::script::theme::apply_theme_name(&appearance.theme_name);
+        if let Ok(mode) = crate::script::theme::parse_theme_mode(&appearance.theme_mode) {
+            let _ = crate::script::theme::apply_theme_mode(mode);
+        }
+
+        if !cli_locked {
+            if let Err(err) = self.set_output_device(audio.output_device.as_deref(), window, cx) {
+                eprintln!("FieldAssist: settings output device: {err}");
+            }
+        }
+
+        self.set_explorer_dock(view.explorer, window, cx);
+        self.apply_detail_preference(&view.detail, window, cx);
+        self.apply_script_preference(&view.script, window, cx);
+
+        self.add_marker_at_hover = selection.add_at_hover;
+        self.follow_playhead = waveform.follow_playhead;
+        self.set_waveform_representation(waveform.representation_enum(), window, cx);
+        self.sync_view_menus(cx);
+        cx.notify();
     }
 
     fn eval_lua(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2612,41 +2740,7 @@ impl AppView {
     }
 
     fn show_monitor_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel_id = PanelId::from(self.monitor.entity_id());
-        let dock_open = self.detail_dock_open(cx);
-        let already_active = dock_open
-            && Self::panel_tab_slot(&self.dock_area.read(cx), DockPlacement::Right, panel_id)
-                .is_some_and(|(_, ix, active_ix)| ix == active_ix);
-        if already_active {
-            return;
-        }
-        if !dock_open {
-            self.dock_area.update(cx, |area, cx| {
-                area.toggle_dock(DockPlacement::Right, window, cx);
-            });
-        }
-        self.dock_area.update(cx, |area, cx| {
-            if let Some((node, ix, active_ix)) =
-                Self::panel_tab_slot(area, DockPlacement::Right, panel_id)
-            {
-                if ix != active_ix {
-                    area.move_panel(
-                        panel_id,
-                        InsertTarget::Tabs {
-                            node,
-                            ix: Some(ix),
-                            activate: true,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-            }
-        });
-        self.refresh_output_devices_cache();
-        self.monitor.update(cx, |_, cx| cx.notify());
-        self.sync_view_menus(cx);
-        cx.notify();
+        self.activate_detail_tab(PanelId::from(self.monitor.entity_id()), window, cx);
     }
 
     fn refresh_output_devices_cache(&mut self) {
@@ -5902,6 +5996,10 @@ pub(crate) fn dispatch_command(command_id: &str, cx: &mut App) -> Result<(), Str
         open_about_window(cx);
         return Ok(());
     }
+    if command_id == "app.settings" {
+        crate::components::settings_window::open_settings_window(cx);
+        return Ok(());
+    }
 
     if let Some((view, window)) = living_editor_window(cx) {
         let command_id = command_id.to_string();
@@ -5964,6 +6062,7 @@ fn on_app_window_closed(cx: &mut App, id: WindowId) {
             let _ = cx.remove_global::<AboutWindow>();
         }
     }
+    crate::components::settings_window::on_settings_window_closed(cx, id);
 }
 
 fn open_about_window(cx: &mut App) {
@@ -6350,7 +6449,66 @@ fn show_all(_: &ShowAll, cx: &mut App) {
     cx.unhide_other_apps();
 }
 
-fn settings(_: &Settings, _cx: &mut App) {}
+fn settings(_: &Settings, cx: &mut App) {
+    crate::components::settings_window::open_settings_window(cx);
+}
+
+/// Apply waveform defaults from the settings store to the open editor (if any).
+pub(crate) fn apply_waveform_default_from_settings(cx: &mut App) {
+    let (rep, follow) = {
+        let waveform = &crate::settings::store(cx).settings.waveform;
+        (waveform.representation_enum(), waveform.follow_playhead)
+    };
+    update_open_view(cx, move |this, window, cx| {
+        this.follow_playhead = follow;
+        this.set_waveform_representation(rep, window, cx);
+        this.sync_view_menus(cx);
+        cx.notify();
+    });
+}
+
+/// Apply detail-dock preference from the settings store.
+pub(crate) fn apply_detail_from_settings(cx: &mut App) {
+    let preference = crate::settings::store(cx).settings.view.detail.clone();
+    update_open_view(cx, move |this, window, cx| {
+        this.apply_detail_preference(&preference, window, cx);
+    });
+}
+
+/// Apply script-dock preference from the settings store.
+pub(crate) fn apply_script_from_settings(cx: &mut App) {
+    let preference = crate::settings::store(cx).settings.view.script.clone();
+    update_open_view(cx, move |this, window, cx| {
+        this.apply_script_preference(&preference, window, cx);
+    });
+}
+
+/// Apply selection defaults (add-at-hover) from the settings store.
+pub(crate) fn apply_selection_defaults_from_settings(cx: &mut App) {
+    let add_at_hover = crate::settings::store(cx).settings.selection.add_at_hover;
+    update_open_view(cx, move |this, _, cx| {
+        this.add_marker_at_hover = add_at_hover;
+        this.sync_view_menus(cx);
+        cx.notify();
+    });
+}
+
+/// Apply preferred output device from the settings store (respects CLI lock).
+pub(crate) fn apply_audio_device_from_settings(cx: &mut App) {
+    if crate::settings::store(cx).cli_output_locked {
+        return;
+    }
+    let device = crate::settings::store(cx)
+        .settings
+        .audio
+        .output_device
+        .clone();
+    update_open_view(cx, move |this, window, cx| {
+        if let Err(err) = this.set_output_device(device.as_deref(), window, cx) {
+            eprintln!("FieldAssist: settings output device: {err}");
+        }
+    });
+}
 
 fn open(_: &Open, cx: &mut App) {
     let _ = crate::commands::dispatch("file.open", cx);
@@ -6775,7 +6933,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     ];
     if !cfg!(target_os = "macos") {
         edit_items.push(MenuItem::separator());
-        edit_items.push(MenuItem::action("Settings...", Settings).disabled(true));
+        edit_items.push(MenuItem::action("Settings...", Settings));
     }
 
     let mut menus = Vec::new();
@@ -6784,7 +6942,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         menus.push(Menu::new(crate::APP_NAME).items([
             MenuItem::action("About...", About),
             MenuItem::separator(),
-            MenuItem::action("Settings...", Settings).disabled(true),
+            MenuItem::action("Settings...", Settings),
             MenuItem::separator(),
             MenuItem::action(format!("Hide {}", crate::APP_NAME), Hide),
             MenuItem::action("Hide Others", HideOthers),
@@ -7266,6 +7424,10 @@ pub fn run(
             output_device_spec: output_spec.clone(),
             launch_ui_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
+        crate::settings::ensure_store(cx);
+        if output_spec.is_some() {
+            crate::settings::lock_cli_output_device(cx);
+        }
         cx.on_window_closed(on_app_window_closed).detach();
 
         cx.spawn(async move |cx| {

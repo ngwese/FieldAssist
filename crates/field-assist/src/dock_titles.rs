@@ -27,15 +27,12 @@ pub const EXPLORER_TAB_COMPOSITIONS: &str = "Compositions";
 pub const EXPLORER_DOCK_TAB_TITLES: &[&str] = &[EXPLORER_TAB_COMPOSITIONS];
 
 /// Bottom-dock Script panel tab.
-#[allow(dead_code)]
 pub const BOTTOM_TAB_SCRIPT: &str = "Script";
 /// Bottom-dock Messages panel tab.
-#[allow(dead_code)]
 pub const BOTTOM_TAB_MESSAGES: &str = "Messages";
 /// Bottom-dock Media pool panel tab.
 pub const BOTTOM_TAB_MEDIA: &str = "Media";
 
 /// Titles used when the bottom dock is open.
-#[allow(dead_code)]
 pub const BOTTOM_DOCK_TAB_TITLES: &[&str] =
     &[BOTTOM_TAB_SCRIPT, BOTTOM_TAB_MESSAGES, BOTTOM_TAB_MEDIA];

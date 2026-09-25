@@ -87,6 +87,26 @@ Resolved by `field_scripting::user_config_dir()` (shared by FieldAssist,
 field-batch, and field-play). Dump the embedded default with
 `FieldAssist --dump-init`.
 
+The same directory may also hold:
+
+| File | Role |
+| --- | --- |
+| `init.lua` | Startup script (user override or embedded default) |
+| `keymap.json` | Optional keybinding overlay |
+| `settings.json` | FieldAssist preferences (theme, docks, waveform, selection, output device) |
+
+Embedded `init.lua` loads settings only on FieldAssist:
+
+```lua
+if app.name == "field-assist" then
+  app:load_settings()
+end
+```
+
+Copy that snippet to the top of a dumped user `init.lua` if you want the same
+startup behavior. Missing or invalid `settings.json` keeps built-in defaults
+(no error). CLI `--output` still wins over the saved device.
+
 `require` search paths default to this config directory plus the process
 cwd (see [field.scripting](#field-scripting)). Call
 `field.scripting.enable_*` at the top of `init.lua` when a script needs
@@ -149,6 +169,7 @@ APIs live under `field.*`, not here.
 | --- | --- | --- | --- | --- |
 | `app:alert` | `subject`, `body` | — | all | Host alert (dialog / stderr). Args are stringified. |
 | `app:command` | `id: string` | — | FieldAssist | Invoke a UI command (e.g. `"view.show-explorer"`) |
+| `app:load_settings` | — | — | FieldAssist | Read `settings.json` (or defaults), update the Global store, apply theme / docks / waveform / selection / output device |
 
 field-scripting also keeps temporary migration shims
 `app:info` / `app:warn` / `app:error` and
@@ -165,11 +186,14 @@ field-scripting also keeps temporary migration shims
 | `semantic` | **ro** | palette userdata | Same keys as [field.ui.semantic](#field-ui) |
 
 ```lua
+if app.name == "field-assist" then
+  app:load_settings()
+end
+
 if app.name == "field-assist" and app.command then
   app:command("view.show-explorer")
 end
 ```
-
 ---
 
 <a id="field-log"></a>
