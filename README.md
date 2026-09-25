@@ -10,6 +10,8 @@ Review, edit, and process audio coming in from the field.
 > on `main` so the latest version may not be stable.
 
 - See [docs/BUILDING.md](docs/BUILDING.md) for build, packaging, and app-icon generation.
+- See [docs/RELEASING.md](docs/RELEASING.md) for GitHub Releases and the
+  release-branch workflow.
 - See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the Cargo workspace crate
 map and composition patterns.
 - See [docs/SCRIPTING.md](docs/SCRIPTING.md) for details on the evolving Lua scripting layer.
