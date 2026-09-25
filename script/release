@@ -297,7 +297,7 @@ if [[ ! -f CHANGELOG.md ]]; then
     '<!-- git-cliff: end of header -->' \
     '' >CHANGELOG.md
 fi
-git cliff --tag "$release" --prepend CHANGELOG.md
+git cliff --unreleased --tag "$release" --prepend CHANGELOG.md
 
 git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "chore: prepare release ${release}"
