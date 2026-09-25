@@ -8,6 +8,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+use cpal::traits::HostTrait;
+
 fn empty_config_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("temp config dir")
 }
