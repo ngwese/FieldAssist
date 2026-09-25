@@ -266,6 +266,15 @@ impl ScriptHost {
     pub fn choose_layout(&self, id: DocumentId, n: Option<&str>) -> mlua::Result<()> {
         self.inner.choose_layout(id, n)
     }
+    pub fn export_profile(&self, name: &str) -> Option<field_scripting::ExportProfileDef> {
+        self.inner.export_profile(name)
+    }
+    pub fn export_profile_names(&self) -> Vec<String> {
+        self.inner.export_profile_names()
+    }
+    pub fn export_profile_choices(&self) -> Vec<(String, String)> {
+        self.inner.export_profile_choices()
+    }
     pub fn take_prints(&self) -> Vec<String> {
         self.inner.take_prints()
     }

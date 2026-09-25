@@ -17,6 +17,10 @@ end
 
 local started = os.clock()
 
+--
+-- Channel Layouts
+--
+
 field.layouts.define({
   name = "mono",
   description = "Single channel",
@@ -67,6 +71,40 @@ field.layouts.define({
     [8] = "U",
   },
 })
+
+--
+-- Export Profiles
+--
+
+field.exports.define({
+  name = "WAV (Source Equivalent)",
+  description = "WAV matching source rate, format, and channels",
+  encoder = "wav",
+})
+
+field.exports.define({
+  name = "WAV (48kHz)",
+  description = "WAV at 48 kHz, source equivalent format",
+  encoder = "wav",
+  sample_rate = 48000,
+})
+
+field.exports.define({
+  name = "FLAC (Source Equivalent)",
+  description = "FLAC matching source rate, format, and channels",
+  encoder = "flac",
+})
+
+field.exports.define({
+  name = "FLAC (48kHz)",
+  description = "FLAC at 48 kHz, source equivalent format",
+  encoder = "flac",
+  sample_rate = 48000,
+})
+
+--
+-- Event Handlers
+--
 
 field.on("detect_layout", function(c, chosen)
   if chosen == "1OA" then

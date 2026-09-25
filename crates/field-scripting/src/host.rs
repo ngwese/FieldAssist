@@ -114,6 +114,7 @@ pub(crate) struct HostInner {
     pub(crate) composition_selected: Vec<Function>,
     pub(crate) detect_layout: Vec<Function>,
     pub(crate) layouts: Vec<ChannelLayoutDef>,
+    pub(crate) export_profiles: Vec<crate::export::ExportProfileDef>,
     pub(crate) workflows: BTreeMap<String, WorkflowDef>,
     pub(crate) active: Option<Table>,
     /// Backend — owns session, open documents, media pool.
@@ -181,6 +182,7 @@ impl ScriptHost {
                 composition_selected: Vec::new(),
                 detect_layout: Vec::new(),
                 layouts: Vec::new(),
+                export_profiles: Vec::new(),
                 workflows: BTreeMap::new(),
                 active: None,
                 backend,
@@ -484,6 +486,21 @@ impl ScriptHost {
     /// `(name, description)` pairs for registered layouts.
     pub fn layout_choices(&self) -> Vec<(String, String)> {
         self.handle.layout_choices()
+    }
+
+    /// Look up a registered export profile by name.
+    pub fn export_profile(&self, name: &str) -> Option<crate::export::ExportProfileDef> {
+        self.handle.export_profile(name)
+    }
+
+    /// Names of registered export profiles.
+    pub fn export_profile_names(&self) -> Vec<String> {
+        self.handle.export_profile_names()
+    }
+
+    /// `(name, description)` pairs for registered export profiles.
+    pub fn export_profile_choices(&self) -> Vec<(String, String)> {
+        self.handle.export_profile_choices()
     }
 
     /// Invoke a registered drag-drop workflow by name with dropped paths.

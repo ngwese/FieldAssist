@@ -551,6 +551,96 @@ mod tests {
     }
 
     #[test]
+    fn export_registry_items_and_remove() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local reg = field.exports.shared_registry()
+            field.exports.define({
+              name = "wav48",
+              description = "48 kHz WAV",
+              encoder = "wav",
+              sample_format = "s24",
+              sample_rate = 48000,
+              channels = "all",
+              directory = "/tmp",
+              filename = "out.wav",
+            })
+            reg:define({
+              name = "temp",
+              description = "Temporary",
+              encoder = "flac",
+            })
+            local items = reg:items()
+            local wav48
+            for _, profile in ipairs(items) do
+              if profile.name == "wav48" then wav48 = profile end
+            end
+            assert(wav48)
+            assert(wav48.description == "48 kHz WAV")
+            assert(wav48.encoder == "wav")
+            assert(wav48.sample_format == "S24")
+            assert(wav48.sample_rate == 48000)
+            assert(wav48.channels == "all")
+            assert(wav48.directory == "/tmp")
+            assert(wav48.filename == "out.wav")
+            reg:remove("temp")
+            reg:remove(wav48)
+            local names = {}
+            for _, profile in ipairs(reg:items()) do
+              names[#names + 1] = profile.name
+            end
+            return table.concat(names, ",")
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn composition_export_profile_and_inline_round_trip() {
+        let (mut host, _) = test_host();
+        let dir = std::env::temp_dir().join(format!("fa-export-lua-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let profile_path = dir.join("from-profile.wav");
+        let inline_path = dir.join("from-inline.wav");
+        let profile_lua = profile_path.to_string_lossy().replace('\\', "\\\\");
+        let inline_lua = inline_path.to_string_lossy().replace('\\', "\\\\");
+        let out = host.eval(&format!(
+            r#"
+            field.exports.define({{
+              name = "wav16",
+              encoder = "wav",
+              sample_format = "s16",
+              sample_rate = 44100,
+              channels = "all",
+              path = "{profile_lua}",
+            }})
+            local c = field.session.focused().composition
+            assert(c:export("wav16"))
+            assert(c:export({{
+              encoder = "wav",
+              sample_format = "f32",
+              sample_rate = 44100,
+              channels = {{ 0 }},
+              path = "{inline_lua}",
+            }}))
+            return true
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(profile_path.is_file(), "missing {}", profile_path.display());
+        assert!(inline_path.is_file(), "missing {}", inline_path.display());
+        let profile_decoded = field_audio_io::decode(&profile_path).expect("decode profile");
+        let inline_decoded = field_audio_io::decode(&inline_path).expect("decode inline");
+        assert_eq!(profile_decoded.sample_rate, 44100);
+        assert_eq!(profile_decoded.channel_count(), 2);
+        assert_eq!(inline_decoded.sample_rate, 44100);
+        assert_eq!(inline_decoded.channel_count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn layout_registry_items_and_remove() {
         let (mut host, _) = test_host();
         let out = host.eval(
@@ -636,6 +726,23 @@ mod tests {
         );
         assert!(host.layout("1OA").is_none());
         assert!(host.layout("2OA").unwrap().monitor_chain_id().is_none());
+        assert_eq!(
+            host.export_profile_names(),
+            vec![
+                "WAV (Source Equivalent)",
+                "WAV (48kHz)",
+                "FLAC (Source Equivalent)",
+                "FLAC (48kHz)",
+            ]
+        );
+        let wav48 = host.export_profile("WAV (48kHz)").expect("wav48");
+        assert_eq!(wav48.encoder.as_deref(), Some("wav"));
+        assert_eq!(wav48.sample_rate, Some(48_000));
+        let flac_src = host
+            .export_profile("FLAC (Source Equivalent)")
+            .expect("flac src");
+        assert_eq!(flac_src.encoder.as_deref(), Some("flac"));
+        assert!(flac_src.sample_rate.is_none());
     }
 
     fn detect_with(channels: usize, filename: Option<&str>) -> (Option<String>, Option<String>) {

@@ -29,6 +29,7 @@ mod audio_devices;
 mod backend;
 mod composition;
 mod config_dir;
+mod export;
 mod field_ns;
 mod fs;
 mod host;
@@ -54,6 +55,10 @@ mod world;
 pub use audio_devices::bind_audio_devices;
 pub use backend::{BackendHandle, HeadlessBackend, ScriptBackend};
 pub use config_dir::user_config_dir;
+pub use export::{
+    resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
+    ResolvedExportSettings,
+};
 pub use fs::bind_fs;
 pub use host::{
     host_from_lua, EvalOutput, HostHandle, HostProfile, LogEntry, LogLevel, ResumeWorkflow,

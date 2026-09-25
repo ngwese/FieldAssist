@@ -32,24 +32,24 @@ use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak,
     AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
     EditBreakOutChannels, EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate,
-    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Hide, HideOthers, InvertSelection,
-    MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Render as RenderFile, Save,
-    SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings,
-    ShowAll, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome,
-    TransportLoop, TransportNext, TransportPlayPause, TransportPreview, TransportPrevious,
-    TransportStart, TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead,
-    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
-    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
-    ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages,
-    ViewZoomIn, ViewZoomOut, ZeroCrossing,
+    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Export, Hide, HideOthers, InvertSelection,
+    MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Save, SaveAs, SaveSession,
+    SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll, SnapToMarker,
+    StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
+    TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
+    ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead, ViewFrame, ViewHideDetail,
+    ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail,
+    ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks,
+    ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
+    ZeroCrossing,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
 use crate::components::explorer::{ExplorerEvent, ExplorerPanel, InfoMediaRow};
+use crate::components::export_sheet::ExportSheet;
 use crate::components::header_meta::HeaderMeta;
 use crate::components::media_panel::MediaPoolPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
-use crate::components::render_sheet::RenderSheet;
 use crate::components::status_bar::file_status_from_composition;
 use crate::components::workflow_bar::WorkflowBar;
 use crate::components::workspace::WorkspacePanel;
@@ -231,13 +231,13 @@ pub struct AppView {
     /// When restoring a session, accumulate document load reports until all
     /// expected loads finish, then present one sheet (or commit).
     session_open_batch: Option<SessionOpenBatch>,
-    pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
+    pending_export: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
     pending_analysis: Arc<Mutex<Vec<DocumentId>>>,
     /// Info lines produced by analysis workers (drained onto the Messages panel).
     pending_analysis_logs: Arc<Mutex<Vec<LogLine>>>,
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
-    render_sheet: Entity<RenderSheet>,
-    render_sheet_open: bool,
+    export_sheet: Entity<ExportSheet>,
+    export_sheet_open: bool,
     /// App-owned modal for aggregated open failures (avoids Root::update).
     load_problems: Option<Entity<crate::components::load_problems_sheet::LoadProblemsSheet>>,
     load_problems_focus: FocusHandle,
@@ -291,7 +291,7 @@ impl AppView {
                     this.drain_pending_loaded_scripts(window, cx);
                     this.drain_pending_opens(window, cx);
                     this.drain_pending_load(window, cx);
-                    this.drain_pending_render(window, cx);
+                    this.drain_pending_export(window, cx);
                     this.drain_pending_analysis(window, cx);
                     this.drain_analysis_requests(cx);
                     this.flush_playback_faults(cx);
@@ -458,8 +458,8 @@ impl AppView {
         let repl = cx.new(|cx| ReplPanel::new("Script", window, cx));
         let messages = cx.new(|cx| MessagesPanel::new(cx));
         let media_panel = cx.new(|cx| MediaPoolPanel::new(cx));
-        let render_sheet = cx.new(|cx| RenderSheet::new(window, cx));
-        cx.observe(&render_sheet, |_, _, cx| cx.notify()).detach();
+        let export_sheet = cx.new(|cx| ExportSheet::new(window, cx));
+        cx.observe(&export_sheet, |_, _, cx| cx.notify()).detach();
         repl.update(cx, |repl, _| {
             let app = app.clone();
             repl.set_handler(Rc::new(move |code, window, cx| {
@@ -550,12 +550,12 @@ impl AppView {
             pending_opens,
             pending_load: Arc::new(Mutex::new(Vec::new())),
             session_open_batch: None,
-            pending_render: Arc::new(Mutex::new(Vec::new())),
+            pending_export: Arc::new(Mutex::new(Vec::new())),
             pending_analysis: Arc::new(Mutex::new(Vec::new())),
             pending_analysis_logs: Arc::new(Mutex::new(Vec::new())),
             pending_loaded_scripts: Vec::new(),
-            render_sheet,
-            render_sheet_open: false,
+            export_sheet,
+            export_sheet_open: false,
             load_problems: None,
             load_problems_focus: cx.focus_handle(),
             quick_note: None,
@@ -3346,7 +3346,7 @@ impl AppView {
             }
             "file.close_session" => self.request_close_session(window, cx),
             "file.close" => self.request_close_active(window, cx),
-            "file.render" => self.open_render_sheet(window, cx),
+            "file.export" => self.open_export_sheet(window, cx),
             "file.quit" => self.request_quit(window, cx),
             "help.about" => self.show_about(window, cx),
             "transport.home" => {
@@ -3948,7 +3948,7 @@ impl AppView {
     ) {
         use crate::components::load_problems_sheet::LoadProblemsSheet;
 
-        // Own the modal on AppView (same pattern as RenderSheet). Calling
+        // Own the modal on AppView (same pattern as ExportSheet). Calling
         // open_alert_dialog / open_sheet here hits Root::update and panics when
         // the window root is not yet (or no longer) typed as gpui_component::Root.
         self.load_problems = Some(cx.new(|cx| LoadProblemsSheet::new(report, window, cx)));
@@ -4689,12 +4689,12 @@ impl AppView {
         open_about_window(cx);
     }
 
-    fn open_render_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_export_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.session.active() else {
             window.open_alert_dialog(cx, |alert, _, _| {
                 alert
-                    .title("Nothing to render")
-                    .description("Open a composition before rendering.")
+                    .title("Nothing to export")
+                    .description("Open a composition before exporting.")
             });
             return;
         };
@@ -4702,36 +4702,43 @@ impl AppView {
             return;
         };
         let directory = self.suggested_save_directory(id, cx);
-        let prefs = self.render_prefs_for(id, cx);
+        let prefs = self.export_prefs_for(id, cx);
+        let profiles: Vec<_> = self
+            .script
+            .export_profile_names()
+            .into_iter()
+            .filter_map(|name| self.script.export_profile(&name))
+            .collect();
         let composition = views.composition.clone();
-        self.render_sheet.update(cx, |sheet, cx| {
+        self.export_sheet.update(cx, |sheet, cx| {
             sheet.configure_with_prefs(
                 &composition.read().unwrap(),
                 directory,
+                profiles,
                 Some(&prefs),
                 window,
                 cx,
             );
         });
-        self.render_sheet_open = true;
+        self.export_sheet_open = true;
         cx.notify();
     }
 
-    fn render_prefs_for(
+    fn export_prefs_for(
         &self,
         id: DocumentId,
         cx: &App,
-    ) -> crate::components::render_sheet::RenderPrefs {
-        use crate::components::render_sheet::RenderPrefs;
-        use crate::render::PcmFormat;
+    ) -> crate::components::export_sheet::ExportPrefs {
+        use crate::components::export_sheet::ExportPrefs;
+        use field_audio_io::PcmFormat;
 
-        let mut prefs = RenderPrefs::default();
-        prefs.encoder = self.inherited_property(id, "render.encoder", cx);
+        let mut prefs = ExportPrefs::default();
+        prefs.encoder = self.inherited_property(id, "export.encoder", cx);
         prefs.sample_rate = self
-            .inherited_property(id, "render.sample_rate", cx)
+            .inherited_property(id, "export.sample_rate", cx)
             .and_then(|value| value.parse().ok());
         prefs.sample_format = self
-            .inherited_property(id, "render.sample_format", cx)
+            .inherited_property(id, "export.sample_format", cx)
             .and_then(|value| match value.as_str() {
                 "s16" | "S16" => Some(PcmFormat::S16),
                 "s24" | "S24" => Some(PcmFormat::S24),
@@ -4739,7 +4746,7 @@ impl AppView {
                 "f32" | "F32" => Some(PcmFormat::F32),
                 _ => None,
             });
-        if let Some(mask) = self.inherited_property(id, "render.channels", cx) {
+        if let Some(mask) = self.inherited_property(id, "export.channels", cx) {
             prefs.channels_selected =
                 Some(mask.split(',').map(|part| part.trim() == "1").collect());
         }
@@ -4761,36 +4768,36 @@ impl AppView {
         self.session.properties().get(key).cloned()
     }
 
-    fn close_render_sheet(&mut self, cx: &mut Context<Self>) {
-        if !self.render_sheet_open {
+    fn close_export_sheet(&mut self, cx: &mut Context<Self>) {
+        if !self.export_sheet_open {
             return;
         }
-        self.render_sheet_open = false;
+        self.export_sheet_open = false;
         cx.notify();
     }
 
-    fn render_sheet_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn export_sheet_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let can_render = self.render_sheet.read(cx).can_render(cx);
-        let sheet = self.render_sheet.clone();
+        let can_export = self.export_sheet.read(cx).can_export(cx);
+        let sheet = self.export_sheet.clone();
         div()
-            .id("render-sheet-layer")
+            .id("export-sheet-layer")
             .absolute()
             .inset_0()
             .occlude()
             .child(
                 div()
-                    .id("render-sheet-backdrop")
+                    .id("export-sheet-backdrop")
                     .absolute()
                     .inset_0()
                     .bg(hsla(0., 0., 0., 0.25))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.close_render_sheet(cx);
+                        this.close_export_sheet(cx);
                     })),
             )
             .child(
                 v_flex()
-                    .id("render-sheet-panel")
+                    .id("export-sheet-panel")
                     .absolute()
                     .top_0()
                     .left(rems(5.))
@@ -4802,7 +4809,7 @@ impl AppView {
                     .border_color(theme.border)
                     .shadow_xl()
                     .occlude()
-                    .child(div().px_4().py_2().font_semibold().child("Render"))
+                    .child(div().px_4().py_2().font_semibold().child("Export"))
                     .child(div().px_4().py_1().w_full().child(sheet.clone()))
                     .child(
                         h_flex()
@@ -4812,29 +4819,29 @@ impl AppView {
                             .justify_end()
                             .gap_2()
                             .child(
-                                Button::new("render-cancel")
+                                Button::new("export-cancel")
                                     .outline()
                                     .label("Cancel")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.close_render_sheet(cx);
+                                        this.close_export_sheet(cx);
                                     })),
                             )
                             .child(
-                                Button::new("render-go")
+                                Button::new("export-go")
                                     .primary()
-                                    .label("Render")
-                                    .disabled(!can_render)
+                                    .label("Export")
+                                    .disabled(!can_export)
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.start_render(&sheet, window, cx);
+                                        this.start_export(&sheet, window, cx);
                                     })),
                             ),
                     ),
             )
     }
 
-    fn start_render(
+    fn start_export(
         &mut self,
-        sheet: &Entity<RenderSheet>,
+        sheet: &Entity<ExportSheet>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -4847,25 +4854,25 @@ impl AppView {
         let Some(views) = self.views.get(&id).cloned() else {
             return;
         };
-        self.close_render_sheet(cx);
-        let epoch = views.document.read(cx).progress.begin("rendering");
+        self.close_export_sheet(cx);
+        let epoch = views.document.read(cx).progress.begin("exporting");
         let progress = views.document.read(cx).progress.clone();
         views.waveform.update(cx, |_, cx| cx.notify());
         cx.notify();
-        let pending = self.pending_render.clone();
+        let pending = self.pending_export.clone();
         let composition = views.composition.clone();
         std::thread::spawn(move || {
             let result = {
                 let guard = composition.read().unwrap();
-                crate::render::render_to_path(&guard, &job, Some(&progress), epoch)
+                field_composition::export_to_path(&guard, &job, Some(&progress), epoch)
                     .map_err(|err| format!("{err:#}"))
             };
             pending.lock().unwrap().push((id, epoch, result));
         });
     }
 
-    fn drain_pending_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let completed = std::mem::take(&mut *self.pending_render.lock().unwrap());
+    fn drain_pending_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let completed = std::mem::take(&mut *self.pending_export.lock().unwrap());
         for (id, epoch, result) in completed {
             let Some(views) = self.views.get(&id) else {
                 continue;
@@ -4882,7 +4889,7 @@ impl AppView {
                 Err(err) => {
                     let message = err.clone();
                     window.open_alert_dialog(cx, move |alert, _, _| {
-                        alert.title("Render failed").description(message.clone())
+                        alert.title("Export failed").description(message.clone())
                     });
                     cx.notify();
                 }
@@ -5958,8 +5965,8 @@ impl Render for AppView {
                                             .with_layout(layout_picker),
                                     ),
                             )
-                            .when(self.render_sheet_open, |this| {
-                                this.child(self.render_sheet_overlay(cx))
+                            .when(self.export_sheet_open, |this| {
+                                this.child(self.export_sheet_overlay(cx))
                             })
                             .when(self.load_problems.is_some(), |this| {
                                 this.child(self.load_problems_overlay(window, cx))
@@ -6547,8 +6554,8 @@ fn close(_: &Close, cx: &mut App) {
     let _ = crate::commands::dispatch("file.close", cx);
 }
 
-fn render_cmd(_: &RenderFile, cx: &mut App) {
-    let _ = crate::commands::dispatch("file.render", cx);
+fn export_cmd(_: &Export, cx: &mut App) {
+    let _ = crate::commands::dispatch("file.export", cx);
 }
 
 fn about(_: &About, cx: &mut App) {
@@ -6919,7 +6926,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         needs_editor(MenuItem::action("Save As...", SaveAs), open),
         needs_editor(MenuItem::action("Close", Close), open),
         MenuItem::separator(),
-        needs_editor(MenuItem::action("Render...", RenderFile), open),
+        needs_editor(MenuItem::action("Export...", Export), open),
         MenuItem::separator(),
         needs_editor(MenuItem::action("Save Session", SaveSession), open),
         needs_editor(MenuItem::action("Save Session As...", SaveSessionAs), open),
@@ -7162,7 +7169,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(save_session_as);
     cx.on_action(close_session);
     cx.on_action(close);
-    cx.on_action(render_cmd);
+    cx.on_action(export_cmd);
     cx.on_action(quit);
     cx.on_action(hide);
     cx.on_action(hide_others);

@@ -3,6 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
+use field_audio_io::{encoder, encoders, format_rate, EncodeSpec, PcmFormat, RATE_PRESETS};
+use field_composition::ExportJob;
+use field_scripting::{
+    resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
+    ResolvedExportSettings,
+};
 use gpui_kit::component::{
     button::Button,
     checkbox::Checkbox,
@@ -18,13 +24,13 @@ use gpui_kit::{
 
 use crate::components::explorer::CompositionDrag;
 use crate::model::composition::Composition;
-use crate::render::{
-    encoder, encoders, format_rate, snap_format, EncodeSpec, PcmFormat, RenderJob, RATE_PRESETS,
-};
 
-/// Optional render defaults inherited from parent/session properties.
+/// Optional export defaults inherited from parent/session properties.
+///
+/// Applied as an overlay on top of composition/media source defaults when the
+/// sheet opens with no profile selected (same layering as a sparse profile).
 #[derive(Debug, Clone, Default)]
-pub struct RenderPrefs {
+pub struct ExportPrefs {
     /// Encoder id (`wav`, `flac`, …).
     pub encoder: Option<String>,
     /// PCM sample format when the encoder supports it.
@@ -37,8 +43,15 @@ pub struct RenderPrefs {
 
 const LABEL_WIDTH: gpui_kit::Rems = rems(7.);
 const VALUE_WIDTH: gpui_kit::Rems = rems(11.);
+const CUSTOM_PROFILE_LABEL: &str = "Custom";
 
-pub struct RenderSheet {
+pub struct ExportSheet {
+    /// Registered profiles available in the Profile menu.
+    profiles: Vec<ExportProfileDef>,
+    /// Selected profile name, or `None` for Custom (manual / prefs-seeded).
+    profile_name: Option<String>,
+    /// Composition/media defaults captured when the sheet was configured.
+    source: ExportSourceDefaults,
     encoder_id: String,
     sample_format: Option<PcmFormat>,
     sample_rate: u32,
@@ -48,7 +61,7 @@ pub struct RenderSheet {
     filename: Entity<InputState>,
 }
 
-impl RenderSheet {
+impl ExportSheet {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let directory = cx.new(|cx| InputState::new(window, cx));
         let filename = cx.new(|cx| InputState::new(window, cx));
@@ -65,6 +78,14 @@ impl RenderSheet {
         })
         .detach();
         Self {
+            profiles: Vec::new(),
+            profile_name: None,
+            source: ExportSourceDefaults {
+                sample_rate: 48_000,
+                sample_format: Some(PcmFormat::S24),
+                channel_count: 1,
+                display_name: "export".into(),
+            },
             encoder_id: "wav".into(),
             sample_format: Some(PcmFormat::S24),
             sample_rate: 48_000,
@@ -81,50 +102,104 @@ impl RenderSheet {
         &mut self,
         composition: &Composition,
         directory: PathBuf,
+        profiles: Vec<ExportProfileDef>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.configure_with_prefs(composition, directory, None, window, cx);
+        self.configure_with_prefs(composition, directory, profiles, None, window, cx);
     }
 
-    /// Configure from composition, optionally overlaying inherited render prefs.
+    /// Configure from composition source defaults, then optional session prefs.
+    ///
+    /// Resolution when opening (no profile selected):
+    /// 1. Source defaults from the composition / media
+    /// 2. Session/document `export.*` prefs as a sparse overlay (same rules as a profile)
+    ///
+    /// Choosing a named profile later re-resolves as source ← profile (prefs are
+    /// not mixed into a named profile).
     pub fn configure_with_prefs(
         &mut self,
         composition: &Composition,
         directory: PathBuf,
-        prefs: Option<&RenderPrefs>,
+        profiles: Vec<ExportProfileDef>,
+        prefs: Option<&ExportPrefs>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let encoder_id = prefs.and_then(|p| p.encoder.as_deref()).unwrap_or("wav");
-        let encoder = encoder(encoder_id).unwrap_or_else(|| encoder("wav").expect("wav encoder"));
-        self.encoder_id = encoder.id().into();
-        let bits = composition
-            .pool()
-            .first()
-            .and_then(|media| media.bits_per_sample);
-        let preferred_format = prefs
-            .and_then(|p| p.sample_format)
-            .or_else(|| bits.and_then(PcmFormat::from_bits))
-            .or(Some(PcmFormat::S24));
-        self.sample_format = snap_format(encoder.capabilities(), preferred_format);
-        self.sample_rate = prefs
-            .and_then(|p| p.sample_rate)
-            .unwrap_or_else(|| composition.sample_rate().max(1));
-        let count = composition.channel_count().max(1);
-        self.channels_selected = prefs
-            .and_then(|p| p.channels_selected.clone())
-            .filter(|selected| selected.len() == count)
-            .unwrap_or_else(|| vec![true; count]);
-        self.channel_labels = (0..count).map(|ch| composition.channel_label(ch)).collect();
-        let filename = format!("{}.{}", composition.display_name(), encoder.extension());
+        self.profiles = profiles;
+        self.profile_name = None;
+        self.source = ExportSourceDefaults::from_composition(composition);
+        self.channel_labels = (0..self.source.channel_count)
+            .map(|ch| composition.channel_label(ch))
+            .collect();
+
+        let overlay = prefs.map(prefs_as_profile).unwrap_or_default();
+        let resolved = resolve_export_settings(&self.source, &overlay)
+            .unwrap_or_else(|_| fallback_resolved(&self.source));
+        self.apply_resolved(&resolved, Some(directory), window, cx);
+        cx.notify();
+    }
+
+    /// Apply a named export profile (source ← profile) and update the sheet.
+    pub fn select_profile(
+        &mut self,
+        name: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match name {
+            Some(name) => {
+                let profile = self.profiles.iter().find(|p| p.name == name).cloned();
+                let Some(profile) = profile else {
+                    cx.notify();
+                    return;
+                };
+                self.profile_name = Some(name.to_string());
+                match resolve_export_settings(&self.source, &profile) {
+                    Ok(resolved) => self.apply_resolved(&resolved, None, window, cx),
+                    Err(_) => cx.notify(),
+                }
+            }
+            None => {
+                self.profile_name = None;
+                let resolved = resolve_export_settings(&self.source, &ExportProfileDef::default())
+                    .unwrap_or_else(|_| fallback_resolved(&self.source));
+                self.apply_resolved(&resolved, None, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn apply_resolved(
+        &mut self,
+        resolved: &ResolvedExportSettings,
+        directory_override: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.encoder_id = resolved.encoder_id.clone();
+        self.sample_format = resolved.sample_format;
+        self.sample_rate = resolved.sample_rate;
+        let count = self.source.channel_count;
+        self.channels_selected = (0..count)
+            .map(|i| resolved.channel_indices.contains(&i))
+            .collect();
+
+        let encoder = encoder(&self.encoder_id).unwrap_or_else(|| encoder("wav").expect("wav"));
+        let (dir, name) = destination_for_sheet(
+            resolved,
+            &self.source,
+            encoder.extension(),
+            directory_override,
+            &self.directory.read(cx).value().to_string(),
+            &self.filename.read(cx).value().to_string(),
+        );
         self.directory.update(cx, |input, cx| {
-            input.set_value(directory.to_string_lossy().into_owned(), window, cx);
+            input.set_value(dir, window, cx);
         });
         self.filename.update(cx, |input, cx| {
-            input.set_value(filename, window, cx);
+            input.set_value(name, window, cx);
         });
-        cx.notify();
     }
 
     fn selected_count(&self) -> u16 {
@@ -143,20 +218,41 @@ impl RenderSheet {
         let Some(encoder) = encoder(id) else {
             return;
         };
+        self.profile_name = None;
         self.encoder_id = encoder.id().into();
-        self.sample_format = snap_format(encoder.capabilities(), self.sample_format);
+        // Re-snap format against source preference when the encoder changes.
+        let preferred = self
+            .sample_format
+            .or(self.source.sample_format)
+            .or(Some(PcmFormat::S24));
+        let overlay = ExportProfileDef {
+            encoder: Some(self.encoder_id.clone()),
+            sample_format: preferred,
+            sample_rate: Some(self.sample_rate),
+            channels: Some(ExportChannels::Indices(
+                self.channels_selected
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, on)| on.then_some(i))
+                    .collect(),
+            )),
+            ..ExportProfileDef::default()
+        };
+        if let Ok(resolved) = resolve_export_settings(&self.source, &overlay) {
+            self.sample_format = resolved.sample_format;
+        }
         let stem = Path::new(&self.filename.read(cx).value().to_string())
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "render".into());
+            .unwrap_or_else(|| self.source.display_name.clone());
         self.filename.update(cx, |input, cx| {
             input.set_value(format!("{stem}.{}", encoder.extension()), window, cx);
         });
         cx.notify();
     }
 
-    pub fn can_render(&self, cx: &App) -> bool {
+    pub fn can_export(&self, cx: &App) -> bool {
         let Some(encoder) = encoder(&self.encoder_id) else {
             return false;
         };
@@ -172,14 +268,14 @@ impl RenderSheet {
         encoder.supports(&self.spec())
     }
 
-    pub fn job(&self, cx: &App) -> Option<RenderJob> {
-        if !self.can_render(cx) {
+    pub fn job(&self, cx: &App) -> Option<ExportJob> {
+        if !self.can_export(cx) {
             return None;
         }
         let directory = PathBuf::from(self.directory.read(cx).value().to_string());
         let filename = self.filename.read(cx).value().to_string();
         let dest = directory.join(filename.trim());
-        Some(RenderJob {
+        Some(ExportJob {
             encoder_id: self.encoder_id.clone(),
             spec: self.spec(),
             channel_indices: self
@@ -233,9 +329,86 @@ impl RenderSheet {
         });
         cx.notify();
     }
+
+    fn profile_label(&self) -> String {
+        match &self.profile_name {
+            Some(name) => name.clone(),
+            None => CUSTOM_PROFILE_LABEL.into(),
+        }
+    }
 }
 
-impl Render for RenderSheet {
+fn prefs_as_profile(prefs: &ExportPrefs) -> ExportProfileDef {
+    let channels = prefs.channels_selected.as_ref().map(|mask| {
+        ExportChannels::Indices(
+            mask.iter()
+                .enumerate()
+                .filter_map(|(i, on)| on.then_some(i))
+                .collect(),
+        )
+    });
+    ExportProfileDef {
+        encoder: prefs.encoder.clone(),
+        sample_format: prefs.sample_format,
+        sample_rate: prefs.sample_rate,
+        channels,
+        ..ExportProfileDef::default()
+    }
+}
+
+fn fallback_resolved(source: &ExportSourceDefaults) -> ResolvedExportSettings {
+    ResolvedExportSettings {
+        encoder_id: "wav".into(),
+        sample_format: source.sample_format.or(Some(PcmFormat::S24)),
+        sample_rate: source.sample_rate,
+        channel_indices: (0..source.channel_count).collect(),
+        path: None,
+        directory: None,
+        filename: None,
+    }
+}
+
+/// Build directory + filename strings for the sheet inputs from resolved settings.
+fn destination_for_sheet(
+    resolved: &ResolvedExportSettings,
+    source: &ExportSourceDefaults,
+    extension: &str,
+    directory_override: Option<PathBuf>,
+    current_directory: &str,
+    current_filename: &str,
+) -> (String, String) {
+    if let Some(path) = &resolved.path {
+        let dir = path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("{}.{}", source.display_name, extension));
+        return (dir, name);
+    }
+    let dir = directory_override
+        .or_else(|| resolved.directory.clone())
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| current_directory.to_string());
+    let name = resolved
+        .filename
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            let stem = Path::new(current_filename)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| source.display_name.clone());
+            format!("{stem}.{extension}")
+        });
+    (dir, name)
+}
+
+impl Render for ExportSheet {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -258,6 +431,55 @@ impl Render for RenderSheet {
             .map(|enc| enc.label().to_string())
             .unwrap_or_else(|| encoder_id.clone());
         let rate_choices = rate_choices(self.sample_rate);
+        let profile_label = self.profile_label();
+        let profile_name = self.profile_name.clone();
+        let profiles = self.profiles.clone();
+
+        let profile_menu = {
+            let this = cx.entity();
+            let profile_name = profile_name.clone();
+            move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                let mut menu = menu.item(
+                    PopupMenuItem::new(CUSTOM_PROFILE_LABEL)
+                        .checked(profile_name.is_none())
+                        .on_click({
+                            let this = this.clone();
+                            move |_, window, cx| {
+                                this.update(cx, |sheet, cx| {
+                                    sheet.select_profile(None, window, cx);
+                                });
+                            }
+                        }),
+                );
+                for profile in &profiles {
+                    let checked = profile_name.as_deref() == Some(profile.name.as_str());
+                    let profile_id = profile.name.clone();
+                    let this = this.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(profile.name.clone())
+                            .checked(checked)
+                            .on_click(move |_, window, cx| {
+                                this.update(cx, |sheet, cx| {
+                                    sheet.select_profile(Some(&profile_id), window, cx);
+                                });
+                            }),
+                    );
+                }
+                menu
+            }
+        };
+
+        let profile_description = self
+            .profile_name
+            .as_ref()
+            .and_then(|name| {
+                self.profiles
+                    .iter()
+                    .find(|p| &p.name == name)
+                    .map(|p| p.description.clone())
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_default();
 
         let codec_menu = {
             let this = cx.entity();
@@ -306,6 +528,7 @@ impl Render for RenderSheet {
                             .checked(spec.sample_format == Some(format))
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |sheet, cx| {
+                                    sheet.profile_name = None;
                                     sheet.sample_format = Some(format);
                                     cx.notify();
                                 });
@@ -335,6 +558,7 @@ impl Render for RenderSheet {
                             .checked(spec.sample_rate == rate)
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |sheet, cx| {
+                                    sheet.profile_name = None;
                                     sheet.sample_rate = rate;
                                     cx.notify();
                                 });
@@ -348,6 +572,30 @@ impl Render for RenderSheet {
         v_flex()
             .gap_4()
             .w_full()
+            .child(form_row(
+                "Profile",
+                muted,
+                None,
+                h_flex()
+                    .gap_3()
+                    .w_full()
+                    .items_center()
+                    .child(div().w(VALUE_WIDTH).flex_none().child(dropdown(
+                        "export-profile",
+                        profile_label,
+                        false,
+                        profile_menu,
+                    )))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(profile_description),
+                    ),
+            ))
+            .child(div().w_full().border_b_1().border_color(theme.border))
             .child(
                 h_flex()
                     .gap_6()
@@ -362,14 +610,14 @@ impl Render for RenderSheet {
                                     "Type",
                                     muted,
                                     Some(VALUE_WIDTH),
-                                    dropdown("render-type", codec_label, false, codec_menu),
+                                    dropdown("export-type", codec_label, false, codec_menu),
                                 ))
                                 .child(form_row(
                                     "Format",
                                     muted,
                                     Some(VALUE_WIDTH),
                                     dropdown(
-                                        "render-format",
+                                        "export-format",
                                         format_label,
                                         !stores_format,
                                         format_menu,
@@ -379,7 +627,7 @@ impl Render for RenderSheet {
                                     "Sample Rate",
                                     muted,
                                     Some(VALUE_WIDTH),
-                                    dropdown("render-rate", rate_label, false, rate_menu),
+                                    dropdown("export-rate", rate_label, false, rate_menu),
                                 )),
                         )),
                     )
@@ -389,10 +637,11 @@ impl Render for RenderSheet {
                             self.channel_labels.iter().enumerate().map(|(i, label)| {
                                 let checked =
                                     self.channels_selected.get(i).copied().unwrap_or(false);
-                                Checkbox::new(("render-ch", i as u64))
+                                Checkbox::new(("export-ch", i as u64))
                                     .label(label.clone())
                                     .checked(checked)
                                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                        this.profile_name = None;
                                         if let Some(slot) = this.channels_selected.get_mut(i) {
                                             *slot = *checked;
                                         }

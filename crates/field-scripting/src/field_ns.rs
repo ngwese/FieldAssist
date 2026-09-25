@@ -7,6 +7,7 @@ use mlua::{Function, Table, Value};
 
 use crate::audio_devices::bind_audio_devices;
 use crate::composition::bind_composition_module;
+use crate::export::bind_exports;
 use crate::fs::bind_fs;
 use crate::host::{host_from_lua, LogLevel};
 use crate::include::field_include;
@@ -33,6 +34,7 @@ pub fn bind_field(lua: &mlua::Lua) -> mlua::Result<()> {
     bind_composition_module(lua, &field)?;
     bind_media_module(lua, &field)?;
     bind_layouts(lua, &field)?;
+    bind_exports(lua, &field)?;
     bind_workflow_module(lua, &field)?;
     bind_ui(lua, &field)?;
     bind_audio_devices(lua, &field)?;

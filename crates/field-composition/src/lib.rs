@@ -26,6 +26,7 @@ mod clip;
 mod composition;
 mod edit_ranges;
 mod edl;
+mod export;
 mod tree;
 
 pub use analysis_store::{
@@ -45,6 +46,7 @@ pub use edl::{
     CompositionId, Edit, EditId, EditOp, Edl, InitialState, ProjectEnvelope, ProjectFile,
     FACOMP_FORMAT_VERSION, FACOMP_KIND,
 };
+pub use export::{export_to_path, ExportJob};
 pub use field_audio_model::{
     default_marker_type, descriptor_mismatch, marker_type_color, BlockPager, BlockSource,
     DescriptorMismatch, Marker, MarkerId, MarkerList, MarkerType, MediaDescriptor, MediaId,

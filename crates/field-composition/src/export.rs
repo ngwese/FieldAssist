@@ -1,33 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+//! One-shot composition encode (File → Export / `composition:export`).
+
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use field_audio_io::{encoder as encoder_by_id, encoders as registry, select_channels};
+use field_audio_io::{encoder, select_channels, EncodeSpec, FormatEncoder};
 use field_audio_process::resample_planar;
+use field_core::ProgressHandle;
 
-use crate::model::composition::Composition;
-use crate::progress::ProgressHandle;
+use crate::Composition;
 
-pub use field_audio_io::{
-    format_rate, snap_format, EncodeSpec, FormatEncoder, PcmFormat, RATE_PRESETS,
-};
-
-/// Look up built-in encoders.
-pub fn encoders() -> &'static [&'static dyn FormatEncoder] {
-    registry()
-}
-
-/// Look up a built-in encoder by id.
-pub fn encoder(id: &str) -> Option<&'static dyn FormatEncoder> {
-    encoder_by_id(id)
-}
-
-/// Render job parameters for writing a composition to disk.
+/// Export job parameters for writing a composition to disk.
 #[derive(Clone, Debug)]
-pub struct RenderJob {
+pub struct ExportJob {
     /// Encoder id (e.g. `"wav"`).
     pub encoder_id: String,
     /// Output format / rate / channels.
@@ -38,10 +26,10 @@ pub struct RenderJob {
     pub dest: std::path::PathBuf,
 }
 
-/// Render `composition` according to `job`, optionally reporting `progress`.
-pub fn render_to_path(
+/// Export `composition` according to `job`, optionally reporting `progress`.
+pub fn export_to_path(
     composition: &Composition,
-    job: &RenderJob,
+    job: &ExportJob,
     progress: Option<&ProgressHandle>,
     epoch: u64,
 ) -> Result<()> {
@@ -97,17 +85,23 @@ fn write_encoded(
     let file = std::fs::File::create(dest).with_context(|| format!("create {}", dest.display()))?;
     let mut writer = BufWriter::new(file);
     encoder.encode(spec, planar, &mut writer)?;
-    writer.flush().context("flush render output")?;
+    writer.flush().context("flush export output")?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::path::Path;
 
     use super::*;
-    use crate::model::composition::{Composition, MediaRef};
-    use field_audio_io::{planar_frames, EncoderCaps};
+    use field_audio_io::{
+        decode, encoder, encoders, planar_frames, EncodeSpec, EncoderCaps, FormatEncoder, PcmFormat,
+    };
+    use field_audio_model::MediaRef;
+    use field_audio_process::resample_planar;
+
+    use crate::Composition;
 
     fn sine(frames: usize, channels: usize, rate: u32) -> MediaRef {
         let samples = (0..channels)
@@ -123,8 +117,8 @@ mod tests {
         MediaRef::from_memory_samples(rate, samples)
     }
 
-    fn decode_path(path: &Path) -> crate::audio::DecodedAudio {
-        crate::audio::decode(path).expect("decode rendered file")
+    fn decode_path(path: &Path) -> field_audio_io::DecodedAudio {
+        decode(path).expect("decode exported file")
     }
 
     #[test]
@@ -183,10 +177,10 @@ mod tests {
         let comp = Composition::from_media(sine(256, 1, 44100)).unwrap();
         let dir = std::env::temp_dir();
         for format in [PcmFormat::S16, PcmFormat::S24, PcmFormat::F32] {
-            let dest = dir.join(format!("snd-render-{format:?}.wav"));
-            render_to_path(
+            let dest = dir.join(format!("snd-export-{format:?}.wav"));
+            export_to_path(
                 &comp,
-                &RenderJob {
+                &ExportJob {
                     encoder_id: "wav".into(),
                     spec: EncodeSpec {
                         sample_rate: 44100,
@@ -211,10 +205,10 @@ mod tests {
     #[test]
     fn wav_channel_subset_is_mono() {
         let comp = Composition::from_media(sine(128, 2, 44100)).unwrap();
-        let dest = std::env::temp_dir().join("snd-render-subset.wav");
-        render_to_path(
+        let dest = std::env::temp_dir().join("snd-export-subset.wav");
+        export_to_path(
             &comp,
-            &RenderJob {
+            &ExportJob {
                 encoder_id: "wav".into(),
                 spec: EncodeSpec {
                     sample_rate: 44100,
@@ -248,10 +242,10 @@ mod tests {
             .collect();
         let media = MediaRef::from_memory_samples(rate, vec![source_plane.clone()]);
         let comp = Composition::from_media(media).unwrap();
-        let dest = std::env::temp_dir().join("snd-render.flac");
-        render_to_path(
+        let dest = std::env::temp_dir().join("snd-export.flac");
+        export_to_path(
             &comp,
-            &RenderJob {
+            &ExportJob {
                 encoder_id: "flac".into(),
                 spec: EncodeSpec {
                     sample_rate: rate,
@@ -279,16 +273,16 @@ mod tests {
         let n = frames.min(decoded.channels[0].len());
         let err = max_abs_err(&decoded.channels[0][..n], &expected[..n]);
         let tol = 1.0 / max + 1e-5;
-        assert!(err <= tol, "flac s16 render err {err} exceeds {tol}");
+        assert!(err <= tol, "flac s16 export err {err} exceeds {tol}");
     }
 
     #[test]
     fn vorbis_short_buffer_decodes() {
         let comp = Composition::from_media(sine(8192, 2, 44100)).unwrap();
-        let dest = std::env::temp_dir().join("snd-render.ogg");
-        render_to_path(
+        let dest = std::env::temp_dir().join("snd-export.ogg");
+        export_to_path(
             &comp,
-            &RenderJob {
+            &ExportJob {
                 encoder_id: "ogg".into(),
                 spec: EncodeSpec {
                     sample_rate: 44100,
@@ -368,17 +362,17 @@ mod tests {
     }
 
     #[test]
-    fn wav_f32_same_rate_render_is_sample_identity() {
+    fn wav_f32_same_rate_export_is_sample_identity() {
         use field_audio_process::{max_abs_err, sine};
         let rate = 48_000u32;
         let frames = 2048usize;
         let samples = sine(frames, rate, 440.0, 0.5);
         let media = MediaRef::from_memory_samples(rate, vec![samples.clone()]);
         let comp = Composition::from_media(media).unwrap();
-        let dest = std::env::temp_dir().join("fa-identity-render.wav");
-        render_to_path(
+        let dest = std::env::temp_dir().join("fa-identity-export.wav");
+        export_to_path(
             &comp,
-            &RenderJob {
+            &ExportJob {
                 encoder_id: "wav".into(),
                 spec: EncodeSpec {
                     sample_rate: rate,
@@ -398,7 +392,7 @@ mod tests {
         let got = &decoded.channels[0];
         let n = frames.min(got.len());
         let err = max_abs_err(&got[..n], &samples[..n]);
-        assert!(err < 1e-6, "same-rate f32 render err {err}");
+        assert!(err < 1e-6, "same-rate f32 export err {err}");
     }
 
     #[test]
@@ -408,10 +402,10 @@ mod tests {
         let right = vec![0.0f32; 128];
         let media = MediaRef::from_memory_samples(48_000, vec![left, right]);
         let comp = Composition::from_media(media).unwrap();
-        let dest = std::env::temp_dir().join("fa-identity-stereo.wav");
-        render_to_path(
+        let dest = std::env::temp_dir().join("fa-identity-stereo-export.wav");
+        export_to_path(
             &comp,
-            &RenderJob {
+            &ExportJob {
                 encoder_id: "wav".into(),
                 spec: EncodeSpec {
                     sample_rate: 48_000,
@@ -433,11 +427,10 @@ mod tests {
 
     #[test]
     fn decode_wav_f32_round_trips_synthetic_sine() {
-        use field_audio_io::{encoder, EncodeSpec, PcmFormat};
         use field_audio_process::{max_abs_err, sine};
         let rate = 44_100u32;
         let samples = sine(1024, rate, 1000.0, 0.25);
-        let dest = std::env::temp_dir().join("fa-decode-identity.wav");
+        let dest = std::env::temp_dir().join("fa-decode-identity-export.wav");
         {
             let enc = encoder("wav").expect("wav");
             let file = std::fs::File::create(&dest).unwrap();
@@ -454,7 +447,7 @@ mod tests {
             .unwrap();
             writer.flush().unwrap();
         }
-        let decoded = crate::audio::decode(&dest).unwrap();
+        let decoded = decode(&dest).unwrap();
         let _ = std::fs::remove_file(&dest);
         let n = samples.len().min(decoded.channels[0].len());
         let err = max_abs_err(&decoded.channels[0][..n], &samples[..n]);

@@ -27,11 +27,12 @@ examples are under
 12. [field.composition](#field-composition)
 13. [field.media](#field-media)
 14. [field.layouts](#field-layouts)
-15. [field.workflow](#field-workflow)
-16. [field.ui](#field-ui)
-17. [field.audio_devices](#field-audio-devices)
-18. [Nested types](#nested-types)
-19. [Migration from app:*](#migration-from-app)
+15. [field.exports](#field-exports)
+16. [field.workflow](#field-workflow)
+17. [field.ui](#field-ui)
+18. [field.audio_devices](#field-audio-devices)
+19. [Nested types](#nested-types)
+20. [Migration from app:*](#migration-from-app)
 
 ## Hosts and scope
 
@@ -66,6 +67,7 @@ field-play uses the headless backend only long enough to load init and fire
 | `field.composition` | baseline userdata | baseline | full, plus desktop chrome fields/methods |
 | `field.media` / `field.workflow` / `field.ui` | full | unused at play | full |
 | `field.layouts` | `define` + `shared_registry` | via init | `define` + `shared_registry` |
+| `field.exports` | `define` + `shared_registry` | unused at play | `define` + `shared_registry` |
 | `field.audio_devices` | full | unused at play | full |
 
 ## Initialization
@@ -527,6 +529,7 @@ still uses `session:open`.
 | `:replace` | `path` (string or url) | composition | Replace media/project from path |
 | `:undo` / `:redo` | — | `boolean` | Edit history |
 | `:cut` / `:copy` / `:paste` / `:clear` / `:remove` / `:duplicate` / `:trim` | — | `true` | Edit ops on the selection |
+| `:export` | profile name, profile userdata, or options table | `true` | Encode to disk (same pipeline as File → Export); see [field.exports](#field-exports) |
 
 **FieldAssist-only methods:** `:break_out_regions()` → composition or array;
 `:break_out_channels(channels?)` → composition.
@@ -644,6 +647,111 @@ Channel layout registry used by detect hooks and composition layout choice.
 | `description` | **ro** | `string` | Human label |
 | `channels` | **ro** | map | **0-based** channel index → label string |
 | `monitor` | **ro** | table or `nil` | Monitor table from `define` |
+
+#### Methods
+
+*(none)*
+
+---
+
+<a id="field-exports"></a>
+
+## `field.exports`
+
+Export profile registry for scripted one-shot encodes (`composition:export`).
+Profiles express the same options as the File → Export sheet.
+
+### Properties
+
+*(none)*
+
+### Functions
+
+| Function | Arguments | Returns | Hosts | Description |
+| --- | --- | --- | --- | --- |
+| `define` | `spec: table` | — | all | Sugar for `shared_registry():define(spec)` |
+| `shared_registry` | — | [export registry](#export-registry) | field-scripting | Process export profile registry |
+
+### `define(spec)` keys
+
+| Key | Required | Type | Description |
+| --- | --- | --- | --- |
+| `name` | yes | `string` | Non-empty profile id |
+| `description` | no | `string` | Human label (default `""`) |
+| `encoder` | no | `string` | Encoder id (`wav`, `flac`, `ogg`; default `wav` at export) |
+| `sample_format` | no | `string` | PCM label (`S16`, `S24`, `F32`, …); snapped when the encoder stores PCM |
+| `sample_rate` | no | `integer` | Output Hz (default: composition rate) |
+| `channels` | no | `"all"` or `{ indices… }` | **0-based** channel indices (default all) |
+| `directory` | no | string or url | Output directory |
+| `filename` | no | `string` | Output filename |
+| `path` | no | string or url | Full destination; wins over `directory` + `filename` |
+
+### `composition:export(arg)`
+
+`arg` may be:
+
+- a profile **name** string or profile **userdata**
+- an options table: ad-hoc encode settings, and/or `{ profile = name, …overrides }`
+- `{ name = "profile", path = "…", … }` when `name` matches a registered profile
+
+Destination requires `path`, or `directory` (with optional `filename`). Returns
+`true` on success; raises a Lua error on failure. Encode matches File → Export
+(no monitor DSP). Processing chains and background batch jobs are future work.
+
+### Setting resolution
+
+Export settings are resolved in layers. A later layer supplies a value **only
+when that field is explicitly set**; omitted fields keep the previous layer.
+
+1. **Source defaults** from the open composition / primary media:
+   - `sample_rate` ← composition sample rate
+   - `sample_format` ← primary media bit depth (else preference `S24`)
+   - `channels` ← all composition channels
+   - `encoder` ← product default `"wav"`
+   - destination ← unset (caller must supply `path` or `directory`)
+2. **Profile** (`field.exports.define` / named profile): each set field
+   overrides the source for that field only
+3. **Call-time overrides** (inline table keys, or Export-sheet UI edits after
+   picking a profile): same sparse overlay as a profile
+
+After merging, the encoder's capabilities snap `sample_format` and validate
+rate / channel count. File → Export applies the same source ← profile merge
+when a Profile is chosen in the sheet; opening the sheet with **Custom** uses
+source ← session `export.*` prefs instead.
+
+<a id="export-registry"></a>
+
+### Returned type: export registry
+
+#### Properties
+
+*(none)*
+
+#### Methods
+
+| Method | Arguments | Returns | Description |
+| --- | --- | --- | --- |
+| `:define` | `spec: table` | — | Register or replace a profile by `name` |
+| `:remove` | profile or name string | — | Drop a registered profile (no-op if missing) |
+| `:items` | — | `{ profile, … }` | Registered profiles in definition order |
+
+<a id="export-profile"></a>
+
+### Returned type: export profile
+
+#### Properties
+
+| Property | Access | Type | Description |
+| --- | --- | --- | --- |
+| `name` | **ro** | `string` | Profile id |
+| `description` | **ro** | `string` | Human label |
+| `encoder` | **ro** | `string` or `nil` | Encoder id |
+| `sample_format` | **ro** | `string` or `nil` | PCM label |
+| `sample_rate` | **ro** | `integer` or `nil` | Hz |
+| `channels` | **ro** | `"all"` or `{ indices… }` | Channel selection |
+| `directory` | **ro** | `string` or `nil` | Directory |
+| `filename` | **ro** | `string` or `nil` | Filename |
+| `path` | **ro** | `string` or `nil` | Full path |
 
 #### Methods
 

@@ -55,7 +55,6 @@ mod monitor;
 mod monitor_schema;
 mod playback;
 mod progress;
-mod render;
 mod script;
 mod settings;
 mod themes;

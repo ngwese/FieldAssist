@@ -441,6 +441,9 @@ impl UserData for LuaComposition {
                 Ok(true)
             })
         });
+        methods.add_method("export", |lua, this, arg: Value| {
+            crate::export::export_composition(lua, this.id, arg)
+        });
     }
 }
 

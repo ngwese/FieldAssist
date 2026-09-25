@@ -42,7 +42,7 @@ sittings.
 Named **processing chains** and background batch export are a future layer,
 specified in [SPEC-processing.md](SPEC-processing.md). They sit **in addition
 to** the as-built **monitor chain** (playback downmix / listen DSP) and the
-current File → Render of the active composition. **Analysis** beyond overview
+current File → Export of the active composition. **Analysis** beyond overview
 peaks (overlays, spectrum view, silence/transients, …) is specified in
 [SPEC-analysis.md](SPEC-analysis.md). Lua workflows (especially Review) cover
 incremental pass-through of a set of files.
@@ -461,9 +461,9 @@ on reload. Changing layout does not clear a custom `playback_channels` subset.
 Second-order Ambisonics (`2OA`) is a labeling layout only; it has no monitor
 chain.
 
-## Render
+## Export
 
-File → Render opens a sheet: encoder, PCM format (when the encoder stores
+File → Export opens a sheet: encoder, PCM format (when the encoder stores
 PCM), sample-rate preset, per-channel checkboxes, directory, and filename.
 The job runs off the UI thread:
 
@@ -482,16 +482,27 @@ Defaults: WAV, source bit depth snapped toward S24, composition sample rate,
 all channels, `{display_name}.{ext}` in the suggested save directory. Rate
 presets include 22.05 kHz through 192 kHz.
 
-Render is a one-shot export of the edited composition. It does not walk
+Export is a one-shot encode of the edited composition. It does not walk
 session groups or named regions, and it does not run a processing chain.
-Those belong to the future processing layer.
+Those belong to the future processing layer. Lua can perform the same encode
+via `composition:export` and named profiles from `field.exports.define`
+(see [SCRIPTING.md](../SCRIPTING.md)).
+
+The Export sheet includes a **Profile** menu populated from
+`field.exports`. Selecting a profile resolves settings as **composition/media
+source defaults**, then **profile fields that are set** (omitted profile
+fields keep the source value). Opening with Custom uses source defaults
+overlaid with session/document `export.*` prefs instead.
+
+Inherited document/session string prefs: `export.encoder`,
+`export.sample_rate`, `export.sample_format`, `export.channels`.
 
 ## Commands
 
 Menus, keymap, and Lua `app:command` share these ids:
 
 **File:** `file.open`, `file.save`, `file.save_as`, `file.save_session`,
-`file.save_session_as`, `file.close_session`, `file.close`, `file.render`,
+`file.save_session_as`, `file.close_session`, `file.close`, `file.export`,
 `file.quit`
 
 **Help:** `help.about`
@@ -519,7 +530,7 @@ Letter keys are scoped to the waveform so they do not steal Script/REPL typing.
 ## Non-destructive rule
 
 Source media files are never rewritten by edits, save, peak build, or
-playback. Save writes `.facomp` / `.fasession` JSON. Render writes a new
+playback. Save writes `.facomp` / `.fasession` JSON. Export writes a new
 file at the path the user chose. Temp spill is under the OS temp directory.
 
 ## Out of scope for the as-built application
