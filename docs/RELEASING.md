@@ -72,8 +72,8 @@ gh workflow run Release --ref release/X.Y.Z -f tag=X.Y.Z
 ```
 
 cargo-dist builds again, then creates the GitHub Release for tag `X.Y.Z`
-(creating the git tag as part of that release). Humans should not
-`git push --tags` for product versions.
+(creating the git tag as part of that release). The `version-tags` ruleset
+blocks rewriting or deleting tags; prefer not to `git push --tags` by hand.
 
 ## After promote
 
