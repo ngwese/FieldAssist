@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use field_features::{Feature, FeatureFlags, FeatureRegistry};
 use field_ui_components::WaveformRepresentation;
 use gpui_kit::{App, Global};
 use schemars::JsonSchema;
@@ -14,14 +15,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug)]
 pub struct AppSettingsStore {
     pub settings: AppSettings,
+    /// Live feature flags synced from [`AppSettings::experimental`].
+    pub features: FeatureRegistry,
     /// When true, `load_settings` must not overwrite the CLI `--output` device.
     pub cli_output_locked: bool,
 }
 
 impl Default for AppSettingsStore {
     fn default() -> Self {
+        let settings = AppSettings::default();
+        let features = FeatureRegistry::from_flags(settings.experimental.flags.clone());
         Self {
-            settings: AppSettings::default(),
+            settings,
+            features,
             cli_output_locked: false,
         }
     }
@@ -38,6 +44,7 @@ pub struct AppSettings {
     pub waveform: WaveformSettings,
     pub selection: SelectionSettings,
     pub audio: AudioSettings,
+    pub experimental: ExperimentalSettings,
 }
 
 impl Default for AppSettings {
@@ -48,6 +55,7 @@ impl Default for AppSettings {
             waveform: WaveformSettings::default(),
             selection: SelectionSettings::default(),
             audio: AudioSettings::default(),
+            experimental: ExperimentalSettings::default(),
         }
     }
 }
@@ -223,6 +231,21 @@ impl Default for AudioSettings {
     }
 }
 
+/// Unstable / preview preferences.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ExperimentalSettings {
+    pub flags: FeatureFlags,
+}
+
+impl Default for ExperimentalSettings {
+    fn default() -> Self {
+        Self {
+            flags: FeatureFlags::default(),
+        }
+    }
+}
+
 impl AppSettings {
     /// Path to `settings.json` beside `init.lua`, if the config dir resolves.
     pub fn path() -> Option<PathBuf> {
@@ -293,6 +316,9 @@ pub fn store_mut(cx: &mut App) -> &mut AppSettingsStore {
 pub fn reload_from_disk(cx: &mut App) {
     let settings = AppSettings::load();
     let store = store_mut(cx);
+    store
+        .features
+        .set_flags(settings.experimental.flags.clone());
     store.settings = settings;
 }
 
@@ -306,8 +332,18 @@ pub fn update_and_save(cx: &mut App, f: impl FnOnce(&mut AppSettings)) -> Result
     {
         let store = store_mut(cx);
         f(&mut store.settings);
+        store
+            .features
+            .set_flags(store.settings.experimental.flags.clone());
     }
     save_store(cx)
+}
+
+/// Whether a product feature flag is currently enabled.
+pub fn feature_enabled(feature: Feature, cx: &App) -> bool {
+    cx.try_global::<AppSettingsStore>()
+        .map(|s| s.features.is_enabled(feature))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -329,6 +365,8 @@ mod tests {
         assert!(!s.selection.snap_to_marker);
         assert!(s.selection.add_at_hover);
         assert!(s.audio.output_device.is_none());
+        assert!(!s.experimental.flags.content_credentials);
+        assert!(!s.experimental.flags.analysis_ops);
     }
 
     #[test]
@@ -339,6 +377,7 @@ mod tests {
         s.waveform
             .set_representation_enum(WaveformRepresentation::Spectrum);
         s.audio.output_device = Some("Speakers".into());
+        s.experimental.flags.analysis_ops = true;
         let text = serde_json::to_string_pretty(&s).unwrap();
         let back: AppSettings = serde_json::from_str(&text).unwrap();
         assert_eq!(back, s);

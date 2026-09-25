@@ -24,6 +24,8 @@ field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
     │                    field-composition edge)
     └── field-audio-playback     (device list for field.audio_devices)
 
+field-features          (feature flag registry; no gpui)
+
 field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
 field-ui-components     (gpui widgets + host traits / DTOs)
 
@@ -31,12 +33,14 @@ field-scripting         (mlua host; NO gpui, NO field-ui-components)
     ├── field-batch     (CLI: REPL + script + shebang)
     ├── field-play      (CLI: composition → default device + monitor;
     │                    init.lua + detect_layout)
-    └── FieldAssist     (GPUI app; also monitor, ui-components, playback)
+    └── FieldAssist     (GPUI app; also monitor, ui-components, playback,
+                         field-features)
 ```
 
 | Crate | Level | Responsibility |
 | --- | --- | --- |
 | `field-core` | leaf | File URLs, `ProgressHandle`, prefixed `CompositionId` |
+| `field-features` | leaf | Feature flag IDs, defaults, and in-memory registry |
 | `field-audio-model` | leaf | `PcmBuffer`, regions, markers, `MediaId` / descriptors, `MediaPool` / `MediaStore`, `BlockPager` / `BlockSource` |
 | `field-audio-io` | leaf | Probe/decode/encode above Symphonia and format encoders |
 | `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops ([SPEC-analysis.md](spec/SPEC-analysis.md)) |

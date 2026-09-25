@@ -2109,6 +2109,10 @@ impl AppView {
             envelope_overlay,
             waveform_representation: self.waveform_representation,
             analyze_selection_only,
+            analysis_ops: crate::settings::feature_enabled(
+                field_features::Feature::AnalysisOps,
+                cx,
+            ),
             marker_type: self.active_marker_type.clone(),
             add_at_hover: self.add_marker_at_hover,
             snap_zero_crossings,
@@ -6510,6 +6514,11 @@ pub(crate) fn apply_audio_device_from_settings(cx: &mut App) {
     });
 }
 
+/// Refresh menus after experimental feature flags change.
+pub(crate) fn apply_experimental_from_settings(cx: &mut App) {
+    refresh_menus_for_editor_presence(cx);
+}
+
 fn open(_: &Open, cx: &mut App) {
     let _ = crate::commands::dispatch("file.open", cx);
 }
@@ -6808,6 +6817,8 @@ struct AppMenuState {
     envelope_overlay: bool,
     waveform_representation: field_ui_components::WaveformRepresentation,
     analyze_selection_only: bool,
+    /// Experimental Analysis Ops flag — when false the Analyze menu is omitted.
+    analysis_ops: bool,
     marker_type: String,
     add_at_hover: bool,
     snap_zero_crossings: bool,
@@ -6858,7 +6869,7 @@ fn snap_marker_type_menu_item(name: &str, disabled: &HashSet<String>) -> MenuIte
     .checked(!disabled.contains(name))
 }
 
-fn no_editor_menu_state() -> AppMenuState {
+fn no_editor_menu_state(cx: &App) -> AppMenuState {
     AppMenuState {
         editor_open: false,
         explorer: false,
@@ -6868,6 +6879,7 @@ fn no_editor_menu_state() -> AppMenuState {
         envelope_overlay: false,
         waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
         analyze_selection_only: false,
+        analysis_ops: crate::settings::feature_enabled(field_features::Feature::AnalysisOps, cx),
         marker_type: default_marker_type().to_string(),
         add_at_hover: true,
         snap_zero_crossings: true,
@@ -7054,28 +7066,32 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             needs_editor(MenuItem::action("Reset View", ViewFitAll), open),
         ]),
     );
-    menus.push(
-        Menu::new("Analyze").items([
-            needs_editor(
-                MenuItem::action("Selection Only", AnalyzeSelectionOnly)
-                    .checked(state.analyze_selection_only),
-                open,
-            ),
-            MenuItem::separator(),
-            needs_editor(
-                MenuItem::submenu(
-                    Menu::new("Envelope").items([MenuItem::action("Peak", AnalyzeEnvelopePeak)]),
+    if state.analysis_ops {
+        menus.push(
+            Menu::new("Analyze").items([
+                needs_editor(
+                    MenuItem::action("Selection Only", AnalyzeSelectionOnly)
+                        .checked(state.analyze_selection_only),
+                    open,
                 ),
-                open,
-            ),
-            needs_editor(
-                MenuItem::submenu(
-                    Menu::new("Mark").items([MenuItem::action("Transients", AnalyzeTransients)]),
+                MenuItem::separator(),
+                needs_editor(
+                    MenuItem::submenu(
+                        Menu::new("Envelope")
+                            .items([MenuItem::action("Peak", AnalyzeEnvelopePeak)]),
+                    ),
+                    open,
                 ),
-                open,
-            ),
-        ]),
-    );
+                needs_editor(
+                    MenuItem::submenu(
+                        Menu::new("Mark")
+                            .items([MenuItem::action("Transients", AnalyzeTransients)]),
+                    ),
+                    open,
+                ),
+            ]),
+        );
+    }
     menus.push(workflow_menu(state));
     if !cfg!(target_os = "macos") {
         menus.push(Menu::new("Help").items([MenuItem::action("About...", About)]));
@@ -7134,7 +7150,7 @@ fn refresh_menus_for_editor_presence(cx: &mut App) {
             bar.update(cx, |bar, cx| bar.reload(cx));
         }
     } else {
-        apply_app_menus(&no_editor_menu_state(), cx);
+        apply_app_menus(&no_editor_menu_state(cx), cx);
     }
 }
 
@@ -7214,7 +7230,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(cancel_workflow_action);
     cx.on_action(start_workflow_action);
     install_keybindings(cx);
-    apply_app_menus(&no_editor_menu_state(), cx);
+    apply_app_menus(&no_editor_menu_state(cx), cx);
     cx.activate(true);
 }
 

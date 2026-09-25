@@ -22,6 +22,7 @@ ogg = { workspace = true }
 flacenc = { workspace = true }
 rubato = { workspace = true }
 field-core = { path = "../field-core" }
+field-features = { path = "../field-features" }
 field-audio-model = { path = "../field-audio-model" }
 field-audio-io = { path = "../field-audio-io" }
 field-audio-process = { path = "../field-audio-process" }

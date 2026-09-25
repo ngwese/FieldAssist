@@ -1,0 +1,13 @@
+[package]
+name = "field-features"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Feature flag registry for FieldAssist hosts"
+
+[dependencies]
+schemars = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

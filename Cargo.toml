@@ -5,6 +5,7 @@ members = [
     "crates/field-batch",
     "crates/field-scripting",
     "crates/field-core",
+    "crates/field-features",
     "crates/field-audio-model",
     "crates/field-audio-io",
     "crates/field-audio-process",

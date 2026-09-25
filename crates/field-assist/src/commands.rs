@@ -201,6 +201,13 @@ pub fn is_known_command(command_id: &str) -> bool {
 /// Run a command by keymap ID. Lua and the menu/key path share this table.
 pub fn dispatch(command_id: &str, cx: &mut App) -> Result<(), String> {
     validate_command_id(command_id)?;
+    if command_id.starts_with("analyze.")
+        && !crate::settings::feature_enabled(field_features::Feature::AnalysisOps, cx)
+    {
+        return Err(format!(
+            "command `{command_id}` requires the Analysis Ops experimental flag"
+        ));
+    }
     if let Some(result) = crate::script::try_invoke_command(command_id) {
         return result;
     }

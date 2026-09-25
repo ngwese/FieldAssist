@@ -275,6 +275,50 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                     ),
                 ),
         )
+        .page(
+            SettingPage::new("Experimental")
+                .icon(IconName::Settings)
+                .description("Unstable and preview features")
+                .group(
+                    SettingGroup::new()
+                        .title("Flags")
+                        .item(flag_switch(
+                            "Content Credentials",
+                            "Enable Content Credentials (C2PA) tooling when available",
+                            |s| s.experimental.flags.content_credentials,
+                            |s, v| s.experimental.flags.content_credentials = v,
+                            false,
+                        ))
+                        .item(flag_switch(
+                            "Analysis Ops",
+                            "Enable the Analyze menu and analysis commands",
+                            |s| s.experimental.flags.analysis_ops,
+                            |s, v| s.experimental.flags.analysis_ops = v,
+                            false,
+                        )),
+                ),
+        )
+}
+
+fn flag_switch(
+    title: &'static str,
+    description: &'static str,
+    get: fn(&AppSettings) -> bool,
+    set: fn(&mut AppSettings, bool),
+    default: bool,
+) -> SettingItem {
+    SettingItem::new(
+        title,
+        SettingField::switch(
+            move |cx| get(&settings::store(cx).settings),
+            move |on, cx| {
+                let _ = settings::update_and_save(cx, |s| set(s, on));
+                crate::app::apply_experimental_from_settings(cx);
+            },
+        )
+        .default_value(default),
+    )
+    .description(description)
 }
 
 fn dock_switch(
