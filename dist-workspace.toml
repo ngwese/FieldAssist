@@ -13,8 +13,9 @@ ci = "github"
 dispatch-releases = true
 # Cheap PR check only (not full multi-OS artifact builds)
 pr-run-mode = "plan"
-# The installers to generate for each app
-installers = ["shell", "powershell"]
+# The installers to generate for each app (Windows uses MSIX via
+# .github/workflows/windows-msix.yml instead of a PowerShell installer)
+installers = ["shell"]
 # Cost-efficient native GitHub runners only
 targets = [
     "x86_64-unknown-linux-gnu",

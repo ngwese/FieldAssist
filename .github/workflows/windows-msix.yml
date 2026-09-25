@@ -1,0 +1,222 @@
+# SPDX-FileCopyrightText: 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Pack and sign a per-user FieldAssist MSIX after cargo-dist finishes a
+# Release workflow run. Dry-runs upload a workflow artifact; published
+# tags also attach the MSIX (and public .cer) to the GitHub Release.
+
+name: Windows MSIX
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  pack:
+    name: pack-and-sign
+    # Release PRs only run `dist plan` (no Windows zips). Pack after a
+    # workflow_dispatch dry-run or promote.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'workflow_dispatch' }}
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the default branch tip; pin to the
+          # commit that produced the Release artifacts.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Require signing secrets
+        shell: bash
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          if [ -z "${WINDOWS_SIGNING_PFX}" ]; then
+            echo "::error::WINDOWS_SIGNING_PFX secret is not set"
+            exit 1
+          fi
+          # Empty password is allowed for the self-signed PFX.
+
+      - name: Download Release workflow artifacts
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Locate Windows binaries
+        id: bins
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Get-Location
+          $search = Join-Path $root "dist-artifacts"
+          $names = @(
+            "FieldAssist-x86_64-pc-windows-msvc.zip",
+            "field-play-x86_64-pc-windows-msvc.zip",
+            "field-batch-x86_64-pc-windows-msvc.zip"
+          )
+          $binDir = Join-Path $root "msix-bins"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+          foreach ($name in $names) {
+            $zip = Get-ChildItem -LiteralPath $search -Recurse -Filter $name |
+              Select-Object -First 1
+            if ($null -eq $zip) {
+              throw "missing Release artifact: $name under $search"
+            }
+            Write-Host "Extracting $($zip.FullName)"
+            Expand-Archive -LiteralPath $zip.FullName -DestinationPath $binDir -Force
+          }
+
+          foreach ($exe in @("FieldAssist.exe", "field-play.exe", "field-batch.exe")) {
+            $path = Join-Path $binDir $exe
+            if (-not (Test-Path -LiteralPath $path)) {
+              # cargo-dist sometimes nests the exe one level deep
+              $found = Get-ChildItem -LiteralPath $binDir -Recurse -Filter $exe |
+                Select-Object -First 1
+              if ($null -eq $found) {
+                throw "missing $exe after extracting Windows zips"
+              }
+              Copy-Item -Force -LiteralPath $found.FullName -Destination $path
+            }
+          }
+
+          $cargoToml = Get-Content -Raw (Join-Path $root "Cargo.toml")
+          if ($cargoToml -notmatch '(?m)^version = "([^"]+)"') {
+            throw "could not read version from Cargo.toml"
+          }
+          $version = $Matches[1]
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "bin-dir=$binDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Decode signing PFX
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "FieldAssist.pfx"
+          [IO.File]::WriteAllBytes(
+            $pfxPath,
+            [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX)
+          )
+          "FIELDASSIST_SIGNING_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($null -ne $env:WINDOWS_SIGNING_PASSWORD) {
+            "FIELDASSIST_SIGNING_PASSWORD=$($env:WINDOWS_SIGNING_PASSWORD)" |
+              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+      - name: Pack and sign MSIX
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.bins.outputs.version }}"
+          $binDir = "${{ steps.bins.outputs.bin-dir }}"
+          $outDir = Join-Path (Get-Location) "msix-out"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $out = Join-Path $outDir "FieldAssist-$version.msix"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File script/bundle-windows.ps1 `
+            --skip-build `
+            --bin-dir $binDir `
+            --out $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $out).Hash.ToLowerInvariant()
+          $hashFile = "$out.sha256"
+          Set-Content -LiteralPath $hashFile -Value "$hash  $(Split-Path -Leaf $out)`n" -NoNewline
+          Copy-Item -Force `
+            -LiteralPath "crates/field-assist/assets/windows/FieldAssist.cer" `
+            -Destination (Join-Path $outDir "FieldAssist.cer")
+
+      - name: Upload MSIX workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: FieldAssist-msix
+          path: |
+            msix-out/FieldAssist-*.msix
+            msix-out/FieldAssist-*.msix.sha256
+            msix-out/FieldAssist.cer
+
+      - name: Detect published release tag
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MANIFEST=$(find dist-artifacts -name 'dist-manifest.json' -o -name '*-dist-manifest.json' | head -n 1 || true)
+          TAG=""
+          if [ -n "${MANIFEST}" ]; then
+            echo "Reading tag from ${MANIFEST}"
+            TAG=$(python -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('announcement_tag') or m.get('tag') or '')" "${MANIFEST}" || true)
+          fi
+          if [ -z "${TAG}" ]; then
+            # Fallback: head_branch of a promote run is often release/X.Y.Z
+            HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+            if [[ "${HEAD_BRANCH}" =~ ^release/([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+              CANDIDATE="${BASH_REMATCH[1]}"
+              if gh release view "${CANDIDATE}" >/dev/null 2>&1; then
+                TAG="${CANDIDATE}"
+              fi
+            fi
+          fi
+          if [ -n "${TAG}" ] && gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "publishing=true" >> "$GITHUB_OUTPUT"
+            echo "Publishing MSIX to GitHub Release ${TAG}"
+          else
+            echo "publishing=false" >> "$GITHUB_OUTPUT"
+            echo "No published GitHub Release for this run (dry-run or plan-only)"
+          fi
+
+      - name: Attach MSIX to GitHub Release
+        if: ${{ steps.release.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.bins.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" \
+            "msix-out/FieldAssist-${VERSION}.msix" \
+            "msix-out/FieldAssist-${VERSION}.msix.sha256" \
+            "msix-out/FieldAssist.cer" \
+            --clobber
+
+          NOTES=$(gh release view "${TAG}" --json body -q .body)
+          BLURB=$(cat <<EOF
+
+          ## Windows (MSIX)
+
+          Per-user install (one-time publisher trust needs an elevated
+          PowerShell; package install/upgrade does not):
+
+          \`\`\`powershell
+          Import-Certificate -FilePath .\\FieldAssist.cer \`
+            -CertStoreLocation Cert:\\LocalMachine\\TrustedPeople
+          Add-AppxPackage -Path .\\FieldAssist-${VERSION}.msix
+          \`\`\`
+
+          Later upgrades: download the newer \`.msix\` and run
+          \`Add-AppxPackage\` again (same certificate). Uninstall with
+          \`Get-AppxPackage FieldAssist | Remove-AppxPackage\`.
+          EOF
+          )
+          if ! grep -q '## Windows (MSIX)' <<<"${NOTES}"; then
+            printf '%s\n%s\n' "${NOTES}" "${BLURB}" > "${RUNNER_TEMP}/notes.md"
+            gh release edit "${TAG}" --notes-file "${RUNNER_TEMP}/notes.md"
+          fi
