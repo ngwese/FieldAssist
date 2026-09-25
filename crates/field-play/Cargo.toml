@@ -25,4 +25,5 @@ field-composition = { path = "../field-composition" }
 field-scripting = { path = "../field-scripting" }
 
 [dev-dependencies]
+cpal = { workspace = true }
 tempfile = "3"

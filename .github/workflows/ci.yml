@@ -36,6 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libasound2-dev \
             libfontconfig-dev \
             libxcb1-dev \
             libxkbcommon-dev \

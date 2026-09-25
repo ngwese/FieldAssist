@@ -43,6 +43,12 @@ fn write_stereo_sine(path: &Path, frames: u32, sample_rate: u32) {
 
 #[test]
 fn plays_media_file_with_detect_layout_and_decoder() {
+    // Headless CI hosts (especially Windows) may have no default output device.
+    if cpal::default_host().default_output_device().is_none() {
+        eprintln!("skipping: no default audio output device");
+        return;
+    }
+
     let config = empty_config_dir();
     let media = tempfile::tempdir().unwrap();
     let wav = media.path().join("stereo_sine.wav");
