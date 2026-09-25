@@ -23,7 +23,22 @@ Pull requests into `main` and `release/**` must land via **rebase merge**
 passed PR CI is the SHA on the target branch. CI runs on `pull_request`
 only — there is no duplicate run after merge.
 
-## Cut a release branch
+## Quick path: `script/release`
+
+From a clean tree on an up-to-date clone:
+
+```bash
+./script/release          # interactive; releases 0.12.0 from 0.12.0-pre
+./script/release -y       # no confirmation prompt
+./script/release --with-dry-run -y   # extra multi-OS artifact dry-run first
+```
+
+The script syncs `main`, cuts `release/X.Y.Z`, opens a PR for lightweight
+CI (`ci.yml`), promotes the cargo-dist GitHub Release (tag = `X.Y.Z`), bumps
+the PR to the next `*-pre`, waits for CI again, and rebase-merges into
+`main`. See `./script/release --help`.
+
+## Cut a release branch (manual)
 
 From an up-to-date `main` at `X.Y.Z-pre`:
 
