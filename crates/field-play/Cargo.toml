@@ -6,6 +6,7 @@ name = "field-play"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Example CLI: play a composition through the default audio device"
 publish = false
 

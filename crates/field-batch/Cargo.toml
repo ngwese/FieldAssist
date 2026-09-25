@@ -3,6 +3,7 @@ name = "field-batch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Headless Lua batch runtime for FieldAssist sessions and workflows"
 publish = false
 

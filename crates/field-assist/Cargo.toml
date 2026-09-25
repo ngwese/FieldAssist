@@ -3,7 +3,10 @@ name = "FieldAssist"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Review, edit, and process audio coming in from the field"
+homepage = "https://github.com/ngwese/FieldAssist"
+
 
 [dependencies]
 anyhow = { workspace = true }
