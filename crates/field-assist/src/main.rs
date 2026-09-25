@@ -63,7 +63,7 @@ mod themes;
 #[command(
     name = env!("CARGO_PKG_NAME"),
     about = env!("CARGO_PKG_DESCRIPTION"),
-    after_help = "Supported codecs: AAC, ADPCM, ALAC, FLAC, MP1, MP2, MP3, PCM, Vorbis."
+    after_help = "Supported formats: WAV, AIFF, CAF, FLAC, OGG, MP3, M4A/MP4, MKV. Codecs: AAC, ADPCM, ALAC, FLAC, MP1, MP2, MP3, PCM, Vorbis."
 )]
 struct Args {
     /// Path to an audio file, composition, or session

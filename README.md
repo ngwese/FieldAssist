@@ -14,7 +14,8 @@ Review, edit, and process audio coming in from the field.
 map and composition patterns.
 - See [docs/SCRIPTING.md](docs/SCRIPTING.md) for details on the evolving Lua scripting layer.
 
-Supported formats include WAV, FLAC, MP3, OGG, and M4A (via Symphonia).
+Supported formats: WAV, AIFF, CAF, FLAC, OGG, MP3, M4A/MP4, MKV.
+Codecs: AAC, ADPCM, ALAC, FLAC, MP1, MP2, MP3, PCM, Vorbis.
 Supported platforms include Linux, macOS, and Windows.
 
 Open a file from the app with **File → Open…**, or drag and drop onto the
