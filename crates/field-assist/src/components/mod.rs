@@ -9,6 +9,7 @@ pub mod explorer;
 pub mod header_meta;
 pub mod load_problems_sheet;
 pub mod media_panel;
+pub mod quick_note;
 pub mod quit_unsaved;
 pub mod render_sheet;
 pub mod status_bar;

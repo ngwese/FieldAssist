@@ -15,7 +15,7 @@ use gpui_kit::component::{
         panel_handle, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
         PaneRef, PanelId, PanelStyle,
     },
-    h_flex, v_flex, ActiveTheme as _, Disableable as _, GlobalState, IconName, Root,
+    h_flex, v_flex, ActiveTheme as _, Disableable as _, GlobalState, Icon, IconName, Root,
     Selectable as _, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
 };
 use gpui_kit::{
@@ -29,7 +29,7 @@ use gpui_kit::{
 
 use crate::assets::AppAssets;
 use crate::commands::{
-    install_keybindings, About, AddMarker, AddMarkerAtHover, AnalyzeEnvelopePeak,
+    install_keybindings, About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak,
     AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
     EditBreakOutChannels, EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate,
     EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Hide, HideOthers, InvertSelection,
@@ -241,6 +241,8 @@ pub struct AppView {
     /// App-owned modal for aggregated open failures (avoids Root::update).
     load_problems: Option<Entity<crate::components::load_problems_sheet::LoadProblemsSheet>>,
     load_problems_focus: FocusHandle,
+    /// Floating quick-note entry (`n` over the waveform).
+    quick_note: Option<crate::components::quick_note::QuickNoteSession>,
     quit_save_queue: Vec<DocumentId>,
     pending_continue: Option<PendingContinue>,
     focus_handle: FocusHandle,
@@ -556,6 +558,7 @@ impl AppView {
             render_sheet_open: false,
             load_problems: None,
             load_problems_focus: cx.focus_handle(),
+            quick_note: None,
             quit_save_queue: Vec::new(),
             pending_continue: None,
             focus_handle: cx.focus_handle(),
@@ -3387,6 +3390,9 @@ impl AppView {
                     doc.add_marker_of_type(sample, &kind);
                 });
             }
+            "selection.add_note" => {
+                self.begin_quick_note(window, cx);
+            }
             "selection.delete_marker" => {
                 let kind = self.active_marker_type.clone();
                 if let Some(sample) = self.marker_target_sample(cx) {
@@ -3865,6 +3871,163 @@ impl AppView {
     fn abort_failed_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.session_open_batch = None;
         self.close_to_empty_session(window, cx);
+    }
+
+    fn begin_quick_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_note.is_some() || self.active_views().is_none() {
+            return;
+        }
+        let sample = self.marker_target_sample(cx).unwrap_or(0);
+        // Pause only when targeting the caret/playhead; hover notes leave
+        // transport alone so you can annotate while listening.
+        let resume_playing =
+            !self.add_marker_at_hover && self.playback.transport_state() == TransportState::Playing;
+        if resume_playing {
+            self.playback.pause();
+            self.sync_playback_to_document(cx);
+        }
+        self.quick_note = Some(crate::components::quick_note::QuickNoteSession::begin(
+            sample,
+            resume_playing,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+
+    pub(crate) fn commit_quick_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::components::quick_note::{NOTE_MARKER_COLOR, NOTE_MARKER_TYPE};
+
+        let Some(session) = self.quick_note.take() else {
+            return;
+        };
+        let text = session.text(cx);
+        let sample = session.sample;
+        let resume = session.resume_playing;
+        let note = {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        };
+        self.run_edit(cx, |doc| {
+            let scope = doc
+                .current_position
+                .as_ref()
+                .map(|pos| pos.channels.clone())
+                .unwrap_or_else(ChannelScope::all);
+            let sample = doc.snap_sample(&scope, sample, 0);
+            if doc
+                .marker_types()
+                .iter()
+                .all(|ty| ty.name != NOTE_MARKER_TYPE)
+            {
+                let _ = doc.add_marker_type(NOTE_MARKER_TYPE, NOTE_MARKER_COLOR);
+            }
+            doc.add_marker(sample, NOTE_MARKER_TYPE, note);
+        });
+        self.focus_handle.focus(window, cx);
+        if resume {
+            self.playback.play();
+            self.sync_playback_to_document(cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_quick_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.quick_note.take() else {
+            return;
+        };
+        let resume = session.resume_playing;
+        self.focus_handle.focus(window, cx);
+        if resume {
+            self.playback.play();
+            self.sync_playback_to_document(cx);
+        }
+        cx.notify();
+    }
+
+    fn quick_note_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::input::Input;
+        use gpui_kit::MouseButton;
+
+        let theme = cx.theme().clone();
+        let session = self
+            .quick_note
+            .as_ref()
+            .expect("quick_note_overlay requires an open session");
+        let input = session.input.clone();
+        div()
+            .id("quick-note-layer")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(72.))
+            .occlude()
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                if event.keystroke.key.as_str() == "escape" {
+                    this.cancel_quick_note(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.cancel_quick_note(window, cx);
+                }),
+            )
+            .child(
+                h_flex()
+                    .id("quick-note-bar")
+                    .w(px(420.))
+                    .max_w_full()
+                    .items_center()
+                    .gap_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.popover)
+                    .shadow_md()
+                    .px_2()
+                    .py_1()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        Input::new(&input)
+                            .small()
+                            .w_full()
+                            .cleanable(false)
+                            .prefix(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        Icon::new(crate::components::quick_note::MessageSquareIcon)
+                                            .xsmall(),
+                                    ),
+                            )
+                            .suffix(
+                                Button::new("quick-note-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .tab_stop(false)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel_quick_note(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
     }
 
     fn load_problems_overlay(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5702,6 +5865,9 @@ impl Render for AppView {
                             })
                             .when(self.load_problems.is_some(), |this| {
                                 this.child(self.load_problems_overlay(window, cx))
+                            })
+                            .when(self.quick_note.is_some(), |this| {
+                                this.child(self.quick_note_overlay(cx))
                             }),
                     ),
             )
@@ -6453,6 +6619,10 @@ fn add_marker(_: &AddMarker, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.add_marker", cx);
 }
 
+fn add_note(_: &AddNote, cx: &mut App) {
+    let _ = crate::commands::dispatch("selection.add_note", cx);
+}
+
 fn delete_marker(_: &DeleteMarker, cx: &mut App) {
     let _ = crate::commands::dispatch("selection.delete_marker", cx);
 }
@@ -6881,6 +7051,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(toggle_snap_marker_type_action);
     cx.on_action(add_marker_at_hover);
     cx.on_action(add_marker);
+    cx.on_action(add_note);
     cx.on_action(delete_marker);
     cx.on_action(cancel_workflow_action);
     cx.on_action(start_workflow_action);

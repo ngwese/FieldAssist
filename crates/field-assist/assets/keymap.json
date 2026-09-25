@@ -3,6 +3,7 @@
     "a": "view.fit_all",
     "f": "view.frame",
     "m": "selection.add_marker",
+    "n": "selection.add_note",
     "d": "selection.delete_marker",
     "secondary-a": "selection.select_all",
     "secondary-=": "view.zoom_in",

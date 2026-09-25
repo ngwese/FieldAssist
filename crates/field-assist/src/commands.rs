@@ -79,6 +79,7 @@ actions!(
         SnapToMarker,
         AddMarkerAtHover,
         AddMarker,
+        AddNote,
         DeleteMarker,
         CancelWorkflow,
     ]
@@ -182,6 +183,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "selection.snap_to_marker",
     "selection.add_at_hover",
     "selection.add_marker",
+    "selection.add_note",
     "selection.delete_marker",
 ];
 
@@ -326,6 +328,7 @@ fn bindings_for(command_id: &str, keystrokes: &str) -> Vec<KeyBinding> {
         "view.fit_all"
         | "view.frame"
         | "selection.add_marker"
+        | "selection.add_note"
         | "selection.delete_marker"
         | "transport.play_pause" => &[WAVEFORM_KEY_CONTEXT, WAVEFORM_HOVER_KEY_CONTEXT],
         _ => &[APP_KEY_CONTEXT],
@@ -417,6 +420,7 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "selection.snap_to_marker" => KeyBinding::new(keystrokes, SnapToMarker, Some(context)),
         "selection.add_at_hover" => KeyBinding::new(keystrokes, AddMarkerAtHover, Some(context)),
         "selection.add_marker" => KeyBinding::new(keystrokes, AddMarker, Some(context)),
+        "selection.add_note" => KeyBinding::new(keystrokes, AddNote, Some(context)),
         "selection.delete_marker" => KeyBinding::new(keystrokes, DeleteMarker, Some(context)),
         _ => return None,
     })
@@ -453,6 +457,7 @@ mod tests {
             map.get("m").map(String::as_str),
             Some("selection.add_marker")
         );
+        assert_eq!(map.get("n").map(String::as_str), Some("selection.add_note"));
         assert_eq!(
             map.get("d").map(String::as_str),
             Some("selection.delete_marker")
@@ -557,6 +562,7 @@ mod tests {
             ("view.fit_all", "a"),
             ("view.frame", "f"),
             ("selection.add_marker", "m"),
+            ("selection.add_note", "n"),
             ("selection.delete_marker", "d"),
             ("transport.play_pause", "space"),
         ] {

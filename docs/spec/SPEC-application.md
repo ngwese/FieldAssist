@@ -358,14 +358,21 @@ playhead placement, region begin/end, and Add Marker.
 ### Markers
 
 Built-in types: Blue (default), Yellow, Purple, Transient (pink; used by
-Analyze → Mark → Transients). Custom types (name + color) live on the
-composition. A marker is a type instance at a frame, with an optional note.
-Color is on the type. At most one marker of a given type may occupy a frame;
-different types may share a frame.
+Analyze → Mark → Transients), and Note (green; created by quick note). Custom
+types (name + color) live on the composition. A marker is a type instance at a
+frame, with an optional note. Color is on the type. At most one marker of a
+given type may occupy a frame; different types may share a frame.
 
 Add at Hover (Selection menu) uses the sample under the pointer when set;
 otherwise the caret. Delete removes the marker at the target. Types can be
 created from the menu. Removing a type deletes its markers.
+
+Quick note (`selection.add_note`, `n` over the waveform): opens a floating
+field with a message-square icon, “Enter a note…”, and Close (X). With Add at
+Hover on, playback keeps running; with it off, playback pauses if playing and
+resumes after commit/cancel. Return commits a Note marker at the hover/caret
+target (same targeting as Add Marker); Escape or Close cancels without creating
+a marker.
 
 ### Timeline edits
 
@@ -494,7 +501,7 @@ idempotent; menus and status-bar pane buttons use the toggles.
 `selection.invert`, `selection.zero_crossing`, `selection.marker_type_blue`,
 `selection.marker_type_yellow`, `selection.marker_type_purple`,
 `selection.snap_to_marker`, `selection.add_at_hover`,
-`selection.add_marker`, `selection.delete_marker`
+`selection.add_marker`, `selection.add_note`, `selection.delete_marker`
 
 Letter keys are scoped to the waveform so they do not steal Script/REPL typing.
 
