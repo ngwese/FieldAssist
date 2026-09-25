@@ -246,10 +246,12 @@ mod tests {
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(
-            out.result.as_deref(),
-            Some("a.wav\ta\twav\tfile\t/tmp/takes/a.wav")
-        );
+        let expected = if cfg!(windows) {
+            "a.wav\ta\twav\tfile\t\\tmp\\takes\\a.wav"
+        } else {
+            "a.wav\ta\twav\tfile\t/tmp/takes/a.wav"
+        };
+        assert_eq!(out.result.as_deref(), Some(expected));
     }
 
     #[test]

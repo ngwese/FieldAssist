@@ -45,9 +45,17 @@ fn write_stereo_sine(path: &Path, frames: u32, sample_rate: u32) {
 
 #[test]
 fn plays_media_file_with_detect_layout_and_decoder() {
-    // Headless CI hosts (especially Windows) may have no default output device.
-    if cpal::default_host().default_output_device().is_none() {
+    use cpal::traits::DeviceTrait;
+
+    // Headless CI hosts often advertise a default device that cannot open
+    // (no ALSA card, missing WASAPI endpoint, etc.).
+    let host = cpal::default_host();
+    let Some(device) = host.default_output_device() else {
         eprintln!("skipping: no default audio output device");
+        return;
+    };
+    if device.default_output_config().is_err() {
+        eprintln!("skipping: default output device has no usable config");
         return;
     }
 
