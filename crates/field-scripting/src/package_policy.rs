@@ -244,7 +244,16 @@ mod tests {
         assert_eq!(once, twice);
         if !policy.system_path.is_empty() {
             assert!(once.len() > before.len(), "once={once} before={before}");
-            assert!(once.contains("/usr/local") || once.contains("!.\\") || once.contains("!\\"));
+            for part in policy.system_path.split(';') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                assert!(
+                    once.contains(part),
+                    "expected system template {part:?} in {once}"
+                );
+            }
         }
     }
 
