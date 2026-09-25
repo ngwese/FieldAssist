@@ -29,7 +29,7 @@ field-ui-components     (gpui widgets + host traits / DTOs)
 
 field-scripting         (mlua host; NO gpui, NO field-ui-components)
     ├── field-batch     (CLI: REPL + script + shebang)
-    ├── field-play      (example CLI: composition → default device + monitor;
+    ├── field-play      (CLI: composition → default device + monitor;
     │                    init.lua + detect_layout)
     └── FieldAssist     (GPUI app; also monitor, ui-components, playback)
 ```
@@ -47,7 +47,7 @@ field-scripting         (mlua host; NO gpui, NO field-ui-components)
 | `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
 | `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `ScriptBackend` / `HeadlessWorld` ([README](../crates/field-scripting/README.md)) |
 | `field-batch` | app | Headless REPL / script runner / Unix shebang over `field-scripting` |
-| `field-play` | example | Headless composition playback; `init.lua` + `detect_layout` for monitor chain |
+| `field-play` | app | Headless composition playback; `init.lua` + `detect_layout` for monitor chain |
 | `FieldAssist` | app | Document editor, GPUI host bridge, docks, playback; embeds workflows |
 
 `field-scripting` sits at the same layer as the app hosts: it may depend on

@@ -22,7 +22,6 @@ window. Press Space to play or pause.
 
 ## Workspace crates
 
-
 | Crate                  | Role                                              |
 | ---------------------- | ------------------------------------------------- |
 | `field-core`           | File URLs and job progress                        |
@@ -34,13 +33,12 @@ window. Press Space to play or pause.
 | `field-ui-components`  | Reusable GPUI widgets and traits                  |
 | `field-composition`    | `.facomp` / EDL                                   |
 | `field-session`        | `.fasession`                                      |
-| `field-play`           | Example CLI: play a composition on the default device |
+| `field-scripting`      | Shared Lua 5.4 host                               |
+| `field-batch`          | Headless Lua CLI (REPL, scripts, shebang)         |
+| `field-play`           | CLI: play a composition on the default device     |
 | `FieldAssist`          | Desktop application                               |
 
-
-
-
-### Example: play a composition from the CLI
+### Play a composition from the CLI
 
 ```bash
 cargo run -p field-play -- path/to/project.facomp
@@ -51,6 +49,17 @@ cargo run -p field-play -- path/to/take.wav
 runs `init.lua` (user config else embedded) and `detect_layout` for the
 monitoring chain, then plays on the system default output. Persisted
 `monitor_chain` values win; otherwise Direct if detect leaves the chain unset.
+
+### Run a Lua script with field-batch
+
+```bash
+cargo run -p field-batch -- path/to/script.lua
+cargo run -p field-batch --  # interactive REPL
+```
+
+See [docs/SCRIPTING.md](docs/SCRIPTING.md) and
+[docs/examples/field-batch/](docs/examples/field-batch/) for scripting details
+and samples (including native modules such as lsqlite3).
 
 ## License
 
