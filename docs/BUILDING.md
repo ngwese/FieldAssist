@@ -173,4 +173,5 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
 Binary GitHub Releases (archives + installers) are automated with cargo-dist.
 See [RELEASING.md](RELEASING.md) for cutting a `release/X.Y.Z` branch, dry-run
-builds, and promoting a version tag (no `v` prefix).
+builds, and promoting a version tag (no `v` prefix). The usual path is
+`./script/release`.

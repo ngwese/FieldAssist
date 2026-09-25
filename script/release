@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Cut a release branch, validate with PR CI, promote a GitHub Release via
+# cargo-dist, then bump main to the next -pre through a lightweight CI PR.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: script/release [options] [VERSION]
+
+Automate a FieldAssist release end-to-end:
+
+  1. Sync local main with origin
+  2. Cut release/VERSION from main (VERSION defaults to stripping -pre
+     from [workspace.package] version, e.g. 0.12.0-pre → 0.12.0)
+  3. Set workspace version, refresh CHANGELOG, push
+  4. Open PR release/VERSION → main and wait for CI (ci.yml)
+  5. Promote via cargo-dist (builds then creates tag + GitHub Release)
+  6. Bump PR branch to next -pre, wait for CI, rebase-merge into main
+
+Options:
+  --next VERSION     Next main prerelease (default: bump minor, e.g.
+                     0.12.0 → 0.13.0-pre)
+  --with-dry-run     Run a cargo-dist dry-run build before promote
+  --skip-promote     Stop after CI is green (no GitHub Release)
+  --yes, -y          Do not prompt for confirmation
+  -h, --help         Show this help
+
+Requires: git, gh, git-cliff, cargo. GitHub auth must allow workflow
+dispatch, PR create/merge, and contents write for releases.
+EOF
+}
+
+log() { printf '==> %s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
+
+YES=false
+WITH_DRY_RUN=false
+SKIP_PROMOTE=false
+NEXT_OVERRIDE=""
+RELEASE_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --next)
+      [[ $# -ge 2 ]] || die "--next requires a version"
+      NEXT_OVERRIDE="$2"
+      shift 2
+      ;;
+    --with-dry-run)
+      WITH_DRY_RUN=true
+      shift
+      ;;
+    --skip-promote)
+      SKIP_PROMOTE=true
+      shift
+      ;;
+    --yes | -y)
+      YES=true
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      [[ -z "$RELEASE_OVERRIDE" ]] || die "unexpected argument: $1"
+      RELEASE_OVERRIDE="$1"
+      shift
+      ;;
+  esac
+done
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+need git
+need gh
+need git-cliff
+need cargo
+
+[[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] \
+  || die "not a git repository"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  die "working tree is dirty; commit or stash first"
+fi
+
+gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
+
+read_workspace_version() {
+  awk -F '"' '
+    $0 == "[workspace.package]" { in_pkg = 1; next }
+    in_pkg && /^version = / { print $2; exit }
+    in_pkg && /^\[/ { exit }
+  ' Cargo.toml
+}
+
+set_workspace_version() {
+  local ver="$1"
+  python3 - "$ver" <<'PY'
+import pathlib, sys
+ver = sys.argv[1]
+path = pathlib.Path("Cargo.toml")
+lines = path.read_text().splitlines(keepends=True)
+out = []
+in_pkg = False
+replaced = False
+for line in lines:
+    if line.strip() == "[workspace.package]":
+        in_pkg = True
+        out.append(line)
+        continue
+    if in_pkg and line.startswith("["):
+        in_pkg = False
+    if in_pkg and line.startswith("version = ") and not replaced:
+        out.append(f'version = "{ver}"\n')
+        replaced = True
+        continue
+    out.append(line)
+if not replaced:
+    raise SystemExit("could not find [workspace.package] version in Cargo.toml")
+path.write_text("".join(out))
+PY
+}
+
+sync_lockfile() {
+  # Refresh path-package versions recorded in Cargo.lock.
+  cargo metadata --format-version 1 --no-deps >/dev/null
+  # cargo metadata does not rewrite the lock; a no-op check does.
+  cargo check -q -p FieldAssist -p field-batch -p field-play
+}
+
+bump_minor_pre() {
+  # 0.12.0 → 0.13.0-pre
+  local ver="$1"
+  python3 - "$ver" <<'PY'
+import re, sys
+ver = sys.argv[1]
+m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", ver)
+if not m:
+    raise SystemExit(f"not a stable semver X.Y.Z: {ver}")
+major, minor, _patch = map(int, m.groups())
+print(f"{major}.{minor + 1}.0-pre")
+PY
+}
+
+wait_workflow_dispatch() {
+  local workflow="$1"
+  local ref="$2"
+  local started_after="$3"
+  local run_id=""
+  local i
+  local runs_json
+  for i in $(seq 1 90); do
+    runs_json="$(
+      gh run list --workflow="$workflow" --event workflow_dispatch --limit 20 \
+        --json databaseId,headBranch,createdAt
+    )"
+    run_id="$(
+      printf '%s\n' "$runs_json" | REF="$ref" SINCE="$started_after" python3 -c '
+import json, os, sys
+ref = os.environ["REF"]
+since = os.environ["SINCE"]
+runs = json.load(sys.stdin)
+for run in runs:
+    if run.get("headBranch") == ref and run.get("createdAt", "") >= since:
+        print(run["databaseId"])
+        break
+'
+    )"
+    if [[ -n "$run_id" ]]; then
+      echo "$run_id"
+      return 0
+    fi
+    sleep 2
+  done
+  die "timed out waiting for $workflow workflow_dispatch on $ref"
+}
+
+wait_pr_ci() {
+  local pr="$1"
+  local i
+  local conclusion=""
+  log "waiting for CI on PR #$pr (check name: ci)"
+  for i in $(seq 1 180); do
+    conclusion="$(
+      gh pr view "$pr" --json statusCheckRollup \
+        --jq '[.statusCheckRollup[] | select(.name == "ci")][0].conclusion // empty'
+    )"
+    case "$conclusion" in
+      SUCCESS)
+        log "PR #$pr ci check passed"
+        return 0
+        ;;
+      FAILURE | CANCELLED | TIMED_OUT | ACTION_REQUIRED | STARTUP_FAILURE)
+        die "PR #$pr ci check failed ($conclusion)"
+        ;;
+      "")
+        # Check not reported yet.
+        ;;
+      *)
+        # PENDING / null while in progress — keep waiting.
+        ;;
+    esac
+    # Surface progress occasionally.
+    if (( i % 6 == 0 )); then
+      gh pr checks "$pr" 2>/dev/null | head -20 || true
+    fi
+    sleep 30
+  done
+  die "timed out waiting for PR #$pr ci check"
+}
+
+current="$(read_workspace_version)"
+[[ -n "$current" ]] || die "could not read [workspace.package] version"
+
+if [[ -n "$RELEASE_OVERRIDE" ]]; then
+  release="$RELEASE_OVERRIDE"
+else
+  [[ "$current" == *-pre ]] \
+    || die "main version must be a prerelease (got '$current'); pass VERSION explicitly"
+  release="${current%-pre}"
+fi
+
+if [[ ! "$release" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  die "release version must be X.Y.Z (got '$release')"
+fi
+
+if [[ -n "$NEXT_OVERRIDE" ]]; then
+  next="$NEXT_OVERRIDE"
+else
+  next="$(bump_minor_pre "$release")"
+fi
+
+if [[ ! "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+-pre$ ]]; then
+  die "next version must look like X.Y.Z-pre (got '$next')"
+fi
+
+branch="release/$release"
+pr_title="release: $release"
+
+log "current main version: $current"
+log "release version:      $release"
+log "next -pre version:    $next"
+log "release branch:       $branch"
+
+if [[ "$YES" != true ]]; then
+  printf 'Proceed? [y/N] '
+  read -r ans
+  [[ "$ans" == [yY] || "$ans" == [yY][eE][sS] ]] || die "aborted"
+fi
+
+log "syncing main"
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+
+main_ver="$(read_workspace_version)"
+if [[ -z "$RELEASE_OVERRIDE" && "$main_ver" != "$current" ]]; then
+  die "main version changed after pull ($main_ver); re-run the script"
+fi
+if [[ -z "$RELEASE_OVERRIDE" && "$main_ver" != "${release}-pre" ]]; then
+  die "expected main at ${release}-pre after sync (got '$main_ver')"
+fi
+
+if git show-ref --verify --quiet "refs/heads/$branch" \
+  || git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+  die "branch $branch already exists locally or on origin"
+fi
+
+if gh release view "$release" >/dev/null 2>&1; then
+  die "GitHub Release '$release' already exists"
+fi
+
+log "creating $branch"
+git checkout -b "$branch"
+
+log "setting workspace version to $release"
+set_workspace_version "$release"
+sync_lockfile
+
+log "refreshing CHANGELOG.md for $release"
+if [[ ! -f CHANGELOG.md ]]; then
+  printf '%s\n' \
+    '# Changelog' \
+    '' \
+    'All notable changes to this project will be documented in this file.' \
+    '' \
+    '<!-- git-cliff: end of header -->' \
+    '' >CHANGELOG.md
+fi
+git cliff --tag "$release" --prepend CHANGELOG.md
+
+git add Cargo.toml Cargo.lock CHANGELOG.md
+git commit -m "chore: prepare release ${release}"
+
+log "pushing $branch"
+git push -u origin HEAD
+
+log "opening PR $branch → main"
+pr_url="$(
+  gh pr create --base main --head "$branch" \
+    --title "$pr_title" \
+    --body "$(cat <<EOF
+## Summary
+- Prepare workspace version \`$release\` and CHANGELOG for release.
+- After CI is green, \`script/release\` promotes the cargo-dist GitHub Release
+  (tag \`$release\`), then bumps this branch to \`$next\` and merges.
+
+## Test plan
+- [x] PR CI (\`ci\` check) on linux/macos/windows
+- [ ] cargo-dist promote for tag \`$release\`
+- [ ] Post-promote bump to \`$next\` and rebase-merge
+
+EOF
+)"
+)"
+pr_number="${pr_url##*/}"
+log "PR: $pr_url"
+
+wait_pr_ci "$pr_number"
+
+if [[ "$SKIP_PROMOTE" == true ]]; then
+  log "CI green; --skip-promote set, stopping before GitHub Release"
+  log "promote later with: gh workflow run Release --ref $branch -f tag=$release"
+  exit 0
+fi
+
+if [[ "$WITH_DRY_RUN" == true ]]; then
+  log "starting cargo-dist dry-run on $branch"
+  # Small backdate so GitHub createdAt cannot race the local clock.
+  dry_started="$(python3 -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc)-timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+  gh workflow run Release --ref "$branch" -f tag=dry-run
+  dry_id="$(wait_workflow_dispatch Release "$branch" "$dry_started")"
+  log "watching dry-run run $dry_id"
+  gh run watch "$dry_id" --exit-status \
+    || die "cargo-dist dry-run failed (run $dry_id)"
+fi
+
+log "promoting GitHub Release for tag $release"
+promote_started="$(python3 -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc)-timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+gh workflow run Release --ref "$branch" -f tag="$release"
+promote_id="$(wait_workflow_dispatch Release "$branch" "$promote_started")"
+log "watching promote run $promote_id"
+gh run watch "$promote_id" --exit-status \
+  || die "cargo-dist promote failed (run $promote_id)"
+
+gh release view "$release" >/dev/null \
+  || die "promote finished but GitHub Release '$release' was not found"
+
+log "bumping branch to next prerelease $next"
+git checkout "$branch"
+git pull --ff-only origin "$branch"
+set_workspace_version "$next"
+sync_lockfile
+git add Cargo.toml Cargo.lock
+git commit -m "chore: bump workspace version to ${next}"
+git push origin HEAD
+
+wait_pr_ci "$pr_number"
+
+log "rebase-merging PR #$pr_number into main"
+gh pr merge "$pr_number" --rebase --delete-branch
+
+log "syncing local main"
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+
+final="$(read_workspace_version)"
+[[ "$final" == "$next" ]] || die "expected main at $next after merge (got '$final')"
+
+log "release $release complete; main is now $next"
+log "GitHub Release: $(gh release view "$release" --json url -q .url)"
