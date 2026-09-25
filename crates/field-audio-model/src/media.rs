@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use field_core::{encode_file_url, resolve_file_url};
+use field_core::Location;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -157,7 +157,7 @@ pub struct MediaDescriptor {
     pub id: MediaId,
     /// Stored URL (relative path, `file://`, or `memory://`).
     #[cfg_attr(feature = "serde", serde(rename = "url", alias = "path"))]
-    pub url: String,
+    pub url: Location,
     /// Basename used for identity (no parent dir).
     pub basename: String,
     /// Sample rate in Hz.
@@ -232,6 +232,20 @@ pub fn descriptor_mismatch(
     None
 }
 
+/// Runtime availability of a media reference after resolve / probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaAvailability {
+    /// File resolved and is usable.
+    #[default]
+    Available,
+    /// Recorded URL could not be found on disk.
+    Missing,
+    /// File exists but identity fields differ from the recorded descriptor.
+    IdentityMismatch,
+    /// Same identity, but freshness (e.g. mtime) differs.
+    FreshnessMismatch,
+}
+
 /// Reference to a media file or in-memory samples (runtime + persistence).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -240,7 +254,7 @@ pub struct MediaRef {
     pub id: MediaId,
     /// Stored URL (relative path, `file://`, or `memory://`).
     #[cfg_attr(feature = "serde", serde(rename = "url", alias = "path"))]
-    pub url: String,
+    pub url: Location,
     /// Basename used for identity.
     #[cfg_attr(feature = "serde", serde(default))]
     pub basename: String,
@@ -267,6 +281,9 @@ pub struct MediaRef {
     /// Optional fully decoded samples (skipped on disk).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub samples: Option<Arc<Vec<Vec<f32>>>>,
+    /// Whether the referenced file is present and matches expectations.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub availability: MediaAvailability,
 }
 
 impl MediaRef {
@@ -281,7 +298,7 @@ impl MediaRef {
         let channel_count = samples.len();
         let mut media = Self {
             id: MediaId([0u8; 32]),
-            url: String::new(),
+            url: Location::parse("memory://").expect("memory://"),
             basename: "memory".into(),
             path: PathBuf::new(),
             sample_rate,
@@ -293,10 +310,11 @@ impl MediaRef {
             container_format: "memory".into(),
             codec: "pcm".into(),
             samples: Some(Arc::new(samples)),
+            availability: MediaAvailability::Available,
         };
         media.id = media.compute_id();
         media.path = PathBuf::from(format!("memory://{}", media.id));
-        media.url = media.path.to_string_lossy().into_owned();
+        media.url = Location::parse(&media.path.to_string_lossy()).expect("memory url");
         media
     }
 
@@ -360,6 +378,7 @@ impl MediaRef {
             container_format: descriptor.container_format,
             codec: descriptor.codec,
             samples: None,
+            availability: MediaAvailability::Available,
         }
     }
 
@@ -367,30 +386,42 @@ impl MediaRef {
     pub fn prepare_url(&mut self, base: Option<&Path>) {
         let lossy = self.path.to_string_lossy();
         if lossy.starts_with("memory://") {
-            self.url = lossy.into_owned();
+            self.url = Location::parse(&lossy).unwrap_or_else(|_| self.url.clone());
             return;
         }
-        self.url = encode_file_url(&self.path, base);
+        self.url = match base {
+            Some(base) => Location::from_path_relative_to(&self.path, base),
+            None => Location::from_path(&self.path),
+        };
     }
 
     /// Resolve `url` into `path` using `base` for relative URLs.
     pub fn resolve_url(&mut self, base: Option<&Path>) -> anyhow::Result<()> {
-        if self.url.starts_with("memory://")
-            || self.url.is_empty() && self.path.to_string_lossy().starts_with("memory://")
+        if self.url.is_memory()
+            || (self.url.as_str().is_empty()
+                && self.path.to_string_lossy().starts_with("memory://"))
         {
             if self.path.as_os_str().is_empty() {
-                self.path = PathBuf::from(&self.url);
+                self.path = PathBuf::from(self.url.as_str());
             }
+            self.availability = MediaAvailability::Available;
             return Ok(());
         }
-        if self.url.is_empty() && !self.path.as_os_str().is_empty() {
-            self.url = self.path.to_string_lossy().into_owned();
+        if self.url.as_str().is_empty() && !self.path.as_os_str().is_empty() {
+            self.prepare_url(base);
         }
-        self.path = resolve_file_url(&self.url, base)?;
+        self.path = self.url.resolve_against_path(base)?;
         if self.basename.is_empty() {
             self.basename = basename_of(&self.path);
         }
         Ok(())
+    }
+
+    /// True when this media can be decoded / played.
+    pub fn is_available(&self) -> bool {
+        matches!(self.availability, MediaAvailability::Available)
+            || self.url.is_memory()
+            || self.samples.is_some()
     }
 }
 

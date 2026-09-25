@@ -10,15 +10,15 @@ use anyhow::{bail, Context, Result};
 use field_audio_io::{probe_file, probe_header, ProbedFile, SymphoniaBlockSource};
 use field_audio_model::{
     descriptor_mismatch, BlockPager, BlockSource, ChannelScope, DescriptorMismatch, Marker,
-    MarkerId, MarkerList, MarkerType, MediaDescriptor, MediaId, MediaPool, MediaRef, MediaStore,
-    RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES, MARKER_TYPE_TRANSIENT,
-    SELECTION_COLLECTION,
+    MarkerId, MarkerList, MarkerType, MediaAvailability, MediaDescriptor, MediaId, MediaPool,
+    MediaRef, MediaStore, RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES,
+    MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
 };
 use field_audio_process::{
     AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, SpectralOp,
     TransientDetectOp, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
 };
-use field_core::{encode_file_url, ProgressHandle};
+use field_core::{LoadProblem, Location, OpenReport, ProblemCategory, ProgressHandle};
 
 use super::analysis_store::AnalysisStreams;
 use super::clip::{Clip, ClipCache, ClipId, ClipSpan};
@@ -361,7 +361,7 @@ impl Composition {
     pub fn from_descriptor(
         descriptor: MediaDescriptor,
         store: Option<Arc<Mutex<MediaStore>>>,
-    ) -> Result<(Self, Option<DescriptorMismatch>)> {
+    ) -> Result<(Self, OpenReport)> {
         Self::from_descriptor_with_base(descriptor, None, store)
     }
 
@@ -370,28 +370,82 @@ impl Composition {
         descriptor: MediaDescriptor,
         base: Option<&Path>,
         store: Option<Arc<Mutex<MediaStore>>>,
-    ) -> Result<(Self, Option<DescriptorMismatch>)> {
+    ) -> Result<(Self, OpenReport)> {
+        let target = descriptor.url.clone();
+        let mut report = OpenReport::new(target.clone());
         let store = resolve_media_store(store);
         let mut media = MediaRef::from_descriptor(descriptor.clone(), PathBuf::new());
-        media.resolve_url(base)?;
+        if let Err(err) = media.resolve_url(base) {
+            report.push(LoadProblem::new(
+                ProblemCategory::InvalidLocation,
+                descriptor.basename.clone(),
+                err.to_string(),
+                Some(descriptor.url.clone()),
+            ));
+            media.availability = MediaAvailability::Missing;
+            let composed = Self::from_media_with_store(media, Some(store))?;
+            return Ok((composed, report));
+        }
         if !media.path.to_string_lossy().starts_with("memory://") {
             if !media.path.is_file() {
-                bail!("missing source media {}", media.path.display());
+                media.availability = MediaAvailability::Missing;
+                report.push(LoadProblem::new(
+                    ProblemCategory::MissingReference,
+                    descriptor.basename.clone(),
+                    format!("missing source media {}", media.path.display()),
+                    Some(descriptor.url.clone()),
+                ));
+                let composed = Self::from_media_with_store(media, Some(store))?;
+                return Ok((composed, report));
             }
-            let probed = probe_file(&media.path)?;
+            let probed = match probe_file(&media.path) {
+                Ok(probed) => probed,
+                Err(err) => {
+                    media.availability = MediaAvailability::Missing;
+                    report.push(LoadProblem::new(
+                        ProblemCategory::Other,
+                        descriptor.basename.clone(),
+                        format!("failed to probe {}: {err:#}", media.path.display()),
+                        Some(descriptor.url.clone()),
+                    ));
+                    let composed = Self::from_media_with_store(media, Some(store))?;
+                    return Ok((composed, report));
+                }
+            };
             let mut probed_ref = media_ref_from_probed(probed);
             probed_ref.path = media.path.clone();
             probed_ref.url = descriptor.url.clone();
             let mismatch = descriptor_mismatch(&descriptor, &probed_ref.to_descriptor());
             media = probed_ref;
             media.id = descriptor.id;
-            media.url = descriptor.url;
-            media.basename = descriptor.basename;
+            media.url = descriptor.url.clone();
+            media.basename = descriptor.basename.clone();
+            if let Some(kind) = mismatch {
+                media.availability = match kind {
+                    DescriptorMismatch::Identity => MediaAvailability::IdentityMismatch,
+                    DescriptorMismatch::Freshness => MediaAvailability::FreshnessMismatch,
+                };
+                report.push(LoadProblem::new(
+                    ProblemCategory::MediaMismatch,
+                    descriptor.basename.clone(),
+                    match kind {
+                        DescriptorMismatch::Identity => format!(
+                            "Media identity changed for {} (keeping recorded media id)",
+                            media.path.display()
+                        ),
+                        DescriptorMismatch::Freshness => format!(
+                            "Media file modified on disk for {} (identity unchanged)",
+                            media.path.display()
+                        ),
+                    },
+                    Some(descriptor.url),
+                ));
+            }
             let composed = Self::from_media_with_store(media, Some(store))?;
-            return Ok((composed, mismatch));
+            return Ok((composed, report));
         }
         media.id = descriptor.id;
-        Ok((Self::from_media_with_store(media, Some(store))?, None))
+        Ok((Self::from_media_with_store(media, Some(store))?, report))
     }
 
     /// Override composition identity (session reload of media documents).
@@ -405,7 +459,7 @@ impl Composition {
     }
 
     /// `load_from_path_with_warnings`.
-    pub fn load_from_path_with_warnings(path: &Path) -> Result<(Self, Vec<String>)> {
+    pub fn load_from_path_with_warnings(path: &Path) -> Result<(Self, OpenReport)> {
         Self::load_from_path_with_progress(path, None, 0)
     }
 
@@ -413,7 +467,7 @@ impl Composition {
     pub fn load_from_path_into_store(
         path: &Path,
         store: Option<Arc<Mutex<MediaStore>>>,
-    ) -> Result<(Self, Vec<String>)> {
+    ) -> Result<(Self, OpenReport)> {
         Self::load_from_path_with_progress_into_store(path, None, 0, store)
     }
 
@@ -422,7 +476,7 @@ impl Composition {
         path: &Path,
         progress: Option<&ProgressHandle>,
         epoch: u64,
-    ) -> Result<(Self, Vec<String>)> {
+    ) -> Result<(Self, OpenReport)> {
         Self::load_from_path_with_progress_into_store(path, progress, epoch, None)
     }
 
@@ -432,7 +486,7 @@ impl Composition {
         progress: Option<&ProgressHandle>,
         epoch: u64,
         store: Option<Arc<Mutex<MediaStore>>>,
-    ) -> Result<(Self, Vec<String>)> {
+    ) -> Result<(Self, OpenReport)> {
         if is_facomp_path(path) {
             return Self::load_facomp_with_progress_into_store(path, progress, epoch, store);
         }
@@ -454,12 +508,12 @@ impl Composition {
             .join(format!("{:x}", hasher.finish()));
         Ok((
             Self::from_media_path(path, store)?.with_spill_dir(spill)?,
-            Vec::new(),
+            OpenReport::new(Location::from_path(path)),
         ))
     }
 
     /// `load_facomp`.
-    pub fn load_facomp(path: &Path) -> Result<(Self, Vec<String>)> {
+    pub fn load_facomp(path: &Path) -> Result<(Self, OpenReport)> {
         Self::load_facomp_with_progress(path, None, 0)
     }
 
@@ -467,7 +521,7 @@ impl Composition {
         path: &Path,
         progress: Option<&ProgressHandle>,
         epoch: u64,
-    ) -> Result<(Self, Vec<String>)> {
+    ) -> Result<(Self, OpenReport)> {
         Self::load_facomp_with_progress_into_store(path, progress, epoch, None)
     }
 
@@ -476,7 +530,7 @@ impl Composition {
         progress: Option<&ProgressHandle>,
         epoch: u64,
         store: Option<Arc<Mutex<MediaStore>>>,
-    ) -> Result<(Self, Vec<String>)> {
+    ) -> Result<(Self, OpenReport)> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -488,8 +542,9 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.2);
         }
-        let (mut composition, warnings) =
+        let (mut composition, mut report) =
             Self::from_json_reprobing_at_into_store(&json, path.parent(), store)?;
+        report.target = Location::from_path(path);
         composition.path_display_name = path_stem_name(path);
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 0.85);
@@ -505,7 +560,7 @@ impl Composition {
         if let Some(progress) = progress {
             progress.set_fraction(epoch, 1.0);
         }
-        Ok((composition, warnings))
+        Ok((composition, report))
     }
 
     /// `suggested_facomp_name`.
@@ -3415,12 +3470,12 @@ impl Composition {
     }
 
     /// `from_json_reprobing`.
-    pub fn from_json_reprobing(json: &str) -> Result<(Self, Vec<String>)> {
+    pub fn from_json_reprobing(json: &str) -> Result<(Self, OpenReport)> {
         Self::from_json_reprobing_at(json, None)
     }
 
     /// `from_json_reprobing_at`.
-    pub fn from_json_reprobing_at(json: &str, base: Option<&Path>) -> Result<(Self, Vec<String>)> {
+    pub fn from_json_reprobing_at(json: &str, base: Option<&Path>) -> Result<(Self, OpenReport)> {
         Self::from_json_reprobing_at_into_store(json, base, None)
     }
 
@@ -3428,34 +3483,90 @@ impl Composition {
         json: &str,
         base: Option<&Path>,
         store: Option<Arc<Mutex<MediaStore>>>,
-    ) -> Result<(Self, Vec<String>)> {
-        let envelope = ProjectEnvelope::from_json(json)?;
-        let mut warnings = Vec::new();
+    ) -> Result<(Self, OpenReport)> {
+        let target = match base {
+            Some(base) => Location::from_path(base),
+            None => Location::parse("memory://composition").unwrap(),
+        };
+        let mut report = OpenReport::new(target);
+        let envelope = match ProjectEnvelope::from_json(json) {
+            Ok(envelope) => envelope,
+            Err(err) => {
+                let msg = err.to_string();
+                let category = if msg.contains("format_version") {
+                    ProblemCategory::UnsupportedFormat
+                } else {
+                    ProblemCategory::CorruptDocument
+                };
+                report.push(LoadProblem::new(category, "composition", msg, None));
+                return Err(err);
+            }
+        };
         let mut file = envelope.project;
         let mut resolved = Vec::with_capacity(file.media.len());
         for mut media in file.media {
-            media.resolve_url(base)?;
+            if let Err(err) = media.resolve_url(base) {
+                report.push(LoadProblem::new(
+                    ProblemCategory::InvalidLocation,
+                    media.basename.clone(),
+                    err.to_string(),
+                    Some(media.url.clone()),
+                ));
+                media.availability = MediaAvailability::Missing;
+                resolved.push(media);
+                continue;
+            }
             let path_str = media.path.to_string_lossy();
             if path_str.starts_with("memory://") {
                 resolved.push(media);
                 continue;
             }
             if !media.path.is_file() {
-                bail!("missing source media {}", media.path.display());
+                media.availability = MediaAvailability::Missing;
+                report.push(LoadProblem::new(
+                    ProblemCategory::MissingReference,
+                    media.basename.clone(),
+                    format!("missing source media {}", media.path.display()),
+                    Some(media.url.clone()),
+                ));
+                resolved.push(media);
+                continue;
             }
-            let meta = std::fs::metadata(&media.path)
-                .with_context(|| format!("failed to stat source media {}", media.path.display()))?;
+            let meta = match std::fs::metadata(&media.path) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    media.availability = MediaAvailability::Missing;
+                    report.push(LoadProblem::new(
+                        ProblemCategory::Other,
+                        media.basename.clone(),
+                        format!(
+                            "failed to stat source media {}: {err}",
+                            media.path.display()
+                        ),
+                        Some(media.url.clone()),
+                    ));
+                    resolved.push(media);
+                    continue;
+                }
+            };
             if media_stats_match(&media, &meta) {
                 resolved.push(media);
                 continue;
             }
-            warnings.push(format!("source media changed: {}", media.path.display()));
+            media.availability = MediaAvailability::FreshnessMismatch;
+            report.push(LoadProblem::new(
+                ProblemCategory::MediaMismatch,
+                media.basename.clone(),
+                format!("source media changed: {}", media.path.display()),
+                Some(media.url.clone()),
+            ));
             match probe_header(&media.path) {
                 Ok(probed) => {
                     let mut next = media_ref_from_probed(probed);
                     next.id = media.id;
                     next.path = media.path;
                     next.url = media.url;
+                    next.availability = MediaAvailability::FreshnessMismatch;
                     resolved.push(next);
                 }
                 Err(_) => {
@@ -3467,7 +3578,7 @@ impl Composition {
             }
         }
         file.media = resolved;
-        Ok((Self::from_project_file_into_store(file, store)?, warnings))
+        Ok((Self::from_project_file_into_store(file, store)?, report))
     }
 
     fn replay(&mut self, op: &EditOp) -> Result<()> {
@@ -3672,7 +3783,7 @@ fn media_stats_match(media: &MediaRef, meta: &std::fs::Metadata) -> bool {
 /// Build a [`MediaRef`] from a probed audio file (identity finalized).
 pub fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
     let path = probed.path;
-    let url = encode_file_url(&path, None);
+    let url = Location::from_path(&path);
     let mut media = MediaRef {
         id: MediaId([0u8; 32]),
         url,
@@ -3687,6 +3798,7 @@ pub fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
         container_format: probed.container_format,
         codec: probed.codec,
         samples: probed.samples,
+        availability: field_audio_model::MediaAvailability::Available,
     };
     media.finalize_identity();
     media
@@ -4357,8 +4469,8 @@ mod tests {
         let json = std::fs::read_to_string(&facomp).unwrap();
         assert!(json.contains("\"kind\": \"facomp\""));
         assert!(!json.contains("samples"));
-        let (restored, warnings) = Composition::load_facomp(&facomp).unwrap();
-        assert!(warnings.is_empty());
+        let (restored, report) = Composition::load_facomp(&facomp).unwrap();
+        assert!(report.is_ok());
         assert_eq!(restored.frames(), live.frames());
         assert_eq!(restored.sample_rate(), 44100);
         let pool = restored.pool();
@@ -4376,7 +4488,7 @@ mod tests {
         let meta = std::fs::metadata(&dummy).unwrap();
         let mut media = MediaRef {
             id: MediaId([0u8; 32]),
-            url: dummy.to_string_lossy().into_owned(),
+            url: Location::from_path(&dummy),
             basename: String::new(),
             path: dummy.clone(),
             sample_rate: 44100,
@@ -4388,6 +4500,7 @@ mod tests {
             container_format: "wav".into(),
             codec: "pcm".into(),
             samples: None,
+            availability: field_audio_model::MediaAvailability::Available,
         };
         media.finalize_identity();
         let media_id = media.id;
@@ -4410,8 +4523,8 @@ mod tests {
             source_channels: None,
         };
         let json = ProjectEnvelope::wrap(file).to_json().unwrap();
-        let (comp, warnings) = Composition::from_json_reprobing(&json).unwrap();
-        assert!(warnings.is_empty());
+        let (comp, report) = Composition::from_json_reprobing(&json).unwrap();
+        assert!(report.is_ok());
         assert_eq!(comp.frames(), 1000);
         assert!(comp.pool().first().unwrap().samples.is_none());
         let _ = std::fs::remove_file(dummy);
@@ -5448,6 +5561,29 @@ mod tests {
     }
 
     #[test]
+    fn from_descriptor_missing_media_reports_without_bail() {
+        let dir = std::env::temp_dir().join("fa-from-descriptor-missing");
+        let _ = std::fs::create_dir_all(&dir);
+        let absolute = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
+        let mut descriptor = absolute.pool().first().unwrap().to_descriptor();
+        descriptor.url = "missing-clip.wav".into();
+        descriptor.basename = "missing-clip.wav".into();
+        let (comp, report) =
+            Composition::from_descriptor_with_base(descriptor, Some(&dir), None).unwrap();
+        assert!(!report.is_ok());
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(
+            report.problems[0].category,
+            field_core::ProblemCategory::MissingReference
+        );
+        assert_eq!(
+            comp.pool().first().unwrap().availability,
+            MediaAvailability::Missing
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn from_descriptor_resolves_relative_url_with_base() {
         let dir = std::env::temp_dir().join("fa-from-descriptor-rel");
         let _ = std::fs::create_dir_all(&dir);
@@ -5457,9 +5593,9 @@ mod tests {
         let mut descriptor = absolute.pool().first().unwrap().to_descriptor();
         // Simulate session persistence: relative URL beside the session file.
         descriptor.url = "rel-clip.wav".into();
-        let (comp, mismatch) =
+        let (comp, report) =
             Composition::from_descriptor_with_base(descriptor, Some(&dir), None).unwrap();
-        assert!(mismatch.is_none());
+        assert!(report.is_ok());
         assert_eq!(comp.frames(), 12);
         assert_eq!(comp.display_name(), "rel-clip");
         let _ = std::fs::remove_dir_all(&dir);

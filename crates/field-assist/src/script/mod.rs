@@ -496,7 +496,8 @@ mod tests {
             local pool = field.media.shared_pool()
             local before = #pool:items()
             local m = pool:add("{path_lua}")
-            assert(m.id and m.path and m.basename)
+            assert(m.id and m.url and m.basename)
+            assert(m.url:as_path())
             assert(#pool:items() == before + 1)
             pool:remove(m)
             return #pool:items(), before
@@ -1245,7 +1246,7 @@ mod tests {
             r#"
             field.session.focused().workflow_name = "review"
             field.session.focused():save_as("{path_lua}")
-            return field.session.focused().path ~= nil
+            return field.session.focused().url ~= nil
             "#
         ));
         assert!(out.error.is_none(), "{:?}", out.error);

@@ -27,7 +27,7 @@ pub use field_session::{
 /// Compatibility shim for `crate::model::file_url`.
 pub mod file_url {
     #[allow(unused_imports)]
-    pub use field_core::{encode_file_url, resolve_file_url};
+    pub use field_core::Location;
 }
 
 /// Compatibility shim for `crate::model::buffer`.

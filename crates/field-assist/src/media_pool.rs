@@ -125,7 +125,7 @@ pub fn remove_media(
 fn row_from_ref(media: crate::model::MediaRef) -> MediaPoolRow {
     MediaPoolRow {
         id: media.id,
-        url: media.url,
+        url: media.url.as_str().to_owned(),
         path: media.path,
         basename: media.basename,
         sample_rate: media.sample_rate,
@@ -144,7 +144,7 @@ fn format_modified(time: SystemTime) -> String {
     // Prefer the same RFC3339 form used in .fasession / .facomp descriptors.
     let descriptor = crate::model::MediaDescriptor {
         id: crate::model::composition::MediaId([0u8; 32]),
-        url: String::new(),
+        url: field_core::Location::from(""),
         basename: String::new(),
         sample_rate: 0,
         channel_count: 0,

@@ -48,8 +48,9 @@ local function session_has_path(session, path)
   if not path then
     return false
   end
+  local needle = tostring(path)
   for _, doc in ipairs(session.compositions) do
-    if doc.path == path then
+    if doc.url and tostring(doc.url) == needle then
       return true
     end
   end
@@ -61,9 +62,9 @@ local function add_path(path)
   if is_session_path(path) then
     local incoming = field.session.open(path)
     for _, doc in ipairs(incoming.compositions) do
-      local doc_path = doc.path
-      if doc_path and not session_has_path(session, doc_path) then
-        session:open(doc_path)
+      local doc_url = doc.url
+      if doc_url and not session_has_path(session, doc_url) then
+        session:open(doc_url)
       end
     end
     incoming:close()

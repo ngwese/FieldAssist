@@ -118,7 +118,7 @@ function Catalog:export_one(doc, index, total)
   -- Until that ships, File → Render remains the interactive single-file path.
   field.log.info(
     "catalog",
-    string.format("export (intended) %s → %s", doc.name or doc.path or "?", self.catalog_root)
+    string.format("export (intended) %s → %s", doc.name or tostring(doc.url) or "?", self.catalog_root)
   )
 
   -- Update ledger: catalog_status = exported for this staging_url / document

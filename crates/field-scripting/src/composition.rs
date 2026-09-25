@@ -44,10 +44,10 @@ impl UserData for LuaComposition {
         fields.add_field_method_set("name", |lua, this, value: String| {
             host_from_lua(lua)?.set_display_name(this.id, value)
         });
-        fields.add_field_method_get("path", |lua, this| {
+        fields.add_field_method_get("url", |lua, this| {
             Ok(host_from_lua(lua)?
                 .document_path(this.id)
-                .map(|path| path.display().to_string()))
+                .map(|path| crate::url::LuaUrl::from_path(&path)))
         });
         fields.add_field_method_get("id", |lua, this| {
             host_from_lua(lua)?.composition_id_string(this.id)
@@ -387,9 +387,10 @@ impl UserData for LuaComposition {
         methods.add_method("close", |lua, this, ()| {
             host_from_lua(lua)?.close_composition(this.id)
         });
-        methods.add_method("replace", |lua, this, path: String| {
+        methods.add_method("replace", |lua, this, path: Value| {
+            let path = crate::fs::path_from_lua(path)?;
             host_from_lua(lua)?
-                .replace_composition(this.id, &path)
+                .replace_composition(this.id, &path.to_string_lossy())
                 .map(|id| LuaComposition { id })
         });
         methods.add_method("undo", |lua, this, ()| {
@@ -448,9 +449,10 @@ pub fn bind_composition_module(lua: &Lua, field: &Table) -> mlua::Result<()> {
     let composition = lua.create_table()?;
     composition.set(
         "open",
-        lua.create_function(|lua, path: String| {
+        lua.create_function(|lua, path: Value| {
+            let path = crate::fs::path_from_lua(path)?;
             host_from_lua(lua)?
-                .open_path(&path)
+                .open_path(&path.to_string_lossy())
                 .map(|id| LuaComposition { id })
         })?,
     )?;

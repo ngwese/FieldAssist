@@ -51,8 +51,10 @@ impl UserData for LuaSession {
             let host = host_from_lua(lua)?;
             Ok(host.session_id(this.detached_id))
         });
-        fields.add_field_method_get("path", |lua, this| {
-            Ok(host_from_lua(lua)?.session_path(this.detached_id))
+        fields.add_field_method_get("url", |lua, this| {
+            Ok(host_from_lua(lua)?
+                .session_path(this.detached_id)
+                .map(|path| crate::url::LuaUrl::from_path(std::path::Path::new(&path))))
         });
         fields.add_field_method_get("workflow_name", |lua, this| {
             Ok(host_from_lua(lua)?.session_workflow(this.detached_id))
@@ -125,18 +127,21 @@ impl UserData for LuaSession {
         methods.add_method("move", |lua, this, (doc, index): (LuaComposition, i64)| {
             host_from_lua(lua)?.move_session_document(this.detached_id, doc.id, index)
         });
-        methods.add_method("open", |lua, _, path: String| {
+        methods.add_method("open", |lua, _, path: Value| {
             // `session.open(path)` opens a *document* into the **focused** session.
             // To open a .fasession file, use `field.session.open("…")` (module-level).
+            let path = crate::fs::path_from_lua(path)?;
             host_from_lua(lua)?
-                .open_path(&path)
+                .open_path(&path.to_string_lossy())
                 .map(|id| LuaComposition { id })
         });
         methods.add_method("save", |lua, this, ()| {
             host_from_lua(lua)?.save_session(this.detached_id, None)
         });
-        methods.add_method("save_as", |lua, this, path: String| {
-            host_from_lua(lua)?.save_session(this.detached_id, Some(path))
+        methods.add_method("save_as", |lua, this, path: Value| {
+            let path = crate::fs::path_from_lua(path)?;
+            host_from_lua(lua)?
+                .save_session(this.detached_id, Some(path.to_string_lossy().into_owned()))
         });
         methods.add_method("close", |lua, this, ()| -> mlua::Result<()> {
             let Some(id) = this.detached_id else {
@@ -164,13 +169,14 @@ pub fn bind_session_module(lua: &Lua, field: &Table) -> mlua::Result<()> {
     )?;
     session.set(
         "open",
-        lua.create_function(|lua, path: String| {
+        lua.create_function(|lua, path: Value| {
             // `field.session.open` loads a .fasession into the detached map
             // and returns a LuaSession identified by that session's id.
             // The focused world session is NOT replaced.
             // To replace the focused session (batch style), use
             // `field.session.load(path)` (internal / Phase-2 API).
-            let detached_id = host_from_lua(lua)?.open_detached_session(&path)?;
+            let path = crate::fs::path_from_lua(path)?;
+            let detached_id = host_from_lua(lua)?.open_detached_session(&path.to_string_lossy())?;
             Ok(LuaSession {
                 detached_id: Some(detached_id),
             })

@@ -40,10 +40,9 @@ impl UserData for LuaMedia {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("id", |_, this| Ok(this.id.to_string()));
         fields.add_field_method_get("url", |lua, this| {
-            with_media(lua, this.id, |media| Ok(media.url.clone()))
-        });
-        fields.add_field_method_get("path", |lua, this| {
-            with_media(lua, this.id, |media| Ok(media.path.display().to_string()))
+            with_media(lua, this.id, |media| {
+                Ok(crate::url::LuaUrl::from_location(media.url.clone()))
+            })
         });
         fields.add_field_method_get("basename", |lua, this| {
             with_media(lua, this.id, |media| Ok(media.basename.clone()))
@@ -88,9 +87,10 @@ pub struct LuaMediaPool;
 
 impl UserData for LuaMediaPool {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("add", |lua, _, path: String| {
+        methods.add_method("add", |lua, _, path: Value| {
             let host = host_from_lua(lua)?;
-            let id = host.with_backend_mut(|b| b.add_media(std::path::Path::new(&path)))?;
+            let path = crate::fs::path_from_lua(path)?;
+            let id = host.with_backend_mut(|b| b.add_media(&path))?;
             Ok(LuaMedia { id })
         });
         methods.add_method("remove", |lua, _, value: Value| {

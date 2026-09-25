@@ -107,7 +107,7 @@ struct WalkDir {
     rel: String,
 }
 
-fn path_from_lua(value: Value) -> mlua::Result<PathBuf> {
+pub(crate) fn path_from_lua(value: Value) -> mlua::Result<PathBuf> {
     match value {
         Value::String(s) => Ok(PathBuf::from(s.to_str()?.as_ref())),
         Value::UserData(ud) => {

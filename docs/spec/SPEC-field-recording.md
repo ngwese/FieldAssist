@@ -230,7 +230,7 @@ they exist.
 | `with_extension(ext)` | Replace extension |
 | `relative_to(base)` | Relative URL string when inside `base` |
 
-Rust already has `encode_file_url` / `resolve_file_url` in `field-core`; Lua
+Rust uses `field_core::Location` for portable file URLs; Lua
 needs the object and accessors.
 
 ### Filesystem (`app.fs`)

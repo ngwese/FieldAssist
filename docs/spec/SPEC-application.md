@@ -125,6 +125,21 @@ A session holds:
   are open
 - Dirty flag
 
+Relative URLs in `.fasession` / `.facomp` (and their `media` descriptors) are
+resolved against the parent of the owning file — never the process cwd — so a
+project tree can move across machines and OS path conventions. Absolute refs are
+stored only as `file://…`.
+
+### Open as one operation
+
+Opening a session or composition is a single user operation. All probe /
+resolve problems from that open are collected into one
+[`OpenReport`](../../crates/field-core/src/open_report.rs) and shown in a single
+load-problems sheet (grouped by category). **OK** dismisses the sheet and
+cancels the open (the staged session is discarded). Remapping broken references
+is reserved for a later change; the runtime can still represent missing media via
+`MediaAvailability`.
+
 Each **document** is a tagged target:
 
 - **Media**: `media_id`, recorded `comp:<uuid>`, and optional `name` (defaults to

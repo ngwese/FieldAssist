@@ -21,9 +21,10 @@ use gpui_kit::component::{
 use gpui_kit::{
     div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, AnyWindowHandle, App,
     AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
-    InteractiveElement as _, IntoElement, KeyContext, Menu, MenuItem, ParentElement as _,
-    PathPromptOptions, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId, WindowOptions,
+    InteractiveElement as _, IntoElement, KeyContext, KeyDownEvent, Menu, MenuItem,
+    ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowId, WindowOptions,
 };
 
 use crate::assets::AppAssets;
@@ -58,9 +59,8 @@ use crate::dock_titles::{
 };
 use crate::lineage::{ExplorerLineageFlags, LineageNode, LineageTree};
 use crate::model::composition::{
-    default_marker_type, AnalysisBlockOutcome, AnalysisKind, Composition, DescriptorMismatch,
-    EditId, MediaDescriptor, MediaStore, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
-    MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    default_marker_type, AnalysisBlockOutcome, AnalysisKind, Composition, EditId, MediaDescriptor,
+    MediaStore, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
 };
 use crate::model::{
     is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, CompositionId,
@@ -182,6 +182,16 @@ enum AfterSessionWrite {
     Continue,
 }
 
+/// In-flight session restore: wait for `expected` document loads, then surface
+/// one aggregated [`OpenReport`] (or commit when empty).
+struct SessionOpenBatch {
+    expected: usize,
+    finished: usize,
+    report: field_core::OpenReport,
+    /// Document ids loaded successfully (committed only if report is empty).
+    loaded_ok: Vec<DocumentId>,
+}
+
 pub struct AppView {
     session: Session,
     /// Shared media pool + pager for all documents in this window/session.
@@ -214,10 +224,13 @@ pub struct AppView {
                 u64,
                 f64,
                 bool,
-                Result<(Composition, Vec<String>), String>,
+                Result<(Composition, field_core::OpenReport), String>,
             )>,
         >,
     >,
+    /// When restoring a session, accumulate document load reports until all
+    /// expected loads finish, then present one sheet (or commit).
+    session_open_batch: Option<SessionOpenBatch>,
     pending_render: Arc<Mutex<Vec<(DocumentId, u64, Result<(), String>)>>>,
     pending_analysis: Arc<Mutex<Vec<DocumentId>>>,
     /// Info lines produced by analysis workers (drained onto the Messages panel).
@@ -225,6 +238,9 @@ pub struct AppView {
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
     render_sheet: Entity<RenderSheet>,
     render_sheet_open: bool,
+    /// App-owned modal for aggregated open failures (avoids Root::update).
+    load_problems: Option<Entity<crate::components::load_problems_sheet::LoadProblemsSheet>>,
+    load_problems_focus: FocusHandle,
     quit_save_queue: Vec<DocumentId>,
     pending_continue: Option<PendingContinue>,
     focus_handle: FocusHandle,
@@ -531,12 +547,15 @@ impl AppView {
             app_menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
             pending_opens,
             pending_load: Arc::new(Mutex::new(Vec::new())),
+            session_open_batch: None,
             pending_render: Arc::new(Mutex::new(Vec::new())),
             pending_analysis: Arc::new(Mutex::new(Vec::new())),
             pending_analysis_logs: Arc::new(Mutex::new(Vec::new())),
             pending_loaded_scripts: Vec::new(),
             render_sheet,
             render_sheet_open: false,
+            load_problems: None,
+            load_problems_focus: cx.focus_handle(),
             quit_save_queue: Vec::new(),
             pending_continue: None,
             focus_handle: cx.focus_handle(),
@@ -567,7 +586,12 @@ impl AppView {
         }
         if let Some(path) = session_path {
             if let Err(err) = this.replace_session_from_path(&path, window, cx) {
-                this.show_load_error(&err, window, cx);
+                // AppView::new runs before Root wraps the window; defer so
+                // open_alert_dialog can find gpui_component::Root.
+                let message = err.clone();
+                cx.defer_in(window, move |this, window, cx| {
+                    this.show_load_error(&message, window, cx);
+                });
             }
         }
         if let Some(id) = this.session.active() {
@@ -745,7 +769,7 @@ impl AppView {
                 let path = if !m.path.as_os_str().is_empty() {
                     m.path.display().to_string()
                 } else {
-                    m.url.clone()
+                    m.url.to_string()
                 };
                 let duration_secs = if m.sample_rate > 0 {
                     m.frame_count as f64 / f64::from(m.sample_rate)
@@ -1507,6 +1531,7 @@ impl AppView {
         self.ensure_tab_at(id, None, fire_hooks, window, cx)
     }
 
+    #[allow(dead_code)]
     fn replace_transient_tab(
         &mut self,
         old_id: DocumentId,
@@ -3811,18 +3836,121 @@ impl AppView {
         });
     }
 
-    fn show_media_warning(&self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let message = message.to_string();
-        self.messages.update(cx, |panel, cx| {
-            panel.append(
-                vec![LogLine::new(LogLevel::Warn, "media", message.clone())],
-                cx,
-            );
-        });
-        let title = "Source media changed";
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            alert.title(title).description(message.clone())
-        });
+    fn show_open_report(
+        &mut self,
+        report: field_core::OpenReport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::components::load_problems_sheet::LoadProblemsSheet;
+
+        // Own the modal on AppView (same pattern as RenderSheet). Calling
+        // open_alert_dialog / open_sheet here hits Root::update and panics when
+        // the window root is not yet (or no longer) typed as gpui_component::Root.
+        self.load_problems = Some(cx.new(|cx| LoadProblemsSheet::new(report, window, cx)));
+        self.load_problems_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn close_load_problems(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.load_problems.take().is_none() {
+            return;
+        }
+        self.abort_failed_open(window, cx);
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Discard a staged open that reported problems (empty untitled session).
+    fn abort_failed_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_open_batch = None;
+        self.close_to_empty_session(window, cx);
+    }
+
+    fn load_problems_overlay(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::components::load_problems_sheet::{LoadProblemsSheet, WINDOW_INSET};
+
+        let theme = cx.theme().clone();
+        let sheet = self
+            .load_problems
+            .clone()
+            .expect("load_problems_overlay requires an open sheet");
+        let bounds = window.bounds();
+        let inset = px(WINDOW_INSET);
+        let max_w = (bounds.size.width - inset * 2.).max(px(280.));
+        let panel_w = px(560.).min(max_w);
+        // Cap panel height so top and bottom stay inset by WINDOW_INSET.
+        let panel_h = LoadProblemsSheet::panel_height_for(window);
+        // Backdrop is visual only — dismiss via Escape, Return, or OK.
+        div()
+            .id("load-problems-layer")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .py(inset)
+            .occlude()
+            .track_focus(&self.load_problems_focus)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                match event.keystroke.key.as_str() {
+                    "escape" | "enter" => {
+                        this.close_load_problems(window, cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
+            }))
+            .child(
+                div()
+                    .id("load-problems-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(hsla(0., 0., 0., 0.35)),
+            )
+            .child(
+                v_flex()
+                    .id("load-problems-panel")
+                    .relative()
+                    .w(panel_w)
+                    .h(panel_h)
+                    .bg(theme.background)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded_lg()
+                    .shadow_xl()
+                    .occlude()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .px_4()
+                            .py_3()
+                            .font_semibold()
+                            .child("Load problems"),
+                    )
+                    .child(div().flex_1().min_h_0().w_full().px_4().pb_2().child(sheet))
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .w_full()
+                            .px_4()
+                            .py_3()
+                            .justify_end()
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .child(
+                                Button::new("load-problems-ok")
+                                    .primary()
+                                    .label("OK")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_load_problems(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
     }
 
     fn show_save_error(&self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -4527,32 +4655,136 @@ impl AppView {
                 .get(&id)
                 .is_some_and(|views| views.document.read(cx).progress.is_epoch(epoch));
             if !valid {
+                if let Some(batch) = self.session_open_batch.as_mut() {
+                    batch.finished += 1;
+                }
                 continue;
             }
             match result {
-                Ok((composition, warnings)) => {
-                    self.push_loaded_composition(
-                        id,
-                        composition,
-                        elapsed,
-                        nest_under_parent,
-                        window,
-                        cx,
-                    );
-                    if !warnings.is_empty() {
-                        self.show_media_warning(&warnings.join("\n"), window, cx);
+                Ok((composition, report)) => {
+                    let has_problems = !report.is_ok();
+                    let in_batch = self.session_open_batch.is_some();
+                    if in_batch {
+                        if let Some(batch) = self.session_open_batch.as_mut() {
+                            batch.report.extend_from(report);
+                            batch.finished += 1;
+                        }
+                        if has_problems {
+                            if let Some(views) = self.views.get(&id) {
+                                views.document.read(cx).progress.cancel();
+                            }
+                            self.close_document(id, window, cx);
+                        } else {
+                            self.push_loaded_composition(
+                                id,
+                                composition,
+                                elapsed,
+                                nest_under_parent,
+                                window,
+                                cx,
+                            );
+                            if let Some(batch) = self.session_open_batch.as_mut() {
+                                batch.loaded_ok.push(id);
+                            }
+                        }
+                    } else if has_problems {
+                        if let Some(views) = self.views.get(&id) {
+                            views.document.read(cx).progress.cancel();
+                        }
+                        self.close_document(id, window, cx);
+                        self.show_open_report(report, window, cx);
+                    } else {
+                        self.push_loaded_composition(
+                            id,
+                            composition,
+                            elapsed,
+                            nest_under_parent,
+                            window,
+                            cx,
+                        );
                     }
                 }
                 Err(err) => {
                     if let Some(views) = self.views.get(&id) {
                         views.document.read(cx).progress.cancel();
                     }
-                    self.show_load_error(&err, window, cx);
-                    self.close_document(id, window, cx);
-                    cx.notify();
+                    let problem = field_core::LoadProblem::new(
+                        field_core::ProblemCategory::Other,
+                        "document",
+                        err,
+                        None,
+                    );
+                    if let Some(batch) = self.session_open_batch.as_mut() {
+                        batch.report.push(problem);
+                        batch.finished += 1;
+                        self.close_document(id, window, cx);
+                    } else {
+                        let mut report = field_core::OpenReport::new(
+                            field_core::Location::parse("memory://open")
+                                .unwrap_or_else(|_| field_core::Location::from("memory://open")),
+                        );
+                        report.push(problem);
+                        self.close_document(id, window, cx);
+                        self.show_open_report(report, window, cx);
+                    }
                 }
             }
+            cx.notify();
         }
+        self.finish_session_open_batch_if_ready(window, cx);
+    }
+
+    fn finish_session_open_batch_if_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(batch) = self.session_open_batch.as_ref() else {
+            return;
+        };
+        if batch.finished < batch.expected {
+            return;
+        }
+        let batch = self.session_open_batch.take().expect("batch");
+        if batch.report.is_ok() {
+            // Tabs were deferred during restore so a failed open never left
+            // empty "FieldAssist" placeholders in the center dock.
+            self.open_restored_session_tabs(window, cx);
+            return;
+        }
+        // Problems: discard the staged session entirely, then present the report.
+        let report = batch.report;
+        self.close_to_empty_session(window, cx);
+        self.show_open_report(report, window, cx);
+    }
+
+    /// Open center tabs for documents restored with `tab_open` after a clean
+    /// session batch (tabs are deferred until the open commits).
+    fn open_restored_session_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab_ids: Vec<DocumentId> = self
+            .session
+            .documents()
+            .iter()
+            .filter(|doc| doc.tab_open)
+            .map(|doc| doc.id)
+            .collect();
+        for id in tab_ids {
+            let Some(views) = self.views.get(&id).cloned() else {
+                continue;
+            };
+            let workspace = views.workspace.clone();
+            self.dock_area.update(cx, |area, cx| {
+                Self::show_workspace_tab(area, workspace, None, window, cx);
+            });
+        }
+        if !self.session.documents().is_empty() {
+            self.remove_placeholder(window, cx);
+        } else {
+            self.ensure_placeholder(window, cx);
+        }
+        if let Some(id) = self.session.active() {
+            if self.views.contains_key(&id) {
+                self.ensure_tab(id, window, cx);
+            }
+        }
+        self.apply_active(window, cx);
+        cx.notify();
     }
 
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -4756,7 +4988,6 @@ impl AppView {
             .map_err(|err| format!("{err:#}"))?;
         self.teardown_all_documents(window, cx);
         let ui = loaded.ui;
-        let first = loaded.session.documents().first().map(|doc| doc.id);
         let docs: Vec<DocumentId> = loaded
             .session
             .documents()
@@ -4766,15 +4997,31 @@ impl AppView {
         self.session = loaded.session;
         self.media_store = Arc::new(Mutex::new(MediaStore::in_memory()));
         self.restoring_session = true;
+        let expected = docs
+            .iter()
+            .filter(|id| {
+                self.session
+                    .get(**id)
+                    .and_then(|doc| doc.file_path())
+                    .is_some()
+            })
+            .count();
+        self.session_open_batch = Some(SessionOpenBatch {
+            expected,
+            finished: 0,
+            report: field_core::OpenReport::new(field_core::Location::from_path(path)),
+            loaded_ok: Vec::new(),
+        });
         for id in docs {
             self.attach_session_document(id, window, cx);
         }
         self.restoring_session = false;
-        if let Some(id) = first {
-            if self.session.get(id).is_some() {
-                self.ensure_tab(id, window, cx);
-            }
+        if expected == 0 {
+            self.session_open_batch = None;
+            // No document loads — commit tabs immediately.
+            self.open_restored_session_tabs(window, cx);
         }
+        // Otherwise tabs stay deferred until finish_session_open_batch_if_ready.
         // ensure_tab → focus_document is a no-op when the first doc is already
         // session.active, so bind playback explicitly after restore.
         self.apply_active(window, cx);
@@ -4821,20 +5068,29 @@ impl AppView {
                 self.commit_active_monitor_params(cx);
                 self.stop_playback_into_active(cx);
             }
-            if self.session.get(id).is_some_and(|doc| doc.tab_open) {
-                if let Some(views) = self.views.get(&id) {
-                    let workspace = views.workspace.clone();
-                    self.dock_area.update(cx, |area, cx| {
-                        area.remove_panel(workspace, window, cx);
-                    });
-                }
+            // Always detach the workspace panel when views exist — do not gate
+            // on session.tab_open (layout sync can disagree and leave orphans).
+            if let Some(views) = self.views.get(&id) {
+                let workspace = views.workspace.clone();
+                self.dock_area.update(cx, |area, cx| {
+                    area.remove_panel(workspace, window, cx);
+                });
             }
             if let Some(views) = self.views.get(&id) {
                 views.document.read(cx).progress.cancel();
             }
             self.views.remove(&id);
         }
-        self.ensure_placeholder(window, cx);
+        // Reset center to the empty placeholder so any orphaned workspace tabs
+        // (panels without a live DocumentId) cannot linger unclosable.
+        let empty = self.empty_editors.clone();
+        self.dock_area.update(cx, |area, cx| {
+            area.set_center(
+                DockLayout::tabs().panel_view(panel_handle(empty), cx),
+                window,
+                cx,
+            );
+        });
     }
 
     fn attach_session_document(
@@ -4859,7 +5115,9 @@ impl AppView {
         );
         let workspace = views.workspace.clone();
         self.views.insert(id, views);
-        if doc.tab_open {
+        // While a session open batch is in flight, keep workspaces out of the
+        // center dock until the open commits (or is discarded).
+        if doc.tab_open && self.session_open_batch.is_none() {
             self.dock_area.update(cx, |area, cx| {
                 Self::show_workspace_tab(area, workspace, None, window, cx);
             });
@@ -5149,7 +5407,7 @@ mod composition_identity_load_tests {
             1,
         )
         .unwrap();
-        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(warnings.is_ok(), "{warnings:?}");
         assert_eq!(loaded.id(), file_id);
         assert_ne!(loaded.id(), recorded);
         let _ = std::fs::remove_dir_all(&dir);
@@ -5441,6 +5699,9 @@ impl Render for AppView {
                             )
                             .when(self.render_sheet_open, |this| {
                                 this.child(self.render_sheet_overlay(cx))
+                            })
+                            .when(self.load_problems.is_some(), |this| {
+                                this.child(self.load_problems_overlay(window, cx))
                             }),
                     ),
             )
@@ -5608,33 +5869,21 @@ fn load_document_into_session_store(
     recorded: Option<(CompositionId, bool, Option<MediaDescriptor>, bool)>,
     progress: &ProgressHandle,
     epoch: u64,
-) -> anyhow::Result<(Composition, Vec<String>)> {
-    let mut warnings = Vec::new();
-    let (mut composition, load_warnings) =
+) -> anyhow::Result<(Composition, field_core::OpenReport)> {
+    let mut report = field_core::OpenReport::new(field_core::Location::from_path(path));
+    let (mut composition, load_report) =
         if let Some((recorded_id, true, Some(mut descriptor), _)) = recorded.clone() {
             // Session JSON stores relative media URLs; `path` is already resolved
             // absolute by session load. Prefer that so reopen does not look in cwd.
-            descriptor.url = path.to_string_lossy().into_owned();
-            let (mut composition, mismatch) = Composition::from_descriptor_with_base(
+            descriptor.url = field_core::Location::from_path(path);
+            let (mut composition, desc_report) = Composition::from_descriptor_with_base(
                 descriptor,
                 path.parent(),
                 Some(Arc::clone(&store)),
             )?;
             composition = composition.with_spill_dir(spill_dir_for(path))?;
             composition.set_id(recorded_id);
-            if let Some(kind) = mismatch {
-                warnings.push(match kind {
-                    DescriptorMismatch::Identity => format!(
-                        "Media identity changed for {} (keeping recorded media id)",
-                        path.display()
-                    ),
-                    DescriptorMismatch::Freshness => format!(
-                        "Media file modified on disk for {} (identity unchanged)",
-                        path.display()
-                    ),
-                });
-            }
-            (composition, Vec::new())
+            (composition, desc_report)
         } else {
             Composition::load_from_path_with_progress_into_store(
                 path,
@@ -5643,11 +5892,11 @@ fn load_document_into_session_store(
                 Some(store),
             )?
         };
-    warnings.extend(load_warnings);
+    report.extend_from(load_report);
     if let Some((recorded_id, true, _, _)) = recorded {
         composition.set_id(recorded_id);
     }
-    Ok((composition, warnings))
+    Ok((composition, report))
 }
 
 fn spill_dir_for(path: &Path) -> PathBuf {

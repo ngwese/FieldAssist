@@ -1,53 +1,62 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! `field.url` — location userdata over the `url` crate and field-core file URLs.
+//! `field.url` — location userdata over `field_core::Location`.
 
 use std::path::{Path, PathBuf};
 
-use field_core::{encode_file_url, resolve_file_url};
+use field_core::Location;
 use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 use url::Url;
 
 /// Lua location handle.
 #[derive(Clone, Debug)]
 pub struct LuaUrl {
-    /// Stored serialized form (file://, memory://, relative, or absolute path).
-    raw: String,
+    /// Portable location.
+    loc: Location,
 }
 
 impl LuaUrl {
     /// Parse a native path, `file://` URL, relative URL, or `memory://` URL.
     pub fn parse(input: &str) -> mlua::Result<Self> {
-        let input = input.trim();
-        if input.is_empty() {
-            return Err(mlua::Error::runtime("empty URL"));
-        }
-        Ok(Self {
-            raw: input.to_owned(),
-        })
+        Location::parse(input)
+            .map(|loc| Self { loc })
+            .map_err(|err| mlua::Error::runtime(err.to_string()))
     }
 
     /// From a filesystem path (absolute `file://` when possible).
     pub fn from_path(path: &Path) -> Self {
         Self {
-            raw: encode_file_url(path, None),
+            loc: Location::from_path(path),
         }
+    }
+
+    /// Wrap an existing [`Location`].
+    pub fn from_location(loc: Location) -> Self {
+        Self { loc }
+    }
+
+    /// Underlying location.
+    #[allow(dead_code)]
+    pub fn location(&self) -> &Location {
+        &self.loc
     }
 
     /// Resolve to a filesystem path when applicable.
     pub fn to_path(&self, base: Option<&Path>) -> mlua::Result<PathBuf> {
-        resolve_file_url(&self.raw, base).map_err(|err| mlua::Error::runtime(err.to_string()))
+        self.loc
+            .resolve_against_path(base)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))
     }
 
     fn as_url(&self) -> Option<Url> {
-        if self.raw.starts_with("memory://") {
+        if self.loc.is_memory() {
             return None;
         }
-        if self.raw.starts_with("file://") {
-            return Url::parse(&self.raw).ok();
+        if self.loc.as_str().starts_with("file://") {
+            return Url::parse(self.loc.as_str()).ok();
         }
-        Url::parse(&self.raw).ok()
+        Url::parse(self.loc.as_str()).ok()
     }
 
     fn native_path(&self) -> Option<PathBuf> {
@@ -74,10 +83,12 @@ impl FromLua for LuaUrl {
 impl UserData for LuaUrl {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("scheme", |_, this| {
-            if this.raw.starts_with("memory://") {
+            if this.loc.is_memory() {
                 return Ok("memory".to_string());
             }
-            if this.raw.starts_with("file://") || Path::new(&this.raw).is_absolute() {
+            if this.loc.as_str().starts_with("file://")
+                || Path::new(this.loc.as_str()).is_absolute()
+            {
                 return Ok("file".to_string());
             }
             Ok(this
@@ -95,7 +106,7 @@ impl UserData for LuaUrl {
             Ok(this
                 .as_url()
                 .map(|u| u.path().to_string())
-                .unwrap_or_else(|| this.raw.clone()))
+                .unwrap_or_else(|| this.loc.as_str().to_owned()))
         });
         fields.add_field_method_get("query", |_, this| {
             Ok(this.as_url().and_then(|u| u.query().map(str::to_string)))
@@ -104,25 +115,22 @@ impl UserData for LuaUrl {
             Ok(this
                 .native_path()
                 .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| this.raw.clone()))
+                .unwrap_or_else(|| this.loc.as_str().to_owned()))
         });
         fields.add_field_method_get("normalized", |_, this| {
-            if this.raw.starts_with("memory://") || this.raw.starts_with("file://") {
-                return Ok(this.raw.clone());
+            if this.loc.is_memory() || this.loc.as_str().starts_with("file://") {
+                return Ok(this.loc.as_str().to_owned());
             }
             if let Ok(path) = this.to_path(None) {
-                return Ok(encode_file_url(&path, None));
+                return Ok(Location::from_path(&path).to_string());
             }
-            Ok(this.raw.clone())
+            Ok(this.loc.as_str().to_owned())
         });
         fields.add_field_method_get("parent", |_, this| {
-            let path = this
-                .native_path()
-                .ok_or_else(|| mlua::Error::runtime("parent requires a filesystem URL"))?;
-            let parent = path
+            this.loc
                 .parent()
-                .ok_or_else(|| mlua::Error::runtime("URL has no parent"))?;
-            Ok(LuaUrl::from_path(parent))
+                .map(LuaUrl::from_location)
+                .map_err(|err| mlua::Error::runtime(err.to_string()))
         });
         fields.add_field_method_get("basename", |_, this| {
             let path = this
@@ -154,6 +162,12 @@ impl UserData for LuaUrl {
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("as_path", |_, this, ()| {
+            Ok(this
+                .native_path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| this.loc.as_str().to_owned()))
+        });
         methods.add_method("join", |_, this, parts: mlua::MultiValue| {
             let mut path = this
                 .native_path()
@@ -189,7 +203,7 @@ impl UserData for LuaUrl {
             Ok(rel.to_string_lossy().replace('\\', "/"))
         });
         methods.add_meta_method(mlua::MetaMethod::ToString, |_, this, ()| {
-            Ok(this.raw.clone())
+            Ok(this.loc.as_str().to_owned())
         });
     }
 }
@@ -228,11 +242,14 @@ mod tests {
         let out = host.eval(
             r#"
             local u = field.url.from_path("/tmp/takes/a.wav")
-            return u.basename, u.stem, u.extension, u.scheme
+            return u.basename, u.stem, u.extension, u.scheme, u:as_path()
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert_eq!(out.result.as_deref(), Some("a.wav\ta\twav\tfile"));
+        assert_eq!(
+            out.result.as_deref(),
+            Some("a.wav\ta\twav\tfile\t/tmp/takes/a.wav")
+        );
     }
 
     #[test]

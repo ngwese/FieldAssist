@@ -113,8 +113,9 @@ the layout default before playback.
   `0.0`…`1.0`.
 - **Channels:** where a channels value is accepted: `nil` / `"all"` / a
   0-based index array.
-- **Paths:** native strings, and (in field-scripting) `field.url` userdata
-  where noted.
+- **Paths:** native path strings or `field.url` userdata. Session, composition,
+  and media expose `.url` (url userdata) rather than `.path`. Use `:as_path()`
+  when a native filesystem string is required.
 - **Workflow UI:** `field.ui.*` constructors build control tables.
   FieldAssist renders them; field-batch stores them and ignores paint.
 
@@ -303,8 +304,8 @@ field-batch and indexes audio paths into SQLite, see
 
 ## `field.url`
 
-Location userdata over the Rust `url` crate plus `field-core` file /
-`memory://` URLs. **Bound in field-scripting / field-batch only** (not yet on
+Location userdata over `field_core::Location` (relative, `file://`, or
+`memory://` URLs). Bound on all hosts that use `field-scripting` (including
 FieldAssist).
 
 ### Properties
@@ -327,7 +328,7 @@ FieldAssist).
 | --- | --- | --- | --- |
 | `scheme` | **ro** | `string` | e.g. `file`, `memory`, or URL scheme |
 | `host` | **ro** | `string` or `nil` | Host component when present |
-| `path` | **ro** | `string` | Path component |
+| `path` | **ro** | `string` | Path component of the URL |
 | `query` | **ro** | `string` or `nil` | Query string |
 | `native` | **ro** | `string` | Native filesystem path when applicable |
 | `normalized` | **ro** | `string` | Canonical serialized form |
@@ -340,6 +341,7 @@ FieldAssist).
 
 | Method | Arguments | Returns | Description |
 | --- | --- | --- | --- |
+| `:as_path()` | — | `string` | Platform-native filesystem path |
 | `:join(...)` | one or more path segments | url userdata | Append path segments |
 | `:with_extension` | `ext: string` | url userdata | Replace extension (leading `.` optional) |
 | `:relative_to` | `base` (url or string) | `string` | Relative path from `base` |
@@ -391,7 +393,7 @@ groups, properties, open compositions).
 | --- | --- | --- | --- | --- |
 | `focused` | — | session | all | Process / UI-active session |
 | `new` | — | session | all | Create an empty detached session |
-| `open` | `path: string` | session | all | Load a `.fasession` as a detached session |
+| `open` | `path` (string or url) | session | all | Load a `.fasession` as a detached session |
 
 `field.session.focused()` is the host's current world/UI session. In contrast,
 `field.session.new()` and `field.session.open(path)` create or load detached
@@ -407,7 +409,7 @@ metadata work. To load a `.fasession` into the focused desktop session, call
 | Property | Access | Type | Description |
 | --- | --- | --- | --- |
 | `id` | **ro** | `string` | Session id |
-| `path` | **ro** | `string` or `nil` | On-disk `.fasession` path |
+| `url` | **ro** | url userdata or `nil` | On-disk `.fasession` location |
 | `workflow_name` | **rw** | `string` or `nil` | Persisted stateful workflow name |
 | `capture_ui` | **rw** | `boolean` | Whether UI chrome is captured with the session |
 | `properties` | **rw** | `{ [string] = string }` | String map |
@@ -425,9 +427,9 @@ metadata work. To load a `.fasession` into the focused desktop session, call
 | `:delete_group` | `name: string` | — | Remove a group |
 | `:move_group` | `name`, `index` | — | Reorder group (`index` clamped ≥ 0) |
 | `:move` | `composition`, `index` | — | Reorder a document |
-| `:open` | `path: string` | composition | Open media / `.facomp` into the session (not `.fasession`) |
+| `:open` | `path` (string or url) | composition | Open media / `.facomp` into the session (not `.fasession`) |
 | `:save` | — | — | Save session (FieldAssist; headless stub errors) |
-| `:save_as` | `path: string` | — | Save session to a new path |
+| `:save_as` | `path` (string or url) | — | Save session to a new path |
 | `:close` | — | — | Close / detach (FieldAssist; headless stub errors) |
 
 ---
@@ -447,7 +449,7 @@ still uses `session:open`.
 
 | Function | Arguments | Returns | Description |
 | --- | --- | --- | --- |
-| `open` | `path: string` | composition | Open audio or `.facomp` |
+| `open` | `path` (string or url) | composition | Open audio or `.facomp` |
 
 ### Returned type: composition
 
@@ -456,7 +458,7 @@ still uses `session:open`.
 | Property | Access | Type | Description |
 | --- | --- | --- | --- |
 | `name` | **rw** | `string` | Display name |
-| `path` | **ro** | `string` or `nil` | Source / project path |
+| `url` | **ro** | url userdata or `nil` | Source / project location |
 | `id` | **ro** | `string` | Composition id |
 | `group` | **rw** | `string` or `nil` | Session group membership |
 | `state` | **rw** | `string` or `nil` | Free-form document state |
@@ -498,7 +500,7 @@ still uses `session:open`.
 | `:remove_marker_type` | `name` | `boolean` | Unregister a type |
 | `:save` | — | — | Persist `.facomp` (FieldAssist; headless stub) |
 | `:close` | — | — | Close the document |
-| `:replace` | `path: string` | composition | Replace media/project from path |
+| `:replace` | `path` (string or url) | composition | Replace media/project from path |
 | `:undo` / `:redo` | — | `boolean` | Edit history |
 | `:cut` / `:copy` / `:paste` / `:clear` / `:remove` / `:duplicate` / `:trim` | — | `true` | Edit ops on the selection |
 
@@ -534,7 +536,7 @@ Shared media pool (interned media rows used by compositions).
 
 | Method | Arguments | Returns | Description |
 | --- | --- | --- | --- |
-| `:add` | `path: string` | [media](#media) | Probe and intern a file |
+| `:add` | `path` (string or url) | [media](#media) | Probe and intern a file |
 | `:remove` | media or id string | `boolean` (headless) | Remove from the pool when unreferenced |
 | `:items` | — | `{ media, … }` | Current pool rows |
 
@@ -546,8 +548,7 @@ Shared media pool (interned media rows used by compositions).
 | Property | Access | Type | Description |
 | --- | --- | --- | --- |
 | `id` | **ro** | `string` | Media id |
-| `url` | **ro** | `string` | Canonical URL |
-| `path` | **ro** | `string` | Native path |
+| `url` | **ro** | url userdata | Portable location (`:as_path()` for native path) |
 | `basename` | **ro** | `string` | File basename |
 | `sample_rate` | **ro** | `integer` | Hz |
 | `channels` | **ro** | `integer` | Channel count |

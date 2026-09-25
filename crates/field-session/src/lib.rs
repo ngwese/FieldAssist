@@ -24,10 +24,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use field_audio_model::{MediaDescriptor, MediaId};
-use field_core::{
-    deserialize_prefixed_uuid, encode_file_url, resolve_file_url, serialize_prefixed_uuid,
-    CompositionId,
-};
+use field_core::{deserialize_prefixed_uuid, serialize_prefixed_uuid, CompositionId, Location};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
@@ -344,8 +341,8 @@ impl SessionDocument {
         } = &mut self.target
         {
             *source_path = path.clone();
-            if descriptor.url.is_empty() || !descriptor.url.contains("://") {
-                descriptor.url = path.to_string_lossy().into_owned();
+            if descriptor.url.as_str().is_empty() || !descriptor.url.as_str().contains("://") {
+                descriptor.url = Location::from_path(&path);
             }
             descriptor.basename = basename_of(&path);
         }
@@ -410,9 +407,9 @@ fn placeholder_descriptor(path: &Path) -> MediaDescriptor {
     MediaDescriptor {
         id: MediaId::from_bytes([0u8; 32]),
         url: if path.as_os_str().is_empty() {
-            String::new()
+            Location::from("")
         } else {
-            path.to_string_lossy().into_owned()
+            Location::from_path(path)
         },
         basename,
         sample_rate: 44_100,
@@ -1114,7 +1111,10 @@ impl Session {
                     } else {
                         descriptor.id
                     };
-                    descriptor.url = encode_file_url(source_path, base);
+                    descriptor.url = match base {
+                        Some(base) => Location::from_path_relative_to(source_path, base),
+                        None => Location::from_path(source_path),
+                    };
                     if seen_media.insert(media_id) {
                         media.push(descriptor.clone());
                     }
@@ -1128,7 +1128,11 @@ impl Session {
                     project_path,
                 } => SessionDocumentTargetFile::Composition {
                     composition_id: *composition_id,
-                    url: encode_file_url(project_path, base),
+                    url: match base {
+                        Some(base) => Location::from_path_relative_to(project_path, base),
+                        None => Location::from_path(project_path),
+                    }
+                    .to_string(),
                 },
             };
             let name = doc.name.clone().filter(|n| !n.is_empty());
@@ -1178,7 +1182,7 @@ impl Session {
                     let mut descriptor = media_by_id.get(&media_id).cloned().ok_or_else(|| {
                         anyhow::anyhow!("missing media descriptor for {}", media_id)
                     })?;
-                    let path = resolve_file_url(&descriptor.url, base).with_context(|| {
+                    let path = descriptor.url.resolve_against_path(base).with_context(|| {
                         format!("invalid media URL {} for {}", descriptor.url, media_id)
                     })?;
                     if is_fasession_path(&path) {
@@ -1201,7 +1205,8 @@ impl Session {
                     composition_id,
                     url,
                 } => {
-                    let path = resolve_file_url(&url, base)
+                    let path = Location::parse(&url)?
+                        .resolve_against_path(base)
                         .with_context(|| format!("invalid document URL {url}"))?;
                     if is_fasession_path(&path) {
                         bail!("session documents cannot be nested session files");
@@ -1741,7 +1746,10 @@ mod tests {
             let descriptor = doc.media_descriptor().expect("descriptor");
             assert_eq!(descriptor.id, *media_id);
             // Descriptor URL stays relative; source_path is absolute beside session.
-            assert_eq!(descriptor.url, path.file_name().unwrap().to_string_lossy());
+            assert_eq!(
+                descriptor.url.as_str(),
+                path.file_name().unwrap().to_string_lossy().as_ref()
+            );
             assert_eq!(doc.name(), None);
             assert_eq!(
                 doc.effective_name(),

@@ -34,8 +34,8 @@ pub use markers::{
     MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
 };
 pub use media::{
-    compute_media_id, descriptor_mismatch, DescriptorMismatch, MediaDescriptor, MediaId,
-    MediaIdentityFields, MediaPool, MediaRef, MediaStore,
+    compute_media_id, descriptor_mismatch, DescriptorMismatch, MediaAvailability, MediaDescriptor,
+    MediaId, MediaIdentityFields, MediaPool, MediaRef, MediaStore,
 };
 pub use pager::{
     BlockPager, BlockSource, NullBlockSource, PagerStats, BLOCK_FRAMES, RAM_CACHE_BYTES,
