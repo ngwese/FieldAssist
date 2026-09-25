@@ -48,7 +48,7 @@ git checkout -b release/X.Y.Z
 
 # Strip the -pre suffix in the root Cargo.toml [workspace.package] version
 # (e.g. 0.12.0-pre → 0.12.0), then refresh the changelog:
-git cliff --tag X.Y.Z --prepend CHANGELOG.md
+git cliff --unreleased --tag X.Y.Z --prepend CHANGELOG.md
 
 git add Cargo.toml CHANGELOG.md
 git commit -m "chore: prepare release X.Y.Z"

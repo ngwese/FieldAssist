@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
-### 🚀 Features
+### Features
 
 - Add scrollable multi-channel waveform viewer
 - Add application menu with About and Quit
@@ -109,7 +109,7 @@ All notable changes to this project will be documented in this file.
 - Add experimental feature flags and gate Analyze
 - Rename Render to Export and add Lua export profiles
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - Enable File Open from the macOS menu bar
 - Restart playback from the start at buffer end
@@ -169,8 +169,11 @@ All notable changes to this project will be documented in this file.
 - Surface Lua runtime errors instead of masking them
 - Make FLAC renders readable in FieldAssist
 - Clear monitor chain on channel break-out
+- *(ci)* Install ALSA on Linux and skip play test without device
+- *(ci)* Import cpal HostTrait in field-play CLI test
+- *(ci)* Harden headless audio skip and Windows scripting tests
 
-### 📚 Documentation
+### Documentation
 
 - Add MIT license, README, and SPDX headers
 - Clarify 80-column wrapping for commit messages
@@ -193,19 +196,20 @@ All notable changes to this project will be documented in this file.
 - Document field-batch and stop calling field-play an example
 - List supported codecs in CLI help
 - List decode formats and codecs in README and CLI
+- Clarify version-tags ruleset behavior
 
-### ⚡ Performance
+### Performance
 
 - Keep waveform paint and playback off the pager hot path
 
-### 🚜 Refactor
+### Refactor
 
 - Extract WaveformDisplay with WaveformDataProvider
 - Move About to Help menu
 - Split FieldAssist into a Cargo workspace
 - Genericize field-ui-components behind host traits
 
-### 🎨 Styling
+### Styling
 
 - Rustfmt play icon asset include
 - Mute header and transport icon buttons
@@ -214,7 +218,7 @@ All notable changes to this project will be documented in this file.
 - Shorten About label and bold app menu title
 - Rustfmt import order and wrapping
 
-### ⚙️ Miscellaneous Tasks
+### Miscellaneous Tasks
 
 - Upgrade symphonia to 0.6
 - Upgrade cpal to 0.18
@@ -243,3 +247,5 @@ All notable changes to this project will be documented in this file.
 - Bump workspace version to 0.9.0
 - Bump workspace version to 0.10.0
 - Bump workspace version to 0.11.0
+- Add cargo-dist releases and PR-only multi-OS CI
+- Add script/release for end-to-end shipping
