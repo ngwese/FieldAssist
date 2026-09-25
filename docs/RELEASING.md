@@ -75,8 +75,10 @@ gh workflow run Release --ref release/X.Y.Z -f tag=dry-run
 ```
 
 That builds archives and installers for Linux x64, macOS Apple Silicon, and
-Windows x64, but does **not** create a git tag or GitHub Release. Fix any
-failures on the release branch and re-run.
+Windows x64, but does **not** create a git tag or GitHub Release. The
+follow-up `Windows MSIX` workflow packs a signed `.msix` from the Windows
+zips and uploads it as a workflow artifact (inspectable; not attached to a
+Release on dry-run). Fix any failures on the release branch and re-run.
 
 ## Promote (tag after a green build)
 
@@ -105,9 +107,45 @@ dist generate --check
 git cliff          # preview changelog
 ```
 
-## Artifacts vs macOS `.app`
+## Artifacts vs macOS `.app` / Windows MSIX
 
 GitHub Releases ship platform archives of `FieldAssist`, `field-play`, and
-`field-batch` plus shell/PowerShell installers. Finder-friendly macOS
-`.app` bundles remain a local concern via `./script/bundle-macos` (see
-[BUILDING.md](BUILDING.md)). Notarization is out of scope for v1 CI.
+`field-batch`, plus Unix shell installers. Windows no longer publishes a
+PowerShell installer (Defender blocks unsigned remote scripts); the
+`Windows MSIX` workflow packs a signed `.msix` after a successful Release
+run and attaches it (with `FieldAssist.cer` and a `.sha256`) when the run
+published a tag.
+
+Finder-friendly macOS `.app` bundles remain a local concern via
+`./script/bundle-macos` (see [BUILDING.md](BUILDING.md)). Notarization is
+out of scope for v1 CI.
+
+### Windows signing secrets
+
+The MSIX publisher certificate is generated once with
+`script/generate-windows-signing-cert.ps1`. Commit only the public
+`.cer`. Store the private key as repository secrets (never in git):
+
+| Secret | Value |
+| --- | --- |
+| `WINDOWS_SIGNING_PFX` | Base64 of the `.pfx` bytes |
+| `WINDOWS_SIGNING_PASSWORD` | PFX password (empty string if none) |
+
+Encode the PFX for the secret:
+
+```powershell
+[Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes(
+    "crates\field-assist\assets\windows\FieldAssist.pfx"
+  )
+) | Set-Clipboard
+```
+
+End-user install (one-time elevated cert trust; package install/upgrade
+is per-user):
+
+```powershell
+Import-Certificate -FilePath .\FieldAssist.cer `
+  -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage -Path .\FieldAssist-X.Y.Z.msix
+```

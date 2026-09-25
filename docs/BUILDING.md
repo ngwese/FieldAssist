@@ -124,27 +124,23 @@ inside it, and installs release `field-play` and `field-batch` into
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## Windows executable
+## Windows MSIX
 
-On Windows, package a double-clickable `.exe` that can also be launched from
-the terminal:
+On Windows, package a signed per-user MSIX that registers Start Menu,
+file associations, and CLI aliases. Requires the [Windows 10 SDK](https://developer.microsoft.com/windows/downloads/windows-sdk/)
+(`makeappx.exe` / `signtool.exe`).
 
 ```powershell
 powershell -File script/bundle-windows.ps1
 ```
 
-That writes `target\release\FieldAssist.exe`. Double-click it, or run it from
-a console:
+That builds release `FieldAssist.exe`, `field-play.exe`, and
+`field-batch.exe`, packs them into
+`target\release\FieldAssist-<version>.msix`, and signs the package with
+the FieldAssist publisher certificate.
 
-```powershell
-.\target\release\FieldAssist.exe
-.\target\release\FieldAssist.exe --help
-.\target\release\FieldAssist.exe --dump-init
-.\target\release\FieldAssist.exe path\to\audio.wav
-```
-
-Install into `%LOCALAPPDATA%\FieldAssist`, put the CLIs on your PATH, and
-add a Start Menu shortcut (no admin):
+Install for the current user (UAC once to trust the publisher certificate;
+package install itself needs no admin):
 
 ```powershell
 powershell -File script/bundle-windows.ps1 --install
@@ -154,20 +150,39 @@ field-play path\to\take.wav
 field-batch --eval 'return app.name'
 ```
 
-That copies the exe to `%LOCALAPPDATA%\FieldAssist\FieldAssist.exe`, links
-`%USERPROFILE%\.local\bin\FieldAssist.exe` to it, installs release
-`field-play` and `field-batch` into `%USERPROFILE%\.local\bin`, and creates
-a Start Menu shortcut. If `~\.local\bin` is not already on your PATH, add it
-in PowerShell and open a new terminal:
+That trusts
+[FieldAssist.cer](../crates/field-assist/assets/windows/FieldAssist.cer)
+in `Cert:\LocalMachine\TrustedPeople` (elevated, one time) and runs
+`Add-AppxPackage`. The package includes:
+
+- Start Menu entry for FieldAssist
+- File associations for `.facomp`, `.fasession`, and common audio
+  extensions (Open with; existing defaults stay)
+- App execution aliases `FieldAssist.exe`, `field-play.exe`, and
+  `field-batch.exe` under `%LOCALAPPDATA%\Microsoft\WindowsApps` (already
+  on the user PATH)
+
+Upgrade by installing a newer MSIX signed with the same certificate
+(no re-trust). Uninstall with:
 
 ```powershell
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-[Environment]::SetEnvironmentVariable(
-    "Path",
-    "$userPath;$env:USERPROFILE\.local\bin",
-    "User"
-)
+Get-AppxPackage FieldAssist | Remove-AppxPackage
 ```
+
+### Signing certificate
+
+Publisher identity is the cert subject (`CN=FieldAssist`). Reuse one
+certificate for all versions so upgrades replace the installed package.
+
+Generate once (writes a gitignored `.pfx` and a public `.cer` to commit):
+
+```powershell
+powershell -File script/generate-windows-signing-cert.ps1
+```
+
+Local packs look for
+`crates/field-assist/assets/windows/FieldAssist.pfx`, or
+`FIELDASSIST_SIGNING_PFX` / `FIELDASSIST_SIGNING_PASSWORD`.
 
 ## Releases
 
