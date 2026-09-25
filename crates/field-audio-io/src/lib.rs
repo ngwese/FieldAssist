@@ -23,6 +23,8 @@
 mod decode;
 mod encoders;
 mod pcm;
+#[cfg(test)]
+mod roundtrip;
 mod spec;
 
 use std::io::Write;

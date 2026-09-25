@@ -235,14 +235,26 @@ mod tests {
 
     #[test]
     fn flac_s16_decodes() {
-        let comp = Composition::from_media(sine(4096, 1, 44100)).unwrap();
+        use field_audio_io::to_signed;
+        use field_audio_process::max_abs_err;
+
+        let frames = 4096usize;
+        let rate = 44_100u32;
+        let source_plane: Vec<f32> = (0..frames)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                (t * 440.0 * std::f32::consts::TAU).sin() * 0.5
+            })
+            .collect();
+        let media = MediaRef::from_memory_samples(rate, vec![source_plane.clone()]);
+        let comp = Composition::from_media(media).unwrap();
         let dest = std::env::temp_dir().join("snd-render.flac");
         render_to_path(
             &comp,
             &RenderJob {
                 encoder_id: "flac".into(),
                 spec: EncodeSpec {
-                    sample_rate: 44100,
+                    sample_rate: rate,
                     sample_format: Some(PcmFormat::S16),
                     channel_count: 1,
                 },
@@ -254,9 +266,20 @@ mod tests {
         )
         .unwrap();
         let decoded = decode_path(&dest);
-        assert_eq!(decoded.sample_rate, 44100);
-        assert!(decoded.frames() > 0);
-        let _ = std::fs::remove_file(dest);
+        let _ = std::fs::remove_file(&dest);
+        assert_eq!(decoded.sample_rate, rate);
+        assert_eq!(decoded.channel_count(), 1);
+        assert_eq!(decoded.frames(), frames);
+        let max = ((1i32 << 15) - 1) as f32;
+        let expected: Vec<f32> = source_plane
+            .iter()
+            .copied()
+            .map(|s| to_signed(s, 16) as f32 / max)
+            .collect();
+        let n = frames.min(decoded.channels[0].len());
+        let err = max_abs_err(&decoded.channels[0][..n], &expected[..n]);
+        let tol = 1.0 / max + 1e-5;
+        assert!(err <= tol, "flac s16 render err {err} exceeds {tol}");
     }
 
     #[test]

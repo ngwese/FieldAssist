@@ -2191,6 +2191,7 @@ dependencies = [
  "ogg",
  "rusty_vorbis",
  "symphonia",
+ "tempfile",
 ]
 
 [[package]]

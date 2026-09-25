@@ -14,3 +14,6 @@ hound = { workspace = true }
 ogg = { workspace = true }
 rusty_vorbis = { workspace = true }
 symphonia = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

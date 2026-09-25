@@ -259,6 +259,7 @@ fn decode_with_meta(path: &Path) -> Result<(DecodedAudio, DecodeMeta)> {
         .to_string();
 
     let track = first_audio_track(format.as_ref())?;
+    let declared_frames = track.num_frames.filter(|n| *n > 0);
     let params = audio_codec_params(&track)?;
     let codec = params.codec.to_string();
     let mut bits_per_sample = codec_bits_per_sample(params);
@@ -292,6 +293,17 @@ fn decode_with_meta(path: &Path) -> Result<(DecodedAudio, DecodeMeta)> {
 
     if channels.is_empty() || channels.iter().all(|c| c.is_empty()) {
         bail!("file contained no audio samples");
+    }
+
+    // Containers (especially FLAC) may encode trailing padding while STREAMINFO
+    // / track metadata declares the audible length — truncate to that.
+    if let Some(declared) = declared_frames {
+        let declared = declared as usize;
+        for ch in &mut channels {
+            if ch.len() > declared {
+                ch.truncate(declared);
+            }
+        }
     }
 
     let sample_rate = spec.as_ref().map(|s| s.rate()).unwrap_or(0);

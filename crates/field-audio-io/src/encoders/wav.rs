@@ -76,8 +76,10 @@ impl FormatEncoder for WavEncoder {
                 let sample = planar[ch][frame];
                 match format {
                     PcmFormat::U8 => {
-                        wav.write_sample(to_u8(sample) as i8)
-                            .context("write WAV sample")?;
+                        // Hound's i8 Sample API expects mid-biased signed values;
+                        // it converts to unsigned WAV bytes via +128.
+                        let signed = (i16::from(to_u8(sample)) - 128) as i8;
+                        wav.write_sample(signed).context("write WAV sample")?;
                     }
                     PcmFormat::S16 => {
                         wav.write_sample(to_signed(sample, 16) as i16)

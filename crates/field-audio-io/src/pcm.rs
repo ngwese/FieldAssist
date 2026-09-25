@@ -10,7 +10,11 @@ pub fn clamp_unit(sample: f32) -> f32 {
 
 /// Convert a unit-float sample to a signed integer of `bits` width.
 pub fn to_signed(sample: f32, bits: u32) -> i32 {
-    let max = (1i32 << (bits - 1)) - 1;
+    let max = if bits >= 32 {
+        i32::MAX
+    } else {
+        (1i32 << (bits.saturating_sub(1))) - 1
+    };
     (clamp_unit(sample) * max as f32).round() as i32
 }
 
