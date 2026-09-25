@@ -11,8 +11,8 @@
 Install these packages before building:
 
 ```bash
-sudo apt install libfontconfig-dev libxcb1-dev libxkbcommon-dev \
-  libxkbcommon-x11-dev
+sudo apt install libasound2-dev libfontconfig-dev libxcb1-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev
 ```
 
 ## Faust monitor chains

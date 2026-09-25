@@ -28,9 +28,10 @@ hosting = "github"
 # Whether to install an updater program
 install-updater = false
 
-# GPUI / X11 build deps on Ubuntu runners
+# GPUI / X11 / ALSA build deps on Ubuntu runners
 [dist.dependencies]
 apt = {
+    "libasound2-dev" = "*",
     libfontconfig-dev = "*",
     libxcb1-dev = "*",
     "libxkbcommon-dev" = "*",
