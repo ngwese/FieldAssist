@@ -37,9 +37,9 @@ use crate::commands::{
     SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll,
     SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop,
     TransportNext, TransportPlayPause, TransportPreview, TransportPrevious, TransportStart,
-    TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead, ViewFrame,
-    ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript,
-    ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
+    TransportStop, UserVariables, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead,
+    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
+    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
     ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages,
     ViewZoomIn, ViewZoomOut, ZeroCrossing,
 };
@@ -2554,6 +2554,19 @@ impl AppView {
         self.media_panel.update(cx, |panel, cx| {
             panel.set_rows(rows, cx);
         });
+    }
+
+    /// Apply a new user-variables table (from the User Variables window) and refresh the dock.
+    pub(crate) fn apply_user_variables(
+        &mut self,
+        user: field_variables::VariableTable,
+        cx: &mut Context<Self>,
+    ) {
+        crate::user_variables::ensure_store(cx);
+        crate::user_variables::store_mut(cx).file =
+            crate::user_variables::UserVariablesFile::from_table(&user);
+        self.script.set_user_variables(user);
+        self.refresh_variables_panel(cx);
     }
 
     fn refresh_variables_panel(&mut self, cx: &mut Context<Self>) {
@@ -6181,6 +6194,10 @@ pub(crate) fn dispatch_command(command_id: &str, cx: &mut App) -> Result<(), Str
         crate::components::settings_window::open_settings_window(cx);
         return Ok(());
     }
+    if command_id == "app.variables" {
+        crate::components::user_variables_window::open_user_variables_window(cx);
+        return Ok(());
+    }
     if command_id == "app.install_cli_tools" {
         #[cfg(target_os = "macos")]
         {
@@ -6231,7 +6248,7 @@ fn window_is_open(cx: &App, handle: AnyWindowHandle) -> bool {
     cx.windows().iter().any(|window| *window == handle)
 }
 
-fn living_editor_window(cx: &mut App) -> Option<(Entity<AppView>, AnyWindowHandle)> {
+pub(crate) fn living_editor_window(cx: &mut App) -> Option<(Entity<AppView>, AnyWindowHandle)> {
     let view = cx.try_global::<OpenTarget>().map(|target| target.0.clone());
     let handle = cx.try_global::<EditorWindow>().map(|editor| editor.0);
     match (view, handle) {
@@ -6255,6 +6272,7 @@ fn on_app_window_closed(cx: &mut App, id: WindowId) {
         }
     }
     crate::components::settings_window::on_settings_window_closed(cx, id);
+    crate::components::user_variables_window::on_user_variables_window_closed(cx, id);
 }
 
 fn open_about_window(cx: &mut App) {
@@ -6632,6 +6650,10 @@ fn show_all(_: &ShowAll, cx: &mut App) {
 
 fn settings(_: &Settings, cx: &mut App) {
     crate::components::settings_window::open_settings_window(cx);
+}
+
+fn user_variables(_: &UserVariables, cx: &mut App) {
+    crate::components::user_variables_window::open_user_variables_window(cx);
 }
 
 fn install_cli_tools(_: &InstallCliTools, _cx: &mut App) {
@@ -7126,6 +7148,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     if !cfg!(target_os = "macos") {
         edit_items.push(MenuItem::separator());
         edit_items.push(MenuItem::action("Settings...", Settings));
+        edit_items.push(MenuItem::action("Variables...", UserVariables));
     }
 
     let mut menus = Vec::new();
@@ -7135,6 +7158,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::action("About...", About),
             MenuItem::separator(),
             MenuItem::action("Settings...", Settings),
+            MenuItem::action("Variables...", UserVariables),
             MenuItem::separator(),
             MenuItem::action("Install CLI Tools", InstallCliTools),
             MenuItem::separator(),
@@ -7350,6 +7374,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(hide_others);
     cx.on_action(show_all);
     cx.on_action(settings);
+    cx.on_action(user_variables);
     cx.on_action(install_cli_tools);
     cx.on_action(about);
     cx.on_action(transport_home);

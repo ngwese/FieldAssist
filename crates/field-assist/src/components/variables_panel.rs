@@ -12,7 +12,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{IndentInline, Input, InputEvent, InputState, OutdentInline},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
     v_flex, ActiveTheme as _, IconName, Sizable as _,
@@ -21,11 +21,12 @@ use gpui_kit::{
     canvas, div, fill, point, prelude::FluentBuilder as _, px, size, uniform_list, App,
     AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Render, ScrollStrategy, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
+    ScrollStrategy, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window,
 };
 
+use crate::components::variables_filter::{self, VariablesFilter};
 use crate::dock_titles::BOTTOM_TAB_VARIABLES;
 
 const MIN_COLUMN_WIDTH: f32 = 32.;
@@ -204,6 +205,11 @@ pub struct VariablesPanel {
     editing: Option<CellEdit>,
     /// After host refresh, scroll so this `(scope, name)` row is visible.
     pending_reveal: Option<(String, String)>,
+    filter: VariablesFilter,
+    /// Selected rows keyed by `(scope, name)`.
+    selected: HashSet<(String, String)>,
+    /// Filtered-list index used as the shift-select anchor.
+    selection_anchor: Option<usize>,
     focus_handle: FocusHandle,
     on_change: Option<Rc<dyn Fn(VariablesPanelState, &mut Window, &mut App)>>,
 }
@@ -226,6 +232,9 @@ impl VariablesPanel {
             resize_drag: None,
             editing: None,
             pending_reveal: None,
+            filter: VariablesFilter::default(),
+            selected: HashSet::new(),
+            selection_anchor: None,
             focus_handle: cx.focus_handle(),
             on_change: None,
         }
@@ -234,14 +243,19 @@ impl VariablesPanel {
     /// Replace displayed state.
     pub fn set_state(&mut self, state: VariablesPanelState, cx: &mut Context<Self>) {
         self.state = state;
+        self.filter.sync_scopes_from_rows(&self.state.rows);
         if let Some((scope, name)) = self.pending_reveal.take() {
-            if let Some(ix) = self
-                .state
-                .rows
-                .iter()
-                .position(|r| r.scope == scope && r.name == name)
+            if let Some(filtered_ix) = self
+                .filter
+                .filtered_indices(&self.state.rows, cx)
+                .into_iter()
+                .position(|ix| {
+                    let r = &self.state.rows[ix];
+                    r.scope == scope && r.name == name
+                })
             {
-                self.list_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+                self.list_scroll
+                    .scroll_to_item(filtered_ix, ScrollStrategy::Center);
             }
         }
         cx.notify();
@@ -304,13 +318,17 @@ impl VariablesPanel {
             description: None,
         });
         self.pending_reveal = Some((scope.clone(), name.clone()));
-        if let Some(ix) = self
-            .state
-            .rows
-            .iter()
-            .position(|r| r.scope == scope && r.name == name)
+        if let Some(filtered_ix) = self
+            .filter
+            .filtered_indices(&self.state.rows, cx)
+            .into_iter()
+            .position(|ix| {
+                let r = &self.state.rows[ix];
+                r.scope == scope && r.name == name
+            })
         {
-            self.list_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+            self.list_scroll
+                .scroll_to_item(filtered_ix, ScrollStrategy::Center);
         }
         // Defer edit-start until after the dropdown closes and the host
         // refresh runs, so focus isn't stolen by menu teardown.
@@ -389,7 +407,7 @@ impl VariablesPanel {
     }
 
     /// Visible Name/Value cells on editable rows, left-to-right then top-to-bottom.
-    fn editable_cell_targets(&self) -> Vec<(String, String, EditColumn)> {
+    fn editable_cell_targets(&self, cx: &App) -> Vec<(String, String, EditColumn)> {
         let mut edit_cols: Vec<EditColumn> = Vec::new();
         for col in &self.column_order {
             if self.hidden.contains(col) {
@@ -405,7 +423,8 @@ impl VariablesPanel {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for row in &self.state.rows {
+        for ix in self.filter.filtered_indices(&self.state.rows, cx) {
+            let row = &self.state.rows[ix];
             if !scope_is_editable(&row.scope) {
                 continue;
             }
@@ -421,7 +440,7 @@ impl VariablesPanel {
         let Some(edit) = self.editing.clone() else {
             return;
         };
-        let cells = self.editable_cell_targets();
+        let cells = self.editable_cell_targets(cx);
         let Some(ix) = cells
             .iter()
             .position(|(s, n, c)| *s == edit.scope && *n == edit.name && *c == edit.column)
@@ -448,16 +467,87 @@ impl VariablesPanel {
                 next_name = name;
             }
         }
-        if let Some(row_ix) = self
-            .state
-            .rows
-            .iter()
-            .position(|r| r.scope == next_scope && r.name == next_name)
+        if let Some(filtered_ix) = self
+            .filter
+            .filtered_indices(&self.state.rows, cx)
+            .into_iter()
+            .position(|ix| {
+                let r = &self.state.rows[ix];
+                r.scope == next_scope && r.name == next_name
+            })
         {
             self.list_scroll
-                .scroll_to_item(row_ix, ScrollStrategy::Center);
+                .scroll_to_item(filtered_ix, ScrollStrategy::Center);
         }
         self.begin_edit(&next_scope, &next_name, next_col, window, cx);
+    }
+
+    fn select_row(
+        &mut self,
+        filtered_ix: usize,
+        scope: &str,
+        name: &str,
+        toggle: bool,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (scope.to_string(), name.to_string());
+        if extend {
+            let filtered = self.filter.filtered_indices(&self.state.rows, cx);
+            let anchor = self.selection_anchor.unwrap_or(filtered_ix);
+            let (lo, hi) = if anchor <= filtered_ix {
+                (anchor, filtered_ix)
+            } else {
+                (filtered_ix, anchor)
+            };
+            self.selected.clear();
+            for vis in lo..=hi {
+                if let Some(&ix) = filtered.get(vis) {
+                    let row = &self.state.rows[ix];
+                    self.selected.insert((row.scope.clone(), row.name.clone()));
+                }
+            }
+        } else if toggle {
+            if !self.selected.remove(&key) {
+                self.selected.insert(key);
+            }
+            self.selection_anchor = Some(filtered_ix);
+        } else {
+            self.selected.clear();
+            self.selected.insert(key);
+            self.selection_anchor = Some(filtered_ix);
+        }
+        cx.notify();
+    }
+
+    fn remove_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            self.commit_edit(window, cx);
+        }
+        let keys: Vec<(String, String)> = self.selected.iter().cloned().collect();
+        if keys.is_empty() {
+            return;
+        }
+        let mut removed = false;
+        for (scope, name) in keys {
+            // Dock [-] only deletes composition-scoped rows; user/session
+            // overrides are edited elsewhere (User Variables / session).
+            if top_level_scope(&scope) != "composition" {
+                continue;
+            }
+            self.remove_editable(&scope, &name);
+            self.state
+                .rows
+                .retain(|r| !(r.scope == scope && r.name == name));
+            self.selected.remove(&(scope, name));
+            removed = true;
+        }
+        if removed {
+            self.selection_anchor = None;
+            self.emit_change(window, cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn commit_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -486,6 +576,12 @@ impl VariablesPanel {
                 self.remove_editable(&edit.scope, &edit.name);
                 self.upsert_editable_entry(&edit.scope, &text, &value, description);
                 self.state.rows[row_ix].name = text.clone();
+                if self
+                    .selected
+                    .remove(&(edit.scope.clone(), edit.name.clone()))
+                {
+                    self.selected.insert((edit.scope.clone(), text.clone()));
+                }
                 self.pending_reveal = Some((edit.scope.clone(), text));
             }
             EditColumn::Value => {
@@ -823,16 +919,7 @@ fn column_menu_button(
                     }),
                 );
             }
-            menu = menu.separator();
-            let view = view.clone();
-            menu.item(
-                PopupMenuItem::element(move |_, _| div().text_xs().text_color(muted).child("Add…"))
-                    .on_click(move |_, window, cx| {
-                        view.update(cx, |this, cx| {
-                            this.add_variable(window, cx);
-                        });
-                    }),
-            )
+            menu
         })
 }
 
@@ -872,6 +959,8 @@ fn render_row(
     hidden: &HashSet<VarColumn>,
     content_width: Pixels,
     muted: gpui_kit::Hsla,
+    selected_bg: Option<gpui_kit::Hsla>,
+    is_selected: bool,
     editing: Option<&CellEdit>,
     entity: Entity<VariablesPanel>,
 ) -> gpui_kit::AnyElement {
@@ -880,13 +969,31 @@ fn render_row(
     let editable = scope_is_editable(&row.scope);
     let row_scope = row.scope.clone();
     let row_name = row.name.clone();
-    h_flex()
+    let mut row_el = h_flex()
         .id(id)
         .w(content_width)
         .flex_none()
         .items_center()
         .px_1p5()
-        .py_0p5()
+        .py_0p5();
+    if is_selected {
+        if let Some(bg) = selected_bg {
+            row_el = row_el.bg(bg);
+        }
+    }
+    row_el
+        .on_mouse_down(MouseButton::Left, {
+            let entity = entity.clone();
+            let scope = row_scope.clone();
+            let name = row_name.clone();
+            move |event, _, cx| {
+                let toggle = event.modifiers.platform || event.modifiers.control;
+                let extend = event.modifiers.shift;
+                entity.update(cx, |this, cx| {
+                    this.select_row(row_ix, &scope, &name, toggle, extend, cx);
+                });
+            }
+        })
         .children(visible.iter().flat_map(|col| {
             let col = *col;
             let width = widths
@@ -919,7 +1026,27 @@ fn render_row(
                 .text_xs()
                 .when(col == VarColumn::Row, |el| el.text_color(muted));
             if let Some(input) = edit_input {
+                let entity_tab = entity.clone();
+                let entity_shift_tab = entity.clone();
                 cell = cell
+                    .on_action({
+                        let entity = entity_tab;
+                        move |_: &IndentInline, window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.move_edit(true, window, cx);
+                            });
+                            cx.stop_propagation();
+                        }
+                    })
+                    .on_action({
+                        let entity = entity_shift_tab;
+                        move |_: &OutdentInline, window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.move_edit(false, window, cx);
+                            });
+                            cx.stop_propagation();
+                        }
+                    })
                     .child(Input::new(&input).xsmall().w_full())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         cx.stop_propagation();
@@ -941,6 +1068,7 @@ fn render_row(
                         let name = row_name.clone();
                         cell = cell.cursor_text().on_click(move |_, window, cx| {
                             entity.update(cx, |this, cx| {
+                                this.select_row(row_ix, &scope, &name, false, false, cx);
                                 this.begin_edit(&scope, &name, column, window, cx);
                             });
                         });
@@ -1004,10 +1132,13 @@ impl Panel for VariablesPanel {
 }
 
 impl Render for VariablesPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.filter.ensure_search(window, cx, |_, cx| cx.notify());
+        self.filter.sync_scopes_from_rows(&self.state.rows);
         self.clamp_h_offset();
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
+        let selected_bg = cx.theme().list_active;
         let track = cx.theme().scrollbar;
         let thumb = cx.theme().scrollbar_thumb;
         let hidden = self.hidden.clone();
@@ -1015,46 +1146,74 @@ impl Render for VariablesPanel {
         let content_w = self.content_width_f32();
         let h_offset = self.h_offset;
         let viewport_w = self.viewport_width;
+        // Fill the viewport when columns are narrower so wheel/scroll over the
+        // open space to the right of the last column still drives the list.
+        let body_width = px(content_w.max(viewport_w));
         let show_h_scroll = self.needs_h_scroll();
         let header = self.render_header(cx);
         let menu = column_menu_button(hidden.clone(), muted, cx);
         let order = self.column_order.clone();
         let widths = self.column_widths.clone();
         let rows = self.state.rows.clone();
-        let count = rows.len();
+        let filtered = self.filter.filtered_indices(&rows, cx);
+        let count = filtered.len();
         let entity = cx.entity().clone();
         let entity_id = cx.entity_id();
         let editing = self.editing.clone();
+        let selected = self.selected.clone();
+        let filter_bar = variables_filter::filter_bar(
+            &self.filter,
+            &rows,
+            entity.clone(),
+            border,
+            |this, scope, cx| {
+                this.filter.toggle_scope(&scope);
+                cx.notify();
+            },
+            |this, window, cx| this.add_variable(window, cx),
+            |this, window, cx| this.remove_selected(window, cx),
+        );
 
         let body = if count == 0 {
             div()
                 .id("variables-empty")
                 .size_full()
-                .w(content_width)
+                .w(body_width)
                 .p_2()
                 .text_xs()
                 .text_color(muted)
-                .child("(no variables)")
+                .child(if rows.is_empty() {
+                    "(no variables)"
+                } else {
+                    "(no matching variables)"
+                })
                 .into_any_element()
         } else {
             uniform_list("variables-rows", count, {
                 let entity = entity.clone();
+                let filtered = filtered.clone();
+                let selected = selected.clone();
                 move |range, _, _cx| {
                     range
-                        .map(|ix| {
+                        .map(|vis_ix| {
+                            let ix = filtered[vis_ix];
                             let row = &rows[ix];
+                            let is_selected =
+                                selected.contains(&(row.scope.clone(), row.name.clone()));
                             render_row(
                                 ElementId::Name(SharedString::from(format!(
-                                    "var-row-{ix}-{}",
+                                    "var-row-{vis_ix}-{}",
                                     row.name
                                 ))),
                                 row,
-                                ix,
+                                vis_ix,
                                 &order,
                                 &widths,
                                 &hidden,
                                 content_width,
                                 muted,
+                                Some(selected_bg),
+                                is_selected,
                                 editing.as_ref(),
                                 entity.clone(),
                             )
@@ -1064,7 +1223,7 @@ impl Render for VariablesPanel {
             })
             .track_scroll(&self.list_scroll)
             .size_full()
-            .w(content_width)
+            .w(body_width)
             .into_any_element()
         };
 
@@ -1072,20 +1231,27 @@ impl Render for VariablesPanel {
             .id("variables-panel")
             .size_full()
             .track_focus(&self.focus_handle)
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.editing.is_none() {
-                    return;
+            .on_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                if this.editing.is_some() {
+                    this.move_edit(true, window, cx);
+                    cx.stop_propagation();
                 }
-                if event.keystroke.key.as_str() != "tab" {
-                    return;
-                }
-                let mods = &event.keystroke.modifiers;
-                if mods.control || mods.alt || mods.platform || mods.function {
-                    return;
-                }
-                this.move_edit(!mods.shift, window, cx);
-                cx.stop_propagation();
             }))
+            .on_action(cx.listener(|this, _: &OutdentInline, window, cx| {
+                if this.editing.is_some() {
+                    this.move_edit(false, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                h_flex()
+                    .id("variables-filter-row")
+                    .w_full()
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(filter_bar),
+            )
             .child(
                 h_flex()
                     .id("variables-header-bar")
@@ -1187,8 +1353,8 @@ impl Render for VariablesPanel {
                                     .top_0()
                                     .left(px(-h_offset))
                                     .h_full()
-                                    .w(content_width)
-                                    .min_w(content_width)
+                                    .w(body_width)
+                                    .min_w(body_width)
                                     .child(body),
                             ),
                     )
