@@ -132,6 +132,16 @@ pub trait ScriptBackend {
         properties: BTreeMap<String, String>,
     ) -> mlua::Result<()>;
 
+    /// Session-scoped variables.
+    fn session_variables(&self, which: Option<SessionId>) -> field_variables::VariableTable;
+
+    /// Replace session-scoped variables.
+    fn set_session_variables(
+        &mut self,
+        which: Option<SessionId>,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()>;
+
     /// Compatibility convenience for the shared session.
     fn set_shared_session_properties(
         &mut self,
@@ -329,6 +339,17 @@ pub trait ScriptBackend {
         &mut self,
         id: DocumentId,
         properties: BTreeMap<String, String>,
+    ) -> mlua::Result<()>;
+
+    /// Composition-scoped variables (`.facomp`).
+    fn composition_variables(&self, id: DocumentId)
+        -> mlua::Result<field_variables::VariableTable>;
+
+    /// Replace composition-scoped variables.
+    fn set_composition_variables(
+        &mut self,
+        id: DocumentId,
+        variables: field_variables::VariableTable,
     ) -> mlua::Result<()>;
 
     /// Human-readable display name for a document.
@@ -644,6 +665,26 @@ impl ScriptBackend for HeadlessBackend {
         Ok(())
     }
 
+    fn session_variables(&self, which: Option<SessionId>) -> field_variables::VariableTable {
+        self.session_ref(which).session().variables().clone()
+    }
+
+    fn set_session_variables(
+        &mut self,
+        which: Option<SessionId>,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()> {
+        match which {
+            None => self.world.borrow_mut().session.set_variables(variables),
+            Some(id) => {
+                if let Some(s) = self.detached_sessions.get_mut(&id) {
+                    s.set_variables(variables);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn session_active_document(&self, which: Option<SessionId>) -> Option<DocumentId> {
         self.session_ref(which).session().active()
     }
@@ -939,6 +980,33 @@ impl ScriptBackend for HeadlessBackend {
             .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
         doc.properties = properties;
         world.session.mark_dirty();
+        Ok(())
+    }
+
+    fn composition_variables(
+        &self,
+        id: DocumentId,
+    ) -> mlua::Result<field_variables::VariableTable> {
+        let world = self.world.borrow();
+        let doc = world
+            .docs
+            .get(&id)
+            .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
+        let vars = doc.composition.read().unwrap().variables().clone();
+        Ok(vars)
+    }
+
+    fn set_composition_variables(
+        &mut self,
+        id: DocumentId,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()> {
+        let world = self.world.borrow();
+        let doc = world
+            .docs
+            .get(&id)
+            .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
+        doc.composition.write().unwrap().set_variables(variables);
         Ok(())
     }
 

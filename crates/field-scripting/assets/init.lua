@@ -1,6 +1,10 @@
 -- Default FieldAssist / field-play init script.
 -- Dump with: FieldAssist --dump-init
 -- Copy to the app config directory to customize.
+--
+-- Note: field.variables loads resolver_default.lua before this file, so the
+-- `"default"` last-wins resolver is already declared. Override with
+-- field.variables.declare_resolver / set_resolver in this file if needed.
 
 -- FieldAssist: load settings.json (theme, docks, waveform, selection, device).
 if app.name == "field-assist" then

@@ -150,6 +150,39 @@ impl ScriptHost {
     pub fn eval(&mut self, code: &str) -> field_scripting::EvalOutput {
         self.inner.eval(code)
     }
+
+    /// Sync user-scoped variables into the Lua host (for resolver sites).
+    pub fn set_user_variables(&self, variables: field_variables::VariableTable) {
+        self.inner.set_user_variables(variables);
+    }
+
+    /// Resolve the composition site with the active Lua resolver.
+    ///
+    /// Uses **detached** Bindings snapshots so resolve does not re-enter the
+    /// scripting backend (which may already be mutably borrowed during
+    /// drag-drop `open_path` / workflow `:start`).
+    pub fn resolve_composition_variables(
+        &self,
+        source: &field_variables::VariableTable,
+        user: &field_variables::VariableTable,
+        session: &field_variables::VariableTable,
+        composition: &field_variables::VariableTable,
+    ) -> Result<field_variables::VariableTable, String> {
+        use field_scripting::{split_readonly_by_scope, LuaBindings};
+
+        let mut bindings = split_readonly_by_scope(source);
+        bindings.push(LuaBindings::detached("user", user.clone(), true));
+        bindings.push(LuaBindings::detached("session", session.clone(), true));
+        bindings.push(LuaBindings::detached(
+            "composition",
+            composition.clone(),
+            true,
+        ));
+        self.inner
+            .resolve_variables(&bindings)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn load_init(&mut self) -> Result<(), String> {
         self.load_init_from(crate::commands::user_config_dir().as_deref())
     }

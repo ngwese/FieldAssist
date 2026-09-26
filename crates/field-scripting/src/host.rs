@@ -15,6 +15,7 @@ use crate::backend::{BackendHandle, HeadlessBackend, ScriptBackend};
 use crate::field_ns::bind_field;
 use crate::layout::ChannelLayoutDef;
 use crate::package_policy::{install_package_policy, PackagePolicy};
+use crate::variables::ResolverDef;
 use crate::workflow::{
     instance_display_name, instance_name, prototype_is_stateful, table_method, workflow_new,
     workflow_start, WorkflowDef, WorkflowMeta,
@@ -26,12 +27,16 @@ use crate::workflow_toolbar::{
 use crate::world::HeadlessWorld;
 
 use field_session::DocumentId;
+use field_variables::VariableTable;
 
 /// Embedded default `init.lua` (layouts + `detect_layout`).
 ///
 /// Loaded when `{config_dir}/init.lua` is absent. Dump via FieldAssist
 /// `--dump-init`.
 pub const EMBEDDED_INIT: &str = include_str!("../assets/init.lua");
+
+/// Embedded default variable resolver (last-wins). Loaded before `init.lua`.
+pub const EMBEDDED_RESOLVER_DEFAULT: &str = include_str!("../assets/resolver_default.lua");
 
 /// Profile for the enclosing application process.
 #[derive(Clone, Debug)]
@@ -116,6 +121,11 @@ pub(crate) struct HostInner {
     pub(crate) layouts: Vec<ChannelLayoutDef>,
     pub(crate) export_profiles: Vec<crate::export::ExportProfileDef>,
     pub(crate) workflows: BTreeMap<String, WorkflowDef>,
+    pub(crate) resolvers: BTreeMap<String, ResolverDef>,
+    /// Name of the active variable resolver (`"default"` after startup).
+    pub(crate) active_resolver: String,
+    /// User-scoped variables (`variables.json` in FieldAssist).
+    pub(crate) user_variables: VariableTable,
     pub(crate) active: Option<Table>,
     /// Backend — owns session, open documents, media pool.
     pub(crate) backend: BackendHandle,
@@ -184,6 +194,9 @@ impl ScriptHost {
                 layouts: Vec::new(),
                 export_profiles: Vec::new(),
                 workflows: BTreeMap::new(),
+                resolvers: BTreeMap::new(),
+                active_resolver: String::new(),
+                user_variables: VariableTable::new(),
                 active: None,
                 backend,
                 include_stack: Vec::new(),
@@ -274,7 +287,15 @@ impl ScriptHost {
     }
 
     /// Load `{config}/init.lua` if it is a file, else [`EMBEDDED_INIT`].
+    ///
+    /// Always loads [`EMBEDDED_RESOLVER_DEFAULT`] first so `"default"` is
+    /// registered before user scripts run.
     pub fn load_init_from(&mut self, config: Option<&Path>) -> Result<(), String> {
+        self.lua
+            .load(EMBEDDED_RESOLVER_DEFAULT)
+            .set_name("@<embedded>/resolver_default.lua")
+            .exec()
+            .map_err(|err| format!("resolver_default.lua: {err}"))?;
         if let Some(path) = config.map(|d| d.join("init.lua")).filter(|p| p.is_file()) {
             self.load_file(&path)
         } else {
@@ -284,6 +305,24 @@ impl ScriptHost {
                 .exec()
                 .map_err(|err| format!("init.lua: {err}"))
         }
+    }
+
+    /// Replace host-held user-scoped variables (FieldAssist `variables.json`).
+    pub fn set_user_variables(&self, variables: VariableTable) {
+        self.handle.set_user_variables(variables);
+    }
+
+    /// Snapshot host-held user-scoped variables.
+    pub fn user_variables(&self) -> VariableTable {
+        self.handle.user_variables()
+    }
+
+    /// Resolve a bindings list with the active Lua resolver (or Rust fallback).
+    pub fn resolve_variables(
+        &self,
+        bindings: &[crate::bindings::LuaBindings],
+    ) -> mlua::Result<VariableTable> {
+        crate::variables::resolve_with_active(&self.lua, bindings)
     }
 
     /// Load and execute a Lua file.

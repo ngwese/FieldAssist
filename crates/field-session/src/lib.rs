@@ -25,13 +25,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use field_audio_model::{MediaDescriptor, MediaId};
 use field_core::{deserialize_prefixed_uuid, serialize_prefixed_uuid, CompositionId, Location};
+use field_variables::{StoredVariable, VariableTable};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 /// Session file kind marker written into `.fasession` envelopes.
 pub const FASESSION_KIND: &str = "fasession";
 /// Current on-disk format version for `.fasession` files.
-pub const FASESSION_FORMAT_VERSION: u32 = 2;
+pub const FASESSION_FORMAT_VERSION: u32 = 3;
 
 /// True when `path` looks like a `.facomp` project (extension only).
 fn is_facomp_path(path: &Path) -> bool {
@@ -438,6 +439,8 @@ pub struct Session {
     path: Option<PathBuf>,
     workflow: Option<String>,
     properties: BTreeMap<String, String>,
+    /// Session-scoped variables (parallel to [`Self::properties`]).
+    variables: VariableTable,
     capture_ui: bool,
     dirty: bool,
     /// Ordered named explorer groups (may be empty of documents).
@@ -460,6 +463,7 @@ impl Session {
             path: None,
             workflow: None,
             properties: BTreeMap::new(),
+            variables: VariableTable::new(),
             capture_ui: true,
             dirty: false,
             groups: Vec::new(),
@@ -518,6 +522,20 @@ impl Session {
     pub fn set_properties(&mut self, properties: BTreeMap<String, String>) {
         if self.properties != properties {
             self.properties = properties;
+            self.mark_dirty();
+        }
+    }
+
+    /// Session-scoped variables.
+    pub fn variables(&self) -> &VariableTable {
+        &self.variables
+    }
+
+    /// Replace session-scoped variables.
+    pub fn set_variables(&mut self, variables: VariableTable) {
+        let variables = variables.with_default_scope("session");
+        if self.variables != variables {
+            self.variables = variables;
             self.mark_dirty();
         }
     }
@@ -1153,6 +1171,7 @@ impl Session {
             id: self.id,
             workflow: self.workflow.clone(),
             properties: self.properties.clone(),
+            variables: self.variables.to_stored(),
             active: self.active,
             capture_ui: self.capture_ui,
             groups: self.groups.clone(),
@@ -1249,6 +1268,7 @@ impl Session {
                 path: session_path.map(Path::to_path_buf),
                 workflow: envelope.workflow,
                 properties: envelope.properties,
+                variables: VariableTable::from_stored("session", envelope.variables),
                 capture_ui: envelope.capture_ui,
                 dirty: false,
                 groups,
@@ -1356,6 +1376,9 @@ struct SessionEnvelope {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     /// properties.
     pub properties: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Session-scoped variables (parallel to properties).
+    pub variables: Vec<StoredVariable>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// active.
     pub active: Option<DocumentId>,
@@ -1431,7 +1454,7 @@ impl SessionEnvelope {
             bail!("not a FieldAssist session (kind {:?})", envelope.kind);
         }
         match envelope.format_version {
-            2 => Ok(envelope),
+            2 | 3 => Ok(envelope),
             0 => bail!("missing or invalid format_version"),
             1 => bail!("unsupported format_version 1 (upgrade to format_version 2)"),
             n if n > FASESSION_FORMAT_VERSION => {
@@ -1715,7 +1738,7 @@ mod tests {
         }
 
         let json = session.to_json_at(&session_path, named, None).unwrap();
-        assert!(json.contains("\"format_version\": 2"), "{json}");
+        assert!(json.contains("\"format_version\": 3"), "{json}");
         // Media URLs live only on the top-level media descriptors.
         assert!(json.contains("\"url\": \"one.wav\""), "{json}");
         assert!(json.contains("\"url\": \"two.wav\""), "{json}");
@@ -1836,7 +1859,7 @@ mod tests {
         ));
 
         let json = session.to_json_at(&session_path, named, None).unwrap();
-        assert!(json.contains("\"format_version\": 2"), "{json}");
+        assert!(json.contains("\"format_version\": 3"), "{json}");
         assert!(json.contains("\"type\": \"media\""), "{json}");
         assert!(json.contains("\"type\": \"composition\""), "{json}");
         assert!(json.contains("\"media\""), "{json}");

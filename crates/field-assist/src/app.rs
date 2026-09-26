@@ -51,6 +51,9 @@ use crate::components::header_meta::HeaderMeta;
 use crate::components::media_panel::MediaPoolPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::status_bar::file_status_from_composition;
+use crate::components::variables_panel::{
+    compose_for_view, rows_from_composed, VariablesPanel, VariablesPanelState,
+};
 use crate::components::workflow_bar::WorkflowBar;
 use crate::components::workspace::WorkspacePanel;
 use crate::dock_titles::{
@@ -208,6 +211,7 @@ pub struct AppView {
     repl: Entity<ReplPanel>,
     messages: Entity<MessagesPanel>,
     media_panel: Entity<MediaPoolPanel>,
+    variables_panel: Entity<VariablesPanel>,
     script: ScriptHost,
     idle_composition: Arc<RwLock<Composition>>,
     playback: PlaybackSession,
@@ -458,6 +462,30 @@ impl AppView {
         let repl = cx.new(|cx| ReplPanel::new("Script", window, cx));
         let messages = cx.new(|cx| MessagesPanel::new(cx));
         let media_panel = cx.new(|cx| MediaPoolPanel::new(cx));
+        let variables_panel = cx.new(|cx| VariablesPanel::new(cx));
+        {
+            let app = app.clone();
+            variables_panel.update(cx, |panel, _| {
+                panel.set_on_change(move |state, _window, cx| {
+                    let _ = app.update(cx, |this, cx| {
+                        // Persist user variables independently of settings.
+                        let file =
+                            crate::user_variables::UserVariablesFile::from_table(&state.user);
+                        let _ = file.save();
+                        crate::user_variables::store_mut(cx).file = file;
+                        this.session.set_variables(state.session.clone());
+                        if let Some(views) = this.active_views() {
+                            views
+                                .composition
+                                .write()
+                                .unwrap()
+                                .set_variables(state.composition.clone());
+                        }
+                        this.refresh_variables_panel(cx);
+                    });
+                });
+            });
+        }
         let export_sheet = cx.new(|cx| ExportSheet::new(window, cx));
         cx.observe(&export_sheet, |_, _, cx| cx.notify()).detach();
         repl.update(cx, |repl, _| {
@@ -542,6 +570,7 @@ impl AppView {
             repl,
             messages,
             media_panel,
+            variables_panel,
             script,
             idle_composition,
             playback,
@@ -1138,6 +1167,7 @@ impl AppView {
             views.waveform.update(cx, |view, cx| {
                 view.bump_paint_epoch(cx);
             });
+            self.refresh_variables_panel(cx);
         } else {
             let idle = self.idle_composition.clone();
             self.playback.bind_composition(idle.clone());
@@ -1152,6 +1182,7 @@ impl AppView {
             self.header_meta.update(cx, |meta, cx| {
                 meta.set_target(None, None, cx);
             });
+            self.refresh_variables_panel(cx);
         }
         self.refresh_explorer(cx);
         self.update_window_title(window, cx);
@@ -1950,6 +1981,7 @@ impl AppView {
         match preference {
             crate::dock_titles::BOTTOM_TAB_MESSAGES => self.show_messages_tab(window, cx),
             crate::dock_titles::BOTTOM_TAB_MEDIA => self.show_media_tab(window, cx),
+            crate::dock_titles::BOTTOM_TAB_VARIABLES => self.show_variables_tab(window, cx),
             _ => self.show_script_tab(window, cx),
         }
     }
@@ -2134,6 +2166,7 @@ impl AppView {
             let script_handle = panel_handle(self.repl.clone());
             let messages_handle = panel_handle(self.messages.clone());
             let media_handle = panel_handle(self.media_panel.clone());
+            let variables_handle = panel_handle(self.variables_panel.clone());
             let size = self.script_dock_size;
             self.dock_area.update(cx, |area, cx| {
                 area.set_dock(
@@ -2141,7 +2174,8 @@ impl AppView {
                     DockLayout::tabs()
                         .panel_view(script_handle, cx)
                         .panel_view(messages_handle, cx)
-                        .panel_view(media_handle, cx),
+                        .panel_view(media_handle, cx)
+                        .panel_view(variables_handle, cx),
                     window,
                     cx,
                 );
@@ -2149,6 +2183,7 @@ impl AppView {
                 area.set_dock_collapsible(DockPlacement::Bottom, false, window, cx);
             });
             self.refresh_media_panel(cx);
+            self.refresh_variables_panel(cx);
         }
         self.repl.focus_handle(cx).focus(window, cx);
         if opened {
@@ -2194,6 +2229,7 @@ impl AppView {
 
     /// Apply the Global settings store to this window (theme, docks, device, defaults).
     pub(crate) fn apply_loaded_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::user_variables::reload_from_disk(cx);
         let (appearance, view, waveform, selection, audio, cli_locked) = {
             let store = crate::settings::store(cx);
             (
@@ -2518,6 +2554,101 @@ impl AppView {
         self.media_panel.update(cx, |panel, cx| {
             panel.set_rows(rows, cx);
         });
+    }
+
+    fn refresh_variables_panel(&mut self, cx: &mut Context<Self>) {
+        crate::user_variables::ensure_store(cx);
+        let user = crate::user_variables::store(cx).file.to_table();
+        let session = self.session.variables().clone();
+        self.script.set_user_variables(user.clone());
+        let (source, composition) = if let Some(id) = self.session.active() {
+            if let Some(views) = self.views.get(&id) {
+                let composition = views.composition.read().unwrap();
+                let source = {
+                    if let Some(media) = composition.primary_media() {
+                        let tech = field_audio_io::TechnicalSourceFields {
+                            basename: &media.basename,
+                            sample_rate: media.sample_rate,
+                            channel_count: media.channel_count,
+                            frame_count: media.frame_count,
+                            bits_per_sample: media.bits_per_sample,
+                            container_format: &media.container_format,
+                            codec: &media.codec,
+                        };
+                        if !media.path.as_os_str().is_empty() && media.path.exists() {
+                            field_audio_io::probe_source_variables(&media.path, Some(&tech))
+                        } else {
+                            let mut table = field_variables::VariableTable::new();
+                            table.upsert(field_variables::VariableEntry::new(
+                                "source",
+                                "basename",
+                                media.basename.clone(),
+                            ));
+                            table
+                        }
+                    } else {
+                        field_variables::VariableTable::new()
+                    }
+                };
+                (source, composition.variables().clone())
+            } else {
+                (
+                    field_variables::VariableTable::new(),
+                    field_variables::VariableTable::new(),
+                )
+            }
+        } else {
+            (
+                field_variables::VariableTable::new(),
+                field_variables::VariableTable::new(),
+            )
+        };
+        let composed =
+            match self
+                .script
+                .resolve_composition_variables(&source, &user, &session, &composition)
+            {
+                Ok(table) => table,
+                Err(_) => compose_for_view(&source, &user, &session, &composition),
+            };
+        let state = VariablesPanelState {
+            rows: rows_from_composed(&composed),
+            user,
+            session,
+            composition,
+        };
+        self.variables_panel.update(cx, |panel, cx| {
+            panel.set_state(state, cx);
+        });
+    }
+
+    fn show_variables_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel_id = PanelId::from(self.variables_panel.entity_id());
+        if !self.script_dock_open(cx) {
+            self.show_script_dock(window, cx);
+        }
+        self.refresh_variables_panel(cx);
+        self.dock_area.update(cx, |area, cx| {
+            if let Some((node, ix, active_ix)) =
+                Self::panel_tab_slot(area, DockPlacement::Bottom, panel_id)
+            {
+                if ix != active_ix {
+                    area.move_panel(
+                        panel_id,
+                        InsertTarget::Tabs {
+                            node,
+                            ix: Some(ix),
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+        });
+        self.variables_panel.focus_handle(cx).focus(window, cx);
+        self.sync_view_menus(cx);
+        cx.notify();
     }
 
     pub(crate) fn script_list_media(

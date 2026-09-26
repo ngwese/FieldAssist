@@ -32,7 +32,13 @@ pub const BOTTOM_TAB_SCRIPT: &str = "Script";
 pub const BOTTOM_TAB_MESSAGES: &str = "Messages";
 /// Bottom-dock Media pool panel tab.
 pub const BOTTOM_TAB_MEDIA: &str = "Media";
+/// Bottom-dock Variables panel tab.
+pub const BOTTOM_TAB_VARIABLES: &str = "Variables";
 
 /// Titles used when the bottom dock is open.
-pub const BOTTOM_DOCK_TAB_TITLES: &[&str] =
-    &[BOTTOM_TAB_SCRIPT, BOTTOM_TAB_MESSAGES, BOTTOM_TAB_MEDIA];
+pub const BOTTOM_DOCK_TAB_TITLES: &[&str] = &[
+    BOTTOM_TAB_SCRIPT,
+    BOTTOM_TAB_MESSAGES,
+    BOTTOM_TAB_MEDIA,
+    BOTTOM_TAB_VARIABLES,
+];

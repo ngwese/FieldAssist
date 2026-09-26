@@ -60,6 +60,7 @@ mod progress;
 mod script;
 mod settings;
 mod themes;
+mod user_variables;
 
 #[derive(Parser, Debug)]
 #[command(

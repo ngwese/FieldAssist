@@ -14,12 +14,13 @@ surface is documented in [SCRIPTING.md](SCRIPTING.md).
 
 ```text
 field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
+    ├── field-variables (scoped string vars, compose, `${…}` interpolate)
     ├── field-audio-model
     │       (MediaId `media:`, MediaDescriptor, MediaPool, MediaStore, pager)
     │       ├── field-audio-process
-    │       └── field-composition ← also field-audio-io, field-core
-    ├── field-audio-io
-    ├── field-session   (depends on field-core + field-audio-model serde;
+    │       └── field-composition ← also field-audio-io, field-core, field-variables
+    ├── field-audio-io  (also field-variables for source.* probe / TagMap)
+    ├── field-session   (depends on field-core + field-audio-model serde + field-variables;
     │                    DocumentId `doc:`, SessionId `session:`; no
     │                    field-composition edge)
     └── field-audio-playback     (device list for field.audio_devices)
@@ -40,15 +41,16 @@ field-scripting         (mlua host; NO gpui, NO field-ui-components)
 | Crate | Level | Responsibility |
 | --- | --- | --- |
 | `field-core` | leaf | File URLs, `ProgressHandle`, prefixed `CompositionId` |
+| `field-variables` | leaf | Scoped string variables, compose (last-wins), `${…}` interpolate |
 | `field-features` | leaf | Feature flag IDs, defaults, and in-memory registry |
 | `field-audio-model` | leaf | `PcmBuffer`, regions, markers, `MediaId` / descriptors, `MediaPool` / `MediaStore`, `BlockPager` / `BlockSource` |
-| `field-audio-io` | leaf | Probe/decode/encode above Symphonia and format encoders |
+| `field-audio-io` | leaf | Probe/decode/encode above Symphonia and format encoders; source metadata → variables; tagged encode |
 | `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops ([SPEC-analysis.md](spec/SPEC-analysis.md)) |
 | `field-audio-monitor` | mid | Monitor chain Faust DSP, UI schema, lock-free params |
 | `field-audio-playback` | mid | Realtime device I/O, transport, playhead |
-| `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits |
-| `field-composition` | high | `.facomp` I/O (v8), EDL, clip tree; re-exports `CompositionId` |
-| `field-session` | high | `.fasession` I/O (v2) and membership; media\|composition targets |
+| `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits; Variables table |
+| `field-composition` | high | `.facomp` I/O (v10), EDL, clip tree; re-exports `CompositionId` |
+| `field-session` | high | `.fasession` I/O (v3) and membership; media\|composition targets |
 | `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `ScriptBackend` / `HeadlessWorld` ([README](../crates/field-scripting/README.md)) |
 | `field-batch` | app | Headless REPL / script runner / Unix shebang over `field-scripting` |
 | `field-play` | app | Headless composition playback; `init.lua` + `detect_layout` for monitor chain |

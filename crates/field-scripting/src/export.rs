@@ -5,13 +5,15 @@
 
 use std::path::{Path, PathBuf};
 
-use field_audio_io::{encoder, snap_format, EncodeSpec, PcmFormat};
+use field_audio_io::{build_tag_map, encoder, snap_format, EncodeSpec, PcmFormat};
 use field_composition::{export_to_path, Composition, ExportJob};
 use field_session::DocumentId;
+use field_variables::{interpolate_strict, VariableTable};
 use mlua::{FromLua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::fs::path_from_lua;
 use crate::host::{host_from_lua, HostHandle};
+use crate::variables::composition_source_variables;
 
 /// Registered export profile from Lua.
 #[derive(Clone, Debug, Default)]
@@ -34,6 +36,10 @@ pub struct ExportProfileDef {
     pub filename: Option<String>,
     /// Full destination path (wins over directory + filename).
     pub path: Option<PathBuf>,
+    /// Export-scoped variables (last-wins layer).
+    pub variables: VariableTable,
+    /// Metadata templates: canonical key → `${…}` template (interpolated at export).
+    pub metadata: std::collections::BTreeMap<String, String>,
 }
 
 /// How an export profile selects composition channels.
@@ -307,6 +313,14 @@ fn profile_fields_from_lua(table: Table, name: String) -> mlua::Result<ExportPro
     let directory = optional_path(table.get("directory")?)?;
     let filename = optional_string(table.get("filename")?)?;
     let path = optional_path(table.get("path")?)?;
+    let variables = match table.get::<Value>("variables")? {
+        Value::Nil => VariableTable::new(),
+        other => crate::util::variables_from_lua(other, "export")?,
+    };
+    let metadata = match table.get::<Value>("metadata")? {
+        Value::Nil => std::collections::BTreeMap::new(),
+        other => crate::util::string_map_from_lua(other)?,
+    };
     Ok(ExportProfileDef {
         name,
         description,
@@ -317,6 +331,8 @@ fn profile_fields_from_lua(table: Table, name: String) -> mlua::Result<ExportPro
         directory,
         filename,
         path,
+        variables,
+        metadata,
     })
 }
 
@@ -473,6 +489,16 @@ fn apply_overrides(mut base: ExportProfileDef, table: &Table) -> mlua::Result<Ex
             base.description = text;
         }
     }
+    if let Ok(value) = table.get::<Value>("variables") {
+        if !matches!(value, Value::Nil) {
+            base.variables = crate::util::variables_from_lua(value, "export")?;
+        }
+    }
+    if let Ok(value) = table.get::<Value>("metadata") {
+        if !matches!(value, Value::Nil) {
+            base.metadata = crate::util::string_map_from_lua(value)?;
+        }
+    }
     Ok(base)
 }
 
@@ -497,8 +523,10 @@ fn profile_ref_from_value(host: &HostHandle, value: Value) -> mlua::Result<Expor
 
 /// Resolve a Lua `:export` argument into a concrete job for `composition`.
 pub fn resolve_export_job(
+    lua: &mlua::Lua,
     host: &HostHandle,
     composition: &Composition,
+    composition_id: Option<DocumentId>,
     arg: Value,
 ) -> mlua::Result<ExportJob> {
     let profile = match arg {
@@ -531,16 +559,41 @@ pub fn resolve_export_job(
             )))
         }
     };
-    build_job(composition, profile)
+    build_job(lua, host, composition, composition_id, profile)
 }
 
-fn build_job(composition: &Composition, profile: ExportProfileDef) -> mlua::Result<ExportJob> {
+fn build_job(
+    lua: &mlua::Lua,
+    host: &HostHandle,
+    composition: &Composition,
+    composition_id: Option<DocumentId>,
+    profile: ExportProfileDef,
+) -> mlua::Result<ExportJob> {
     let source = ExportSourceDefaults::from_composition(composition);
+    let composed = compose_export_variables(lua, host, composition, composition_id, &profile)?;
+    let mut profile = profile;
+    if let Some(path) = profile.path.take() {
+        let text = interpolate_strict(&path.to_string_lossy(), &composed)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        profile.path = Some(PathBuf::from(text));
+    }
+    if let Some(directory) = profile.directory.take() {
+        let text = interpolate_strict(&directory.to_string_lossy(), &composed)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        profile.directory = Some(PathBuf::from(text));
+    }
+    if let Some(filename) = profile.filename.take() {
+        let text = interpolate_strict(&filename, &composed)
+            .map_err(|err| mlua::Error::runtime(err.to_string()))?;
+        profile.filename = Some(text);
+    }
     let resolved = resolve_export_settings(&source, &profile).map_err(mlua::Error::runtime)?;
     let encoder = encoder(&resolved.encoder_id).ok_or_else(|| {
         mlua::Error::runtime(format!("unknown encoder `{}`", resolved.encoder_id))
     })?;
     let dest = resolve_dest_from_resolved(&resolved, &source, encoder.extension())?;
+    let tags = build_tag_map(&composed, &profile.metadata)
+        .map_err(|err| mlua::Error::runtime(err.to_string()))?;
     Ok(ExportJob {
         encoder_id: resolved.encoder_id,
         spec: EncodeSpec {
@@ -550,7 +603,38 @@ fn build_job(composition: &Composition, profile: ExportProfileDef) -> mlua::Resu
         },
         channel_indices: resolved.channel_indices,
         dest,
+        tags,
     })
+}
+
+fn compose_export_variables(
+    lua: &mlua::Lua,
+    host: &HostHandle,
+    composition: &Composition,
+    _composition_id: Option<DocumentId>,
+    profile: &ExportProfileDef,
+) -> mlua::Result<VariableTable> {
+    // Always use detached snapshots so resolve never re-enters the backend
+    // while `with_backend` / `with_open_document` already holds a borrow.
+    let source = composition_source_variables(composition);
+    let session = host.session_variables(None);
+    let user = host.user_variables();
+    let mut list = crate::bindings::split_readonly_by_scope(&source);
+    list.push(crate::bindings::LuaBindings::detached("user", user, true));
+    list.push(crate::bindings::LuaBindings::detached(
+        "session", session, true,
+    ));
+    list.push(crate::bindings::LuaBindings::detached(
+        "composition",
+        composition.variables().clone(),
+        true,
+    ));
+    list.push(crate::bindings::LuaBindings::detached(
+        "export",
+        profile.variables.clone(),
+        true,
+    ));
+    crate::variables::resolve_with_active(lua, &list)
 }
 
 fn resolve_dest_from_resolved(
@@ -583,7 +667,7 @@ pub fn export_composition(lua: &mlua::Lua, id: DocumentId, arg: Value) -> mlua::
     host.with_backend(|backend| {
         backend.with_open_document(id, &mut |doc| {
             let composition = doc.composition.read().unwrap();
-            let job = resolve_export_job(&host, &composition, arg.clone())?;
+            let job = resolve_export_job(lua, &host, &composition, Some(id), arg.clone())?;
             if let Some(parent) = job.dest.parent() {
                 ensure_parent_dir(parent)?;
             }

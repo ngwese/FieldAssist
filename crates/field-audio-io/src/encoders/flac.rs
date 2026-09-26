@@ -12,6 +12,7 @@ use flacenc::encode_with_fixed_block_size;
 use flacenc::error::Verify;
 use flacenc::source::MemSource;
 
+use crate::metadata::TagMap;
 use crate::pcm::{bits_for_integer, interleave_i32, planar_frames};
 use crate::spec::{EncodeSpec, EncoderCaps, PcmFormat};
 use crate::FormatEncoder;
@@ -44,7 +45,13 @@ impl FormatEncoder for FlacEncoder {
         }
     }
 
-    fn encode(&self, spec: &EncodeSpec, planar: &[Vec<f32>], writer: &mut dyn Write) -> Result<()> {
+    fn encode_with_tags(
+        &self,
+        spec: &EncodeSpec,
+        planar: &[Vec<f32>],
+        writer: &mut dyn Write,
+        tags: &TagMap,
+    ) -> Result<()> {
         let format = spec
             .sample_format
             .context("FLAC requires a sample format")?;
@@ -131,9 +138,14 @@ impl FormatEncoder for FlacEncoder {
         if sink.as_slice().is_empty() {
             bail!("FLAC encoder produced no bytes");
         }
-        writer
-            .write_all(sink.as_slice())
-            .context("write FLAC bytes")?;
-        Ok(())
+        super::tag_write::encode_with_optional_tags(
+            "flac",
+            tags,
+            |out| {
+                out.extend_from_slice(sink.as_slice());
+                Ok(())
+            },
+            writer,
+        )
     }
 }

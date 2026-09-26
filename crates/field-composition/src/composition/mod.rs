@@ -100,6 +100,10 @@ pub struct Composition {
     playback_channels: Option<Vec<usize>>,
     /// Dest composition channel → media channel. `None` means identity.
     source_channels: Option<Vec<usize>>,
+    /// Composition-scoped variables.
+    variables: field_variables::VariableTable,
+    /// Snapshot of variables at last clean mark.
+    clean_variables: field_variables::VariableTable,
     /// In-memory derived streams (envelope, …); not saved to `.facomp`.
     analysis_streams: AnalysisStreams,
     /// Scratch min/max fold kept across pager blocks of one clip.
@@ -244,6 +248,8 @@ impl Composition {
             monitor_chain: None,
             playback_channels: None,
             source_channels: None,
+            variables: field_variables::VariableTable::new(),
+            clean_variables: field_variables::VariableTable::new(),
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -318,6 +324,8 @@ impl Composition {
             monitor_chain: None,
             playback_channels: None,
             source_channels: None,
+            variables: field_variables::VariableTable::new(),
+            clean_variables: field_variables::VariableTable::new(),
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -596,12 +604,14 @@ impl Composition {
             || self.edl.current_id() != self.clean_edit_id
             || self.markers.to_vec() != self.clean_markers
             || named_regions(&self.collections) != named_regions(&self.clean_collections)
+            || self.variables != self.clean_variables
     }
 
     fn mark_clean(&mut self) {
         self.clean_edit_id = self.edl.current_id();
         self.clean_markers = self.markers.to_vec();
         self.clean_collections = self.collections.clone();
+        self.clean_variables = self.variables.clone();
         self.identity_dirty = false;
         self.display_title = None;
     }
@@ -831,6 +841,8 @@ impl Composition {
             monitor_chain: self.monitor_chain.clone(),
             playback_channels: self.playback_channels.clone(),
             source_channels: self.source_channels.clone(),
+            variables: self.variables.clone(),
+            clean_variables: field_variables::VariableTable::new(),
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -900,7 +912,7 @@ impl Composition {
     }
 
     /// Media this composition was opened from, or the first used media entry.
-    fn primary_media(&self) -> Option<MediaRef> {
+    pub fn primary_media(&self) -> Option<MediaRef> {
         let store = self.store.lock().unwrap();
         let pool = store.pool();
         if let InitialState::FromMedia { media_id } = self.initial {
@@ -1162,6 +1174,16 @@ impl Composition {
     /// `set_monitor_chain`.
     pub fn set_monitor_chain(&mut self, chain: Option<String>) {
         self.monitor_chain = chain.filter(|name| !name.is_empty());
+    }
+
+    /// Composition-scoped variables.
+    pub fn variables(&self) -> &field_variables::VariableTable {
+        &self.variables
+    }
+
+    /// Replace composition-scoped variables.
+    pub fn set_variables(&mut self, variables: field_variables::VariableTable) {
+        self.variables = variables.with_default_scope("composition");
     }
 
     /// `playback_channels`.
@@ -3274,6 +3296,7 @@ impl Composition {
             monitor_chain: self.monitor_chain.clone(),
             playback_channels: self.playback_channels.clone(),
             source_channels: self.source_channels.clone(),
+            variables: self.variables.to_stored(),
         }
     }
 
@@ -3366,12 +3389,15 @@ impl Composition {
             normalize_playback_channels(file.playback_channels, composition.channel_count);
         composition.source_channels =
             normalize_source_channels(file.source_channels, composition.channel_count);
+        composition.variables =
+            field_variables::VariableTable::from_stored("composition", file.variables);
         if identity_dirty {
             // Minted id for a legacy file — leave dirty so the next save
             // persists identity.
             composition.clean_edit_id = composition.edl.current_id();
             composition.clean_markers = composition.markers.to_vec();
             composition.clean_collections = composition.collections.clone();
+            composition.clean_variables = composition.variables.clone();
             composition.identity_dirty = true;
         } else {
             composition.mark_clean();
@@ -3427,6 +3453,8 @@ impl Composition {
             monitor_chain: None,
             playback_channels: None,
             source_channels: None,
+            variables: field_variables::VariableTable::new(),
+            clean_variables: field_variables::VariableTable::new(),
             analysis_streams: AnalysisStreams::default(),
             minmax_op: None,
             envelope_op: None,
@@ -4216,7 +4244,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["media"][0].get("samples").is_none());
         assert_eq!(value["kind"], "facomp");
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         let media = &value["media"][0];
         assert!(media.get("url").is_some());
         assert!(media.get("path").is_none());
@@ -4564,6 +4592,7 @@ mod tests {
             monitor_chain: None,
             playback_channels: None,
             source_channels: None,
+            variables: Vec::new(),
         };
         let json = ProjectEnvelope::wrap(file).to_json().unwrap();
         let (comp, report) = Composition::from_json_reprobing(&json).unwrap();
@@ -4699,7 +4728,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         assert_eq!(value["markers"].as_array().unwrap().len(), 2);
         assert!(value["markers"][0].get("color").is_none());
         assert!(value["marker_types"].as_array().unwrap().len() >= 3);
@@ -4744,7 +4773,7 @@ mod tests {
             .unwrap();
         let json = comp.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
         assert!(value["marker_types"]
             .as_array()
@@ -5334,7 +5363,7 @@ mod tests {
         assert!(!child.can_undo());
         let json = child.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         assert_eq!(value["parent"], parent_id.to_string());
         assert_eq!(value["id"], child.id().to_string());
         assert_eq!(value["edits"][0]["type"], "trim");
@@ -5391,7 +5420,7 @@ mod tests {
 
         let json = nested.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         assert_eq!(value["channel_count"], 2);
         assert_eq!(value["source_channels"], serde_json::json!([0, 3]));
         let restored = Composition::from_json(&json).unwrap();
@@ -5471,7 +5500,7 @@ mod tests {
         let restored = Composition::from_json(json).unwrap();
         assert!(restored.is_modified());
         let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
-        assert_eq!(saved["format_version"], 9);
+        assert_eq!(saved["format_version"], 10);
         assert!(saved.get("id").is_some());
     }
 
@@ -5682,7 +5711,7 @@ mod tests {
         let comp = Composition::from_media(sine_media(6, 1, 44100)).unwrap();
         let media_id = comp.pool().first().unwrap().id;
         let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         assert_eq!(value["initial"]["type"], "from_media");
         assert_eq!(value["initial"]["media_id"], media_id.to_string());
         assert_eq!(value["media"].as_array().unwrap().len(), 1);
@@ -5694,7 +5723,7 @@ mod tests {
         let mut comp = Composition::from_media(sine_media(8, 1, 44100)).unwrap();
         comp.clear(2, 3);
         let value: serde_json::Value = serde_json::from_str(&comp.to_json().unwrap()).unwrap();
-        assert_eq!(value["format_version"], 9);
+        assert_eq!(value["format_version"], 10);
         let edits = value["edits"].as_array().unwrap();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0]["type"], "clear");

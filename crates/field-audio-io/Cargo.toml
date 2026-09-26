@@ -9,11 +9,12 @@ description = "Audio probe, decode, and encode for FieldAssist"
 anyhow = { workspace = true }
 field-audio-model = { path = "../field-audio-model" }
 field-audio-process = { path = "../field-audio-process" }
+field-variables = { path = "../field-variables" }
 flacenc = { workspace = true }
 hound = { workspace = true }
+lofty = { workspace = true }
 ogg = { workspace = true }
 rusty_vorbis = { workspace = true }
 symphonia = { workspace = true }
 
-[dev-dependencies]
 tempfile = "3"

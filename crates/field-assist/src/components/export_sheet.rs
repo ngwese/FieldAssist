@@ -285,6 +285,7 @@ impl ExportSheet {
                 .filter_map(|(i, on)| on.then_some(i))
                 .collect(),
             dest,
+            tags: Default::default(),
         })
     }
 
