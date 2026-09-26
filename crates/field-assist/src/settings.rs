@@ -101,8 +101,8 @@ pub struct ViewSettings {
 impl Default for ViewSettings {
     fn default() -> Self {
         Self {
-            explorer: true,
-            detail: crate::dock_titles::DETAIL_TAB_MARKER.into(),
+            explorer: false,
+            detail: DOCK_HIDDEN.into(),
             script: DOCK_HIDDEN.into(),
         }
     }
@@ -398,10 +398,10 @@ mod tests {
         let s = AppSettings::default();
         assert_eq!(s.appearance.theme_name, "Default Dark");
         assert_eq!(s.appearance.theme_mode, "dark");
-        assert!(s.view.explorer);
-        assert_eq!(s.view.detail, crate::dock_titles::DETAIL_TAB_MARKER);
+        assert!(!s.view.explorer);
+        assert_eq!(s.view.detail, DOCK_HIDDEN);
         assert_eq!(s.view.script, DOCK_HIDDEN);
-        assert!(s.view.detail_open() && !s.view.script_open());
+        assert!(!s.view.detail_open() && !s.view.script_open());
         assert_eq!(s.waveform.representation, "peaks");
         assert!(s.waveform.follow_playhead);
         assert_eq!(s.waveform.peak_rendering, "threaded");
@@ -443,7 +443,8 @@ mod tests {
         }"#;
         let s: AppSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.appearance.theme_mode, "dark");
-        assert!(s.view.explorer);
+        assert!(!s.view.explorer);
+        assert_eq!(s.view.detail, DOCK_HIDDEN);
     }
 
     #[test]
