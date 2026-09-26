@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Pack FieldAssist, field-play, and field-batch into an amd64 .deb that
+# installs into /usr/bin. Intended for Ubuntu 24.04+ and Debian stable;
+# build on Ubuntu 24.04 so glibc stays compatible with those targets.
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: script/bundle-deb [options]
+
+Build (on Linux) or pack FieldAssist, field-play, and field-batch into
+target/release/FieldAssist-<version>-amd64.deb. Requires dpkg-deb and
+dpkg-dev (for dpkg-shlibdeps).
+
+  --skip-build    Use existing FieldAssist / field-play / field-batch under
+                  the release directory (or --bin-dir)
+  --bin-dir DIR   Directory containing the three release executables
+                  (default: target/release, or \$CARGO_TARGET_DIR/release)
+  --out PATH      Output .deb path (default:
+                  target/release/FieldAssist-<cargo-version>-amd64.deb)
+  -h, --help      Show this help
+EOF
+}
+
+skip_build=false
+bin_dir=""
+out_path=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    --bin-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --bin-dir requires a path" >&2
+        exit 1
+      fi
+      bin_dir="$2"
+      shift 2
+      ;;
+    --out)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --out requires a path" >&2
+        exit 1
+      fi
+      out_path="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "error: script/bundle-deb only runs on Linux (needs dpkg-deb)" >&2
+  exit 1
+fi
+
+for cmd in dpkg-deb dpkg-shlibdeps; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "error: missing ${cmd}; install dpkg-dev" >&2
+    exit 1
+  fi
+done
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+if [[ -z "$version" ]]; then
+  echo "error: could not read version from Cargo.toml" >&2
+  exit 1
+fi
+
+description="$(
+  awk -F '"' '/^description = / { print $2; exit }' \
+    crates/field-assist/Cargo.toml
+)"
+if [[ -z "$description" ]]; then
+  description="Review, edit, and process audio coming in from the field"
+fi
+
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
+release_dir="$target_dir/release"
+if [[ -z "$bin_dir" ]]; then
+  bin_dir="$release_dir"
+else
+  bin_dir="$(cd "$bin_dir" && pwd)"
+fi
+
+if [[ "$skip_build" != true ]]; then
+  echo "Building FieldAssist ${version}, field-play, and field-batch (release)..."
+  cargo build --release -p FieldAssist -p field-play -p field-batch
+fi
+
+binary="$bin_dir/FieldAssist"
+field_play_bin="$bin_dir/field-play"
+field_batch_bin="$bin_dir/field-batch"
+for path in "$binary" "$field_play_bin" "$field_batch_bin"; do
+  if [[ ! -x "$path" ]]; then
+    echo "error: missing release binary: $path" >&2
+    exit 1
+  fi
+done
+
+if [[ -z "$out_path" ]]; then
+  mkdir -p "$release_dir"
+  out_path="$release_dir/FieldAssist-${version}-amd64.deb"
+else
+  out_parent="$(dirname "$out_path")"
+  mkdir -p "$out_parent"
+  out_path="$(cd "$out_parent" && pwd)/$(basename "$out_path")"
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/fieldassist-bundle-deb.XXXXXX")"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+stage="${tmpdir}/pkg"
+mkdir -p "$stage/usr/bin" "$stage/DEBIAN" "${tmpdir}/debian"
+cp -f "$binary" "$field_play_bin" "$field_batch_bin" "$stage/usr/bin/"
+chmod 755 \
+  "$stage/usr/bin/FieldAssist" \
+  "$stage/usr/bin/field-play" \
+  "$stage/usr/bin/field-batch"
+
+# Minimal debian/control so dpkg-shlibdeps can resolve substitution vars.
+cat >"${tmpdir}/debian/control" <<'EOF'
+Source: fieldassist
+
+Package: fieldassist
+Depends: ${shlibs:Depends}
+Description: FieldAssist
+EOF
+
+(
+  cd "$tmpdir"
+  dpkg-shlibdeps -O \
+    -e "$stage/usr/bin/FieldAssist" \
+    -e "$stage/usr/bin/field-play" \
+    -e "$stage/usr/bin/field-batch"
+) >"${tmpdir}/shlibs.out"
+
+depends="$(
+  sed -n 's/^shlibs:Depends=//p' "${tmpdir}/shlibs.out" | head -n 1
+)"
+if [[ -z "$depends" ]]; then
+  echo "error: dpkg-shlibdeps produced no Depends" >&2
+  cat "${tmpdir}/shlibs.out" >&2 || true
+  exit 1
+fi
+
+# Keep a glibc floor that matches Ubuntu 24.04 (the pack host baseline).
+bump_libc6() {
+  local deps="$1"
+  local floor="2.39"
+  local cur
+  cur="$(echo "$deps" | sed -n 's/.*libc6 (>= \([0-9.]*\)).*/\1/p')"
+  if [[ -n "$cur" ]]; then
+    if [[ "$cur" != "$floor" ]] \
+      && [[ "$(printf '%s\n%s\n' "$cur" "$floor" | sort -V | head -n 1)" == "$cur" ]]; then
+      deps="${deps/libc6 (>= ${cur})/libc6 (>= ${floor})}"
+    fi
+  elif [[ "$deps" == "libc6" || "$deps" == libc6,* || "$deps" == *", libc6" || "$deps" == *", libc6,"* ]]; then
+    deps="${deps/libc6/libc6 (>= ${floor})}"
+  else
+    deps="libc6 (>= ${floor}), ${deps}"
+  fi
+  printf '%s' "$deps"
+}
+
+depends="$(bump_libc6 "$depends")"
+
+installed_size="$(du -sk "$stage/usr" | awk '{print $1}')"
+
+cat >"$stage/DEBIAN/control" <<EOF
+Package: fieldassist
+Version: ${version}
+Section: sound
+Priority: optional
+Architecture: amd64
+Maintainer: Greg Wuller <ngwese@users.noreply.github.com>
+Homepage: https://github.com/ngwese/FieldAssist
+Installed-Size: ${installed_size}
+Depends: ${depends}
+Description: ${description}
+ FieldAssist is a desktop app for reviewing, editing, and processing
+ audio from the field. This package also provides the field-play and
+ field-batch command-line tools.
+EOF
+
+echo "Packing ${out_path}..."
+dpkg-deb --root-owner-group --build "$stage" "$out_path"
+
+echo "Wrote ${out_path}"

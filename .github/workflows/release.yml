@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Greg Wuller
 # SPDX-License-Identifier: MIT
 #
-# Build platform install packages (MSIX, DMG, Linux tarball) and publish
-# them to a GitHub Release. Dry-runs upload workflow artifacts only;
-# a real tag creates the Release after all three packs succeed.
+# Build platform install packages (MSIX, DMG, Linux tarball + .deb) and
+# publish them to a GitHub Release. Dry-runs upload workflow artifacts
+# only; a real tag creates the Release after all three packs succeed.
 
 name: Release
 
@@ -184,8 +184,10 @@ jobs:
             dmg-out/FieldAssist-macos.cer
 
   linux:
-    name: linux-tarball
-    runs-on: ubuntu-latest
+    name: linux-pack
+    # Pin 24.04 so the shipped glibc baseline stays compatible with
+    # Ubuntu 24.04, Ubuntu 26.04, and Debian stable (Trixie).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -193,6 +195,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            dpkg-dev \
             libasound2-dev \
             libfontconfig-dev \
             libxcb1-dev \
@@ -218,30 +221,43 @@ jobs:
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Pack Linux tarball
+      - name: Pack Linux tarball and .deb
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           out_dir="$(pwd)/linux-out"
           mkdir -p "${out_dir}"
           archive="FieldAssist-${version}-x86_64-linux.tar.gz"
-          out="${out_dir}/${archive}"
-          chmod +x script/bundle-linux script/install-linux
-          ./script/bundle-linux --arch x86_64 --out "${out}"
+          deb="FieldAssist-${version}-amd64.deb"
+          chmod +x script/bundle-linux script/install-linux script/bundle-deb
+          ./script/bundle-linux --arch x86_64 --out "${out_dir}/${archive}"
+          ./script/bundle-deb \
+            --skip-build \
+            --bin-dir "${CARGO_TARGET_DIR:-target}/release" \
+            --out "${out_dir}/${deb}"
 
           (
             cd "${out_dir}"
             sha256sum "${archive}" | awk '{print $1 "  " $2}' \
               > "${archive}.sha256"
+            sha256sum "${deb}" | awk '{print $1 "  " $2}' \
+              > "${deb}.sha256"
           )
 
-      - name: Upload Linux tarball artifact
+          echo "=== dpkg-deb -I ${deb} ==="
+          dpkg-deb -I "${out_dir}/${deb}"
+          echo "=== dpkg-deb -c ${deb} (binaries) ==="
+          dpkg-deb -c "${out_dir}/${deb}" | grep -E 'usr/bin/'
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
           name: FieldAssist-linux
           path: |
             linux-out/FieldAssist-*-x86_64-linux.tar.gz
             linux-out/FieldAssist-*-x86_64-linux.tar.gz.sha256
+            linux-out/FieldAssist-*-amd64.deb
+            linux-out/FieldAssist-*-amd64.deb.sha256
 
   publish:
     name: publish
@@ -324,6 +340,20 @@ jobs:
           place \`field-play\` and \`field-batch\` on \`/usr/local/bin\`
           (administrator password required once).
 
+          ## Linux (.deb)
+
+          Download \`FieldAssist-${version}-amd64.deb\`, then:
+
+          \`\`\`bash
+          sudo apt install ./FieldAssist-${version}-amd64.deb
+          \`\`\`
+
+          Or \`sudo dpkg -i FieldAssist-${version}-amd64.deb\`. That
+          installs \`FieldAssist\`, \`field-play\`, and \`field-batch\`
+          into \`/usr/bin\` and pulls in shared-library dependencies.
+          Built on Ubuntu 24.04 for Ubuntu 24.04 / 26.04 and Debian
+          stable (Trixie).
+
           ## Linux (tarball)
 
           Download \`FieldAssist-${version}-x86_64-linux.tar.gz\`, then:
@@ -360,6 +390,8 @@ jobs:
             release-artifacts/FieldAssist-macos.cer
             release-artifacts/FieldAssist-"${version}"-x86_64-linux.tar.gz
             release-artifacts/FieldAssist-"${version}"-x86_64-linux.tar.gz.sha256
+            release-artifacts/FieldAssist-"${version}"-amd64.deb
+            release-artifacts/FieldAssist-"${version}"-amd64.deb.sha256
           )
           for path in "${assets[@]}"; do
             if [ ! -f "${path}" ]; then
