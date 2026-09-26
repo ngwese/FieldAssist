@@ -6,6 +6,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$DefaultOpPasswordRef = "op://Private/FieldAssist - PFX Signing Password/password"
+
 function Test-IsWindows {
     if ($null -ne (Get-Variable -Name IsWindows -Scope Global -ErrorAction SilentlyContinue)) {
         return [bool]$IsWindows
@@ -32,12 +34,39 @@ Also builds release binaries for field-play and field-batch (unless
                   target/release/FieldAssist-<cargo-version>.msix)
   --pfx PATH      Code-signing PFX (default: FIELDASSIST_SIGNING_PFX,
                   else crates/field-assist/assets/windows/FieldAssist.pfx)
+  --from-op       Read the PFX password from 1Password via ``op read``
+                  (default ref: $DefaultOpPasswordRef)
+  --op-ref REF    1Password secret reference for --from-op
   -h, --help      Show this help
 
 Environment:
   FIELDASSIST_SIGNING_PFX       Path to the signing PFX
-  FIELDASSIST_SIGNING_PASSWORD  Password for the PFX (empty allowed)
+  FIELDASSIST_SIGNING_PASSWORD  Password for the PFX (empty allowed;
+                                ignored when --from-op is set)
 "@
+}
+
+function Get-PasswordFrom1Password {
+    param([Parameter(Mandatory = $true)][string]$OpRef)
+
+    $op = Get-Command op -ErrorAction SilentlyContinue
+    if ($null -eq $op) {
+        Write-Error "1Password CLI (op) not found on PATH; install it or set FIELDASSIST_SIGNING_PASSWORD"
+        exit 1
+    }
+
+    Write-Host "Reading PFX password from 1Password ($OpRef)..."
+    $password = & op read $OpRef
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "op read failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+    if ($null -eq $password) {
+        Write-Error "op read returned no password for $OpRef"
+        exit 1
+    }
+    # op may emit a trailing newline
+    return ([string]$password).TrimEnd("`r", "`n")
 }
 
 function Get-WindowsSdkTool {
@@ -201,12 +230,15 @@ $skipBuild = $false
 $binDir = $null
 $outPath = $null
 $pfxPath = $null
+$fromOp = $false
+$opRef = $DefaultOpPasswordRef
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
         "--install" { $install = $true }
         "-Install" { $install = $true }
         "--skip-build" { $skipBuild = $true }
+        "--from-op" { $fromOp = $true }
         "--bin-dir" {
             $i++
             if ($i -ge $args.Count) {
@@ -230,6 +262,15 @@ for ($i = 0; $i -lt $args.Count; $i++) {
                 exit 1
             }
             $pfxPath = $args[$i]
+        }
+        "--op-ref" {
+            $i++
+            if ($i -ge $args.Count) {
+                Write-Error "--op-ref requires a value"
+                exit 1
+            }
+            $opRef = $args[$i]
+            $fromOp = $true
         }
         "-h" { Show-Usage; exit 0 }
         "--help" { Show-Usage; exit 0 }
@@ -317,17 +358,20 @@ if (-not (Test-Path -LiteralPath $pfxPath)) {
 missing signing PFX: $pfxPath
 
 Generate once with:
-  powershell -File script/generate-windows-signing-cert.ps1
-Then set FIELDASSIST_SIGNING_PFX / FIELDASSIST_SIGNING_PASSWORD, or place
-FieldAssist.pfx next to the committed FieldAssist.cer.
+  powershell -File script/generate-windows-signing-cert.ps1 --from-op
+Then set FIELDASSIST_SIGNING_PFX / FIELDASSIST_SIGNING_PASSWORD, pass
+--from-op, or place FieldAssist.pfx next to the committed FieldAssist.cer.
 "@
     exit 1
 }
-$pfxPassword = if ($null -ne $env:FIELDASSIST_SIGNING_PASSWORD) {
-    $env:FIELDASSIST_SIGNING_PASSWORD
+if ($fromOp) {
+    $pfxPassword = Get-PasswordFrom1Password -OpRef $opRef
+}
+elseif ($null -ne $env:FIELDASSIST_SIGNING_PASSWORD) {
+    $pfxPassword = $env:FIELDASSIST_SIGNING_PASSWORD
 }
 else {
-    ""
+    $pfxPassword = ""
 }
 
 $makeappx = Get-WindowsSdkTool "makeappx.exe"
