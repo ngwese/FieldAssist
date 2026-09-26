@@ -159,6 +159,38 @@ Without a PKCS#12 the script falls back to ad-hoc signing (fine for local
 smoke tests; not for release). The PKCS#12 password must be non-empty —
 Apple's `security import` rejects empty passwords.
 
+## Linux tarball
+
+On Linux, pack a single archive with the three release binaries and an
+install script:
+
+```bash
+./script/bundle-linux
+```
+
+That builds release `FieldAssist`, `field-play`, and `field-batch`, and
+writes `target/release/FieldAssist-<version>-<arch>-linux.tar.gz`
+(`arch` is `uname -m`, with `arm64` normalized to `aarch64`). Unpack and
+install into `/usr/local/bin`:
+
+```bash
+tar -xzf target/release/FieldAssist-*-linux.tar.gz
+cd FieldAssist-*-linux
+sudo ./install.sh
+FieldAssist --help
+field-play path/to/take.wav
+field-batch --eval 'return app.name'
+```
+
+Use `./install.sh --prefix DIR` (or `PREFIX=DIR ./install.sh`) for a
+custom prefix without sudo when `DIR/bin` is writable. Re-running replaces
+the binaries. With `--skip-build --bin-dir DIR`, the packer copies existing
+executables (used by CI; works off Linux for layout checks).
+
+The GUI expects a desktop session with the usual ALSA and X11 client
+libraries (the same stack as the apt build deps above). The install script
+does not install packages.
+
 ## Windows MSIX
 
 On Windows, package a signed per-user MSIX that registers Start Menu,
