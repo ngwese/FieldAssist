@@ -8,6 +8,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$DefaultOpPasswordRef = "op://Private/FieldAssist - PFX Signing Password/password"
+
 function Test-IsWindows {
     if ($null -ne (Get-Variable -Name IsWindows -Scope Global -ErrorAction SilentlyContinue)) {
         return [bool]$IsWindows
@@ -23,6 +25,9 @@ Generate CN=FieldAssist code-signing certificate for MSIX packages.
 
   --force         Overwrite an existing FieldAssist.pfx / FieldAssist.cer
   --password P    PFX password (default: empty, or FIELDASSIST_SIGNING_PASSWORD)
+  --from-op       Read the PFX password from 1Password via ``op read``
+                  (default ref: $DefaultOpPasswordRef)
+  --op-ref REF    1Password secret reference for --from-op
   -h, --help      Show this help
 
 Writes:
@@ -35,6 +40,29 @@ After generating, store the PFX as GitHub secrets for CI:
 "@
 }
 
+function Get-PasswordFrom1Password {
+    param([Parameter(Mandatory = $true)][string]$OpRef)
+
+    $op = Get-Command op -ErrorAction SilentlyContinue
+    if ($null -eq $op) {
+        Write-Error "1Password CLI (op) not found on PATH; install it or pass --password"
+        exit 1
+    }
+
+    Write-Host "Reading PFX password from 1Password ($OpRef)..."
+    $password = & op read $OpRef
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "op read failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+    if ($null -eq $password) {
+        Write-Error "op read returned no password for $OpRef"
+        exit 1
+    }
+    # op may emit a trailing newline
+    return ([string]$password).TrimEnd("`r", "`n")
+}
+
 if (-not (Test-IsWindows)) {
     Write-Error "script/generate-windows-signing-cert.ps1 only runs on Windows"
     exit 1
@@ -42,10 +70,22 @@ if (-not (Test-IsWindows)) {
 
 $force = $false
 $passwordPlain = $null
+$fromOp = $false
+$opRef = $DefaultOpPasswordRef
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
         "--force" { $force = $true }
+        "--from-op" { $fromOp = $true }
+        "--op-ref" {
+            $i++
+            if ($i -ge $args.Count) {
+                Write-Error "--op-ref requires a value"
+                exit 1
+            }
+            $opRef = $args[$i]
+            $fromOp = $true
+        }
         "--password" {
             $i++
             if ($i -ge $args.Count) {
@@ -62,6 +102,11 @@ for ($i = 0; $i -lt $args.Count; $i++) {
             exit 1
         }
     }
+}
+
+if (($null -ne $passwordPlain) -and $fromOp) {
+    Write-Error "pass either --password or --from-op, not both"
+    exit 1
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -87,7 +132,10 @@ you intend to replace the publisher identity for everyone.
     Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $cerPath
 }
 
-if ($null -eq $passwordPlain) {
+if ($fromOp) {
+    $passwordPlain = Get-PasswordFrom1Password -OpRef $opRef
+}
+elseif ($null -eq $passwordPlain) {
     if ($null -ne $env:FIELDASSIST_SIGNING_PASSWORD) {
         $passwordPlain = $env:FIELDASSIST_SIGNING_PASSWORD
     }
@@ -132,8 +180,8 @@ Write-Host @"
 Next steps:
   1. Commit FieldAssist.cer (public). Keep FieldAssist.pfx private.
   2. For local packs: set FIELDASSIST_SIGNING_PFX to the .pfx path
-     (or leave the default next to the .cer) and optionally
-     FIELDASSIST_SIGNING_PASSWORD.
+     (or leave the default next to the .cer) and FIELDASSIST_SIGNING_PASSWORD
+     (or ``op read "$DefaultOpPasswordRef"``).
   3. For CI, add GitHub secrets WINDOWS_SIGNING_PFX (base64 of the
-     .pfx bytes) and WINDOWS_SIGNING_PASSWORD (empty if none).
+     .pfx bytes) and WINDOWS_SIGNING_PASSWORD.
 "@
