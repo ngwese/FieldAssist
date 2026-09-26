@@ -14,7 +14,7 @@ use gpui_kit::component::setting::{
     SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, AxisExt as _, Disableable as _, IconName, Root, Sizable as _, Theme,
+    ActiveTheme as _, AxisExt as _, Disableable as _, IconName, Root, Sizable as _, Size, Theme,
     ThemeRegistry,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -51,6 +51,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
     }
 
     Settings::new("field-assist-settings")
+        .with_size(Size::Small)
         .with_group_variant(GroupBoxVariant::Fill)
         .page(
             SettingPage::new("General")
@@ -144,7 +145,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                             "Show the explorer dock by default",
                             |s| s.view.explorer,
                             |s, v| s.view.explorer = v,
-                            true,
+                            false,
                             "view.show-explorer",
                             "view.hide-explorer",
                         ))
@@ -153,7 +154,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                             "Default detail dock tab (or hide)",
                             "detail-dock-pref",
                             crate::dock_titles::DETAIL_DOCK_TAB_TITLES,
-                            crate::dock_titles::DETAIL_TAB_MARKER,
+                            settings::DOCK_HIDDEN,
                             |s| s.view.detail.as_str(),
                             |s, v| s.view.detail = v.into(),
                             crate::app::apply_detail_from_settings,
@@ -698,6 +699,7 @@ impl Render for SettingsView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(content)
+            .text_sm()
             .child(build_settings_ui(cx))
     }
 }
