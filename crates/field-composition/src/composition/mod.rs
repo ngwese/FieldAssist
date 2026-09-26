@@ -3912,6 +3912,47 @@ mod tests {
     }
 
     #[test]
+    fn fill_minmax_columns_plateaus_when_spp_below_peak_block() {
+        // Document the overview-bin failure mode that peak paint avoids by
+        // folding PCM whenever spp < PEAK_BLOCK.
+        let block = PEAK_BLOCK;
+        let frames = block * 4;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (i % block) as f32 / (block - 1) as f32)
+            .collect();
+        let media = MediaRef::from_memory_samples(44_100, vec![samples.clone()]);
+        let comp = Composition::from_media(media).unwrap();
+        assert!(!comp.needs_peak_build());
+
+        let spp = 100.0;
+        let cols = 8;
+        let mut bin_cols = vec![(0.0f32, 0.0f32); cols];
+        comp.fill_minmax_columns(0, 0.0, spp, &mut bin_cols);
+
+        assert_eq!(
+            bin_cols[0], bin_cols[1],
+            "block-aligned bins share extrema across adjacent columns at spp=100"
+        );
+        assert_eq!(bin_cols[1], bin_cols[2]);
+
+        let mut pcm_cols = vec![(0.0f32, 0.0f32); cols];
+        for (col, slot) in pcm_cols.iter_mut().enumerate() {
+            let a = (col as f64 * spp).floor() as usize;
+            let b = (((col as f64 + 1.0) * spp).ceil() as usize).min(frames);
+            let mut min = f32::MAX;
+            let mut max = f32::MIN;
+            for &s in &samples[a..b] {
+                min = min.min(s);
+                max = max.max(s);
+            }
+            *slot = (min, max);
+        }
+        assert_ne!(pcm_cols[0], pcm_cols[1]);
+        assert_ne!(pcm_cols[1], pcm_cols[2]);
+        assert_ne!(pcm_cols[0], bin_cols[0]);
+    }
+
+    #[test]
     fn unaligned_clear_keeps_right_peak_cache() {
         let block = PEAK_BLOCK as u64;
         let mut comp = Composition::from_media(sine_media((block * 4) as usize, 1, 44100)).unwrap();

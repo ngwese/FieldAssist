@@ -1568,25 +1568,28 @@ fn paint_peaks_body(
     let first = start_sample.max(0.0).floor() as usize;
     let last = ((start_sample + cols as f64 * samples_per_pixel).ceil() as usize).min(frames);
     let visible = last.saturating_sub(first);
-    let fold_from_samples =
-        samples_per_pixel < peak_block as f64 && visible > 0 && visible <= cols.saturating_mul(64);
+    // Overview bins are one PEAK_BLOCK each. When spp < peak_block, clip_min_max
+    // expands each column to whole bins so adjacent pixels share extrema
+    // (plateaus). Fold PCM per column whenever a pixel covers less than one bin.
+    let fold_from_samples = peaks_fold_from_samples(samples_per_pixel, peak_block, visible);
 
     if fold_from_samples {
         let mut samples = vec![0.0; visible];
         WaveformDataProvider::read_channel(provider, channel, first, &mut samples);
-        for col in 0..cols {
+        let mut columns = vec![(0.0f32, 0.0f32); cols];
+        fold_minmax_columns_from_samples(
+            &samples,
+            first,
+            frames,
+            start_sample,
+            samples_per_pixel,
+            &mut columns,
+        );
+        for (col, &(min, max)) in columns.iter().enumerate() {
             let bin_start = start_sample + col as f64 * samples_per_pixel;
-            let bin_end = bin_start + samples_per_pixel;
             if bin_start >= frames as f64 {
                 break;
             }
-            let a = (bin_start.floor() as usize)
-                .saturating_sub(first)
-                .min(samples.len());
-            let b = (bin_end.ceil() as usize)
-                .saturating_sub(first)
-                .clamp(a, samples.len());
-            let (min, max) = min_max_of(&samples[a..b]);
             paint_column(
                 origin_x, col, min, max, &y_scale, origin_y, height, color, window,
             );
@@ -1877,6 +1880,41 @@ fn min_max_of(samples: &[f32]) -> (f32, f32) {
         (0.0, 0.0)
     } else {
         (min, max)
+    }
+}
+
+/// Whether peak paint should fold PCM per column instead of overview bins.
+///
+/// Overview bins are only resolution-correct when each pixel covers at least
+/// one peak block. Below that, block expansion creates shared-extrema plateaus.
+fn peaks_fold_from_samples(samples_per_pixel: f64, peak_block: usize, visible: usize) -> bool {
+    samples_per_pixel < peak_block as f64 && visible > 0
+}
+
+/// Fold `[start, start + cols * spp)` of `samples` (indexed from `first`) into
+/// per-column min/max pairs — same logic as the PCM branch of peak paint.
+fn fold_minmax_columns_from_samples(
+    samples: &[f32],
+    first: usize,
+    frames: usize,
+    start_sample: f64,
+    samples_per_pixel: f64,
+    dest: &mut [(f32, f32)],
+) {
+    for (col, slot) in dest.iter_mut().enumerate() {
+        let bin_start = start_sample + col as f64 * samples_per_pixel;
+        let bin_end = bin_start + samples_per_pixel;
+        if bin_start >= frames as f64 {
+            *slot = (0.0, 0.0);
+            continue;
+        }
+        let a = (bin_start.floor() as usize)
+            .saturating_sub(first)
+            .min(samples.len());
+        let b = (bin_end.ceil() as usize)
+            .saturating_sub(first)
+            .clamp(a, samples.len());
+        *slot = min_max_of(&samples[a..b]);
     }
 }
 
@@ -2756,5 +2794,74 @@ mod tests {
             waveform_pointer_hover_mode(),
             HoverListenerMode::InputModalityIndependent
         );
+    }
+
+    #[test]
+    fn peaks_fold_from_samples_below_peak_block() {
+        // Former ×64 budget left a 64..256 spp dead zone on overview bins.
+        assert!(peaks_fold_from_samples(100.0, 256, 10_000));
+        assert!(peaks_fold_from_samples(63.0, 256, 630));
+        assert!(peaks_fold_from_samples(255.0, 256, 255_000));
+        assert!(!peaks_fold_from_samples(256.0, 256, 256_000));
+        assert!(!peaks_fold_from_samples(100.0, 256, 0));
+    }
+
+    #[test]
+    fn pcm_fold_resolves_peak_bin_plateaus_in_sub_block_zoom() {
+        // Ramp inside each peak block so block extrema are constant while
+        // per-pixel windows differ — the overview-bin failure mode.
+        const PEAK_BLOCK: usize = 256;
+        let frames = PEAK_BLOCK * 4;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (i % PEAK_BLOCK) as f32 / (PEAK_BLOCK - 1) as f32)
+            .collect();
+        let spp = 100.0;
+        let cols = 8;
+        let start = 0.0;
+        let first = 0usize;
+        let visible = ((cols as f64 * spp).ceil() as usize).min(frames);
+
+        let mut pcm = vec![(0.0f32, 0.0f32); cols];
+        fold_minmax_columns_from_samples(&samples[..visible], first, frames, start, spp, &mut pcm);
+
+        // Peak-bin expansion: floor(start/block)..ceil(end/block) per column.
+        let peaks: Vec<(f32, f32)> = samples
+            .chunks(PEAK_BLOCK)
+            .map(|chunk| {
+                let mut min = f32::MAX;
+                let mut max = f32::MIN;
+                for &s in chunk {
+                    min = min.min(s);
+                    max = max.max(s);
+                }
+                (min, max)
+            })
+            .collect();
+        let mut bin_cols = vec![(0.0f32, 0.0f32); cols];
+        for (col, slot) in bin_cols.iter_mut().enumerate() {
+            let a = (start + col as f64 * spp).floor() as usize;
+            let b = ((start + (col as f64 + 1.0) * spp).ceil() as usize).min(frames);
+            let peak_start = a / PEAK_BLOCK;
+            let peak_end = ((b + PEAK_BLOCK - 1) / PEAK_BLOCK).min(peaks.len());
+            let mut min = f32::MAX;
+            let mut max = f32::MIN;
+            for &(pmin, pmax) in &peaks[peak_start..peak_end] {
+                min = min.min(pmin);
+                max = max.max(pmax);
+            }
+            *slot = if min <= max { (min, max) } else { (0.0, 0.0) };
+        }
+
+        assert_eq!(
+            bin_cols[0], bin_cols[1],
+            "block-aligned bins share extrema across adjacent columns"
+        );
+        assert_eq!(bin_cols[1], bin_cols[2]);
+        assert_ne!(
+            pcm[0], pcm[1],
+            "PCM fold must distinguish adjacent columns inside one peak block"
+        );
+        assert_ne!(pcm[1], pcm[2]);
+        assert_ne!(pcm[0], bin_cols[0]);
     }
 }
