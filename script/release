@@ -154,6 +154,29 @@ print(f"{major}.{minor + 1}.0-pre")
 PY
 }
 
+# Keep CHANGELOG.md's fixed header in sync with cliff.toml (H1 + marker).
+# git-cliff --prepend preserves everything above header_marker, but may
+# drop the marker itself from the rewritten file — always normalize after.
+normalize_changelog_header() {
+  python3 <<'PY'
+from pathlib import Path
+
+path = Path("CHANGELOG.md")
+marker = "<!-- git-cliff: end of header -->"
+text = path.read_text() if path.exists() else ""
+lines = text.splitlines(keepends=True)
+idx = next((i for i, line in enumerate(lines) if line.startswith("## ")), None)
+body = "".join(lines[idx:]) if idx is not None else ""
+if body and not body.endswith("\n"):
+    body += "\n"
+path.write_text(f"# CHANGELOG\n\n{marker}\n\n{body}")
+PY
+}
+
+ensure_changelog_header() {
+  normalize_changelog_header
+}
+
 wait_workflow_dispatch() {
   local workflow="$1"
   local ref="$2"
@@ -290,16 +313,9 @@ set_workspace_version "$release"
 sync_lockfile
 
 log "refreshing CHANGELOG.md for $release"
-if [[ ! -f CHANGELOG.md ]]; then
-  printf '%s\n' \
-    '# Changelog' \
-    '' \
-    'All notable changes to this project will be documented in this file.' \
-    '' \
-    '<!-- git-cliff: end of header -->' \
-    '' >CHANGELOG.md
-fi
+ensure_changelog_header
 git cliff --unreleased --tag "$release" --prepend CHANGELOG.md
+normalize_changelog_header
 
 git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "chore: prepare release ${release}"
