@@ -331,7 +331,14 @@ jobs:
 
           ## macOS (DMG)
 
-          Open the disk image and drag FieldAssist to Applications. The
+          Downloads from the browser are quarantined. Clear that before
+          opening the disk image:
+
+          \`\`\`bash
+          xattr -d com.apple.quarantine FieldAssist-${version}.dmg
+          \`\`\`
+
+          Then open the DMG and drag FieldAssist to Applications. The
           package is self-signed (not notarized): on first launch, use
           Open Anyway in System Settings → Privacy & Security, or trust
           \`FieldAssist-macos.cer\` in Keychain Access.
