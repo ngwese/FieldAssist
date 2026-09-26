@@ -14,5 +14,6 @@ pub mod quick_note;
 pub mod quit_unsaved;
 pub mod settings_window;
 pub mod status_bar;
+pub mod window_chrome;
 pub mod workflow_bar;
 pub mod workspace;
