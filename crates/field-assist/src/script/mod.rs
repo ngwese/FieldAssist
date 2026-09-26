@@ -1112,15 +1112,15 @@ mod tests {
     #[test]
     fn embedded_init_loads_settings_for_field_assist() {
         let (mut host, world) = test_host();
-        world.borrow_mut().explorer = false;
-        world.borrow_mut().detail = false;
+        world.borrow_mut().explorer = true;
+        world.borrow_mut().detail = true;
         host.load_init_from(None).expect("embedded init");
         assert!(
             crate::script::EMBEDDED_INIT.contains("app:load_settings()"),
             "embedded init must call load_settings"
         );
-        assert!(world.borrow().explorer, "defaults show explorer");
-        assert!(world.borrow().detail, "defaults show detail");
+        assert!(!world.borrow().explorer, "defaults hide explorer");
+        assert!(!world.borrow().detail, "defaults hide detail");
         assert!(!world.borrow().script, "defaults hide script");
         assert_eq!(world.borrow().theme_name, "Default Dark");
         assert_eq!(world.borrow().theme_mode, "dark");
@@ -1129,11 +1129,11 @@ mod tests {
     #[test]
     fn load_settings_method_applies_defaults() {
         let (mut host, world) = test_host();
-        world.borrow_mut().explorer = false;
+        world.borrow_mut().explorer = true;
         world.borrow_mut().theme_mode = "light".into();
         let out = host.eval("app:load_settings()");
         assert!(out.error.is_none(), "{:?}", out.error);
-        assert!(world.borrow().explorer);
+        assert!(!world.borrow().explorer);
         assert_eq!(world.borrow().theme_mode, "dark");
     }
 
