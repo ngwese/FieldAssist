@@ -6,20 +6,29 @@
 use field_ui_components::content_foreground;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::group_box::GroupBoxVariant;
+use gpui_kit::component::input::{
+    InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
+};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::setting::{
     SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Root, Sizable as _, Theme, ThemeRegistry,
+    ActiveTheme as _, AxisExt as _, Disableable as _, IconName, Root, Sizable as _, Theme,
+    ThemeRegistry,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, App, AppContext as _, Context, FocusHandle, Focusable, Global, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window,
+    div, App, AppContext as _, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window,
 };
 
 use crate::playback::list_output_devices;
 use crate::settings::{self, AppSettings};
+
+const DECIMAL_STEP: f64 = 0.1;
+const DECIMAL_FINE_STEP: f64 = 0.01;
+const DECIMAL_PLACES: usize = 2;
 
 /// Build the Settings tree bound to the global [`settings::AppSettingsStore`].
 pub fn build_settings_ui(cx: &App) -> Settings {
@@ -165,6 +174,22 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                         .title("Waveform")
                         .item(
                             SettingItem::new(
+                                "Follow Playhead",
+                                SettingField::switch(
+                                    |cx| settings::store(cx).settings.waveform.follow_playhead,
+                                    |on, cx| {
+                                        let _ = settings::update_and_save(cx, |s| {
+                                            s.waveform.follow_playhead = on;
+                                        });
+                                        crate::app::apply_waveform_default_from_settings(cx);
+                                    },
+                                )
+                                .default_value(true),
+                            )
+                            .description("Keep the playhead in view while playing"),
+                        )
+                        .item(
+                            SettingItem::new(
                                 "Representation",
                                 SettingField::dropdown(
                                     vec![
@@ -194,20 +219,52 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                         )
                         .item(
                             SettingItem::new(
-                                "Follow Playhead",
-                                SettingField::switch(
-                                    |cx| settings::store(cx).settings.waveform.follow_playhead,
-                                    |on, cx| {
+                                "Peak Rendering",
+                                SettingField::dropdown(
+                                    vec![
+                                        ("simple".into(), "Simple".into()),
+                                        ("threaded".into(), "Threaded".into()),
+                                    ],
+                                    |cx| {
+                                        settings::store(cx)
+                                            .settings
+                                            .waveform
+                                            .peak_rendering
+                                            .clone()
+                                            .into()
+                                    },
+                                    |value, cx| {
+                                        let mode = value.to_string();
                                         let _ = settings::update_and_save(cx, |s| {
-                                            s.waveform.follow_playhead = on;
+                                            s.waveform.set_peak_rendering_str(&mode);
                                         });
                                         crate::app::apply_waveform_default_from_settings(cx);
                                     },
                                 )
-                                .default_value(true),
+                                .default_value(SharedString::from("threaded")),
                             )
-                            .description("Keep the playhead in view while playing"),
-                        ),
+                            .description("Overview peaks: single color, or shell plus −dB ribbon"),
+                        )
+                        .item(waveform_decimal_field(
+                            "Threaded Shell Value",
+                            "HSV value reduction for the Threaded outer peak (0–1)",
+                            "waveform-threaded-shell",
+                            0.0,
+                            1.0,
+                            field_ui_components::DEFAULT_THREADED_SHELL_VALUE_REDUCE as f64,
+                            |s| s.waveform.threaded_shell_value_reduce as f64,
+                            |s, v| s.waveform.set_threaded_shell_value_reduce(v as f32),
+                        ))
+                        .item(waveform_decimal_field(
+                            "Threaded Ribbon dB",
+                            "Inner ribbon amplitude vs full peak when Threaded (dBFS)",
+                            "waveform-threaded-ribbon",
+                            -48.0,
+                            0.0,
+                            field_ui_components::DEFAULT_THREADED_RIBBON_DB as f64,
+                            |s| s.waveform.threaded_ribbon_db as f64,
+                            |s, v| s.waveform.set_threaded_ribbon_db(v as f32),
+                        )),
                 )
                 .group(
                     SettingGroup::new()
@@ -429,6 +486,181 @@ fn selection_switch(
         .default_value(default),
     )
     .description(description)
+}
+
+fn format_decimal(value: f64) -> SharedString {
+    SharedString::from(format!("{value:.DECIMAL_PLACES$}"))
+}
+
+fn quantize_decimal(value: f64, min: f64, max: f64) -> f64 {
+    let scale = 10f64.powi(DECIMAL_PLACES as i32);
+    ((value.clamp(min, max) * scale).round() / scale).clamp(min, max)
+}
+
+fn persist_decimal(set: fn(&mut AppSettings, f64), value: f64, cx: &mut App) {
+    let _ = settings::update_and_save(cx, |s| set(s, value));
+    crate::app::apply_waveform_default_from_settings(cx);
+}
+
+/// Number stepper showing two decimals; ±0.1, or ±0.01 while Shift is held.
+fn waveform_decimal_field(
+    title: &'static str,
+    description: &'static str,
+    field_id: &'static str,
+    min: f64,
+    max: f64,
+    default: f64,
+    get: fn(&AppSettings) -> f64,
+    set: fn(&mut AppSettings, f64),
+) -> SettingItem {
+    SettingItem::new(
+        title,
+        SettingField::render(move |options, window, cx| {
+            let value = quantize_decimal(get(&settings::store(cx).settings), min, max);
+            let state_entity = window.use_keyed_state(
+                SharedString::from(format!(
+                    "decimal-{}-{}-{}-{}",
+                    field_id,
+                    options.page_ix(),
+                    options.group_ix(),
+                    options.item_ix()
+                )),
+                cx,
+                |window, cx| {
+                    let input = cx.new(|cx| {
+                        // Default InputState uses Fixed(1.) steps and never emits
+                        // NumberInputEvent::Step. Clear that so we own stepping.
+                        let mut state =
+                            InputState::new(window, cx).default_value(format_decimal(value));
+                        state.set_step(None, window, cx);
+                        state
+                    });
+                    let _subscriptions = vec![
+                        cx.subscribe_in(&input, window, {
+                            move |state: &mut DecimalFieldState,
+                                  input,
+                                  event: &NumberInputEvent,
+                                  window,
+                                  cx| {
+                                let NumberInputEvent::Step(action) = event;
+                                let Ok(current) = input.read(cx).value().parse::<f64>() else {
+                                    return;
+                                };
+                                let step = if window.modifiers().shift {
+                                    DECIMAL_FINE_STEP
+                                } else {
+                                    DECIMAL_STEP
+                                };
+                                let next = match *action {
+                                    StepAction::Increment => current + step,
+                                    StepAction::Decrement => current - step,
+                                };
+                                let clamped = quantize_decimal(next, min, max);
+                                if (clamped - current).abs() < 1e-12 {
+                                    return;
+                                }
+                                let text = format_decimal(clamped);
+                                input.update(cx, |input, cx| {
+                                    input.set_value(text, window, cx);
+                                });
+                                persist_decimal(set, clamped, cx);
+                                state.initial_value = clamped;
+                            }
+                        }),
+                        cx.subscribe_in(&input, window, {
+                            move |state: &mut DecimalFieldState,
+                                  input,
+                                  event: &InputEvent,
+                                  window,
+                                  cx| {
+                                match event {
+                                    InputEvent::Change => {
+                                        // Persist when the text parses, but do not
+                                        // rewrite mid-keystroke (that blocks decimals).
+                                        let raw = input.read(cx).value();
+                                        let Ok(parsed) = raw.parse::<f64>() else {
+                                            return;
+                                        };
+                                        let clamped = quantize_decimal(parsed, min, max);
+                                        if (clamped - state.initial_value).abs() < 1e-9 {
+                                            return;
+                                        }
+                                        persist_decimal(set, clamped, cx);
+                                        state.initial_value = clamped;
+                                    }
+                                    InputEvent::Blur => {
+                                        let raw = input.read(cx).value();
+                                        let parsed =
+                                            raw.parse::<f64>().unwrap_or(state.initial_value);
+                                        let clamped = quantize_decimal(parsed, min, max);
+                                        let text = format_decimal(clamped);
+                                        if raw != text.as_ref() {
+                                            input.update(cx, |input, cx| {
+                                                input.set_value(text, window, cx);
+                                            });
+                                        }
+                                        if (clamped - state.initial_value).abs() >= 1e-9 {
+                                            persist_decimal(set, clamped, cx);
+                                            state.initial_value = clamped;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }),
+                    ];
+                    DecimalFieldState {
+                        input,
+                        initial_value: value,
+                        _subscriptions,
+                    }
+                },
+            );
+
+            state_entity.update(cx, |state, cx| {
+                // Keep caller-owned stepping even if a prior keyed state still
+                // has InputState's default Fixed(1.) step.
+                state.input.update(cx, |input, cx| {
+                    input.set_step(None, window, cx);
+                });
+                if (state.initial_value - value).abs() >= 1e-9 {
+                    state.initial_value = value;
+                    state.input.update(cx, |input, cx| {
+                        input.set_value(format_decimal(value), window, cx);
+                    });
+                }
+            });
+
+            let state = state_entity.read(cx);
+            NumberInput::new(&state.input)
+                .disabled(options.is_disabled())
+                .with_size(options.size())
+                .map(|this| {
+                    if options.layout().is_horizontal() {
+                        this.w_32()
+                    } else {
+                        this.w_full()
+                    }
+                })
+        })
+        .on_reset(
+            move |cx| {
+                let current = quantize_decimal(get(&settings::store(cx).settings), min, max);
+                (current - quantize_decimal(default, min, max)).abs() >= 1e-9
+            },
+            move |_, cx| {
+                let value = quantize_decimal(default, min, max);
+                persist_decimal(set, value, cx);
+            },
+        ),
+    )
+    .description(description)
+}
+
+struct DecimalFieldState {
+    input: Entity<InputState>,
+    initial_value: f64,
+    _subscriptions: Vec<Subscription>,
 }
 
 /// Root view for the Preferences window.

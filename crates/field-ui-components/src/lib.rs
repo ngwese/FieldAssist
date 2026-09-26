@@ -87,7 +87,9 @@ pub use transport::{Transport, TransportAction};
 pub use waveform::WaveformDisplay;
 pub use waveform_axis::{format_db_hover, format_hz_hover, hover_axis_quantize, WaveformHoverAxis};
 pub use waveform_data::{
-    clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
-    DEFAULT_PEAKS_SPECTRUM_SPLIT, MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
+    clamp_peaks_spectrum_split, clamp_threaded_ribbon_db, clamp_threaded_shell_value_reduce,
+    PeakRendering, WaveformDataProvider, WaveformRepresentation, DEFAULT_PEAKS_SPECTRUM_SPLIT,
+    DEFAULT_THREADED_RIBBON_DB, DEFAULT_THREADED_SHELL_VALUE_REDUCE, MAX_PEAKS_SPECTRUM_SPLIT,
+    MIN_PEAKS_SPECTRUM_SPLIT,
 };
 pub use waveform_editor::{LaneScope, PaintRegion, PeakStatus, WaveformEditor};

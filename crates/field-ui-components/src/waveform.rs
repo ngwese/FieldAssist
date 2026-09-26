@@ -25,12 +25,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::waveform_axis::{
-    hover_axis_at_y, hover_axis_quantize, pane_bounds_for_lane, peak_axis_layout,
+    db_to_amplitude, hover_axis_at_y, hover_axis_quantize, pane_bounds_for_lane, peak_axis_layout,
     peak_ticks_for_layout, spectrum_axis_layout, spectrum_ticks_for_layout, PeakAxisLayout,
     SpectrumAxisLayout, WaveformHoverAxis,
 };
 use crate::waveform_data::{
-    clamp_peaks_spectrum_split, WaveformDataProvider, WaveformRepresentation,
+    clamp_peaks_spectrum_split, PeakRendering, WaveformDataProvider, WaveformRepresentation,
     MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
 };
 use crate::waveform_editor::{LaneScope, PaintRegion, WaveformEditor};
@@ -861,6 +861,39 @@ fn rotate_hue(color: gpui_kit::Hsla, degrees: f32) -> gpui_kit::Hsla {
     gpui_kit::Hsla { h, ..color }
 }
 
+/// Reduce HSV value by `fraction` (0..=1), keeping hue; HSL saturation follows.
+fn reduce_hsv_value(color: gpui_kit::Hsla, fraction: f32) -> gpui_kit::Hsla {
+    let fraction = fraction.clamp(0.0, 1.0);
+    let (h, s_v, v) = hsl_to_hsv(color.h, color.s, color.l);
+    let (h, s, l) = hsv_to_hsl(h, s_v, v * (1.0 - fraction));
+    gpui_kit::Hsla {
+        h,
+        s,
+        l,
+        a: color.a,
+    }
+}
+
+fn hsl_to_hsv(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let v = l + s * l.min(1.0 - l);
+    let s_v = if v <= f32::EPSILON {
+        0.0
+    } else {
+        2.0 * (1.0 - l / v)
+    };
+    (h, s_v.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
+}
+
+fn hsv_to_hsl(h: f32, s_v: f32, v: f32) -> (f32, f32, f32) {
+    let l = v * (1.0 - s_v / 2.0);
+    let s = if l <= f32::EPSILON || l >= 1.0 - f32::EPSILON {
+        0.0
+    } else {
+        (v - l) / l.min(1.0 - l)
+    };
+    (h, s.clamp(0.0, 1.0), l.clamp(0.0, 1.0))
+}
+
 fn sample_to_x(sample: f64, start_sample: f64, samples_per_pixel: f64, origin_x: f32) -> f32 {
     origin_x + ((sample - start_sample) / samples_per_pixel) as f32
 }
@@ -1603,14 +1636,51 @@ fn paint_peaks_body(
             samples_per_pixel,
             &mut columns,
         );
+        // Overview zoom: optional Threaded style paints a dimmer full-peak
+        // shell, then an inner ribbon at the base color scaled by −dB.
+        let threaded = samples_per_pixel > peak_block as f64
+            && matches!(
+                WaveformDataProvider::peak_rendering(provider),
+                PeakRendering::Threaded
+            );
+        let shell_color = if threaded {
+            reduce_hsv_value(
+                color,
+                WaveformDataProvider::threaded_shell_value_reduce(provider),
+            )
+        } else {
+            color
+        };
+        let ribbon_scale = db_to_amplitude(WaveformDataProvider::threaded_ribbon_db(provider));
         for (col, &(min, max)) in columns.iter().enumerate() {
             let bin_start = start_sample + col as f64 * samples_per_pixel;
             if bin_start >= frames as f64 {
                 break;
             }
             paint_column(
-                origin_x, col, min, max, &y_scale, origin_y, height, color, window,
+                origin_x,
+                col,
+                min,
+                max,
+                &y_scale,
+                origin_y,
+                height,
+                shell_color,
+                window,
             );
+            if threaded {
+                paint_column(
+                    origin_x,
+                    col,
+                    min * ribbon_scale,
+                    max * ribbon_scale,
+                    &y_scale,
+                    origin_y,
+                    height,
+                    color,
+                    window,
+                );
+            }
         }
     }
 }
@@ -2804,6 +2874,23 @@ mod tests {
         assert!(peaks_fold_from_samples(255.0, 256, 255_000));
         assert!(!peaks_fold_from_samples(256.0, 256, 256_000));
         assert!(!peaks_fold_from_samples(100.0, 256, 0));
+    }
+
+    #[test]
+    fn reduce_hsv_value_lowers_value_keeps_hue() {
+        let color = hsla(0.3, 0.8, 0.55, 1.0);
+        let dimmed = reduce_hsv_value(color, 0.10);
+        assert!((dimmed.h - color.h).abs() < 1e-5);
+        let (_, _, v0) = hsl_to_hsv(color.h, color.s, color.l);
+        let (_, _, v1) = hsl_to_hsv(dimmed.h, dimmed.s, dimmed.l);
+        assert!((v1 - v0 * 0.9).abs() < 1e-4);
+        assert_eq!(dimmed.a, color.a);
+    }
+
+    #[test]
+    fn overview_ribbon_scale_is_minus_three_db() {
+        let scale = db_to_amplitude(crate::DEFAULT_THREADED_RIBBON_DB);
+        assert!((scale - 10f32.powf(-3.0 / 20.0)).abs() < 1e-6);
     }
 
     #[test]
