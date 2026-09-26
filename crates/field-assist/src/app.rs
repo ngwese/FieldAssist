@@ -32,16 +32,16 @@ use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak,
     AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
     EditBreakOutChannels, EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate,
-    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Export, Hide, HideOthers, InvertSelection,
-    MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Save, SaveAs, SaveSession,
-    SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll, SnapToMarker,
-    StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop, TransportNext,
-    TransportPlayPause, TransportPreview, TransportPrevious, TransportStart, TransportStop,
-    ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead, ViewFrame, ViewHideDetail,
-    ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail,
-    ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia, ViewWaveformPeaks,
-    ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut,
-    ZeroCrossing,
+    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Export, Hide, HideOthers, InstallCliTools,
+    InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Save, SaveAs,
+    SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll,
+    SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop,
+    TransportNext, TransportPlayPause, TransportPreview, TransportPrevious, TransportStart,
+    TransportStop, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead, ViewFrame,
+    ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak, ViewScript,
+    ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
+    ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages,
+    ViewZoomIn, ViewZoomOut, ZeroCrossing,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -6011,6 +6011,17 @@ pub(crate) fn dispatch_command(command_id: &str, cx: &mut App) -> Result<(), Str
         crate::components::settings_window::open_settings_window(cx);
         return Ok(());
     }
+    if command_id == "app.install_cli_tools" {
+        #[cfg(target_os = "macos")]
+        {
+            crate::macos_cli_install::install_cli_tools();
+            return Ok(());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Err("Install CLI Tools is only available on macOS".into());
+        }
+    }
 
     if let Some((view, window)) = living_editor_window(cx) {
         let command_id = command_id.to_string();
@@ -6462,6 +6473,11 @@ fn show_all(_: &ShowAll, cx: &mut App) {
 
 fn settings(_: &Settings, cx: &mut App) {
     crate::components::settings_window::open_settings_window(cx);
+}
+
+fn install_cli_tools(_: &InstallCliTools, _cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    crate::macos_cli_install::install_cli_tools();
 }
 
 /// Apply waveform defaults from the settings store to the open editor (if any).
@@ -6963,6 +6979,8 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Settings...", Settings),
             MenuItem::separator(),
+            MenuItem::action("Install CLI Tools", InstallCliTools),
+            MenuItem::separator(),
             MenuItem::action(format!("Hide {}", crate::APP_NAME), Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
@@ -7175,6 +7193,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(hide_others);
     cx.on_action(show_all);
     cx.on_action(settings);
+    cx.on_action(install_cli_tools);
     cx.on_action(about);
     cx.on_action(transport_home);
     cx.on_action(transport_previous);

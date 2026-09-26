@@ -2,24 +2,51 @@
 # SPDX-FileCopyrightText: 2026 Greg Wuller
 # SPDX-License-Identifier: MIT
 #
-# Build a double-clickable FieldAssist.app and optionally install it for
-# Finder and CLI use.
+# Build a signed FieldAssist.app + DMG and optionally install the app for
+# Finder / developer CLI use.
 
 set -euo pipefail
 
+DefaultOpPasswordRef='op://Private/FieldAssist - macOS Signing Password/password'
+DefaultOpDocumentTitle='FieldAssist - macOS Signing Certificate'
+DefaultOpVault='Private'
+
 usage() {
-  cat <<'EOF'
-Usage: script/bundle-macos [--install]
+  cat <<EOF
+Usage: script/bundle-macos [options]
 
-Build a macOS application bundle at target/release/FieldAssist.app.
-Also builds release binaries for field-play and field-batch.
+Build a macOS application bundle at target/release/FieldAssist.app and a
+UDZO disk image at target/release/FieldAssist-<version>.dmg. The app
+bundle includes FieldAssist, field-play, and field-batch.
 
-      --install   Copy the bundle to ~/Applications/FieldAssist.app,
-                  symlink ~/.local/bin/FieldAssist and
-                  ~/.local/bin/field-assist to the bundled binary, and
-                  install release field-play / field-batch into
-                  ~/.local/bin
+  --install       Copy the bundle to ~/Applications/FieldAssist.app and
+                  symlink ~/.local/bin/FieldAssist, field-assist,
+                  field-play, and field-batch to the binaries inside it
+  --open          Open the finished DMG in Finder after packing
+  --skip-build    Use existing FieldAssist / field-play / field-batch
+                  under the release directory (or --bin-dir)
+  --bin-dir DIR   Directory containing the three release executables
+                  (default: target/release, or \$CARGO_TARGET_DIR/release)
+  --out PATH      Output DMG path (default:
+                  target/release/FieldAssist-<cargo-version>.dmg)
+  --p12 PATH      Code-signing PKCS#12 (default: FIELDASSIST_MACOS_SIGNING_P12,
+                  else crates/field-assist/assets/macos/FieldAssist.p12)
+  --from-op       Read the PKCS#12 password and certificate document from
+                  1Password via \`op\` (password ref:
+                  ${DefaultOpPasswordRef}; document:
+                  ${DefaultOpDocumentTitle} in vault ${DefaultOpVault})
+  --op-ref REF    1Password secret reference for the password; implies
+                  --from-op
   -h, --help      Show this help
+
+Environment:
+  FIELDASSIST_MACOS_SIGNING_P12       Path to the signing PKCS#12
+  FIELDASSIST_MACOS_SIGNING_PASSWORD  Password for the PKCS#12 (must be
+                                      non-empty; ignored when --from-op
+                                      is set)
+
+When no PKCS#12 is available, the app is ad-hoc signed and a warning is
+printed. CI should always provide a real signing identity.
 EOF
 }
 
@@ -29,11 +56,64 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 install=false
+open_dmg=false
+skip_build=false
+bin_dir=""
+out_path=""
+p12_path=""
+from_op=false
+op_ref="$DefaultOpPasswordRef"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --install)
       install=true
       shift
+      ;;
+    --open)
+      open_dmg=true
+      shift
+      ;;
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    --bin-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --bin-dir requires a path" >&2
+        exit 1
+      fi
+      bin_dir="$2"
+      shift 2
+      ;;
+    --out)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --out requires a path" >&2
+        exit 1
+      fi
+      out_path="$2"
+      shift 2
+      ;;
+    --p12)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --p12 requires a path" >&2
+        exit 1
+      fi
+      p12_path="$2"
+      shift 2
+      ;;
+    --from-op)
+      from_op=true
+      shift
+      ;;
+    --op-ref)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --op-ref requires a value" >&2
+        exit 1
+      fi
+      op_ref="$2"
+      from_op=true
+      shift 2
       ;;
     -h | --help)
       usage
@@ -56,12 +136,25 @@ if [[ -z "$version" ]]; then
   exit 1
 fi
 
-echo "Building FieldAssist ${version}, field-play, and field-batch (release)..."
-cargo build --release -p FieldAssist -p field-play -p field-batch
+assets_macos="$root/crates/field-assist/assets/macos"
+default_p12="$assets_macos/FieldAssist.p12"
 
-binary="$root/target/release/FieldAssist"
-field_play_bin="$root/target/release/field-play"
-field_batch_bin="$root/target/release/field-batch"
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
+release_dir="$target_dir/release"
+if [[ -z "$bin_dir" ]]; then
+  bin_dir="$release_dir"
+else
+  bin_dir="$(cd "$bin_dir" && pwd)"
+fi
+
+if [[ "$skip_build" != true ]]; then
+  echo "Building FieldAssist ${version}, field-play, and field-batch (release)..."
+  cargo build --release -p FieldAssist -p field-play -p field-batch
+fi
+
+binary="$bin_dir/FieldAssist"
+field_play_bin="$bin_dir/field-play"
+field_batch_bin="$bin_dir/field-batch"
 for path in "$binary" "$field_play_bin" "$field_batch_bin"; do
   if [[ ! -x "$path" ]]; then
     echo "error: missing release binary: $path" >&2
@@ -69,7 +162,112 @@ for path in "$binary" "$field_play_bin" "$field_batch_bin"; do
   fi
 done
 
-app="$root/target/release/FieldAssist.app"
+if [[ -z "$out_path" ]]; then
+  out_path="$release_dir/FieldAssist-${version}.dmg"
+else
+  out_parent="$(dirname "$out_path")"
+  mkdir -p "$out_parent"
+fi
+
+password_from_op() {
+  local ref="$1"
+  if ! command -v op >/dev/null 2>&1; then
+    echo "error: 1Password CLI (op) not found on PATH; install it or set FIELDASSIST_MACOS_SIGNING_PASSWORD" >&2
+    exit 1
+  fi
+  echo "Reading PKCS#12 password from 1Password ($ref)..." >&2
+  local password
+  password="$(op read "$ref")"
+  printf '%s' "${password%"${password##*[![:space:]]}"}"
+}
+
+document_from_op() {
+  local dest="$1"
+  if ! command -v op >/dev/null 2>&1; then
+    echo "error: 1Password CLI (op) not found on PATH" >&2
+    exit 1
+  fi
+  echo "Fetching PKCS#12 document from 1Password (${DefaultOpDocumentTitle})..." >&2
+  op document get "$DefaultOpDocumentTitle" --vault "$DefaultOpVault" --out-file "$dest"
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/fieldassist-bundle-macos.XXXXXX")"
+keychain_path=""
+keychain_password=""
+mount_point=""
+# Snapshot the user keychain search list so we can restore it after temporarily
+# preferring our import keychain for codesign.
+original_keychains="$(security list-keychains -d user | sed 's/"//g' | tr '\n' ' ')"
+cleanup() {
+  if [[ -n "${mount_point:-}" ]]; then
+    hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true
+    mount_point=""
+  fi
+  if [[ -n "$keychain_path" ]]; then
+    # Restore prior search list before deleting the temp keychain.
+    # shellcheck disable=SC2086
+    security list-keychains -d user -s $original_keychains >/dev/null 2>&1 || true
+    security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+signing_identity=""
+p12_password=""
+resolved_p12=""
+
+if [[ "$from_op" == true ]]; then
+  p12_password="$(password_from_op "$op_ref")"
+  resolved_p12="$tmpdir/FieldAssist.p12"
+  document_from_op "$resolved_p12"
+elif [[ -n "$p12_path" ]]; then
+  resolved_p12="$p12_path"
+elif [[ -n "${FIELDASSIST_MACOS_SIGNING_P12:-}" ]]; then
+  resolved_p12="$FIELDASSIST_MACOS_SIGNING_P12"
+elif [[ -f "$default_p12" ]]; then
+  resolved_p12="$default_p12"
+fi
+
+if [[ -n "$resolved_p12" ]]; then
+  if [[ ! -f "$resolved_p12" ]]; then
+    echo "error: missing signing PKCS#12: $resolved_p12" >&2
+    exit 1
+  fi
+  if [[ "$from_op" != true ]]; then
+    if [[ -n "${FIELDASSIST_MACOS_SIGNING_PASSWORD+x}" ]]; then
+      p12_password="$FIELDASSIST_MACOS_SIGNING_PASSWORD"
+    else
+      p12_password=""
+    fi
+  fi
+
+  keychain_password="$(openssl rand -base64 32)"
+  keychain_path="$tmpdir/FieldAssist-signing.keychain-db"
+  echo "Importing signing identity into a temporary keychain..."
+  security create-keychain -p "$keychain_password" "$keychain_path"
+  security set-keychain-settings -lut 21600 "$keychain_path"
+  security unlock-keychain -p "$keychain_password" "$keychain_path"
+  security import "$resolved_p12" \
+    -k "$keychain_path" \
+    -P "$p12_password" \
+    -T /usr/bin/codesign \
+    -T /usr/bin/security \
+    >/dev/null
+  security set-key-partition-list \
+    -S apple-tool:,apple:,codesign: \
+    -s \
+    -k "$keychain_password" \
+    "$keychain_path" >/dev/null
+
+  # Prefer the keychain we just created so codesign does not pick another
+  # FieldAssist identity from the login keychain.
+  # shellcheck disable=SC2086
+  security list-keychains -d user -s "$keychain_path" $original_keychains
+  signing_identity="FieldAssist"
+fi
+
+app="$release_dir/FieldAssist.app"
 contents="$app/Contents"
 macos_dir="$contents/MacOS"
 resources="$contents/Resources"
@@ -78,10 +276,12 @@ rm -rf "$app"
 mkdir -p "$macos_dir" "$resources"
 
 sed "s/__VERSION__/${version}/g" \
-  "$root/crates/field-assist/assets/macos/Info.plist" > "$contents/Info.plist"
-printf 'APPL????' > "$contents/PkgInfo"
+  "$assets_macos/Info.plist" >"$contents/Info.plist"
+printf 'APPL????' >"$contents/PkgInfo"
 cp "$binary" "$macos_dir/FieldAssist"
-chmod +x "$macos_dir/FieldAssist"
+cp "$field_play_bin" "$macos_dir/field-play"
+cp "$field_batch_bin" "$macos_dir/field-batch"
+chmod +x "$macos_dir/FieldAssist" "$macos_dir/field-play" "$macos_dir/field-batch"
 
 icon="$root/crates/field-assist/assets/app-icon/AppIcon.icns"
 if [[ ! -f "$icon" ]]; then
@@ -95,8 +295,27 @@ if ! plutil -lint "$contents/Info.plist" >/dev/null; then
   exit 1
 fi
 
-echo "Ad-hoc signing $app..."
-codesign --force --deep --sign - "$app"
+codesign_target() {
+  local target="$1"
+  if [[ -n "$signing_identity" ]]; then
+    codesign --force --sign "$signing_identity" --keychain "$keychain_path" "$target"
+  else
+    codesign --force --sign - "$target"
+  fi
+}
+
+if [[ -n "$signing_identity" ]]; then
+  echo "Signing with identity CN=FieldAssist..."
+else
+  echo "warning: no PKCS#12 found; ad-hoc signing $app (not suitable for release)" >&2
+  echo "  Provide --from-op, FIELDASSIST_MACOS_SIGNING_P12, or $default_p12" >&2
+fi
+
+# Sign nested binaries first, then the bundle (inside-out).
+codesign_target "$macos_dir/field-play"
+codesign_target "$macos_dir/field-batch"
+codesign_target "$macos_dir/FieldAssist"
+codesign_target "$app"
 
 # Ensure Launch Services sees document types (Finder Open With / Dock drop).
 lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -106,41 +325,143 @@ fi
 
 echo "Created $app"
 
+# Finder DMG layout: icon view sized to the app + Applications alias only.
+# Coordinates are relative to the content area (below the title bar).
+dmg_volname="FieldAssist"
+dmg_window_w=540
+dmg_window_h=360
+dmg_icon_size=128
+dmg_app_x=140
+dmg_app_y=150
+dmg_apps_x=400
+dmg_apps_y=150
+
+dmg_staging="$tmpdir/dmg-staging"
+rm -rf "$dmg_staging"
+mkdir -p "$dmg_staging"
+ditto "$app" "$dmg_staging/FieldAssist.app"
+ln -s /Applications "$dmg_staging/Applications"
+
+rw_dmg="$tmpdir/FieldAssist-rw.dmg"
+rm -f "$rw_dmg" "$out_path"
+echo "Creating DMG $out_path..."
+hdiutil create \
+  -volname "$dmg_volname" \
+  -srcfolder "$dmg_staging" \
+  -ov \
+  -format UDRW \
+  -fs HFS+ \
+  "$rw_dmg" >/dev/null
+
+# Unmount leftover FieldAssist volumes from earlier packs / --open so Finder
+# and AppleScript see a single disk named FieldAssist.
+while IFS= read -r leftover; do
+  [[ -n "$leftover" ]] || continue
+  hdiutil detach "$leftover" -force >/dev/null 2>&1 || true
+done < <(hdiutil info 2>/dev/null | awk -F'\t' '
+  $0 ~ /\/Volumes\/FieldAssist/ {
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^\/Volumes\/FieldAssist/) print $i
+    }
+  }
+')
+
+attach_out="$(hdiutil attach -readwrite -noverify -noautoopen "$rw_dmg")"
+# Mount paths may contain spaces (e.g. "/Volumes/FieldAssist 2"); take the
+# /Volumes/... field rather than awk's last whitespace token.
+mount_point="$(printf '%s\n' "$attach_out" | awk -F'\t' '
+  $0 ~ /\/Volumes\// {
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^\/Volumes\//) { print $i; exit }
+    }
+  }
+')"
+if [[ -z "$mount_point" || ! -d "$mount_point" ]]; then
+  echo "error: failed to mount temporary DMG for layout" >&2
+  echo "$attach_out" >&2
+  exit 1
+fi
+dmg_disk_name="$(basename "$mount_point")"
+
+# Apply Finder view settings while mounted R/W. Must be under /Volumes so
+# Finder's `disk` reference resolves (custom -mountroot paths do not).
+sleep 1
+osascript <<EOF
+tell application "Finder"
+  activate
+  tell disk "$dmg_disk_name"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {100, 100, $((100 + dmg_window_w)), $((100 + dmg_window_h))}
+    set viewOptions to the icon view options of container window
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to $dmg_icon_size
+    set position of item "FieldAssist.app" of container window to {$dmg_app_x, $dmg_app_y}
+    set position of item "Applications" of container window to {$dmg_apps_x, $dmg_apps_y}
+    update without registering applications
+    delay 1
+    close
+  end tell
+end tell
+EOF
+
+# Flush .DS_Store before detaching so layout survives convert → UDZO.
+sync
+hdiutil detach "$mount_point" >/dev/null
+mount_point=""
+
+hdiutil convert "$rw_dmg" -format UDZO -imagekey zlib-level=9 -o "$out_path" >/dev/null
+rm -f "$rw_dmg"
+
+if [[ -n "$signing_identity" ]]; then
+  echo "Signing DMG..."
+  codesign_target "$out_path"
+else
+  echo "warning: leaving DMG unsigned (ad-hoc identity is for the .app only)" >&2
+fi
+
+echo "Created $out_path"
+
+if [[ "$open_dmg" == true ]]; then
+  open "$out_path"
+fi
+
 if [[ "$install" != true ]]; then
   exit 0
 fi
 
 app_dest="$HOME/Applications/FieldAssist.app"
-bin_dir="$HOME/.local/bin"
+bin_dir_local="$HOME/.local/bin"
 cli_target="$app_dest/Contents/MacOS/FieldAssist"
-cli_link="$bin_dir/FieldAssist"
-cli_link_kebab="$bin_dir/field-assist"
+play_target="$app_dest/Contents/MacOS/field-play"
+batch_target="$app_dest/Contents/MacOS/field-batch"
 
-mkdir -p "$HOME/Applications" "$bin_dir"
+mkdir -p "$HOME/Applications" "$bin_dir_local"
 rm -rf "$app_dest"
 ditto "$app" "$app_dest"
-ln -sfn "$cli_target" "$cli_link"
-ln -sfn "$cli_target" "$cli_link_kebab"
-
-install -m 755 "$field_play_bin" "$bin_dir/field-play"
-install -m 755 "$field_batch_bin" "$bin_dir/field-batch"
+ln -sfn "$cli_target" "$bin_dir_local/FieldAssist"
+ln -sfn "$cli_target" "$bin_dir_local/field-assist"
+ln -sfn "$play_target" "$bin_dir_local/field-play"
+ln -sfn "$batch_target" "$bin_dir_local/field-batch"
 
 if [[ -x "$lsregister" ]]; then
   "$lsregister" -f "$app_dest" >/dev/null 2>&1 || true
 fi
 
 echo "Installed $app_dest"
-echo "Linked $cli_link -> $cli_target"
-echo "Linked $cli_link_kebab -> $cli_target"
-echo "Installed $bin_dir/field-play"
-echo "Installed $bin_dir/field-batch"
+echo "Linked $bin_dir_local/FieldAssist -> $cli_target"
+echo "Linked $bin_dir_local/field-assist -> $cli_target"
+echo "Linked $bin_dir_local/field-play -> $play_target"
+echo "Linked $bin_dir_local/field-batch -> $batch_target"
 
 case ":$PATH:" in
-  *":$bin_dir:"*)
+  *":$bin_dir_local:"*)
     ;;
   *)
     cat <<EOF >&2
-warning: $bin_dir is not on PATH.
+warning: $bin_dir_local is not on PATH.
 Add the following to ~/.zshrc, then open a new terminal:
 
   export PATH="\$HOME/.local/bin:\$PATH"

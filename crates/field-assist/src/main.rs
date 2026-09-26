@@ -46,6 +46,8 @@ mod components;
 mod dock_titles;
 mod lineage;
 #[cfg(target_os = "macos")]
+mod macos_cli_install;
+#[cfg(target_os = "macos")]
 mod macos_menu;
 #[cfg(target_os = "macos")]
 mod macos_open;

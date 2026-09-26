@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Create the stable FieldAssist code-signing certificate used for macOS
+# .app / .dmg packages. Run once; reuse the same p12 for all future
+# versions so trust remains stable.
+
+set -euo pipefail
+
+DefaultOpPasswordRef='op://Private/FieldAssist - macOS Signing Password/password'
+
+usage() {
+  cat <<EOF
+Usage: script/generate-macos-signing-cert [options]
+
+Generate CN=FieldAssist code-signing certificate for macOS app/DMG packages.
+
+  --force         Overwrite an existing FieldAssist.p12 / FieldAssist.cer
+  --password P    PKCS#12 password (required; Apple rejects empty.
+                  Also: FIELDASSIST_MACOS_SIGNING_PASSWORD)
+  --from-op       Read the PKCS#12 password from 1Password via \`op read\`
+                  (default ref: ${DefaultOpPasswordRef})
+  --op-ref REF    1Password secret reference for --from-op
+  -h, --help      Show this help
+
+Writes:
+  crates/field-assist/assets/macos/FieldAssist.p12  (gitignored; private key)
+  crates/field-assist/assets/macos/FieldAssist.cer  (public; commit this)
+
+After generating, store the p12 as GitHub secrets for CI:
+  MACOS_SIGNING_P12       base64 of the .p12 bytes
+  MACOS_SIGNING_PASSWORD  the password used here (must be non-empty)
+
+Optionally store the private p12 in 1Password as document
+  "FieldAssist - macOS Signing Certificate" (vault Private) for local
+  \`script/bundle-macos --from-op\`.
+EOF
+}
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: script/generate-macos-signing-cert only runs on macOS" >&2
+  exit 1
+fi
+
+force=false
+password_plain=""
+password_set=false
+from_op=false
+op_ref="$DefaultOpPasswordRef"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      force=true
+      shift
+      ;;
+    --from-op)
+      from_op=true
+      shift
+      ;;
+    --op-ref)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --op-ref requires a value" >&2
+        exit 1
+      fi
+      op_ref="$2"
+      from_op=true
+      shift 2
+      ;;
+    --password)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --password requires a value" >&2
+        exit 1
+      fi
+      password_plain="$2"
+      password_set=true
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$password_set" == true && "$from_op" == true ]]; then
+  echo "error: pass either --password or --from-op, not both" >&2
+  exit 1
+fi
+
+password_from_op() {
+  local ref="$1"
+  if ! command -v op >/dev/null 2>&1; then
+    echo "error: 1Password CLI (op) not found on PATH; install it or pass --password" >&2
+    exit 1
+  fi
+  echo "Reading PKCS#12 password from 1Password ($ref)..." >&2
+  local password
+  password="$(op read "$ref")"
+  # op may emit a trailing newline
+  printf '%s' "${password%"${password##*[![:space:]]}"}"
+}
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out_dir="$root/crates/field-assist/assets/macos"
+mkdir -p "$out_dir"
+
+p12_path="$out_dir/FieldAssist.p12"
+cer_path="$out_dir/FieldAssist.cer"
+
+if [[ -f "$p12_path" || -f "$cer_path" ]]; then
+  if [[ "$force" != true ]]; then
+    cat <<EOF >&2
+error: signing materials already exist:
+  $p12_path
+  $cer_path
+
+Replacing the certificate changes the signing identity. Pass --force only
+if you intend to replace the identity for everyone.
+EOF
+    exit 1
+  fi
+  rm -f "$p12_path" "$cer_path"
+fi
+
+if [[ "$from_op" == true ]]; then
+  password_plain="$(password_from_op "$op_ref")"
+elif [[ "$password_set" != true ]]; then
+  if [[ -n "${FIELDASSIST_MACOS_SIGNING_PASSWORD+x}" ]]; then
+    password_plain="$FIELDASSIST_MACOS_SIGNING_PASSWORD"
+  else
+    password_plain=""
+  fi
+fi
+
+if [[ -z "$password_plain" ]]; then
+  cat <<'EOF' >&2
+error: macOS PKCS#12 signing requires a non-empty password
+(Apple's security import rejects empty passwords).
+
+Pass --password, --from-op, or set FIELDASSIST_MACOS_SIGNING_PASSWORD.
+EOF
+  exit 1
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/fieldassist-macos-cert.XXXXXX")"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+openssl_cnf="$tmpdir/codesign.cnf"
+cat >"$openssl_cnf" <<'EOF'
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_codesign
+prompt = no
+
+[req_distinguished_name]
+CN = FieldAssist
+
+[v3_codesign]
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+subjectKeyIdentifier = hash
+EOF
+
+echo "Creating self-signed code-signing certificate (CN=FieldAssist)..."
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 \
+  -keyout "$tmpdir/key.pem" -out "$tmpdir/cert.pem" -nodes \
+  -config "$openssl_cnf" >/dev/null 2>&1
+
+openssl pkcs12 -export \
+  -out "$p12_path" \
+  -inkey "$tmpdir/key.pem" \
+  -in "$tmpdir/cert.pem" \
+  -name "FieldAssist" \
+  -passout "pass:${password_plain}"
+
+# DER .cer matches the Windows public cert layout for trusting / documenting.
+openssl x509 -in "$tmpdir/cert.pem" -outform DER -out "$cer_path"
+
+chmod 600 "$p12_path"
+chmod 644 "$cer_path"
+
+echo "Wrote $p12_path"
+echo "Wrote $cer_path"
+echo
+cat <<EOF
+Next steps:
+  1. Commit FieldAssist.cer (public). Keep FieldAssist.p12 private.
+  2. Optionally store the p12 in 1Password as document
+     "FieldAssist - macOS Signing Certificate" (vault Private) and the
+     password as item "FieldAssist - macOS Signing Password".
+  3. For local packs: \`./script/bundle-macos --from-op\`, or set
+     FIELDASSIST_MACOS_SIGNING_P12 / FIELDASSIST_MACOS_SIGNING_PASSWORD.
+  4. For CI, add GitHub secrets MACOS_SIGNING_P12 (base64 of the .p12
+     bytes) and MACOS_SIGNING_PASSWORD.
+EOF

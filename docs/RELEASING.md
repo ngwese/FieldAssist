@@ -76,9 +76,10 @@ gh workflow run Release --ref release/X.Y.Z -f tag=dry-run
 
 That builds archives and installers for Linux x64, macOS Apple Silicon, and
 Windows x64, but does **not** create a git tag or GitHub Release. The
-follow-up `Windows MSIX` workflow packs a signed `.msix` from the Windows
-zips and uploads it as a workflow artifact (inspectable; not attached to a
-Release on dry-run). Fix any failures on the release branch and re-run.
+follow-up `Windows MSIX` and `macOS DMG` workflows pack signed installers
+from the platform archives and upload them as workflow artifacts
+(inspectable; not attached to a Release on dry-run). Fix any failures on
+the release branch and re-run.
 
 ## Promote (tag after a green build)
 
@@ -107,7 +108,7 @@ dist generate --check
 git cliff          # preview changelog
 ```
 
-## Artifacts vs macOS `.app` / Windows MSIX
+## Artifacts vs macOS DMG / Windows MSIX
 
 GitHub Releases ship platform archives of `FieldAssist`, `field-play`, and
 `field-batch`, plus Unix shell installers. Windows no longer publishes a
@@ -116,9 +117,10 @@ PowerShell installer (Defender blocks unsigned remote scripts); the
 run and attaches it (with `FieldAssist.cer` and a `.sha256`) when the run
 published a tag.
 
-Finder-friendly macOS `.app` bundles remain a local concern via
-`./script/bundle-macos` (see [BUILDING.md](BUILDING.md)). Notarization is
-out of scope for v1 CI.
+The `macOS DMG` workflow likewise packs a signed `.dmg` (app bundle with
+`field-play` / `field-batch` inside) after Release and attaches it with
+`FieldAssist.cer` and a `.sha256` when the run published a tag.
+Notarization is out of scope for v1 CI.
 
 ### Windows signing secrets
 
@@ -149,3 +151,28 @@ Import-Certificate -FilePath .\FieldAssist.cer `
   -CertStoreLocation Cert:\LocalMachine\TrustedPeople
 Add-AppxPackage -Path .\FieldAssist-X.Y.Z.msix
 ```
+
+### macOS signing secrets
+
+The DMG / `.app` signing certificate is generated once with
+`script/generate-macos-signing-cert`. Commit only the public `.cer`.
+Store the private key as repository secrets (never in git):
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_SIGNING_P12` | Base64 of the `.p12` bytes |
+| `MACOS_SIGNING_PASSWORD` | PKCS#12 password (must be non-empty) |
+
+Encode the p12 for the secret:
+
+```bash
+base64 -i crates/field-assist/assets/macos/FieldAssist.p12 | pbcopy
+```
+
+Local packs can use `--from-op` against vault `Private` items
+`FieldAssist - macOS Signing Password` and
+`FieldAssist - macOS Signing Certificate` instead of the env vars.
+
+End-user install: open the DMG, drag FieldAssist to Applications, then on
+first launch use Open Anyway (or trust `FieldAssist.cer` in Keychain).
+Use **FieldAssist → Install CLI Tools** for `/usr/local/bin` symlinks.
