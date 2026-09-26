@@ -838,6 +838,23 @@ rate / channel count. File → Export applies the same source ← profile merge
 when a Profile is chosen in the sheet; opening the sheet with **Custom** uses
 source ← session `export.*` prefs instead.
 
+The Export sheet also maintains an **export** variable layer: the selected
+profile’s `variables` table, plus live Format/channel upserts so path
+templates can reference encode settings:
+
+| Leaf | Meaning |
+| --- | --- |
+| `encoder` | Encoder id |
+| `sample_format` | PCM label, or `""` when the encoder does not store PCM |
+| `sample_rate` | Output Hz as a string |
+| `channels` | Selected channel count as a string |
+| `extension` | Encoder file extension |
+
+Export-site compose (source → user → session → composition → export) feeds the
+sheet’s Variables disclosure, the soft **Resolved** path preview, and (on
+Export) strict path interpolate plus tag map build — matching
+`composition:export` / `build_job`.
+
 
 
 ### Returned type: export registry
@@ -925,7 +942,10 @@ One scope's leaf name → string map.
 
 `session.variables` and `composition.variables` return live **single-scope**
 Bindings for that store only (writes hit the session / `.facomp` file). They do
-**not** include probe/`source.*` rows shown in the Variables pane. To look up a
+**not** include probe/`source.*` rows shown in the Variables pane. Composition
+site resolution also injects derived `channel_layout` (layout name, or `""`
+when unset) into the composition layer for `${channel_layout}` / pane display;
+it is not stored in `composition.variables` itself. To look up a
 value the same way the pane does (source + user + session + composition), use
 `composition:resolve_variable`:
 

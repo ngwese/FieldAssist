@@ -183,6 +183,31 @@ impl ScriptHost {
             .map_err(|e| e.to_string())
     }
 
+    /// Resolve the export site (composition layers + export table).
+    pub fn resolve_export_variables(
+        &self,
+        source: &field_variables::VariableTable,
+        user: &field_variables::VariableTable,
+        session: &field_variables::VariableTable,
+        composition: &field_variables::VariableTable,
+        export: &field_variables::VariableTable,
+    ) -> Result<field_variables::VariableTable, String> {
+        use field_scripting::{split_readonly_by_scope, LuaBindings};
+
+        let mut bindings = split_readonly_by_scope(source);
+        bindings.push(LuaBindings::detached("user", user.clone(), true));
+        bindings.push(LuaBindings::detached("session", session.clone(), true));
+        bindings.push(LuaBindings::detached(
+            "composition",
+            composition.clone(),
+            true,
+        ));
+        bindings.push(LuaBindings::detached("export", export.clone(), true));
+        self.inner
+            .resolve_variables(&bindings)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn load_init(&mut self) -> Result<(), String> {
         self.load_init_from(crate::commands::user_config_dir().as_deref())
     }

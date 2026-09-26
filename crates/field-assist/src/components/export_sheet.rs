@@ -1,28 +1,39 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use field_audio_io::{encoder, encoders, format_rate, EncodeSpec, PcmFormat, RATE_PRESETS};
+use field_audio_io::{
+    build_tag_map, encoder, encoders, format_rate, EncodeSpec, PcmFormat, RATE_PRESETS,
+};
 use field_composition::ExportJob;
 use field_scripting::{
     resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
     ResolvedExportSettings,
 };
+use field_ui_components::VariableRow;
+use field_variables::{compose, interpolate, interpolate_strict, VariableEntry, VariableTable};
 use gpui_kit::component::{
-    button::Button,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    v_flex, ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, rems, App, AppContext as _, Context, Entity, ExternalPaths, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, Styled as _, Window,
+    div, px, rems, App, AppContext as _, Context, DispatchPhase, Entity, ExternalPaths, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
+    StatefulInteractiveElement as _, Styled as _, Window,
 };
 
 use crate::components::explorer::CompositionDrag;
+use crate::components::variables_filter::{self, VariablesFilter};
+use crate::components::variables_panel::rows_from_composed;
 use crate::model::composition::Composition;
 
 /// Optional export defaults inherited from parent/session properties.
@@ -41,9 +52,79 @@ pub struct ExportPrefs {
     pub channels_selected: Option<Vec<bool>>,
 }
 
-const LABEL_WIDTH: gpui_kit::Rems = rems(7.);
-const VALUE_WIDTH: gpui_kit::Rems = rems(11.);
+/// Layer tables for Export-site compose (source → user → session → composition → export).
+#[derive(Clone, Debug, Default)]
+pub struct ExportVariableLayers {
+    /// Probe / technical source variables.
+    pub source: VariableTable,
+    /// User-scoped variables.
+    pub user: VariableTable,
+    /// Session-scoped variables.
+    pub session: VariableTable,
+    /// Composition-scoped variables.
+    pub composition: VariableTable,
+}
+
+const LABEL_WIDTH: gpui_kit::Rems = rems(6.5);
+const VALUE_WIDTH: gpui_kit::Rems = rems(10.);
 const CUSTOM_PROFILE_LABEL: &str = "Custom";
+const MIN_COLUMN_WIDTH: f32 = 48.;
+const RESIZE_HANDLE_WIDTH: f32 = 5.;
+const VARIABLES_TABLE_MAX_H: f32 = 200.;
+/// Default Location → Directory template when the profile does not set one.
+const DEFAULT_DIRECTORY: &str = "${source.parent}";
+/// Default Location → Name template when the profile does not set one.
+const DEFAULT_FILENAME: &str = "${source.stem}-${sample_rate}-${channel_layout}.${export.encoder}";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ExportVarColumn {
+    Name,
+    Value,
+    Scope,
+}
+
+impl ExportVarColumn {
+    const ALL: [Self; 3] = [Self::Name, Self::Value, Self::Scope];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Value => "value",
+            Self::Scope => "scope",
+        }
+    }
+
+    fn default_width(self) -> Pixels {
+        match self {
+            Self::Name => px(140.),
+            Self::Value => px(220.),
+            Self::Scope => px(100.),
+        }
+    }
+
+    fn stable_id(self) -> u32 {
+        match self {
+            Self::Name => 0,
+            Self::Value => 1,
+            Self::Scope => 2,
+        }
+    }
+}
+
+fn default_export_column_widths() -> HashMap<ExportVarColumn, Pixels> {
+    ExportVarColumn::ALL
+        .into_iter()
+        .map(|col| (col, col.default_width()))
+        .collect()
+}
+
+struct VarResizeDrag {
+    column: ExportVarColumn,
+    start_x: f32,
+    start_width: Pixels,
+}
+
+type SheetAction = Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub struct ExportSheet {
     /// Registered profiles available in the Profile menu.
@@ -59,6 +140,18 @@ pub struct ExportSheet {
     channel_labels: Vec<String>,
     directory: Entity<InputState>,
     filename: Entity<InputState>,
+    /// Profile Lua `variables` plus live Format/channel upserts.
+    export_vars: VariableTable,
+    /// Profile `metadata` templates for tag write-out.
+    metadata: BTreeMap<String, String>,
+    /// Outer variable layers for Export-site compose.
+    layers: ExportVariableLayers,
+    variables_open: bool,
+    filter: VariablesFilter,
+    column_widths: HashMap<ExportVarColumn, Pixels>,
+    resize_drag: Option<VarResizeDrag>,
+    on_cancel: Option<SheetAction>,
+    on_export: Option<SheetAction>,
 }
 
 impl ExportSheet {
@@ -93,7 +186,22 @@ impl ExportSheet {
             channel_labels: vec!["Mono".into()],
             directory,
             filename,
+            export_vars: VariableTable::new(),
+            metadata: BTreeMap::new(),
+            layers: ExportVariableLayers::default(),
+            variables_open: false,
+            filter: VariablesFilter::default(),
+            column_widths: default_export_column_widths(),
+            resize_drag: None,
+            on_cancel: None,
+            on_export: None,
         }
+    }
+
+    /// Register Cancel / Export actions (wired from the host overlay).
+    pub fn set_actions(&mut self, on_cancel: SheetAction, on_export: SheetAction) {
+        self.on_cancel = Some(on_cancel);
+        self.on_export = Some(on_export);
     }
 
     /// Configure from composition defaults (no inherited prefs).
@@ -101,12 +209,12 @@ impl ExportSheet {
     pub fn configure(
         &mut self,
         composition: &Composition,
-        directory: PathBuf,
         profiles: Vec<ExportProfileDef>,
+        layers: ExportVariableLayers,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.configure_with_prefs(composition, directory, profiles, None, window, cx);
+        self.configure_with_prefs(composition, profiles, None, layers, window, cx);
     }
 
     /// Configure from composition source defaults, then optional session prefs.
@@ -117,26 +225,42 @@ impl ExportSheet {
     ///
     /// Choosing a named profile later re-resolves as source ← profile (prefs are
     /// not mixed into a named profile).
+    ///
+    /// Location Directory / Name default to [`DEFAULT_DIRECTORY`] /
+    /// [`DEFAULT_FILENAME`] when the profile does not set them.
     pub fn configure_with_prefs(
         &mut self,
         composition: &Composition,
-        directory: PathBuf,
         profiles: Vec<ExportProfileDef>,
         prefs: Option<&ExportPrefs>,
+        layers: ExportVariableLayers,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.profiles = profiles;
         self.profile_name = None;
+        self.layers = layers;
+        self.metadata.clear();
+        self.variables_open = false;
         self.source = ExportSourceDefaults::from_composition(composition);
         self.channel_labels = (0..self.source.channel_count)
             .map(|ch| composition.channel_label(ch))
             .collect();
 
+        // Clear location fields so template defaults apply on open.
+        self.directory.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
+        self.filename.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
+
         let overlay = prefs.map(prefs_as_profile).unwrap_or_default();
         let resolved = resolve_export_settings(&self.source, &overlay)
             .unwrap_or_else(|_| fallback_resolved(&self.source));
-        self.apply_resolved(&resolved, Some(directory), window, cx);
+        self.apply_resolved(&resolved, window, cx);
+        self.rebuild_export_vars(VariableTable::new());
+        self.filter.ensure_search(window, cx, |_, cx| cx.notify());
         cx.notify();
     }
 
@@ -155,16 +279,23 @@ impl ExportSheet {
                     return;
                 };
                 self.profile_name = Some(name.to_string());
+                self.metadata = profile.metadata.clone();
                 match resolve_export_settings(&self.source, &profile) {
-                    Ok(resolved) => self.apply_resolved(&resolved, None, window, cx),
-                    Err(_) => cx.notify(),
+                    Ok(resolved) => self.apply_resolved(&resolved, window, cx),
+                    Err(_) => {
+                        cx.notify();
+                        return;
+                    }
                 }
+                self.rebuild_export_vars(profile.variables);
             }
             None => {
                 self.profile_name = None;
+                self.metadata.clear();
                 let resolved = resolve_export_settings(&self.source, &ExportProfileDef::default())
                     .unwrap_or_else(|_| fallback_resolved(&self.source));
-                self.apply_resolved(&resolved, None, window, cx);
+                self.apply_resolved(&resolved, window, cx);
+                self.rebuild_export_vars(VariableTable::new());
             }
         }
         cx.notify();
@@ -173,7 +304,6 @@ impl ExportSheet {
     fn apply_resolved(
         &mut self,
         resolved: &ResolvedExportSettings,
-        directory_override: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -185,12 +315,8 @@ impl ExportSheet {
             .map(|i| resolved.channel_indices.contains(&i))
             .collect();
 
-        let encoder = encoder(&self.encoder_id).unwrap_or_else(|| encoder("wav").expect("wav"));
         let (dir, name) = destination_for_sheet(
             resolved,
-            &self.source,
-            encoder.extension(),
-            directory_override,
             &self.directory.read(cx).value().to_string(),
             &self.filename.read(cx).value().to_string(),
         );
@@ -200,6 +326,29 @@ impl ExportSheet {
         self.filename.update(cx, |input, cx| {
             input.set_value(name, window, cx);
         });
+    }
+
+    fn rebuild_export_vars(&mut self, profile_vars: VariableTable) {
+        let channels = self.selected_count();
+        self.export_vars = profile_vars;
+        upsert_format_export_vars(
+            &mut self.export_vars,
+            &self.encoder_id,
+            self.sample_format,
+            self.sample_rate,
+            channels,
+        );
+    }
+
+    fn sync_format_export_vars(&mut self) {
+        let channels = self.selected_count();
+        upsert_format_export_vars(
+            &mut self.export_vars,
+            &self.encoder_id,
+            self.sample_format,
+            self.sample_rate,
+            channels,
+        );
     }
 
     fn selected_count(&self) -> u16 {
@@ -214,7 +363,7 @@ impl ExportSheet {
         }
     }
 
-    fn set_encoder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_encoder(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(encoder) = encoder(id) else {
             return;
         };
@@ -241,14 +390,7 @@ impl ExportSheet {
         if let Ok(resolved) = resolve_export_settings(&self.source, &overlay) {
             self.sample_format = resolved.sample_format;
         }
-        let stem = Path::new(&self.filename.read(cx).value().to_string())
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| self.source.display_name.clone());
-        self.filename.update(cx, |input, cx| {
-            input.set_value(format!("{stem}.{}", encoder.extension()), window, cx);
-        });
+        self.sync_format_export_vars();
         cx.notify();
     }
 
@@ -268,13 +410,45 @@ impl ExportSheet {
         encoder.supports(&self.spec())
     }
 
-    pub fn job(&self, cx: &App) -> Option<ExportJob> {
+    /// Snapshot of layer tables + current export scope (for host Lua resolve).
+    pub fn variable_layers(&self) -> (ExportVariableLayers, VariableTable) {
+        (self.layers.clone(), self.export_vars.clone())
+    }
+
+    /// Rust last-wins Export-site compose (preview / fallback).
+    pub fn compose_rust(&self) -> VariableTable {
+        compose_export_site(
+            &self.layers.source,
+            &self.layers.user,
+            &self.layers.session,
+            &self.layers.composition,
+            &self.export_vars,
+        )
+    }
+
+    /// Soft-interpolated destination path for the Resolved preview row.
+    pub fn resolved_path_preview(&self, cx: &App) -> String {
+        soft_resolved_path(
+            &self.directory.read(cx).value().to_string(),
+            &self.filename.read(cx).value().to_string(),
+            &self.compose_rust(),
+        )
+    }
+
+    /// Build an [`ExportJob`] using a pre-composed Export-site table.
+    pub fn job_from_composed(&self, composed: &VariableTable, cx: &App) -> Option<ExportJob> {
         if !self.can_export(cx) {
             return None;
         }
-        let directory = PathBuf::from(self.directory.read(cx).value().to_string());
-        let filename = self.filename.read(cx).value().to_string();
-        let dest = directory.join(filename.trim());
+        let directory_raw = self.directory.read(cx).value().to_string();
+        let filename_raw = self.filename.read(cx).value().to_string();
+        let directory = interpolate_strict(directory_raw.trim(), composed).ok()?;
+        let filename = interpolate_strict(filename_raw.trim(), composed).ok()?;
+        if directory.is_empty() || filename.is_empty() {
+            return None;
+        }
+        let dest = PathBuf::from(directory).join(filename);
+        let tags = build_tag_map(composed, &self.metadata).ok()?;
         Some(ExportJob {
             encoder_id: self.encoder_id.clone(),
             spec: self.spec(),
@@ -285,7 +459,7 @@ impl ExportSheet {
                 .filter_map(|(i, on)| on.then_some(i))
                 .collect(),
             dest,
-            tags: Default::default(),
+            tags,
         })
     }
 
@@ -337,6 +511,268 @@ impl ExportSheet {
             None => CUSTOM_PROFILE_LABEL.into(),
         }
     }
+
+    fn toggle_variables(&mut self, cx: &mut Context<Self>) {
+        self.variables_open = !self.variables_open;
+        cx.notify();
+    }
+
+    fn column_width(&self, col: ExportVarColumn) -> Pixels {
+        self.column_widths
+            .get(&col)
+            .copied()
+            .unwrap_or_else(|| col.default_width())
+    }
+
+    fn content_width(&self) -> Pixels {
+        let cols: f32 = ExportVarColumn::ALL
+            .into_iter()
+            .map(|col| f32::from(self.column_width(col)) + RESIZE_HANDLE_WIDTH)
+            .sum();
+        px(cols)
+    }
+
+    fn begin_resize(&mut self, column: ExportVarColumn, start_x: Pixels) {
+        self.resize_drag = Some(VarResizeDrag {
+            column,
+            start_x: f32::from(start_x),
+            start_width: self.column_width(column),
+        });
+    }
+
+    fn apply_resize_drag(&mut self, x: Pixels, cx: &mut Context<Self>) {
+        let Some(drag) = self.resize_drag.as_ref() else {
+            return;
+        };
+        let column = drag.column;
+        let delta = f32::from(x) - drag.start_x;
+        let new_width = px((f32::from(drag.start_width) + delta).max(MIN_COLUMN_WIDTH));
+        self.column_widths.insert(column, new_width);
+        cx.notify();
+    }
+
+    fn end_resize(&mut self, cx: &mut Context<Self>) {
+        if self.resize_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn render_variables_table(
+        &self,
+        rows: &[VariableRow],
+        filtered: &[usize],
+        muted: Hsla,
+        border: Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let content_width = self.content_width();
+        let widths: HashMap<ExportVarColumn, Pixels> = ExportVarColumn::ALL
+            .into_iter()
+            .map(|col| (col, self.column_width(col)))
+            .collect();
+
+        let header = h_flex()
+            .id("export-var-header")
+            .w(content_width)
+            .flex_none()
+            .items_center()
+            .px_1()
+            .py_0p5()
+            .children(ExportVarColumn::ALL.into_iter().flat_map(|col| {
+                let width = widths[&col];
+                [
+                    div()
+                        .w(width)
+                        .flex_none()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(col.label())
+                        .into_any_element(),
+                    resize_handle(col, cx).into_any_element(),
+                ]
+            }));
+
+        let body = if filtered.is_empty() {
+            div()
+                .w(content_width)
+                .px_1()
+                .py_1()
+                .text_xs()
+                .text_color(muted)
+                .child(if rows.is_empty() {
+                    "(no variables)"
+                } else {
+                    "(no matches)"
+                })
+                .into_any_element()
+        } else {
+            v_flex()
+                .w(content_width)
+                .children(filtered.iter().map(|&ix| {
+                    let row = &rows[ix];
+                    h_flex()
+                        .w(content_width)
+                        .px_1()
+                        .py_0p5()
+                        .items_center()
+                        .children(ExportVarColumn::ALL.into_iter().flat_map(|col| {
+                            let width = widths[&col];
+                            let text = match col {
+                                ExportVarColumn::Name => row.name.clone(),
+                                ExportVarColumn::Value => row.value.clone(),
+                                ExportVarColumn::Scope => row.scope.clone(),
+                            };
+                            let cell = div()
+                                .w(width)
+                                .flex_none()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_xs()
+                                .when(col == ExportVarColumn::Scope, |el| el.text_color(muted))
+                                .child(text);
+                            [
+                                cell.into_any_element(),
+                                div()
+                                    .w(px(RESIZE_HANDLE_WIDTH))
+                                    .flex_none()
+                                    .into_any_element(),
+                            ]
+                        }))
+                }))
+                .into_any_element()
+        };
+
+        // Match Variables dock / User Variables: fixed header, full-width
+        // underline, no left/right table borders; body scrolls separately.
+        v_flex()
+            .id("export-variables-table")
+            .w_full()
+            .child(
+                div()
+                    .id("export-var-header-clip")
+                    .w_full()
+                    .flex_none()
+                    .overflow_x_scroll()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(header),
+            )
+            .child(
+                div()
+                    .id("export-var-body")
+                    .w_full()
+                    .max_h(px(VARIABLES_TABLE_MAX_H))
+                    .overflow_y_scroll()
+                    .overflow_x_scroll()
+                    .child(body),
+            )
+    }
+}
+
+fn resize_handle(column: ExportVarColumn, cx: &mut Context<ExportSheet>) -> impl IntoElement {
+    h_flex()
+        .id(("export-var-resize", column.stable_id()))
+        .w(px(RESIZE_HANDLE_WIDTH))
+        .flex_none()
+        .self_stretch()
+        .occlude()
+        .cursor_col_resize()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                this.begin_resize(column, e.position.x);
+                cx.notify();
+            }),
+        )
+}
+
+fn install_resize_listeners(entity: Entity<ExportSheet>, window: &mut Window) {
+    window.on_mouse_event({
+        let entity = entity.clone();
+        move |event: &MouseMoveEvent, phase, _, cx| {
+            if phase != DispatchPhase::Capture {
+                return;
+            }
+            entity.update(cx, |this, cx| {
+                if this.resize_drag.is_some() {
+                    this.apply_resize_drag(event.position.x, cx);
+                }
+            });
+        }
+    });
+    window.on_mouse_event({
+        let entity = entity.clone();
+        move |event: &MouseUpEvent, phase, _, cx| {
+            if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            entity.update(cx, |this, cx| {
+                this.end_resize(cx);
+            });
+        }
+    });
+}
+
+/// Upsert Format/channel-driven leaves into the export variable table.
+pub fn upsert_format_export_vars(
+    table: &mut VariableTable,
+    encoder_id: &str,
+    sample_format: Option<PcmFormat>,
+    sample_rate: u32,
+    channels: u16,
+) {
+    let extension = encoder(encoder_id)
+        .map(|enc| enc.extension().to_string())
+        .unwrap_or_default();
+    let sample_format_label = sample_format
+        .filter(|_| {
+            encoder(encoder_id)
+                .map(|enc| enc.capabilities().stores_sample_format())
+                .unwrap_or(false)
+        })
+        .map(PcmFormat::label)
+        .unwrap_or("");
+    for (name, value) in [
+        ("encoder", encoder_id.to_string()),
+        ("sample_format", sample_format_label.to_string()),
+        ("sample_rate", sample_rate.to_string()),
+        ("channels", channels.to_string()),
+        ("extension", extension),
+    ] {
+        table.upsert(VariableEntry::new("export", name, value));
+    }
+}
+
+/// Soft-interpolate directory + name and join (Resolved preview).
+pub fn soft_resolved_path(directory: &str, filename: &str, composed: &VariableTable) -> String {
+    let dir = interpolate(directory.trim(), composed);
+    let name = interpolate(filename.trim(), composed);
+    if dir.is_empty() {
+        return name;
+    }
+    if name.is_empty() {
+        return dir;
+    }
+    PathBuf::from(dir).join(name).to_string_lossy().into_owned()
+}
+
+/// Rust last-wins Export-site compose.
+pub fn compose_export_site(
+    source: &VariableTable,
+    user: &VariableTable,
+    session: &VariableTable,
+    composition: &VariableTable,
+    export: &VariableTable,
+) -> VariableTable {
+    compose(&[
+        source.clone(),
+        user.clone(),
+        session.clone(),
+        composition.clone(),
+        export.clone(),
+    ])
 }
 
 fn prefs_as_profile(prefs: &ExportPrefs) -> ExportProfileDef {
@@ -372,9 +808,6 @@ fn fallback_resolved(source: &ExportSourceDefaults) -> ResolvedExportSettings {
 /// Build directory + filename strings for the sheet inputs from resolved settings.
 fn destination_for_sheet(
     resolved: &ResolvedExportSettings,
-    source: &ExportSourceDefaults,
-    extension: &str,
-    directory_override: Option<PathBuf>,
     current_directory: &str,
     current_filename: &str,
 ) -> (String, String) {
@@ -386,33 +819,37 @@ fn destination_for_sheet(
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("{}.{}", source.display_name, extension));
+            .unwrap_or_else(|| DEFAULT_FILENAME.to_string());
         return (dir, name);
     }
-    let dir = directory_override
-        .or_else(|| resolved.directory.clone())
+    let dir = resolved
+        .directory
+        .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| current_directory.to_string());
+        .or_else(|| {
+            let cur = current_directory.trim();
+            (!cur.is_empty()).then(|| cur.to_string())
+        })
+        .unwrap_or_else(|| DEFAULT_DIRECTORY.to_string());
     let name = resolved
         .filename
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            let stem = Path::new(current_filename)
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| source.display_name.clone());
-            format!("{stem}.{extension}")
-        });
+        .or_else(|| {
+            let cur = current_filename.trim();
+            (!cur.is_empty()).then(|| cur.to_string())
+        })
+        .unwrap_or_else(|| DEFAULT_FILENAME.to_string());
     (dir, name)
 }
 
 impl Render for ExportSheet {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        install_resize_listeners(cx.entity(), window);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
+        let border = theme.border;
         let drop_highlight = theme.secondary;
         let spec = self.spec();
         let encoder_id = self.encoder_id.clone();
@@ -435,6 +872,12 @@ impl Render for ExportSheet {
         let profile_label = self.profile_label();
         let profile_name = self.profile_name.clone();
         let profiles = self.profiles.clone();
+        let can_export = self.can_export(cx);
+        let resolved_preview = self.resolved_path_preview(cx);
+        let composed_rows = rows_from_composed(&self.compose_rust());
+        self.filter.sync_scopes_from_rows(&composed_rows);
+        let filtered = self.filter.filtered_indices(&composed_rows, cx);
+        let variables_open = self.variables_open;
 
         let profile_menu = {
             let this = cx.entity();
@@ -531,6 +974,7 @@ impl Render for ExportSheet {
                                 this.update(cx, |sheet, cx| {
                                     sheet.profile_name = None;
                                     sheet.sample_format = Some(format);
+                                    sheet.sync_format_export_vars();
                                     cx.notify();
                                 });
                             }),
@@ -561,6 +1005,7 @@ impl Render for ExportSheet {
                                 this.update(cx, |sheet, cx| {
                                     sheet.profile_name = None;
                                     sheet.sample_rate = rate;
+                                    sheet.sync_format_export_vars();
                                     cx.notify();
                                 });
                             }),
@@ -570,17 +1015,39 @@ impl Render for ExportSheet {
             }
         };
 
+        let entity = cx.entity().clone();
+        let filter_bar = variables_filter::filter_bar(
+            &self.filter,
+            &composed_rows,
+            entity,
+            border,
+            false,
+            |this, scope, cx| {
+                this.filter.toggle_scope(&scope);
+                cx.notify();
+            },
+            |_, _, _| {},
+            |_, _, _| {},
+        );
+        let variables_table =
+            self.render_variables_table(&composed_rows, &filtered, muted, border, cx);
+
         v_flex()
-            .gap_4()
+            .gap_3()
             .w_full()
-            .child(form_row(
-                "Profile",
-                muted,
-                None,
+            .child(
                 h_flex()
-                    .gap_3()
+                    .gap_2()
                     .w_full()
                     .items_center()
+                    .child(
+                        div()
+                            .w(LABEL_WIDTH)
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .child(div().text_xs().text_color(muted).child("Profile")),
+                    )
                     .child(div().w(VALUE_WIDTH).flex_none().child(dropdown(
                         "export-profile",
                         profile_label,
@@ -591,22 +1058,58 @@ impl Render for ExportSheet {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_sm()
+                            .text_xs()
                             .text_color(muted)
                             .child(profile_description),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_none()
+                            .child(
+                                Button::new("export-cancel")
+                                    .outline()
+                                    .xsmall()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let Some(on_cancel) = this.on_cancel.clone() else {
+                                            return;
+                                        };
+                                        // Defer so AppView can update without nesting
+                                        // inside this sheet's click borrow.
+                                        window.defer(cx, move |window, cx| {
+                                            on_cancel(window, cx);
+                                        });
+                                    })),
+                            )
+                            .child(
+                                Button::new("export-go")
+                                    .primary()
+                                    .xsmall()
+                                    .label("Export")
+                                    .disabled(!can_export)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let Some(on_export) = this.on_export.clone() else {
+                                            return;
+                                        };
+                                        window.defer(cx, move |window, cx| {
+                                            on_export(window, cx);
+                                        });
+                                    })),
+                            ),
                     ),
-            ))
-            .child(div().w_full().border_b_1().border_color(theme.border))
+            )
+            .child(div().w_full().border_b_1().border_color(border))
             .child(
                 h_flex()
-                    .gap_6()
+                    .gap_4()
                     .w_full()
                     .items_start()
                     .child(
-                        div().flex_none().child(group(
+                        div().flex_none().child(section(
                             "Format",
                             v_flex()
-                                .gap_2()
+                                .gap_1()
                                 .child(form_row(
                                     "Type",
                                     muted,
@@ -632,13 +1135,14 @@ impl Render for ExportSheet {
                                 )),
                         )),
                     )
-                    .child(div().flex_1().min_w_0().child(group(
+                    .child(div().flex_1().min_w_0().child(section(
                         "Channels",
-                        h_flex().gap_3().flex_wrap().children(
+                        h_flex().gap_2().flex_wrap().children(
                             self.channel_labels.iter().enumerate().map(|(i, label)| {
                                 let checked =
                                     self.channels_selected.get(i).copied().unwrap_or(false);
                                 Checkbox::new(("export-ch", i as u64))
+                                    .xsmall()
                                     .label(label.clone())
                                     .checked(checked)
                                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {
@@ -646,16 +1150,17 @@ impl Render for ExportSheet {
                                         if let Some(slot) = this.channels_selected.get_mut(i) {
                                             *slot = *checked;
                                         }
+                                        this.sync_format_export_vars();
                                         cx.notify();
                                     }))
                             }),
                         ),
                     ))),
             )
-            .child(group(
+            .child(section(
                 "Location",
                 v_flex()
-                    .gap_2()
+                    .gap_1()
                     .w_full()
                     .child(form_row(
                         "Directory",
@@ -695,12 +1200,12 @@ impl Render for ExportSheet {
                                             }
                                         },
                                     ))
-                                    .child(Input::new(&self.directory).small().w_full()),
+                                    .child(Input::new(&self.directory).xsmall().w_full()),
                             )
                             .child(
                                 Button::new("browse-dir")
                                     .outline()
-                                    .small()
+                                    .xsmall()
                                     .label("Browse…")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.prompt_directory(window, cx);
@@ -711,16 +1216,59 @@ impl Render for ExportSheet {
                         "Name",
                         muted,
                         None,
-                        Input::new(&self.filename).small().w_full(),
+                        Input::new(&self.filename).xsmall().w_full(),
+                    ))
+                    .child(form_row(
+                        "Resolved",
+                        muted,
+                        None,
+                        div()
+                            .w_full()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(resolved_preview),
                     )),
             ))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .w_full()
+                    .child(
+                        h_flex()
+                            .id("export-variables-toggle")
+                            .gap_1()
+                            .items_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_variables(cx);
+                            }))
+                            .child(div().text_xs().font_semibold().child("Variables"))
+                            .child(
+                                Icon::new(if variables_open {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall(),
+                            ),
+                    )
+                    .when(variables_open, |el| {
+                        el.child(
+                            v_flex()
+                                .gap_1()
+                                .w_full()
+                                .child(filter_bar)
+                                .child(variables_table),
+                        )
+                    }),
+            )
     }
 }
 
-fn group(title: &'static str, child: impl IntoElement) -> impl IntoElement {
+fn section(title: &'static str, child: impl IntoElement) -> impl IntoElement {
     v_flex()
-        .gap_2()
-        .child(div().text_sm().font_semibold().child(title))
+        .gap_1()
+        .child(div().text_xs().font_semibold().child(title))
         .child(child)
 }
 
@@ -730,13 +1278,13 @@ fn form_row(
     value_width: Option<gpui_kit::Rems>,
     control: impl IntoElement,
 ) -> impl IntoElement {
-    let row = h_flex().gap_3().items_center().child(
+    let row = h_flex().gap_2().items_center().child(
         div()
             .w(LABEL_WIDTH)
             .flex_none()
             .flex()
             .justify_end()
-            .child(div().text_sm().text_color(muted).child(label)),
+            .child(div().text_xs().text_color(muted).child(label)),
     );
     match value_width {
         Some(width) => row.child(div().w(width).flex_none().child(control)),
@@ -752,7 +1300,7 @@ fn dropdown(
 ) -> impl IntoElement {
     Button::new(id)
         .outline()
-        .small()
+        .xsmall()
         .w_full()
         .label(value)
         .disabled(disabled)
@@ -766,4 +1314,53 @@ fn rate_choices(current: u32) -> Vec<u32> {
         rates.sort_unstable();
     }
     rates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_format_leaves_match_sheet_controls() {
+        let mut table = VariableTable::new();
+        table.upsert(VariableEntry::new("export", "title", "from-profile"));
+        upsert_format_export_vars(&mut table, "wav", Some(PcmFormat::S24), 48_000, 2);
+        assert_eq!(
+            table.get_by_name("encoder").map(|e| e.value.as_str()),
+            Some("wav")
+        );
+        assert_eq!(
+            table.get_by_name("sample_format").map(|e| e.value.as_str()),
+            Some("S24")
+        );
+        assert_eq!(
+            table.get_by_name("sample_rate").map(|e| e.value.as_str()),
+            Some("48000")
+        );
+        assert_eq!(
+            table.get_by_name("channels").map(|e| e.value.as_str()),
+            Some("2")
+        );
+        assert_eq!(
+            table.get_by_name("extension").map(|e| e.value.as_str()),
+            Some("wav")
+        );
+        assert_eq!(
+            table.get_by_name("title").map(|e| e.value.as_str()),
+            Some("from-profile")
+        );
+    }
+
+    #[test]
+    fn soft_resolved_path_interpolates_templates() {
+        let mut composed = VariableTable::new();
+        composed.upsert(VariableEntry::new("source", "basename", "take01"));
+        composed.upsert(VariableEntry::new("export", "extension", "flac"));
+        let path = soft_resolved_path(
+            "/out/${source.basename}",
+            "${source.basename}.${export.extension}",
+            &composed,
+        );
+        assert_eq!(path, "/out/take01/take01.flac");
+    }
 }

@@ -14,6 +14,7 @@ use field_composition::Composition;
 use field_session::DocumentId;
 use field_variables::{VariableEntry, VariableTable};
 use mlua::{MultiValue, Table, UserData, UserDataFields, Value};
+use std::path::Path;
 
 use crate::bindings::{bindings_from_lua, split_readonly_by_scope, LuaBindings};
 use crate::host::host_from_lua;
@@ -347,13 +348,18 @@ pub fn composition_source_variables(composition: &Composition) -> VariableTable 
         container_format: &media.container_format,
         codec: &media.codec,
     };
-    if media.path.as_os_str().is_empty() || !media.path.exists() {
+    if media.path.as_os_str().is_empty() {
         let mut table = VariableTable::new();
         table.upsert(VariableEntry::new(
             "source",
             "basename",
             media.basename.clone(),
         ));
+        let stem = Path::new(&media.basename)
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        table.upsert(VariableEntry::new("source", "stem", stem));
         table.upsert(VariableEntry::new(
             "source",
             "sample_rate",
@@ -362,6 +368,18 @@ pub fn composition_source_variables(composition: &Composition) -> VariableTable 
         return table;
     }
     probe_source_variables(&media.path, Some(&tech))
+}
+
+/// Composition-scope table for compose / resolve: stored variables plus derived
+/// leaves such as `channel_layout` (layout name, or empty when unset).
+pub fn composition_layer_variables(composition: &Composition) -> VariableTable {
+    let mut table = composition.variables().clone();
+    table.upsert(VariableEntry::new(
+        "composition",
+        "channel_layout",
+        composition.channel_layout().unwrap_or("").to_string(),
+    ));
+    table
 }
 
 /// Detached composition-site Bindings for an open document (Variables pane order).
@@ -374,7 +392,7 @@ pub fn composition_site_detached(
         let composition = doc.composition.read().unwrap();
         Ok((
             composition_source_variables(&composition),
-            composition.variables().clone(),
+            composition_layer_variables(&composition),
         ))
     })?;
     let user = host.user_variables();
@@ -693,6 +711,39 @@ mod tests {
         assert_eq!(
             out.result.as_deref(),
             Some("nil\tresolve_comp.wav\tsource\tmine\tcomposition\tresolve_comp.wav")
+        );
+    }
+
+    #[test]
+    fn composition_layer_includes_channel_layout() {
+        use super::composition_layer_variables;
+        use field_composition::Composition;
+        use std::collections::BTreeMap;
+
+        let mut comp = Composition::new(48_000, 2);
+        let empty = composition_layer_variables(&comp);
+        assert_eq!(
+            empty
+                .get_by_name("channel_layout")
+                .map(|e| e.value.as_str()),
+            Some("")
+        );
+        let mut labels = BTreeMap::new();
+        labels.insert(0, "L".into());
+        labels.insert(1, "R".into());
+        comp.apply_channel_layout(Some("Stereo".into()), labels);
+        let layered = composition_layer_variables(&comp);
+        assert_eq!(
+            layered
+                .get_by_name("channel_layout")
+                .map(|e| e.value.as_str()),
+            Some("Stereo")
+        );
+        assert_eq!(
+            layered
+                .get_by_name("channel_layout")
+                .map(|e| e.scope.as_str()),
+            Some("composition")
         );
     }
 }

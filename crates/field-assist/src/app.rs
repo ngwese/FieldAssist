@@ -15,11 +15,11 @@ use gpui_kit::component::{
         panel_handle, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
         PaneRef, PanelId, PanelStyle,
     },
-    h_flex, v_flex, ActiveTheme as _, Disableable as _, GlobalState, Icon, IconName, Root,
-    Selectable as _, Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    h_flex, v_flex, ActiveTheme as _, GlobalState, Icon, IconName, Root, Selectable as _,
+    Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
 };
 use gpui_kit::{
-    div, hsla, img, point, prelude::FluentBuilder as _, px, rems, size, AnyWindowHandle, App,
+    div, hsla, img, point, prelude::FluentBuilder as _, px, relative, size, AnyWindowHandle, App,
     AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
     InteractiveElement as _, IntoElement, KeyContext, KeyDownEvent, Menu, MenuItem,
     ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
@@ -2588,7 +2588,7 @@ impl AppView {
                             container_format: &media.container_format,
                             codec: &media.codec,
                         };
-                        if !media.path.as_os_str().is_empty() && media.path.exists() {
+                        if !media.path.as_os_str().is_empty() {
                             field_audio_io::probe_source_variables(&media.path, Some(&tech))
                         } else {
                             let mut table = field_variables::VariableTable::new();
@@ -2597,13 +2597,23 @@ impl AppView {
                                 "basename",
                                 media.basename.clone(),
                             ));
+                            let stem = std::path::Path::new(&media.basename)
+                                .file_stem()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            table.upsert(field_variables::VariableEntry::new(
+                                "source", "stem", stem,
+                            ));
                             table
                         }
                     } else {
                         field_variables::VariableTable::new()
                     }
                 };
-                (source, composition.variables().clone())
+                (
+                    source,
+                    field_scripting::composition_layer_variables(&composition),
+                )
             } else {
                 (
                     field_variables::VariableTable::new(),
@@ -3473,6 +3483,7 @@ impl AppView {
             }
         }
         self.refresh_explorer(cx);
+        self.refresh_variables_panel(cx);
         self.request_waveform_analysis(id, cx);
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
@@ -4884,7 +4895,6 @@ impl AppView {
         let Some(views) = self.views.get(&id).cloned() else {
             return;
         };
-        let directory = self.suggested_save_directory(id, cx);
         let prefs = self.export_prefs_for(id, cx);
         let profiles: Vec<_> = self
             .script
@@ -4893,18 +4903,101 @@ impl AppView {
             .filter_map(|name| self.script.export_profile(&name))
             .collect();
         let composition = views.composition.clone();
+        crate::user_variables::ensure_store(cx);
+        let layers = self.export_variable_layers(id, cx);
+        let app = cx.entity();
+        let sheet_entity = self.export_sheet.clone();
         self.export_sheet.update(cx, |sheet, cx| {
             sheet.configure_with_prefs(
                 &composition.read().unwrap(),
-                directory,
                 profiles,
                 Some(&prefs),
+                layers,
                 window,
                 cx,
+            );
+            sheet.set_actions(
+                {
+                    let app = app.clone();
+                    std::rc::Rc::new(move |_window, cx| {
+                        app.update(cx, |this, cx| {
+                            this.close_export_sheet(cx);
+                        });
+                    })
+                },
+                {
+                    let app = app.clone();
+                    let sheet = sheet_entity.clone();
+                    std::rc::Rc::new(move |window, cx| {
+                        app.update(cx, |this, cx| {
+                            this.start_export(&sheet, window, cx);
+                        });
+                    })
+                },
             );
         });
         self.export_sheet_open = true;
         cx.notify();
+    }
+
+    fn export_variable_layers(
+        &self,
+        id: DocumentId,
+        cx: &App,
+    ) -> crate::components::export_sheet::ExportVariableLayers {
+        use crate::components::export_sheet::ExportVariableLayers;
+
+        let user = crate::user_variables::store(cx).file.to_table();
+        let session = self.session.variables().clone();
+        let (source, composition) = if let Some(views) = self.views.get(&id) {
+            let composition = views.composition.read().unwrap();
+            let source = {
+                if let Some(media) = composition.primary_media() {
+                    let tech = field_audio_io::TechnicalSourceFields {
+                        basename: &media.basename,
+                        sample_rate: media.sample_rate,
+                        channel_count: media.channel_count,
+                        frame_count: media.frame_count,
+                        bits_per_sample: media.bits_per_sample,
+                        container_format: &media.container_format,
+                        codec: &media.codec,
+                    };
+                    if !media.path.as_os_str().is_empty() {
+                        field_audio_io::probe_source_variables(&media.path, Some(&tech))
+                    } else {
+                        let mut table = field_variables::VariableTable::new();
+                        table.upsert(field_variables::VariableEntry::new(
+                            "source",
+                            "basename",
+                            media.basename.clone(),
+                        ));
+                        let stem = std::path::Path::new(&media.basename)
+                            .file_stem()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        table.upsert(field_variables::VariableEntry::new("source", "stem", stem));
+                        table
+                    }
+                } else {
+                    field_variables::VariableTable::new()
+                }
+            };
+            (
+                source,
+                field_scripting::composition_layer_variables(&composition),
+            )
+        } else {
+            (
+                field_variables::VariableTable::new(),
+                field_variables::VariableTable::new(),
+            )
+        };
+        ExportVariableLayers {
+            source,
+            user,
+            session,
+            composition,
+        }
     }
 
     fn export_prefs_for(
@@ -4961,7 +5054,6 @@ impl AppView {
 
     fn export_sheet_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let can_export = self.export_sheet.read(cx).can_export(cx);
         let sheet = self.export_sheet.clone();
         div()
             .id("export-sheet-layer")
@@ -4983,8 +5075,8 @@ impl AppView {
                     .id("export-sheet-panel")
                     .absolute()
                     .top_0()
-                    .left(rems(5.))
-                    .right(rems(5.))
+                    .left(relative(0.1))
+                    .right(relative(0.1))
                     .bg(theme.background)
                     .border_l_1()
                     .border_r_1()
@@ -4993,32 +5085,7 @@ impl AppView {
                     .shadow_xl()
                     .occlude()
                     .child(div().px_4().py_2().font_semibold().child("Export"))
-                    .child(div().px_4().py_1().w_full().child(sheet.clone()))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px_4()
-                            .py_3()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("export-cancel")
-                                    .outline()
-                                    .label("Cancel")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.close_export_sheet(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("export-go")
-                                    .primary()
-                                    .label("Export")
-                                    .disabled(!can_export)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.start_export(&sheet, window, cx);
-                                    })),
-                            ),
-                    ),
+                    .child(div().px_4().py_3().w_full().child(sheet)),
             )
     }
 
@@ -5031,7 +5098,24 @@ impl AppView {
         let Some(id) = self.session.active() else {
             return;
         };
-        let Some(job) = sheet.read(cx).job(cx) else {
+        let (layers, export) = sheet.read(cx).variable_layers();
+        let composed = match self.script.resolve_export_variables(
+            &layers.source,
+            &layers.user,
+            &layers.session,
+            &layers.composition,
+            &export,
+        ) {
+            Ok(table) => table,
+            Err(_) => crate::components::export_sheet::compose_export_site(
+                &layers.source,
+                &layers.user,
+                &layers.session,
+                &layers.composition,
+                &export,
+            ),
+        };
+        let Some(job) = sheet.read(cx).job_from_composed(&composed, cx) else {
             return;
         };
         let Some(views) = self.views.get(&id).cloned() else {

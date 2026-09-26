@@ -39,8 +39,9 @@ pub type TagMap = BTreeMap<String, String>;
 
 /// Probe a media file and build a `source` / `source.*` variable table.
 ///
-/// Always includes technical fields under `source` (`basename`, `sample_rate`,
-/// …) when `technical` is provided. Container tags fill sub-scopes.
+/// Always includes technical fields under `source` (`basename`, `stem`,
+/// `parent`, `sample_rate`, …) when `technical` is provided. Container tags
+/// fill sub-scopes. `parent` is the parent directory of `path` when known.
 pub fn probe_source_variables(
     path: &Path,
     technical: Option<&TechnicalSourceFields<'_>>,
@@ -48,12 +49,11 @@ pub fn probe_source_variables(
     let mut table = VariableTable::new();
     if let Some(tech) = technical {
         push_technical(&mut table, tech);
-    } else {
-        // Minimal basename from path.
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            table.upsert(VariableEntry::new("source", "basename", name));
-        }
+    } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        table.upsert(VariableEntry::new("source", "basename", name));
+        push_stem(&mut table, Path::new(name));
     }
+    push_parent(&mut table, path);
 
     if let Err(err) = probe_riff_chunks(path, &mut table) {
         let _ = err; // best-effort
@@ -85,6 +85,7 @@ pub struct TechnicalSourceFields<'a> {
 
 fn push_technical(table: &mut VariableTable, tech: &TechnicalSourceFields<'_>) {
     table.upsert(VariableEntry::new("source", "basename", tech.basename));
+    push_stem(table, Path::new(tech.basename));
     table.upsert(VariableEntry::new(
         "source",
         "sample_rate",
@@ -113,6 +114,27 @@ fn push_technical(table: &mut VariableTable, tech: &TechnicalSourceFields<'_>) {
         tech.container_format,
     ));
     table.upsert(VariableEntry::new("source", "codec", tech.codec));
+}
+
+/// Basename without extension (`source.stem`), matching `field.url` `.stem`.
+fn push_stem(table: &mut VariableTable, path: &Path) {
+    let stem = path
+        .file_stem()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    table.upsert(VariableEntry::new("source", "stem", stem));
+}
+
+/// Parent directory of the media path (`source.parent`).
+fn push_parent(table: &mut VariableTable, path: &Path) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    let parent = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    table.upsert(VariableEntry::new("source", "parent", parent));
 }
 
 fn probe_lofty_tags(path: &Path, table: &mut VariableTable) -> Result<()> {
@@ -404,10 +426,15 @@ mod tests {
             container_format: "wav",
             codec: "pcm",
         };
-        let table = probe_source_variables(Path::new("take.wav"), Some(&tech));
+        let table = probe_source_variables(Path::new("/recordings/day1/take.wav"), Some(&tech));
         assert_eq!(
             table.get_qualified("source.basename").unwrap().value,
             "take.wav"
+        );
+        assert_eq!(table.get_qualified("source.stem").unwrap().value, "take");
+        assert_eq!(
+            table.get_qualified("source.parent").unwrap().value,
+            "/recordings/day1"
         );
         assert_eq!(
             table.get_qualified("source.sample_rate").unwrap().value,

@@ -118,12 +118,13 @@ impl VariablesFilter {
     }
 }
 
-/// Build the search field + Scopes dropdown + add/remove controls.
+/// Build the search field + Scopes dropdown, optionally with add/remove controls.
 pub fn filter_bar<V: 'static>(
     filter: &VariablesFilter,
     rows: &[VariableRow],
     entity: Entity<V>,
     divider: Hsla,
+    show_edit_controls: bool,
     on_toggle_scope: impl Fn(&mut V, String, &mut Context<V>) + 'static,
     on_add: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
     on_remove: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
@@ -181,37 +182,39 @@ pub fn filter_bar<V: 'static>(
                     }
                 }),
         )
-        .child(div().w(px(1.)).h(px(16.)).flex_none().bg(divider))
-        .child(
-            Button::new("variables-add")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Plus)
-                .tooltip("Add variable")
-                .on_click({
-                    let entity = entity.clone();
-                    let on_add = on_add.clone();
-                    move |_, window, cx| {
-                        entity.update(cx, |this, cx| {
-                            on_add(this, window, cx);
-                        });
-                    }
-                }),
-        )
-        .child(
-            Button::new("variables-remove")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Minus)
-                .tooltip("Remove selected")
-                .on_click({
-                    let entity = entity.clone();
-                    let on_remove = on_remove.clone();
-                    move |_, window, cx| {
-                        entity.update(cx, |this, cx| {
-                            on_remove(this, window, cx);
-                        });
-                    }
-                }),
-        )
+        .when(show_edit_controls, |bar| {
+            bar.child(div().w(px(1.)).h(px(16.)).flex_none().bg(divider))
+                .child(
+                    Button::new("variables-add")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .tooltip("Add variable")
+                        .on_click({
+                            let entity = entity.clone();
+                            let on_add = on_add.clone();
+                            move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    on_add(this, window, cx);
+                                });
+                            }
+                        }),
+                )
+                .child(
+                    Button::new("variables-remove")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Minus)
+                        .tooltip("Remove selected")
+                        .on_click({
+                            let entity = entity.clone();
+                            let on_remove = on_remove.clone();
+                            move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    on_remove(this, window, cx);
+                                });
+                            }
+                        }),
+                )
+        })
 }

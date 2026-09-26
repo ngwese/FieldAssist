@@ -66,7 +66,7 @@ Default compose order (last wins for a given leaf name):
 | `source` | Derived at media probe (primary media); not user-edited |
 | `user` | `variables.json` beside `settings.json` / `init.lua` / `keymap.json` |
 | `session` | `.fasession` v3 (`variables` array) |
-| `composition` | `.facomp` v10 (`variables` on the project file) |
+| `composition` | `.facomp` v10 (`variables` on the project file), plus derived `channel_layout` (layout name) |
 | `export` | Export profile Lua tables (`variables = { … }`) |
 
 `variables.json` envelope: `{ "kind": "variables", "format_version": 1, "variables": [ { "name", "value", "description"? } ] }` — entries are implicitly scope `user`.
@@ -79,7 +79,7 @@ On media load / probe ([`field-audio-io`](../../crates/field-audio-io)):
 
 | Sub-scope | Source |
 | --- | --- |
-| `source` | Technical fields: `basename`, `sample_rate`, `channels`, `frames`, … |
+| `source` | Technical fields: `basename`, `stem`, `parent`, `sample_rate`, `channels`, `frames`, … |
 | `source.riff` | RIFF INFO FOURCCs (`INAM`, `IART`, …) |
 | `source.bwf` | BWF `bext` fields (`Description`, `Originator`, …) |
 | `source.id3v1` / `source.id3v2` | ID3 frames |
@@ -96,6 +96,29 @@ Primary media only for v1 (first / `FromMedia` initial).
 4. Encoders write tags: WAV INFO / bext / iXML; FLAC / Ogg Vorbis comments.
 
 Unknown encoder keys are skipped; missing tags are omitted.
+
+### Export UI (File → Export)
+
+The sheet Profile row holds Cancel / Export. **Format**, **Location**, and
+**Variables** use outlined group boxes. Location includes a read-only **Resolved** path (soft `${…}` interpolate of
+Directory + Name). Defaults when the profile omits them: Directory
+`${source.parent}`, Name
+`${source.stem}-${sample_rate}-${channel_layout}.${export.encoder}`. Variables is
+collapsed by default; when open it shows Export-site composed rows with the
+same search / Scopes filter as the Variables dock (no add/remove).
+
+Live Format / channel controls upsert these **export**-scope leaves into the
+export variable layer (on top of the selected profile’s Lua `variables`):
+
+| Leaf | Value |
+| --- | --- |
+| `encoder` | Encoder id (`wav`, `flac`, …) |
+| `sample_format` | PCM label, or empty when the encoder does not store PCM |
+| `sample_rate` | Hz string |
+| `channels` | Selected channel count string |
+| `extension` | Encoder file extension |
+
+Templates may use `${export.sample_rate}` or a bare name that wins from export.
 
 ## UI — Variables dock
 
