@@ -94,35 +94,70 @@ On Windows, `build.rs` embeds `app-icon.ico` into the binary. On macOS,
 `script/bundle-macos` copies `AppIcon.icns` into the bundle. The title-bar
 glyph (Windows and Linux only) loads the SVG directly.
 
-## macOS app bundle
+## macOS app bundle and DMG
 
-On macOS, package a double-clickable `.app` that can also be launched from the
-terminal:
+On macOS, package a double-clickable `.app` and a Finder-friendly DMG:
 
 ```bash
-./script/bundle-macos
+./script/bundle-macos --from-op
 open target/release/FieldAssist.app
+# Or pack and open the DMG in one step:
+./script/bundle-macos --from-op --skip-build --open
 ```
 
-Install into `~/Applications` and put the CLIs on your PATH (no sudo):
+That builds release `FieldAssist`, `field-play`, and `field-batch`, puts all
+three into `FieldAssist.app/Contents/MacOS/`, signs with the FieldAssist
+code-signing certificate, and writes
+`target/release/FieldAssist-<version>.dmg` (drag the app onto Applications).
+
+Install into `~/Applications` and put developer CLI symlinks on your PATH
+(no sudo; uses `~/.local/bin`):
 
 ```bash
-./script/bundle-macos --install
+./script/bundle-macos --from-op --install
 FieldAssist --help
 field-assist path/to/audio.wav
 field-play path/to/take.wav
 field-batch --eval 'return app.name'
 ```
 
-That copies the bundle to `~/Applications/FieldAssist.app`, symlinks
-`~/.local/bin/FieldAssist` and `~/.local/bin/field-assist` to the binary
-inside it, and installs release `field-play` and `field-batch` into
-`~/.local/bin`. If `~/.local/bin` is not already on your PATH, add this to
-`~/.zshrc` and open a new terminal:
+That copies the bundle to `~/Applications/FieldAssist.app` and symlinks
+`~/.local/bin/FieldAssist`, `field-assist`, `field-play`, and `field-batch`
+to the binaries inside it. End users who install from the DMG should instead
+use **FieldAssist → Install CLI Tools**, which writes the same CLI names
+into `/usr/local/bin` (administrator password once).
+
+If `~/.local/bin` is not already on your PATH, add this to `~/.zshrc` and
+open a new terminal:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+### Signing certificate
+
+Signer identity is the cert subject (`CN=FieldAssist`). Reuse one
+certificate for all versions.
+
+Generate once (writes a gitignored `.p12` and a public `.cer` to commit):
+
+```bash
+./script/generate-macos-signing-cert --from-op
+```
+
+Local packs look for
+`crates/field-assist/assets/macos/FieldAssist.p12`, or
+`FIELDASSIST_MACOS_SIGNING_P12` / `FIELDASSIST_MACOS_SIGNING_PASSWORD`.
+Prefer `--from-op`, which reads:
+
+| 1Password item (vault `Private`) | Used for |
+| --- | --- |
+| `FieldAssist - macOS Signing Password` | PKCS#12 password (`op read …/password`) |
+| `FieldAssist - macOS Signing Certificate` | PKCS#12 document (`op document get`) |
+
+Without a PKCS#12 the script falls back to ad-hoc signing (fine for local
+smoke tests; not for release). The PKCS#12 password must be non-empty —
+Apple's `security import` rejects empty passwords.
 
 ## Windows MSIX
 

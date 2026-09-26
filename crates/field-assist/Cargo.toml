@@ -43,6 +43,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSAlert",
     "NSApplication",
     "NSBezierPath",
     "NSColor",
