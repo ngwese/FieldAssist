@@ -1,3 +1,10 @@
+## [0.16.0] - 2026-09-26
+
+### Miscellaneous Tasks
+
+- Prepare release 0.15.0
+- Bump workspace version to 0.16.0-pre
+- Publish MSIX, DMG, and Linux tarball only
 ## [0.15.0] - 2026-09-26
 
 ### Features
