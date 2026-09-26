@@ -1,0 +1,92 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Install FieldAssist, field-play, and field-batch from this directory into
+# PREFIX/bin (default /usr/local/bin). Intended to ship inside the Linux
+# release tarball as install.sh.
+
+set -eu
+
+usage() {
+  cat <<'EOF'
+Usage: install.sh [--prefix DIR]
+
+Install FieldAssist, field-play, and field-batch next to this script into
+PREFIX/bin (default: /usr/local, or $PREFIX when set).
+
+  --prefix DIR   Install prefix (binaries go in DIR/bin)
+  -h, --help     Show this help
+
+If DIR/bin is not writable and you are not root, the script re-runs itself
+with sudo (and an explicit --prefix so sudo cannot drop PREFIX).
+EOF
+}
+
+prefix="${PREFIX:-/usr/local}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix)
+      if [ $# -lt 2 ]; then
+        echo "error: --prefix requires a directory" >&2
+        exit 1
+      fi
+      prefix="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bindir="${prefix}/bin"
+
+for exe in FieldAssist field-play field-batch; do
+  if [ ! -f "${script_dir}/${exe}" ]; then
+    echo "error: missing binary next to installer: ${script_dir}/${exe}" >&2
+    exit 1
+  fi
+done
+
+need_sudo=false
+if [ "$(id -u)" -ne 0 ]; then
+  check="$bindir"
+  while [ ! -e "$check" ]; do
+    parent=$(dirname -- "$check")
+    if [ "$parent" = "$check" ]; then
+      break
+    fi
+    check="$parent"
+  done
+  if [ ! -w "$check" ]; then
+    need_sudo=true
+  fi
+fi
+
+if [ "$need_sudo" = true ]; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "error: ${bindir} is not writable and sudo is not available" >&2
+    exit 1
+  fi
+  echo "Installing into ${bindir} (elevating with sudo)..."
+  exec sudo "$0" --prefix "$prefix"
+fi
+
+mkdir -p "$bindir"
+for exe in FieldAssist field-play field-batch; do
+  dest="${bindir}/${exe}"
+  echo "Installing ${exe} -> ${dest}"
+  cp -f "${script_dir}/${exe}" "$dest"
+  chmod 755 "$dest"
+done
+
+echo "Installed FieldAssist, field-play, and field-batch into ${bindir}"

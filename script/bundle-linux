@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Pack FieldAssist, field-play, and field-batch into a single Linux release
+# tarball with an install.sh that copies them to /usr/local/bin.
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: script/bundle-linux [options]
+
+Build (on Linux) or pack FieldAssist, field-play, and field-batch into
+target/release/FieldAssist-<version>-<arch>-linux.tar.gz. The archive
+contains the three binaries and install.sh (from script/install-linux).
+
+  --skip-build    Use existing FieldAssist / field-play / field-batch under
+                  the release directory (or --bin-dir). Does not require
+                  Linux; useful for layout checks and CI packing.
+  --bin-dir DIR   Directory containing the three release executables
+                  (default: target/release, or \$CARGO_TARGET_DIR/release)
+  --out PATH      Output tarball path (default:
+                  target/release/FieldAssist-<cargo-version>-<arch>-linux.tar.gz)
+  --arch ARCH     Architecture label in the archive name (default: uname -m;
+                  map arm64 → aarch64). CI uses x86_64.
+  -h, --help      Show this help
+EOF
+}
+
+skip_build=false
+bin_dir=""
+out_path=""
+arch=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    --bin-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --bin-dir requires a path" >&2
+        exit 1
+      fi
+      bin_dir="$2"
+      shift 2
+      ;;
+    --out)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --out requires a path" >&2
+        exit 1
+      fi
+      out_path="$2"
+      shift 2
+      ;;
+    --arch)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --arch requires a value" >&2
+        exit 1
+      fi
+      arch="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+if [[ -z "$version" ]]; then
+  echo "error: could not read version from Cargo.toml" >&2
+  exit 1
+fi
+
+if [[ -z "$arch" ]]; then
+  arch="$(uname -m)"
+fi
+case "$arch" in
+  arm64) arch=aarch64 ;;
+esac
+
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
+release_dir="$target_dir/release"
+if [[ -z "$bin_dir" ]]; then
+  bin_dir="$release_dir"
+else
+  bin_dir="$(cd "$bin_dir" && pwd)"
+fi
+
+if [[ "$skip_build" != true ]]; then
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "error: cargo build for Linux requires a Linux host (use --skip-build --bin-dir)" >&2
+    exit 1
+  fi
+  echo "Building FieldAssist ${version}, field-play, and field-batch (release)..."
+  cargo build --release -p FieldAssist -p field-play -p field-batch
+fi
+
+binary="$bin_dir/FieldAssist"
+field_play_bin="$bin_dir/field-play"
+field_batch_bin="$bin_dir/field-batch"
+for path in "$binary" "$field_play_bin" "$field_batch_bin"; do
+  if [[ ! -x "$path" ]]; then
+    echo "error: missing release binary: $path" >&2
+    exit 1
+  fi
+done
+
+install_src="$root/script/install-linux"
+if [[ ! -f "$install_src" ]]; then
+  echo "error: missing installer template: $install_src" >&2
+  exit 1
+fi
+
+if [[ -z "$out_path" ]]; then
+  mkdir -p "$release_dir"
+  out_path="$release_dir/FieldAssist-${version}-${arch}-linux.tar.gz"
+else
+  out_parent="$(dirname "$out_path")"
+  mkdir -p "$out_parent"
+  out_path="$(cd "$out_parent" && pwd)/$(basename "$out_path")"
+fi
+
+stage_name="FieldAssist-${version}-${arch}-linux"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/fieldassist-bundle-linux.XXXXXX")"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+stage="${tmpdir}/${stage_name}"
+mkdir -p "$stage"
+cp -f "$binary" "$field_play_bin" "$field_batch_bin" "$stage/"
+cp -f "$install_src" "$stage/install.sh"
+chmod 755 "$stage/FieldAssist" "$stage/field-play" "$stage/field-batch" "$stage/install.sh"
+
+echo "Packing ${out_path}..."
+tar -C "$tmpdir" -czf "$out_path" "$stage_name"
+
+echo "Wrote ${out_path}"

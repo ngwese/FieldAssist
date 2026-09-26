@@ -76,8 +76,8 @@ gh workflow run Release --ref release/X.Y.Z -f tag=dry-run
 
 That builds archives and installers for Linux x64, macOS Apple Silicon, and
 Windows x64, but does **not** create a git tag or GitHub Release. The
-follow-up `Windows MSIX` and `macOS DMG` workflows pack signed installers
-from the platform archives and upload them as workflow artifacts
+follow-up `Windows MSIX`, `macOS DMG`, and `Linux tarball` workflows pack
+platform installers from the archives and upload them as workflow artifacts
 (inspectable; not attached to a Release on dry-run). Fix any failures on
 the release branch and re-run.
 
@@ -108,7 +108,7 @@ dist generate --check
 git cliff          # preview changelog
 ```
 
-## Artifacts vs macOS DMG / Windows MSIX
+## Artifacts vs macOS DMG / Windows MSIX / Linux tarball
 
 GitHub Releases ship platform archives of `FieldAssist`, `field-play`, and
 `field-batch`, plus Unix shell installers. Windows no longer publishes a
@@ -121,6 +121,21 @@ The `macOS DMG` workflow likewise packs a signed `.dmg` (app bundle with
 `field-play` / `field-batch` inside) after Release and attaches it with
 `FieldAssist.cer` and a `.sha256` when the run published a tag.
 Notarization is out of scope for v1 CI.
+
+The `Linux tarball` workflow packs
+`FieldAssist-<version>-x86_64-linux.tar.gz` (the three binaries plus
+`install.sh`) after Release and attaches it with a `.sha256` when the run
+published a tag. End-user install:
+
+```bash
+tar -xzf FieldAssist-X.Y.Z-x86_64-linux.tar.gz
+cd FieldAssist-X.Y.Z-x86_64-linux
+sudo ./install.sh
+```
+
+That installs into `/usr/local/bin`. Use `./install.sh --prefix DIR` for a
+custom prefix. The GUI needs a desktop session with the usual ALSA and X11
+client libraries; the install script does not install packages.
 
 ### Windows signing secrets
 
