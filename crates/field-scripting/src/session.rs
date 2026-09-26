@@ -78,6 +78,15 @@ impl UserData for LuaSession {
             host_from_lua(lua)?
                 .set_session_properties(this.detached_id, string_map_from_lua(value)?)
         });
+        fields.add_field_method_get("variables", |_lua, this| {
+            Ok(crate::bindings::LuaBindings::session(this.detached_id))
+        });
+        fields.add_field_method_set("variables", |lua, this, value: Value| {
+            host_from_lua(lua)?.set_session_variables(
+                this.detached_id,
+                crate::bindings::variables_table_from_value(value, "session")?,
+            )
+        });
         fields.add_field_method_get("composition", |lua, this| {
             Ok(host_from_lua(lua)?
                 .session_active_document(this.detached_id)
@@ -231,6 +240,29 @@ impl HostHandle {
         properties: BTreeMap<String, String>,
     ) -> mlua::Result<()> {
         self.with_backend_mut(|b| b.set_session_properties(which, properties))
+    }
+
+    pub(crate) fn session_variables(
+        &self,
+        which: Option<SessionId>,
+    ) -> field_variables::VariableTable {
+        self.with_backend(|b| b.session_variables(which))
+    }
+
+    pub(crate) fn set_session_variables(
+        &self,
+        which: Option<SessionId>,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.set_session_variables(which, variables))
+    }
+
+    pub(crate) fn user_variables(&self) -> field_variables::VariableTable {
+        self.inner.borrow().user_variables.clone()
+    }
+
+    pub(crate) fn set_user_variables(&self, variables: field_variables::VariableTable) {
+        self.inner.borrow_mut().user_variables = variables;
     }
 
     pub(crate) fn session_active_document(&self, which: Option<SessionId>) -> Option<DocumentId> {
@@ -393,6 +425,21 @@ impl HostHandle {
         properties: BTreeMap<String, String>,
     ) -> mlua::Result<()> {
         self.with_backend_mut(|b| b.set_document_properties(id, properties))
+    }
+
+    pub(crate) fn composition_variables(
+        &self,
+        id: DocumentId,
+    ) -> mlua::Result<field_variables::VariableTable> {
+        self.with_backend(|b| b.composition_variables(id))
+    }
+
+    pub(crate) fn set_composition_variables(
+        &self,
+        id: DocumentId,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.set_composition_variables(id, variables))
     }
 
     pub(crate) fn display_name(&self, id: DocumentId) -> Option<String> {

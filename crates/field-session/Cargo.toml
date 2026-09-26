@@ -9,6 +9,7 @@ description = "Session and .fasession I/O for FieldAssist"
 anyhow = { workspace = true }
 field-audio-model = { path = "../field-audio-model", features = ["serde"] }
 field-core = { path = "../field-core" }
+field-variables = { path = "../field-variables" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

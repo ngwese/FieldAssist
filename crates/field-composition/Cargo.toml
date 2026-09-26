@@ -8,6 +8,7 @@ description = "Composition, EDL, and .facomp I/O for FieldAssist"
 [dependencies]
 anyhow = { workspace = true }
 field-core = { path = "../field-core" }
+field-variables = { path = "../field-variables" }
 field-audio-model = { path = "../field-audio-model" }
 field-audio-io = { path = "../field-audio-io" }
 field-audio-process = { path = "../field-audio-process" }

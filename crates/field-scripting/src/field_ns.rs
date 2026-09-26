@@ -16,6 +16,7 @@ use crate::media::bind_media_module;
 use crate::session::bind_session_module;
 use crate::ui::bind_ui;
 use crate::url::bind_url;
+use crate::variables::bind_variables_module;
 use crate::workflow::bind_workflow_module;
 
 /// Install the global `field` table and its modules.
@@ -35,6 +36,7 @@ pub fn bind_field(lua: &mlua::Lua) -> mlua::Result<()> {
     bind_media_module(lua, &field)?;
     bind_layouts(lua, &field)?;
     bind_exports(lua, &field)?;
+    bind_variables_module(lua, &field)?;
     bind_workflow_module(lua, &field)?;
     bind_ui(lua, &field)?;
     bind_audio_devices(lua, &field)?;

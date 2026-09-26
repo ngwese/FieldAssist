@@ -7,7 +7,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use field_audio_io::{encoder, select_channels, EncodeSpec, FormatEncoder};
+use field_audio_io::{encoder, select_channels, EncodeSpec, FormatEncoder, TagMap};
 use field_audio_process::resample_planar;
 use field_core::ProgressHandle;
 
@@ -24,6 +24,26 @@ pub struct ExportJob {
     pub channel_indices: Vec<usize>,
     /// Destination path.
     pub dest: std::path::PathBuf,
+    /// Metadata tags to embed (empty = none).
+    pub tags: TagMap,
+}
+
+impl ExportJob {
+    /// Build a job with no tags.
+    pub fn new(
+        encoder_id: impl Into<String>,
+        spec: EncodeSpec,
+        channel_indices: Vec<usize>,
+        dest: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            encoder_id: encoder_id.into(),
+            spec,
+            channel_indices,
+            dest: dest.into(),
+            tags: TagMap::new(),
+        }
+    }
 }
 
 /// Export `composition` according to `job`, optionally reporting `progress`.
@@ -69,7 +89,7 @@ pub fn export_to_path(
     if let Some(progress) = progress {
         progress.set_fraction(epoch, 0.7);
     }
-    write_encoded(encoder, &job.spec, &planar, &job.dest)?;
+    write_encoded(encoder, &job.spec, &planar, &job.dest, &job.tags)?;
     if let Some(progress) = progress {
         progress.set_fraction(epoch, 1.0);
     }
@@ -81,10 +101,11 @@ fn write_encoded(
     spec: &EncodeSpec,
     planar: &[Vec<f32>],
     dest: &Path,
+    tags: &TagMap,
 ) -> Result<()> {
     let file = std::fs::File::create(dest).with_context(|| format!("create {}", dest.display()))?;
     let mut writer = BufWriter::new(file);
-    encoder.encode(spec, planar, &mut writer)?;
+    encoder.encode_with_tags(spec, planar, &mut writer, tags)?;
     writer.flush().context("flush export output")?;
     Ok(())
 }
@@ -189,6 +210,7 @@ mod tests {
                     },
                     channel_indices: vec![0],
                     dest: dest.clone(),
+                    tags: Default::default(),
                 },
                 None,
                 0,
@@ -217,6 +239,7 @@ mod tests {
                 },
                 channel_indices: vec![1],
                 dest: dest.clone(),
+                tags: Default::default(),
             },
             None,
             0,
@@ -254,6 +277,7 @@ mod tests {
                 },
                 channel_indices: vec![0],
                 dest: dest.clone(),
+                tags: Default::default(),
             },
             None,
             0,
@@ -291,6 +315,7 @@ mod tests {
                 },
                 channel_indices: vec![0, 1],
                 dest: dest.clone(),
+                tags: Default::default(),
             },
             None,
             0,
@@ -326,11 +351,12 @@ mod tests {
                     max_channels: 2,
                 }
             }
-            fn encode(
+            fn encode_with_tags(
                 &self,
                 spec: &EncodeSpec,
                 planar: &[Vec<f32>],
                 writer: &mut dyn Write,
+                _tags: &field_audio_io::TagMap,
             ) -> Result<()> {
                 writer.write_all(&(spec.sample_rate.to_le_bytes()))?;
                 writer.write_all(&(planar.len() as u16).to_le_bytes())?;
@@ -381,6 +407,7 @@ mod tests {
                 },
                 channel_indices: vec![0],
                 dest: dest.clone(),
+                tags: Default::default(),
             },
             None,
             0,
@@ -414,6 +441,7 @@ mod tests {
                 },
                 channel_indices: vec![0, 1],
                 dest: dest.clone(),
+                tags: Default::default(),
             },
             None,
             0,

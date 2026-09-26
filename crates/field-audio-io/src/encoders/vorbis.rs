@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use rusty_vorbis::VorbisEncoder;
 
+use crate::metadata::TagMap;
 use crate::pcm::interleave_f32;
 use crate::spec::{EncodeSpec, EncoderCaps};
 use crate::FormatEncoder;
@@ -37,7 +38,13 @@ impl FormatEncoder for VorbisEncoderImpl {
         }
     }
 
-    fn encode(&self, spec: &EncodeSpec, planar: &[Vec<f32>], writer: &mut dyn Write) -> Result<()> {
+    fn encode_with_tags(
+        &self,
+        spec: &EncodeSpec,
+        planar: &[Vec<f32>],
+        writer: &mut dyn Write,
+        tags: &TagMap,
+    ) -> Result<()> {
         if !self.supports(spec) {
             bail!(
                 "Ogg Vorbis cannot encode {} Hz {} ch",
@@ -72,19 +79,30 @@ impl FormatEncoder for VorbisEncoderImpl {
             bail!("Vorbis encoder produced no header packets");
         }
         let last = packets.len() - 1;
-        let mut ogg = PacketWriter::new(writer);
-        let serial = 1u32;
-        for (index, packet) in packets.into_iter().enumerate() {
-            let end = if index < 3 && index != last {
-                PacketWriteEndInfo::EndPage
-            } else if index == last {
-                PacketWriteEndInfo::EndStream
-            } else {
-                PacketWriteEndInfo::NormalPacket
-            };
-            ogg.write_packet(packet.data, serial, end, packet.pts.max(0) as u64)
-                .context("write Ogg packet")?;
+        let mut body = Vec::new();
+        {
+            let mut ogg = PacketWriter::new(&mut body);
+            let serial = 1u32;
+            for (index, packet) in packets.into_iter().enumerate() {
+                let end = if index < 3 && index != last {
+                    PacketWriteEndInfo::EndPage
+                } else if index == last {
+                    PacketWriteEndInfo::EndStream
+                } else {
+                    PacketWriteEndInfo::NormalPacket
+                };
+                ogg.write_packet(packet.data, serial, end, packet.pts.max(0) as u64)
+                    .context("write Ogg packet")?;
+            }
         }
-        Ok(())
+        super::tag_write::encode_with_optional_tags(
+            "ogg",
+            tags,
+            |out| {
+                out.extend_from_slice(&body);
+                Ok(())
+            },
+            writer,
+        )
     }
 }

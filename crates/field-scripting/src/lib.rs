@@ -27,6 +27,7 @@
 mod app;
 mod audio_devices;
 mod backend;
+mod bindings;
 mod composition;
 mod config_dir;
 mod export;
@@ -47,6 +48,7 @@ mod session;
 mod ui;
 mod url;
 mod util;
+mod variables;
 mod workflow;
 mod workflow_app;
 mod workflow_toolbar;
@@ -54,6 +56,7 @@ mod world;
 
 pub use audio_devices::bind_audio_devices;
 pub use backend::{BackendHandle, HeadlessBackend, ScriptBackend};
+pub use bindings::{split_readonly_by_scope, LuaBindings};
 pub use config_dir::user_config_dir;
 pub use export::{
     resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
@@ -62,11 +65,15 @@ pub use export::{
 pub use fs::bind_fs;
 pub use host::{
     host_from_lua, EvalOutput, HostHandle, HostProfile, LogEntry, LogLevel, ResumeWorkflow,
-    ScriptHost, EMBEDDED_INIT,
+    ScriptHost, EMBEDDED_INIT, EMBEDDED_RESOLVER_DEFAULT,
 };
 pub use layout::ChannelLayoutDef;
 pub use package_policy::{install_package_policy, PackagePolicy};
 pub use url::bind_url;
+pub use variables::{
+    composition_site_bindings, composition_source_variables, export_site_bindings,
+    resolve_composition_variable, resolve_with_active, session_site_bindings, ResolverDef,
+};
 pub use workflow::{WorkflowDef, WorkflowMeta};
 pub use workflow_app::{
     layout_drop_targets, workflows_for_menu, DropLayout, SCOPE_DRAG_DROP, SCOPE_MENU,

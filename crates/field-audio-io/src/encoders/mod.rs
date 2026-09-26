@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 mod flac;
+mod tag_write;
 mod vorbis;
 mod wav;
 

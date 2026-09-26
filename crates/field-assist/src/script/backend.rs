@@ -406,6 +406,19 @@ impl ScriptBackend for DesktopBackend {
             Ok(())
         })
     }
+    fn session_variables(&self, which: Option<SessionId>) -> field_variables::VariableTable {
+        self.with_session_kind(which, |s| s.variables().clone())
+    }
+    fn set_session_variables(
+        &mut self,
+        which: Option<SessionId>,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()> {
+        self.with_session_kind_mut(which, |s| {
+            s.set_variables(variables);
+            Ok(())
+        })
+    }
     fn session_active_document(&self, which: Option<SessionId>) -> Option<DocumentId> {
         self.with_session_kind(which, Session::active)
     }
@@ -668,6 +681,24 @@ impl ScriptBackend for DesktopBackend {
                 .ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
             d.properties = properties;
             s.mark_dirty();
+            Ok(())
+        })
+    }
+    fn composition_variables(
+        &self,
+        id: DocumentId,
+    ) -> mlua::Result<field_variables::VariableTable> {
+        self.with_buffer(id, |d| {
+            Ok(d.composition.read().unwrap().variables().clone())
+        })
+    }
+    fn set_composition_variables(
+        &mut self,
+        id: DocumentId,
+        variables: field_variables::VariableTable,
+    ) -> mlua::Result<()> {
+        self.with_buffer_mut(id, |d| {
+            d.composition.write().unwrap().set_variables(variables);
             Ok(())
         })
     }

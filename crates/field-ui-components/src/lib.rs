@@ -60,6 +60,7 @@ mod repl;
 mod status_bar;
 mod theme;
 mod transport;
+mod variables;
 mod waveform;
 mod waveform_axis;
 mod waveform_data;
@@ -84,6 +85,10 @@ pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
 pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
+pub use variables::{
+    VariableAddHandler, VariableRemoveHandler, VariableRow, VariableScopeHandler,
+    VariableValueHandler, VariablesTable, VariablesTableOptions,
+};
 pub use waveform::WaveformDisplay;
 pub use waveform_axis::{format_db_hover, format_hz_hover, hover_axis_quantize, WaveformHoverAxis};
 pub use waveform_data::{
