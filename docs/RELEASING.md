@@ -193,6 +193,12 @@ Local packs can use `--from-op` against vault `Private` items
 `FieldAssist - macOS Signing Password` and
 `FieldAssist - macOS Signing Certificate` instead of the env vars.
 
-End-user install: open the DMG, drag FieldAssist to Applications, then on
-first launch use Open Anyway (or trust `FieldAssist-macos.cer` in Keychain).
+End-user install: clear the download quarantine, open the DMG, drag
+FieldAssist to Applications, then on first launch use Open Anyway (or trust
+`FieldAssist-macos.cer` in Keychain):
+
+```bash
+xattr -d com.apple.quarantine FieldAssist-X.Y.Z.dmg
+```
+
 Use **FieldAssist → Install CLI Tools** for `/usr/local/bin` symlinks.
