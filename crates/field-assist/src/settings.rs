@@ -14,6 +14,11 @@ use gpui_kit::{App, Global};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// On-disk kind marker for `settings.json`.
+pub const SETTINGS_KIND: &str = "settings";
+/// Current `settings.json` format version.
+pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+
 /// In-memory settings + launch flags used by the Settings UI and `app:load_settings`.
 #[derive(Clone, Debug)]
 pub struct AppSettingsStore {
@@ -38,10 +43,14 @@ impl Default for AppSettingsStore {
 
 impl Global for AppSettingsStore {}
 
-/// Top-level preferences file schema.
+/// Top-level preferences file schema (versioned envelope like `variables.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct AppSettings {
+    /// File kind marker.
+    pub kind: String,
+    /// Format version.
+    pub format_version: u32,
     pub appearance: AppearanceSettings,
     pub view: ViewSettings,
     pub waveform: WaveformSettings,
@@ -53,6 +62,8 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            kind: SETTINGS_KIND.into(),
+            format_version: SETTINGS_FORMAT_VERSION,
             appearance: AppearanceSettings::default(),
             view: ViewSettings::default(),
             waveform: WaveformSettings::default(),
@@ -302,7 +313,17 @@ impl AppSettings {
         };
         match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<AppSettings>(&text) {
-                Ok(settings) => settings,
+                // Legacy files omit `kind`; `#[serde(default)]` fills
+                // `SETTINGS_KIND`. Reject only an explicit wrong marker.
+                Ok(settings) if settings.kind == SETTINGS_KIND => settings,
+                Ok(settings) => {
+                    eprintln!(
+                        "FieldAssist: ignoring settings.json with unexpected kind {:?} ({})",
+                        settings.kind,
+                        path.display()
+                    );
+                    Self::default()
+                }
                 Err(err) => {
                     eprintln!(
                         "FieldAssist: ignoring invalid settings.json ({}): {err}",
@@ -328,7 +349,10 @@ impl AppSettings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| format!("{err:#}"))?;
         }
-        let text = serde_json::to_string_pretty(self).map_err(|err| format!("{err:#}"))?;
+        let mut out = self.clone();
+        out.kind = SETTINGS_KIND.into();
+        out.format_version = SETTINGS_FORMAT_VERSION;
+        let text = serde_json::to_string_pretty(&out).map_err(|err| format!("{err:#}"))?;
         std::fs::write(&path, text + "\n").map_err(|err| format!("{err:#}"))
     }
 }
@@ -396,6 +420,8 @@ mod tests {
     #[test]
     fn defaults_match_shipping_behavior() {
         let s = AppSettings::default();
+        assert_eq!(s.kind, SETTINGS_KIND);
+        assert_eq!(s.format_version, SETTINGS_FORMAT_VERSION);
         assert_eq!(s.appearance.theme_name, "Default Dark");
         assert_eq!(s.appearance.theme_mode, "dark");
         assert!(!s.view.explorer);
@@ -431,6 +457,8 @@ mod tests {
         s.audio.output_device = Some("Speakers".into());
         s.experimental.flags.analysis_ops = true;
         let text = serde_json::to_string_pretty(&s).unwrap();
+        assert!(text.contains("\"kind\": \"settings\""), "{text}");
+        assert!(text.contains("\"format_version\": 1"), "{text}");
         let back: AppSettings = serde_json::from_str(&text).unwrap();
         assert_eq!(back, s);
     }
@@ -442,9 +470,24 @@ mod tests {
             "future_key": 1
         }"#;
         let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.kind, SETTINGS_KIND);
+        assert_eq!(s.format_version, SETTINGS_FORMAT_VERSION);
         assert_eq!(s.appearance.theme_mode, "dark");
         assert!(!s.view.explorer);
         assert_eq!(s.view.detail, DOCK_HIDDEN);
+    }
+
+    #[test]
+    fn legacy_files_without_kind_deserialize() {
+        let json = r#"{
+            "appearance": { "theme_name": "Default Dark", "theme_mode": "light" },
+            "view": { "explorer": true, "detail": "hidden", "script": "hidden" }
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.kind, SETTINGS_KIND);
+        assert_eq!(s.format_version, SETTINGS_FORMAT_VERSION);
+        assert_eq!(s.appearance.theme_mode, "light");
+        assert!(s.view.explorer);
     }
 
     #[test]
