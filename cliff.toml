@@ -3,7 +3,15 @@
 
 
 [changelog]
-# Used by `--prepend` to remove the previous header.
+# Written at the top of generated changelogs. `--prepend` preserves this
+# text from the existing file (everything above header_marker).
+header = """
+# CHANGELOG
+
+"""
+# Must appear in CHANGELOG.md so `--prepend` can find the fixed header.
+# git-cliff may omit this marker from the rewritten file; script/release
+# re-inserts it after each prepend.
 header_marker = "<!-- git-cliff: end of header -->"
 # A Tera template to be rendered for each release in the changelog.
 # See https://keats.github.io/tera/#getting-started
@@ -69,6 +77,9 @@ commit_parsers = [
     { message = "^style", group = "<!-- 5 -->Styling" },
     { message = "^test", group = "<!-- 6 -->Testing" },
     { message = "^chore\\(release\\): prepare for", skip = true },
+    { message = "^chore: prepare release", skip = true },
+    { message = "^chore: bump workspace version", skip = true },
+    { message = "^chore: bump version to", skip = true },
     { message = "^chore\\(deps.*\\)", skip = true },
     { message = "^chore\\(pr\\)", skip = true },
     { message = "^chore\\(pull\\)", skip = true },

@@ -49,7 +49,10 @@ git checkout main && git pull
 git checkout -b release/X.Y.Z
 
 # Strip the -pre suffix in the root Cargo.toml [workspace.package] version
-# (e.g. 0.12.0-pre → 0.12.0), then refresh the changelog:
+# (e.g. 0.12.0-pre → 0.12.0), then refresh the changelog. Prefer
+# `./script/release`, which keeps the `# CHANGELOG` header and
+# `<!-- git-cliff: end of header -->` marker consistent after prepend.
+# Manual equivalent:
 git cliff --unreleased --tag X.Y.Z --prepend CHANGELOG.md
 
 git add Cargo.toml CHANGELOG.md
