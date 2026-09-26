@@ -140,12 +140,18 @@ chmod 755 \
   "$stage/usr/bin/field-batch"
 
 # Minimal debian/control so dpkg-shlibdeps can resolve substitution vars.
+# Current dpkg requires Architecture on every binary stanza.
 cat >"${tmpdir}/debian/control" <<'EOF'
 Source: fieldassist
+Section: sound
+Priority: optional
+Maintainer: Greg Wuller <ngwese@users.noreply.github.com>
 
 Package: fieldassist
+Architecture: amd64
 Depends: ${shlibs:Depends}
 Description: FieldAssist
+ FieldAssist desktop app and CLI tools.
 EOF
 
 (
