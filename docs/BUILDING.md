@@ -163,10 +163,45 @@ in `Cert:\LocalMachine\TrustedPeople` (elevated, one time) and runs
   on the user PATH)
 
 Upgrade by installing a newer MSIX signed with the same certificate
-(no re-trust). Uninstall with:
+(no re-trust).
+
+### Remove a conflicting install
+
+`Add-AppxPackage` fails if an older FieldAssist package is already
+registered (especially one signed with a **different** publisher
+certificate, or left over from an earlier local pack). Remove it for the
+current user, then re-run `--install`:
 
 ```powershell
-Get-AppxPackage FieldAssist | Remove-AppxPackage
+# List what is installed
+Get-AppxPackage *FieldAssist* | Format-List Name, Version, Publisher, PackageFullName
+
+# Remove every FieldAssist MSIX for this user
+Get-AppxPackage *FieldAssist* | Remove-AppxPackage
+```
+
+If `Remove-AppxPackage` reports the package is in use, quit FieldAssist
+(and any `field-play` / `field-batch` processes) and try again.
+
+Older pre-MSIX installs (from the previous
+`%LOCALAPPDATA%\FieldAssist` copy) are not AppX packages. Clean those up
+separately if Start Menu or PATH still point at them:
+
+```powershell
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
+  "$env:LOCALAPPDATA\FieldAssist"
+Remove-Item -Force -ErrorAction SilentlyContinue `
+  "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\FieldAssist.lnk"
+Remove-Item -Force -ErrorAction SilentlyContinue `
+  "$env:USERPROFILE\.local\bin\FieldAssist.exe",
+  "$env:USERPROFILE\.local\bin\field-play.exe",
+  "$env:USERPROFILE\.local\bin\field-batch.exe"
+```
+
+After a clean uninstall, install again:
+
+```powershell
+powershell -File script/bundle-windows.ps1 --from-op --install
 ```
 
 ### Signing certificate
@@ -177,12 +212,13 @@ certificate for all versions so upgrades replace the installed package.
 Generate once (writes a gitignored `.pfx` and a public `.cer` to commit):
 
 ```powershell
-powershell -File script/generate-windows-signing-cert.ps1
+powershell -File script/generate-windows-signing-cert.ps1 --from-op
 ```
 
 Local packs look for
 `crates/field-assist/assets/windows/FieldAssist.pfx`, or
-`FIELDASSIST_SIGNING_PFX` / `FIELDASSIST_SIGNING_PASSWORD`.
+`FIELDASSIST_SIGNING_PFX` / `FIELDASSIST_SIGNING_PASSWORD` (or pass
+`--from-op` to read the password from 1Password).
 
 ## Releases
 
