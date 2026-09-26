@@ -569,6 +569,7 @@ impl Render for UserVariablesView {
             &rows,
             entity.clone(),
             border,
+            true,
             |this, scope, cx| {
                 this.filter.toggle_scope(&scope);
                 cx.notify();

@@ -480,7 +480,8 @@ The job runs off the UI thread:
 | `ogg` | `.ogg` | Vorbis; UI PCM format is n/a; mono is written dual-mono |
 
 Defaults: WAV, source bit depth snapped toward S24, composition sample rate,
-all channels, `{display_name}.{ext}` in the suggested save directory. Rate
+all channels. Location defaults to Directory `${source.parent}` and Name
+`${source.stem}-${sample_rate}-${channel_layout}.${export.encoder}`. Rate
 presets include 22.05 kHz through 192 kHz.
 
 Export is a one-shot encode of the edited composition. It does not walk
@@ -493,7 +494,13 @@ The Export sheet includes a **Profile** menu populated from
 `field.exports`. Selecting a profile resolves settings as **composition/media
 source defaults**, then **profile fields that are set** (omitted profile
 fields keep the source value). Opening with Custom uses source defaults
-overlaid with session/document `export.*` prefs instead.
+overlaid with session/document `export.*` prefs instead. Cancel / Export sit
+on the Profile row. Format, Location, and Variables are outlined group boxes;
+Location shows a soft-resolved destination path, and Variables (collapsed by
+default) lists Export-site composed rows. Format controls upsert
+`encoder` / `sample_format` / `sample_rate` / `channels` / `extension` into
+the export variable layer for `${…}` path templates (see
+[SPEC-metadata.md](SPEC-metadata.md)).
 
 Inherited document/session string prefs: `export.encoder`,
 `export.sample_rate`, `export.sample_format`, `export.channels`.
