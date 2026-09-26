@@ -2,8 +2,8 @@
 
 Binary distributions are built by the GitHub Actions **Release** workflow
 using the local pack scripts (`script/bundle-windows.ps1`,
-`script/bundle-macos`, `script/bundle-linux`) and published to GitHub
-Releases. Crates are **not** published to crates.io.
+`script/bundle-macos`, `script/bundle-linux`, `script/bundle-deb`) and
+published to GitHub Releases. Crates are **not** published to crates.io.
 
 Version tags match the Cargo version exactly (no `v` prefix): `0.12.0`, not
 `v0.12.0`.
@@ -76,9 +76,9 @@ Or:
 gh workflow run Release --ref release/X.Y.Z -f tag=dry-run
 ```
 
-That builds the Windows MSIX, macOS DMG, and Linux tarball on each OS, but
-does **not** create a git tag or GitHub Release. Inspect the workflow
-artifacts, fix any failures on the release branch, and re-run.
+That builds the Windows MSIX, macOS DMG, and Linux tarball + `.deb` on
+each OS, but does **not** create a git tag or GitHub Release. Inspect the
+workflow artifacts, fix any failures on the release branch, and re-run.
 
 ## Promote (tag after a green build)
 
@@ -113,11 +113,21 @@ Each GitHub Release ships only the platform install packages:
 | --- | --- |
 | Windows | `FieldAssist-<version>.msix`, `.sha256`, `FieldAssist-windows.cer` |
 | macOS | `FieldAssist-<version>.dmg`, `.sha256`, `FieldAssist-macos.cer` |
-| Linux | `FieldAssist-<version>-x86_64-linux.tar.gz`, `.sha256` |
+| Linux | `FieldAssist-<version>-amd64.deb`, `.sha256`, `FieldAssist-<version>-x86_64-linux.tar.gz`, `.sha256` |
 
 The DMG embeds `field-play` / `field-batch` inside the app bundle.
-Notarization is out of scope for v1 CI. The Linux tarball contains the
-three binaries plus `install.sh`. End-user install:
+Notarization is out of scope for v1 CI.
+
+The Linux `.deb` (package name `fieldassist`) installs the three binaries
+into `/usr/bin`. It is built on Ubuntu 24.04 so the glibc baseline and
+`Depends` work on Ubuntu 24.04, Ubuntu 26.04, and Debian stable (Trixie):
+
+```bash
+sudo apt install ./FieldAssist-X.Y.Z-amd64.deb
+```
+
+The Linux tarball contains the three binaries plus `install.sh`. End-user
+install:
 
 ```bash
 tar -xzf FieldAssist-X.Y.Z-x86_64-linux.tar.gz

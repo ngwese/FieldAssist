@@ -191,6 +191,24 @@ The GUI expects a desktop session with the usual ALSA and X11 client
 libraries (the same stack as the apt build deps above). The install script
 does not install packages.
 
+### Debian package (.deb)
+
+On Linux (with `dpkg-dev` installed), pack an amd64 `.deb` that installs
+into `/usr/bin`:
+
+```bash
+sudo apt install dpkg-dev
+./script/bundle-deb
+sudo apt install ./target/release/FieldAssist-*-amd64.deb
+FieldAssist --help
+```
+
+That builds the three release binaries (unless `--skip-build --bin-dir`
+points at existing ones), runs `dpkg-shlibdeps` for `Depends`, and writes
+`target/release/FieldAssist-<version>-amd64.deb` (Debian package name
+`fieldassist`). Release CI builds this on Ubuntu 24.04 so the package
+runs on Ubuntu 24.04 / 26.04 and Debian stable.
+
 ## Windows MSIX
 
 On Windows, package a signed per-user MSIX that registers Start Menu,
