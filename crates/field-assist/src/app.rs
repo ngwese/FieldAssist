@@ -6138,23 +6138,12 @@ fn open_about_window(cx: &mut App) {
         let _ = cx.remove_global::<AboutWindow>();
     }
 
-    // Native titlebar: movable, with system close/miniaturize controls. Do not use
-    // TitleBar::window_options (transparent + app-owned drag) without drawing TitleBar.
-    let options = WindowOptions {
-        titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::from(format!("About {}", crate::APP_NAME))),
-            appears_transparent: false,
-            traffic_light_position: None,
-        }),
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(200.), px(200.)),
-            size: size(px(480.), px(300.)),
-        })),
-        app_owns_titlebar_drag: false,
-        #[cfg(target_os = "linux")]
-        window_decorations: Some(gpui_kit::WindowDecorations::Server),
-        ..Default::default()
-    };
+    let title = format!("About {}", crate::APP_NAME);
+    let options = crate::components::window_chrome::themed_window_options(
+        title,
+        point(px(200.), px(200.)),
+        crate::components::window_chrome::window_size(480., 340.),
+    );
 
     match cx.open_window(options, |window, cx| {
         let view = cx.new(AboutView::new);

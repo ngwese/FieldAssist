@@ -14,8 +14,8 @@ use gpui_kit::component::setting::{
     SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, AxisExt as _, Disableable as _, IconName, Root, Sizable as _, Size, Theme,
-    ThemeRegistry,
+    v_flex, ActiveTheme as _, AxisExt as _, Disableable as _, IconName, Root, Sizable as _, Size,
+    Theme, ThemeRegistry,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -695,12 +695,21 @@ impl Render for SettingsView {
         let content = content_foreground(cx);
         Theme::global_mut(cx).foreground = content;
 
-        div()
+        v_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(content)
             .text_sm()
-            .child(build_settings_ui(cx))
+            .child(crate::components::window_chrome::window_title_bar(
+                "Settings",
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(build_settings_ui(cx)),
+            )
     }
 }
 
@@ -727,25 +736,13 @@ pub fn open_settings_window(cx: &mut App) {
         let _ = cx.remove_global::<SettingsWindow>();
     }
 
-    use gpui_kit::{
-        point, px, size, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions,
-    };
+    use gpui_kit::{point, px};
 
-    let options = WindowOptions {
-        titlebar: Some(TitlebarOptions {
-            title: Some(SharedString::from("Settings")),
-            appears_transparent: false,
-            traffic_light_position: None,
-        }),
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(160.), px(120.)),
-            size: size(px(880.), px(640.)),
-        })),
-        app_owns_titlebar_drag: false,
-        #[cfg(target_os = "linux")]
-        window_decorations: Some(gpui_kit::WindowDecorations::Server),
-        ..Default::default()
-    };
+    let (origin, size) = (
+        point(px(160.), px(120.)),
+        crate::components::window_chrome::window_size(880., 640.),
+    );
+    let options = crate::components::window_chrome::themed_window_options("Settings", origin, size);
 
     match cx.open_window(options, |window, cx| {
         let view = cx.new(SettingsView::new);

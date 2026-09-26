@@ -35,50 +35,58 @@ impl Render for AboutView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .p_6()
-            .gap_4()
             .track_focus(&self.focus_handle(cx))
+            .child(crate::components::window_chrome::window_title_bar(format!(
+                "About {}",
+                crate::APP_NAME
+            )))
             .child(
-                h_flex()
+                v_flex()
+                    .flex_1()
                     .w_full()
-                    .items_start()
-                    .gap_3()
-                    .child(img("icons/app-mark.svg").size(px(128.)).flex_none())
+                    .p_6()
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_start()
+                            .gap_3()
+                            .child(img("icons/app-mark.svg").size(px(128.)).flex_none())
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .child(div().font_semibold().text_lg().child(crate::APP_NAME))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .child(crate::app_version_detail()),
+                                    ),
+                            ),
+                    )
                     .child(
                         v_flex()
-                            .flex_1()
-                            .min_w_0()
+                            .w_full()
                             .gap_1()
-                            .child(div().font_semibold().text_lg().child(crate::APP_NAME))
+                            .child(div().child(env!("CARGO_PKG_DESCRIPTION")))
                             .child(
                                 div()
                                     .text_sm()
                                     .text_color(muted)
-                                    .child(crate::app_version_detail()),
+                                    .child(crate::APP_COPYRIGHT),
                             ),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_1()
-                    .child(div().child(env!("CARGO_PKG_DESCRIPTION")))
+                    )
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .child(crate::APP_COPYRIGHT),
+                        h_flex().w_full().justify_end().child(
+                            Button::new("about-ok").primary().label("OK").on_click(
+                                |_, window, _| {
+                                    window.remove_window();
+                                },
+                            ),
+                        ),
                     ),
-            )
-            .child(
-                h_flex().w_full().justify_end().child(
-                    Button::new("about-ok")
-                        .primary()
-                        .label("OK")
-                        .on_click(|_, window, _| {
-                            window.remove_window();
-                        }),
-                ),
             )
     }
 }
