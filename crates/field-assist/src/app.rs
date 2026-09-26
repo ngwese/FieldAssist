@@ -623,9 +623,13 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> DocumentViews {
         let selection = crate::settings::store(cx).settings.selection.clone();
+        let waveform = crate::settings::store(cx).settings.waveform.clone();
         let document = cx.new(|_| {
             let mut doc = BufferDocument::with_shared(composition.clone(), buffer.clone());
             doc.waveform_representation = waveform_representation;
+            doc.peak_rendering = waveform.peak_rendering_enum();
+            doc.threaded_shell_value_reduce = waveform.threaded_shell_value_reduce;
+            doc.threaded_ribbon_db = waveform.threaded_ribbon_db;
             doc.snap_zero_crossings = selection.zero_crossing;
             doc.snap_to_marker = selection.snap_to_marker;
             doc
@@ -2220,6 +2224,7 @@ impl AppView {
         self.add_marker_at_hover = selection.add_at_hover;
         self.follow_playhead = waveform.follow_playhead;
         self.set_waveform_representation(waveform.representation_enum(), window, cx);
+        self.apply_peak_rendering_settings(&waveform, cx);
         self.sync_view_menus(cx);
         cx.notify();
     }
@@ -3929,6 +3934,40 @@ impl AppView {
         }
         self.sync_view_menus(cx);
         window.refresh();
+    }
+
+    fn apply_peak_rendering_settings(
+        &mut self,
+        waveform: &crate::settings::WaveformSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let mode = waveform.peak_rendering_enum();
+        let shell = waveform.threaded_shell_value_reduce;
+        let ribbon = waveform.threaded_ribbon_db;
+        let ids: Vec<_> = self.views.keys().copied().collect();
+        for id in ids {
+            let Some(views) = self.views.get(&id).cloned() else {
+                continue;
+            };
+            let mut changed = false;
+            views.document.update(cx, |doc, cx| {
+                if doc.peak_rendering != mode
+                    || doc.threaded_shell_value_reduce != shell
+                    || doc.threaded_ribbon_db != ribbon
+                {
+                    doc.peak_rendering = mode;
+                    doc.threaded_shell_value_reduce = shell;
+                    doc.threaded_ribbon_db = ribbon;
+                    changed = true;
+                    cx.notify();
+                }
+            });
+            if changed {
+                views.waveform.update(cx, |view, cx| {
+                    view.bump_paint_epoch(cx);
+                });
+            }
+        }
     }
 
     fn show_load_error(&self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -6482,13 +6521,11 @@ fn install_cli_tools(_: &InstallCliTools, _cx: &mut App) {
 
 /// Apply waveform defaults from the settings store to the open editor (if any).
 pub(crate) fn apply_waveform_default_from_settings(cx: &mut App) {
-    let (rep, follow) = {
-        let waveform = &crate::settings::store(cx).settings.waveform;
-        (waveform.representation_enum(), waveform.follow_playhead)
-    };
+    let waveform = crate::settings::store(cx).settings.waveform.clone();
     update_open_view(cx, move |this, window, cx| {
-        this.follow_playhead = follow;
-        this.set_waveform_representation(rep, window, cx);
+        this.follow_playhead = waveform.follow_playhead;
+        this.set_waveform_representation(waveform.representation_enum(), window, cx);
+        this.apply_peak_rendering_settings(&waveform, cx);
         this.sync_view_menus(cx);
         cx.notify();
     });

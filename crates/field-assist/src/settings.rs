@@ -6,7 +6,10 @@
 use std::path::PathBuf;
 
 use field_features::{Feature, FeatureFlags, FeatureRegistry};
-use field_ui_components::WaveformRepresentation;
+use field_ui_components::{
+    PeakRendering, WaveformRepresentation, DEFAULT_THREADED_RIBBON_DB,
+    DEFAULT_THREADED_SHELL_VALUE_REDUCE,
+};
 use gpui_kit::{App, Global};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -159,6 +162,12 @@ pub struct WaveformSettings {
     pub representation: String,
     /// Keep the playhead in view while playing / after seeks.
     pub follow_playhead: bool,
+    /// `"simple"` or `"threaded"` overview peak paint.
+    pub peak_rendering: String,
+    /// HSV value reduction for Threaded shell bars (`0.0..=1.0`).
+    pub threaded_shell_value_reduce: f32,
+    /// Ribbon amplitude scale in dBFS for Threaded peak paint.
+    pub threaded_ribbon_db: f32,
 }
 
 impl Default for WaveformSettings {
@@ -166,6 +175,9 @@ impl Default for WaveformSettings {
         Self {
             representation: "peaks".into(),
             follow_playhead: true,
+            peak_rendering: "threaded".into(),
+            threaded_shell_value_reduce: DEFAULT_THREADED_SHELL_VALUE_REDUCE,
+            threaded_ribbon_db: DEFAULT_THREADED_RIBBON_DB,
         }
     }
 }
@@ -193,6 +205,37 @@ impl WaveformSettings {
             "peaks_spectrum" => WaveformRepresentation::PeaksSpectrum,
             _ => WaveformRepresentation::Peaks,
         }
+    }
+
+    pub fn peak_rendering_enum(&self) -> PeakRendering {
+        Self::from_peak_rendering_string(&self.peak_rendering)
+    }
+
+    pub fn set_peak_rendering_enum(&mut self, mode: PeakRendering) {
+        self.peak_rendering = match mode {
+            PeakRendering::Simple => "simple".into(),
+            PeakRendering::Threaded => "threaded".into(),
+        };
+    }
+
+    pub fn set_peak_rendering_str(&mut self, value: &str) {
+        self.set_peak_rendering_enum(Self::from_peak_rendering_string(value));
+    }
+
+    fn from_peak_rendering_string(value: &str) -> PeakRendering {
+        match value {
+            "simple" => PeakRendering::Simple,
+            _ => PeakRendering::Threaded,
+        }
+    }
+
+    pub fn set_threaded_shell_value_reduce(&mut self, value: f32) {
+        self.threaded_shell_value_reduce =
+            field_ui_components::clamp_threaded_shell_value_reduce(value);
+    }
+
+    pub fn set_threaded_ribbon_db(&mut self, value: f32) {
+        self.threaded_ribbon_db = field_ui_components::clamp_threaded_ribbon_db(value);
     }
 }
 
@@ -361,6 +404,12 @@ mod tests {
         assert!(s.view.detail_open() && !s.view.script_open());
         assert_eq!(s.waveform.representation, "peaks");
         assert!(s.waveform.follow_playhead);
+        assert_eq!(s.waveform.peak_rendering, "threaded");
+        assert_eq!(
+            s.waveform.threaded_shell_value_reduce,
+            DEFAULT_THREADED_SHELL_VALUE_REDUCE
+        );
+        assert_eq!(s.waveform.threaded_ribbon_db, DEFAULT_THREADED_RIBBON_DB);
         assert!(s.selection.zero_crossing);
         assert!(!s.selection.snap_to_marker);
         assert!(s.selection.add_at_hover);
@@ -376,6 +425,9 @@ mod tests {
         s.view.script = crate::dock_titles::BOTTOM_TAB_SCRIPT.into();
         s.waveform
             .set_representation_enum(WaveformRepresentation::Spectrum);
+        s.waveform.set_peak_rendering_enum(PeakRendering::Threaded);
+        s.waveform.set_threaded_shell_value_reduce(0.15);
+        s.waveform.set_threaded_ribbon_db(-6.0);
         s.audio.output_device = Some("Speakers".into());
         s.experimental.flags.analysis_ops = true;
         let text = serde_json::to_string_pretty(&s).unwrap();

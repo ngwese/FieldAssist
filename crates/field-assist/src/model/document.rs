@@ -44,6 +44,12 @@ pub struct BufferDocument {
     pub show_envelope_peak: bool,
     /// Active waveform body; mirrored from the app-global View menu choice.
     pub waveform_representation: WaveformRepresentation,
+    /// Overview peak paint style from settings.
+    pub peak_rendering: field_ui_components::PeakRendering,
+    /// HSV value reduction for Threaded shell bars (`0.0..=1.0`).
+    pub threaded_shell_value_reduce: f32,
+    /// Ribbon amplitude scale in dBFS for Threaded peak paint.
+    pub threaded_ribbon_db: f32,
     /// Shared peaks-pane height fraction for Peaks + Spectrum (0.15..=0.85).
     pub peaks_spectrum_split: f32,
     /// Analyze → Selection Only: limit envelope/transient jobs to the selection.
@@ -89,6 +95,9 @@ impl BufferDocument {
             analysis_requests: Arc::new(Mutex::new(Vec::new())),
             show_envelope_peak: false,
             waveform_representation: WaveformRepresentation::Peaks,
+            peak_rendering: field_ui_components::PeakRendering::Threaded,
+            threaded_shell_value_reduce: field_ui_components::DEFAULT_THREADED_SHELL_VALUE_REDUCE,
+            threaded_ribbon_db: field_ui_components::DEFAULT_THREADED_RIBBON_DB,
             peaks_spectrum_split: field_ui_components::DEFAULT_PEAKS_SPECTRUM_SPLIT,
             analyze_selection_only: false,
             pending_analysis_target: Mutex::new(None),
@@ -1053,6 +1062,18 @@ impl WaveformDataProvider for BufferDocument {
 
     fn waveform_representation(&self) -> WaveformRepresentation {
         self.waveform_representation
+    }
+
+    fn peak_rendering(&self) -> field_ui_components::PeakRendering {
+        self.peak_rendering
+    }
+
+    fn threaded_shell_value_reduce(&self) -> f32 {
+        self.threaded_shell_value_reduce
+    }
+
+    fn threaded_ribbon_db(&self) -> f32 {
+        self.threaded_ribbon_db
     }
 
     fn peaks_spectrum_split(&self) -> f32 {
