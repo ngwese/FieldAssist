@@ -1,7 +1,9 @@
 # Releasing FieldAssist
 
-Binary distributions are built with [cargo-dist](https://opensource.axo.dev/cargo-dist/)
-and published to GitHub Releases. Crates are **not** published to crates.io.
+Binary distributions are built by the GitHub Actions **Release** workflow
+using the local pack scripts (`script/bundle-windows.ps1`,
+`script/bundle-macos`, `script/bundle-linux`) and published to GitHub
+Releases. Crates are **not** published to crates.io.
 
 Version tags match the Cargo version exactly (no `v` prefix): `0.12.0`, not
 `v0.12.0`.
@@ -34,9 +36,9 @@ From a clean tree on an up-to-date clone:
 ```
 
 The script syncs `main`, cuts `release/X.Y.Z`, opens a PR for lightweight
-CI (`ci.yml`), promotes the cargo-dist GitHub Release (tag = `X.Y.Z`), bumps
-the PR to the next `*-pre`, waits for CI again, and rebase-merges into
-`main`. See `./script/release --help`.
+CI (`ci.yml`), promotes the GitHub Release (tag = `X.Y.Z`), bumps the PR to
+the next `*-pre`, waits for CI again, and rebase-merges into `main`. See
+`./script/release --help`.
 
 ## Cut a release branch (manual)
 
@@ -61,8 +63,8 @@ fixes between branches as needed.
 
 ## Dry-run (build without tagging)
 
-With `dispatch-releases = true`, the Release workflow is started manually.
-From the `release/X.Y.Z` tip (after the version bump):
+The Release workflow is started manually. From the `release/X.Y.Z` tip
+(after the version bump):
 
 1. GitHub → **Actions** → **Release** → **Run workflow**
 2. Use branch `release/X.Y.Z`
@@ -74,12 +76,9 @@ Or:
 gh workflow run Release --ref release/X.Y.Z -f tag=dry-run
 ```
 
-That builds archives and installers for Linux x64, macOS Apple Silicon, and
-Windows x64, but does **not** create a git tag or GitHub Release. The
-follow-up `Windows MSIX`, `macOS DMG`, and `Linux tarball` workflows pack
-platform installers from the archives and upload them as workflow artifacts
-(inspectable; not attached to a Release on dry-run). Fix any failures on
-the release branch and re-run.
+That builds the Windows MSIX, macOS DMG, and Linux tarball on each OS, but
+does **not** create a git tag or GitHub Release. Inspect the workflow
+artifacts, fix any failures on the release branch, and re-run.
 
 ## Promote (tag after a green build)
 
@@ -89,7 +88,7 @@ When dry-run (and PR CI) are green:
 gh workflow run Release --ref release/X.Y.Z -f tag=X.Y.Z
 ```
 
-cargo-dist builds again, then creates the GitHub Release for tag `X.Y.Z`
+The workflow builds again, then creates the GitHub Release for tag `X.Y.Z`
 (creating the git tag as part of that release). The `version-tags` ruleset
 blocks rewriting or deleting tags; prefer not to `git push --tags` by hand.
 
@@ -103,29 +102,22 @@ blocks rewriting or deleting tags; prefer not to `git push --tags` by hand.
 ## Local checks
 
 ```bash
-dist plan          # what would be announced
-dist generate --check
 git cliff          # preview changelog
 ```
 
-## Artifacts vs macOS DMG / Windows MSIX / Linux tarball
+## Release artifacts
 
-GitHub Releases ship platform archives of `FieldAssist`, `field-play`, and
-`field-batch`, plus Unix shell installers. Windows no longer publishes a
-PowerShell installer (Defender blocks unsigned remote scripts); the
-`Windows MSIX` workflow packs a signed `.msix` after a successful Release
-run and attaches it (with `FieldAssist.cer` and a `.sha256`) when the run
-published a tag.
+Each GitHub Release ships only the platform install packages:
 
-The `macOS DMG` workflow likewise packs a signed `.dmg` (app bundle with
-`field-play` / `field-batch` inside) after Release and attaches it with
-`FieldAssist.cer` and a `.sha256` when the run published a tag.
-Notarization is out of scope for v1 CI.
+| Platform | Assets |
+| --- | --- |
+| Windows | `FieldAssist-<version>.msix`, `.sha256`, `FieldAssist-windows.cer` |
+| macOS | `FieldAssist-<version>.dmg`, `.sha256`, `FieldAssist-macos.cer` |
+| Linux | `FieldAssist-<version>-x86_64-linux.tar.gz`, `.sha256` |
 
-The `Linux tarball` workflow packs
-`FieldAssist-<version>-x86_64-linux.tar.gz` (the three binaries plus
-`install.sh`) after Release and attaches it with a `.sha256` when the run
-published a tag. End-user install:
+The DMG embeds `field-play` / `field-batch` inside the app bundle.
+Notarization is out of scope for v1 CI. The Linux tarball contains the
+three binaries plus `install.sh`. End-user install:
 
 ```bash
 tar -xzf FieldAssist-X.Y.Z-x86_64-linux.tar.gz
@@ -162,7 +154,7 @@ End-user install (one-time elevated cert trust; package install/upgrade
 is per-user):
 
 ```powershell
-Import-Certificate -FilePath .\FieldAssist.cer `
+Import-Certificate -FilePath .\FieldAssist-windows.cer `
   -CertStoreLocation Cert:\LocalMachine\TrustedPeople
 Add-AppxPackage -Path .\FieldAssist-X.Y.Z.msix
 ```
@@ -189,5 +181,5 @@ Local packs can use `--from-op` against vault `Private` items
 `FieldAssist - macOS Signing Certificate` instead of the env vars.
 
 End-user install: open the DMG, drag FieldAssist to Applications, then on
-first launch use Open Anyway (or trust `FieldAssist.cer` in Keychain).
+first launch use Open Anyway (or trust `FieldAssist-macos.cer` in Keychain).
 Use **FieldAssist → Install CLI Tools** for `/usr/local/bin` symlinks.
