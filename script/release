@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Cut a release branch, validate with PR CI, promote a GitHub Release via
-# cargo-dist, then bump main to the next -pre through a lightweight CI PR.
+# the Release workflow, then bump main to the next -pre through a
+# lightweight CI PR.
 
 set -euo pipefail
 
@@ -18,13 +19,14 @@ Automate a FieldAssist release end-to-end:
      from [workspace.package] version, e.g. 0.12.0-pre → 0.12.0)
   3. Set workspace version, refresh CHANGELOG, push
   4. Open PR release/VERSION → main and wait for CI (ci.yml)
-  5. Promote via cargo-dist (builds then creates tag + GitHub Release)
+  5. Promote via the Release workflow (builds MSIX/DMG/Linux tarball,
+     then creates tag + GitHub Release)
   6. Bump PR branch to next -pre, wait for CI, rebase-merge into main
 
 Options:
   --next VERSION     Next main prerelease (default: bump minor, e.g.
                      0.12.0 → 0.13.0-pre)
-  --with-dry-run     Run a cargo-dist dry-run build before promote
+  --with-dry-run     Run a Release workflow dry-run build before promote
   --skip-promote     Stop after CI is green (no GitHub Release)
   --yes, -y          Do not prompt for confirmation
   -h, --help         Show this help
@@ -312,12 +314,12 @@ pr_url="$(
     --body "$(cat <<EOF
 ## Summary
 - Prepare workspace version \`$release\` and CHANGELOG for release.
-- After CI is green, \`script/release\` promotes the cargo-dist GitHub Release
+- After CI is green, \`script/release\` promotes the GitHub Release
   (tag \`$release\`), then bumps this branch to \`$next\` and merges.
 
 ## Test plan
 - [x] PR CI (\`ci\` check) on linux/macos/windows
-- [ ] cargo-dist promote for tag \`$release\`
+- [ ] Release workflow promote for tag \`$release\`
 - [ ] Post-promote bump to \`$next\` and rebase-merge
 
 EOF
@@ -335,14 +337,14 @@ if [[ "$SKIP_PROMOTE" == true ]]; then
 fi
 
 if [[ "$WITH_DRY_RUN" == true ]]; then
-  log "starting cargo-dist dry-run on $branch"
+  log "starting Release dry-run on $branch"
   # Small backdate so GitHub createdAt cannot race the local clock.
   dry_started="$(python3 -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc)-timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
   gh workflow run Release --ref "$branch" -f tag=dry-run
   dry_id="$(wait_workflow_dispatch Release "$branch" "$dry_started")"
   log "watching dry-run run $dry_id"
   gh run watch "$dry_id" --exit-status \
-    || die "cargo-dist dry-run failed (run $dry_id)"
+    || die "Release dry-run failed (run $dry_id)"
 fi
 
 log "promoting GitHub Release for tag $release"
@@ -351,7 +353,7 @@ gh workflow run Release --ref "$branch" -f tag="$release"
 promote_id="$(wait_workflow_dispatch Release "$branch" "$promote_started")"
 log "watching promote run $promote_id"
 gh run watch "$promote_id" --exit-status \
-  || die "cargo-dist promote failed (run $promote_id)"
+  || die "Release promote failed (run $promote_id)"
 
 gh release view "$release" >/dev/null \
   || die "promote finished but GitHub Release '$release' was not found"
