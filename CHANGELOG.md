@@ -1,3 +1,21 @@
+## [0.15.0] - 2026-09-26
+
+### Features
+
+- Ship Windows builds as a per-user MSIX
+- Read MSIX PFX password from 1Password
+- Ship macOS DMG with bundled CLIs and Install CLI Tools
+- Ship a combined Linux release tarball
+
+### Documentation
+
+- Document MSIX conflict cleanup and op password for packs
+
+### Miscellaneous Tasks
+
+- Prepare release 0.12.0
+- Bump workspace version to 0.13.0-pre
+- Bump workspace version to 0.15.0-pre
 ## [0.12.0] - 2026-09-25
 
 ### Features
