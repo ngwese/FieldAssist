@@ -158,17 +158,17 @@ impl RenderOnce for ChannelSelector {
                 self.channels
                     .into_iter()
                     .enumerate()
-                .map(|(i, (label, checked))| {
-                    let on_toggle = on_toggle.clone();
-                    ChannelToggle::new(format!("{id_prefix}-{i}"))
-                        .label(label)
-                        .checked(checked)
-                        .on_click(move |enabled: &bool, window, cx| {
-                            if let Some(on_toggle) = &on_toggle {
-                                on_toggle(&(i, *enabled), window, cx);
-                            }
-                        })
-                }),
+                    .map(|(i, (label, checked))| {
+                        let on_toggle = on_toggle.clone();
+                        ChannelToggle::new(format!("{id_prefix}-{i}"))
+                            .label(label)
+                            .checked(checked)
+                            .on_click(move |enabled: &bool, window, cx| {
+                                if let Some(on_toggle) = &on_toggle {
+                                    on_toggle(&(i, *enabled), window, cx);
+                                }
+                            })
+                    }),
             )
     }
 }
