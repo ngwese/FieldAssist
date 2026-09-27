@@ -68,7 +68,7 @@ mod waveform_data;
 mod waveform_editor;
 
 pub use app_menu::AppMenuBar;
-pub use channel_toggle::ChannelToggle;
+pub use channel_toggle::{ChannelSelector, ChannelToggle};
 pub use dock_skin::{tool_dock_min_size, CenterTabBarHandler, CompactDockSkin};
 pub use edits::{
     EditActivateHandler, EditCard, EditClickHandler, EditHoverHandler, EditsData, EditsPanel,

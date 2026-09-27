@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! Compact channel on/off chip for monitor and export channel lists.
+//! Compact channel on/off chips and the wrapped selector that hosts them.
 
 use std::rc::Rc;
 
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::{h_flex, ActiveTheme as _};
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, App, ElementId, InteractiveElement as _, IntoElement,
     ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
@@ -100,5 +100,75 @@ impl RenderOnce for ChannelToggle {
                     on_click(&!checked, window, cx);
                 })
             })
+    }
+}
+
+/// Wrapped row of [`ChannelToggle`] chips for selecting N channels.
+///
+/// Owns the shared `gap_1` / `flex_wrap` layout used by the monitor pane and
+/// export sheet so those hosts stay visually consistent.
+#[derive(IntoElement)]
+pub struct ChannelSelector {
+    id_prefix: SharedString,
+    channels: Vec<(SharedString, bool)>,
+    on_toggle: Option<Rc<dyn Fn(&(usize, bool), &mut Window, &mut App) + 'static>>,
+}
+
+impl ChannelSelector {
+    /// Create a selector; `id_prefix` is paired with each channel index for
+    /// element ids (e.g. `"monitor-ch"` → `("monitor-ch", 0)`).
+    pub fn new(id_prefix: impl Into<SharedString>) -> Self {
+        Self {
+            id_prefix: id_prefix.into(),
+            channels: Vec::new(),
+            on_toggle: None,
+        }
+    }
+
+    /// Set channel labels and checked state in index order.
+    pub fn channels(
+        mut self,
+        channels: impl IntoIterator<Item = (impl Into<SharedString>, bool)>,
+    ) -> Self {
+        self.channels = channels
+            .into_iter()
+            .map(|(label, checked)| (label.into(), checked))
+            .collect();
+        self
+    }
+
+    /// Toggle handler receives `(channel_index, new_enabled)`.
+    pub fn on_toggle(
+        mut self,
+        handler: impl Fn(&(usize, bool), &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle = Some(Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for ChannelSelector {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let id_prefix = self.id_prefix;
+        let on_toggle = self.on_toggle;
+        h_flex()
+            .gap_1()
+            .flex_wrap()
+            .children(
+                self.channels
+                    .into_iter()
+                    .enumerate()
+                .map(|(i, (label, checked))| {
+                    let on_toggle = on_toggle.clone();
+                    ChannelToggle::new(format!("{id_prefix}-{i}"))
+                        .label(label)
+                        .checked(checked)
+                        .on_click(move |enabled: &bool, window, cx| {
+                            if let Some(on_toggle) = &on_toggle {
+                                on_toggle(&(i, *enabled), window, cx);
+                            }
+                        })
+                }),
+            )
     }
 }

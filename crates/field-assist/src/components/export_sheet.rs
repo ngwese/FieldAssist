@@ -13,7 +13,7 @@ use field_scripting::{
     resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
     ResolvedExportSettings,
 };
-use field_ui_components::{ChannelToggle, VariableRow};
+use field_ui_components::{ChannelSelector, VariableRow};
 use field_variables::{compose, interpolate, interpolate_strict, VariableEntry, VariableTable};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
@@ -1134,26 +1134,27 @@ impl Render for ExportSheet {
                                 )),
                         )),
                     )
-                    .child(div().flex_1().min_w_0().child(section(
-                        "Channels",
-                        h_flex().gap_2().flex_wrap().children(
-                            self.channel_labels.iter().enumerate().map(|(i, label)| {
-                                let checked =
-                                    self.channels_selected.get(i).copied().unwrap_or(false);
-                                ChannelToggle::new(("export-ch", i as u64))
-                                    .label(label.clone())
-                                    .checked(checked)
-                                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                        this.profile_name = None;
-                                        if let Some(slot) = this.channels_selected.get_mut(i) {
-                                            *slot = *checked;
-                                        }
-                                        this.sync_format_export_vars();
-                                        cx.notify();
-                                    }))
-                            }),
-                        ),
-                    ))),
+                    .child(
+                        div().flex_1().min_w_0().child(section(
+                            "Channels",
+                            ChannelSelector::new("export-ch")
+                                .channels(self.channel_labels.iter().enumerate().map(
+                                    |(i, label)| {
+                                        let checked =
+                                            self.channels_selected.get(i).copied().unwrap_or(false);
+                                        (label.clone(), checked)
+                                    },
+                                ))
+                                .on_toggle(cx.listener(|this, &(i, enabled), _, cx| {
+                                    this.profile_name = None;
+                                    if let Some(slot) = this.channels_selected.get_mut(i) {
+                                        *slot = enabled;
+                                    }
+                                    this.sync_format_export_vars();
+                                    cx.notify();
+                                })),
+                        )),
+                    ),
             )
             .child(section(
                 "Location",

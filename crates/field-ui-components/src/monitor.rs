@@ -23,7 +23,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
-use crate::channel_toggle::ChannelToggle;
+use crate::channel_toggle::ChannelSelector;
 use crate::param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
 
 /// Host callbacks for monitor panel interactions.
@@ -291,23 +291,22 @@ impl MonitorPanel {
                     if mismatch { " (pad / truncate)" } else { "" }
                 )))
             })
-            .child(h_flex().gap_2().flex_wrap().children(
-                snap.channel_labels.iter().enumerate().map(|(i, label)| {
-                    let checked = match snap.playback_channels.as_deref() {
-                        Some(channels) => channels.contains(&i),
-                        None => true,
-                    };
-                    let callbacks = callbacks.clone();
-                    ChannelToggle::new(("monitor-ch", i as u64))
-                        .label(label.clone())
-                        .checked(checked)
-                        .on_click(move |enabled: &bool, window, cx| {
-                            if let Some(cb) = &callbacks {
-                                (cb.set_playback_channel)(i, *enabled, window, cx);
-                            }
-                        })
-                }),
-            ))
+            .child({
+                let callbacks = callbacks.clone();
+                ChannelSelector::new("monitor-ch")
+                    .channels(snap.channel_labels.iter().enumerate().map(|(i, label)| {
+                        let checked = match snap.playback_channels.as_deref() {
+                            Some(channels) => channels.contains(&i),
+                            None => true,
+                        };
+                        (label.clone(), checked)
+                    }))
+                    .on_toggle(move |(i, enabled), window, cx| {
+                        if let Some(cb) = &callbacks {
+                            (cb.set_playback_channel)(*i, *enabled, window, cx);
+                        }
+                    })
+            })
             .child(render_schema(
                 &snap.params_ui,
                 &self.sliders,
