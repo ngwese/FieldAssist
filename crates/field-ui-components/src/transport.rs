@@ -146,7 +146,7 @@ impl RenderOnce for Transport {
                         muted,
                     ))
                     .child({
-                        let loop_color = if self.looping { theme.cyan } else { muted };
+                        let loop_color = if self.looping { theme.primary } else { muted };
                         transport_button(
                             "transport-loop",
                             TransportIcon::Repeat,

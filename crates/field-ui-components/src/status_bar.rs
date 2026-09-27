@@ -361,7 +361,7 @@ fn preview_button(
     cx: &App,
 ) -> impl IntoElement {
     let theme = cx.theme();
-    let color = if selected { theme.cyan } else { muted };
+    let color = if selected { theme.primary } else { muted };
     Button::new("preview-toggle")
         .ghost()
         .size(MONITOR_ICON_SIZE)
