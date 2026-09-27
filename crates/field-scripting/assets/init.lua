@@ -28,7 +28,7 @@ local started = os.clock()
 field.layouts.define({
   name = "mono",
   description = "Single channel",
-  channels = { [0] = "Mono" },
+  channels = { [0] = "C" },
   monitor = { chain = "mono" },
 })
 
