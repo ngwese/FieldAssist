@@ -664,9 +664,22 @@ mod tests {
             end
             assert(stereo)
             assert(stereo.description == "Left / Right")
+            assert(stereo.code == "stereo")
             assert(stereo.channels[0] == "L")
             assert(stereo.channels[1] == "R")
             assert(stereo.monitor.chain == "stereo")
+            reg:define({
+              name = "B-Format (AmbiX)",
+              code = "ambiX",
+              channels = { [0] = "W" },
+            })
+            local ambix
+            for _, layout in ipairs(reg:items()) do
+              if layout.name == "B-Format (AmbiX)" then ambix = layout end
+            end
+            assert(ambix)
+            assert(ambix.code == "ambiX")
+            reg:remove("B-Format (AmbiX)")
             reg:remove("temp")
             reg:remove(stereo)
             local names = {}
@@ -699,6 +712,21 @@ mod tests {
         assert_eq!(
             host.layout("stereo").map(|layout| layout.description),
             Some("Left / Right".into())
+        );
+        assert_eq!(
+            host.layout("stereo")
+                .map(|layout| layout.export_code().to_string()),
+            Some("st".into())
+        );
+        assert_eq!(
+            host.layout("B-Format (AmbiX)")
+                .map(|layout| layout.export_code().to_string()),
+            Some("ambix".into())
+        );
+        assert_eq!(
+            host.layout("2OA")
+                .map(|layout| layout.export_code().to_string()),
+            Some("2OA".into())
         );
         let id = world.borrow().active.unwrap();
         host.fire_detect_layout(id);

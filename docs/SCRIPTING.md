@@ -710,12 +710,13 @@ Channel layout registry used by detect hooks and composition layout choice.
 ### `define(spec)` keys
 
 
-| Key           | Required | Type     | Description                                             |
-| ------------- | -------- | -------- | ------------------------------------------------------- |
-| `name`        | yes      | `string` | Non-empty layout id                                     |
-| `description` | no       | `string` | Human label (default `""`)                              |
-| `channels`    | yes      | map      | **0-based** channel index → label string                |
-| `monitor`     | no       | table    | JSON-compatible monitor table (often `{ chain = "…" }`) |
+| Key           | Required | Type     | Description                                                                  |
+| ------------- | -------- | -------- | ---------------------------------------------------------------------------- |
+| `name`        | yes      | `string` | Non-empty layout id                                                          |
+| `code`        | no       | `string` | Filename-safe token for `${channel_layout}` (default = `name`; empty → `name`) |
+| `description` | no       | `string` | Human label (default `""`)                                                   |
+| `channels`    | yes      | map      | **0-based** channel index → label string                                     |
+| `monitor`     | no       | table    | JSON-compatible monitor table (often `{ chain = "…" }`)                      |
 
 
 
@@ -747,12 +748,13 @@ Channel layout registry used by detect hooks and composition layout choice.
 #### Properties
 
 
-| Property      | Access | Type           | Description                              |
-| ------------- | ------ | -------------- | ---------------------------------------- |
-| `name`        | **ro** | `string`       | Layout id                                |
-| `description` | **ro** | `string`       | Human label                              |
-| `channels`    | **ro** | map            | **0-based** channel index → label string |
-| `monitor`     | **ro** | table or `nil` | Monitor table from `define`              |
+| Property      | Access | Type           | Description                                              |
+| ------------- | ------ | -------------- | -------------------------------------------------------- |
+| `name`        | **ro** | `string`       | Layout id                                                |
+| `code`        | **ro** | `string`       | Filename-safe token (defaults to `name` when unset)      |
+| `description` | **ro** | `string`       | Human label                                              |
+| `channels`    | **ro** | map            | **0-based** channel index → label string                 |
+| `monitor`     | **ro** | table or `nil` | Monitor table from `define`                              |
 
 
 
@@ -943,9 +945,10 @@ One scope's leaf name → string map.
 `session.variables` and `composition.variables` return live **single-scope**
 Bindings for that store only (writes hit the session / `.facomp` file). They do
 **not** include probe/`source.*` rows shown in the Variables pane. Composition
-site resolution also injects derived `channel_layout` (layout name, or `""`
-when unset) into the composition layer for `${channel_layout}` / pane display;
-it is not stored in `composition.variables` itself. To look up a
+site resolution also injects derived `channel_layout` (layout export `code`,
+or `""` when unset) into the composition layer for `${channel_layout}` / pane
+display; when `code` was omitted at `define` time it equals the layout `name`.
+It is not stored in `composition.variables` itself. To look up a
 value the same way the pane does (source + user + session + composition), use
 `composition:resolve_variable`:
 

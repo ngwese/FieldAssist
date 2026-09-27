@@ -15,6 +15,8 @@ use field_session::DocumentId;
 pub struct ChannelLayoutDef {
     /// Layout name.
     pub name: String,
+    /// Filename-safe short token (defaults to [`Self::name`] when omitted).
+    pub code: String,
     /// Human-readable description.
     pub description: String,
     /// Channel index to label map.
@@ -30,6 +32,15 @@ impl ChannelLayoutDef {
             .as_ref()
             .and_then(|value| value.get("chain"))
             .and_then(|value| value.as_str())
+    }
+
+    /// Filename-safe token for export paths (`code`, falling back to `name`).
+    pub fn export_code(&self) -> &str {
+        if self.code.is_empty() {
+            self.name.as_str()
+        } else {
+            self.code.as_str()
+        }
     }
 }
 
@@ -57,6 +68,11 @@ impl FromLua for LuaLayout {
 impl UserData for LuaLayout {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
+        fields.add_field_method_get("code", |lua, this| {
+            with_layout(lua, &this.name, |layout| {
+                Ok(layout.export_code().to_string())
+            })
+        });
         fields.add_field_method_get("description", |lua, this| {
             with_layout(lua, &this.name, |layout| Ok(layout.description.clone()))
         });
@@ -124,6 +140,23 @@ pub fn layout_from_lua(table: Table) -> mlua::Result<ChannelLayoutDef> {
     if name.is_empty() {
         return Err(mlua::Error::runtime("layout name is required"));
     }
+    let code = match table.get::<Value>("code")? {
+        Value::Nil => name.clone(),
+        Value::String(text) => {
+            let code = text.to_str()?.to_owned();
+            if code.is_empty() {
+                name.clone()
+            } else {
+                code
+            }
+        }
+        other => {
+            return Err(mlua::Error::runtime(format!(
+                "layout code must be a string, got {}",
+                other.type_name()
+            )))
+        }
+    };
     let description: String = table.get("description").unwrap_or_default();
     let channels_tbl: Table = table.get("channels")?;
     let mut channels = BTreeMap::new();
@@ -147,6 +180,7 @@ pub fn layout_from_lua(table: Table) -> mlua::Result<ChannelLayoutDef> {
     };
     Ok(ChannelLayoutDef {
         name,
+        code,
         description,
         channels,
         monitor,
@@ -317,6 +351,13 @@ impl HostHandle {
             .iter()
             .find(|l| l.name == name)
             .cloned()
+    }
+
+    /// Filename-safe channel layout token for `name` (`code`, else `name`).
+    pub(crate) fn layout_export_code(&self, name: &str) -> String {
+        self.layout(name)
+            .map(|layout| layout.export_code().to_string())
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// Names of all registered layouts.
