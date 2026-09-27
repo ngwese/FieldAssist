@@ -1361,6 +1361,10 @@ mod tests {
             "${source.basename}.${export.extension}",
             &composed,
         );
-        assert_eq!(path, "/out/take01/take01.flac");
+        let expected = PathBuf::from("/out/take01")
+            .join("take01.flac")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(path, expected);
     }
 }
