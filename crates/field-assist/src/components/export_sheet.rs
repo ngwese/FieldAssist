@@ -66,6 +66,8 @@ pub struct ExportVariableLayers {
 
 const LABEL_WIDTH: gpui_kit::Rems = rems(6.5);
 const VALUE_WIDTH: gpui_kit::Rems = rems(10.);
+/// Cancel / Export action buttons (~2× default xsmall content width).
+const ACTION_BUTTON_WIDTH: gpui_kit::Rems = rems(5.);
 const CUSTOM_PROFILE_LABEL: &str = "Custom";
 const MIN_COLUMN_WIDTH: f32 = 48.;
 const RESIZE_HANDLE_WIDTH: f32 = 5.;
@@ -1066,35 +1068,41 @@ impl Render for ExportSheet {
                             .gap_2()
                             .flex_none()
                             .child(
-                                Button::new("export-cancel")
-                                    .outline()
-                                    .xsmall()
-                                    .label("Cancel")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let Some(on_cancel) = this.on_cancel.clone() else {
-                                            return;
-                                        };
-                                        // Defer so AppView can update without nesting
-                                        // inside this sheet's click borrow.
-                                        window.defer(cx, move |window, cx| {
-                                            on_cancel(window, cx);
-                                        });
-                                    })),
+                                div().w(ACTION_BUTTON_WIDTH).flex_none().child(
+                                    Button::new("export-cancel")
+                                        .outline()
+                                        .xsmall()
+                                        .w_full()
+                                        .label("Cancel")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let Some(on_cancel) = this.on_cancel.clone() else {
+                                                return;
+                                            };
+                                            // Defer so AppView can update without nesting
+                                            // inside this sheet's click borrow.
+                                            window.defer(cx, move |window, cx| {
+                                                on_cancel(window, cx);
+                                            });
+                                        })),
+                                ),
                             )
                             .child(
-                                Button::new("export-go")
-                                    .primary()
-                                    .xsmall()
-                                    .label("Export")
-                                    .disabled(!can_export)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let Some(on_export) = this.on_export.clone() else {
-                                            return;
-                                        };
-                                        window.defer(cx, move |window, cx| {
-                                            on_export(window, cx);
-                                        });
-                                    })),
+                                div().w(ACTION_BUTTON_WIDTH).flex_none().child(
+                                    Button::new("export-go")
+                                        .primary()
+                                        .xsmall()
+                                        .w_full()
+                                        .label("Export")
+                                        .disabled(!can_export)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let Some(on_export) = this.on_export.clone() else {
+                                                return;
+                                            };
+                                            window.defer(cx, move |window, cx| {
+                                                on_export(window, cx);
+                                            });
+                                        })),
+                                ),
                             ),
                     ),
             )
@@ -1202,13 +1210,16 @@ impl Render for ExportSheet {
                                     .child(Input::new(&self.directory).xsmall().w_full()),
                             )
                             .child(
-                                Button::new("browse-dir")
-                                    .outline()
-                                    .xsmall()
-                                    .label("Browse…")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.prompt_directory(window, cx);
-                                    })),
+                                div().w(ACTION_BUTTON_WIDTH).flex_none().child(
+                                    Button::new("browse-dir")
+                                        .outline()
+                                        .xsmall()
+                                        .w_full()
+                                        .label("Browse…")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.prompt_directory(window, cx);
+                                        })),
+                                ),
                             ),
                     ))
                     .child(form_row(
