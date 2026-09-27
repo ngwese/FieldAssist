@@ -2,6 +2,29 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.19.0] - 2026-09-27
+
+### Features
+
+- Add editable spectrum heatmap gradient settings
+- Add ChannelToggle chips for channel selection
+- Add optional layout code for export filenames
+- Add enrich_composition hook for media-built docs
+- Add enrich_session hook for new empty sessions
+
+### Bug Fixes
+
+- Use theme primary for active UI indicators
+- Shorten mono layout channel label to C
+- Format ChannelSelector render chain
+- Give export sheet actions a shared rem width
+- Dismiss export sheet only via Cancel or Escape
+
+### Refactor
+
+- Extract ChannelSelector for shared channel chips
+
+
 ## [0.18.0] - 2026-09-27
 
 ### Features
