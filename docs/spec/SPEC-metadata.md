@@ -66,7 +66,7 @@ Default compose order (last wins for a given leaf name):
 | `source` | Derived at media probe (primary media); not user-edited |
 | `user` | `variables.json` beside `settings.json` / `init.lua` / `keymap.json` |
 | `session` | `.fasession` v3 (`variables` array) |
-| `composition` | `.facomp` v10 (`variables` on the project file), plus derived `channel_layout` (layout name) |
+| `composition` | `.facomp` v10 (`variables` on the project file), plus derived `channel_layout` (layout export `code`, defaulting to layout name) |
 | `export` | Export profile Lua tables (`variables = { … }`) |
 
 `variables.json` envelope: `{ "kind": "variables", "format_version": 1, "variables": [ { "name", "value", "description"? } ] }` — entries are implicitly scope `user`.

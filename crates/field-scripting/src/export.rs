@@ -626,7 +626,7 @@ fn compose_export_variables(
     ));
     list.push(crate::bindings::LuaBindings::detached(
         "composition",
-        crate::variables::composition_layer_variables(composition),
+        crate::variables::composition_layer_variables_for_host(host, composition),
         true,
     ));
     list.push(crate::bindings::LuaBindings::detached(

@@ -2625,10 +2625,21 @@ impl AppView {
                         field_variables::VariableTable::new()
                     }
                 };
-                (
-                    source,
-                    field_scripting::composition_layer_variables(&composition),
-                )
+                (source, {
+                    let token = composition
+                        .channel_layout()
+                        .map(|name| {
+                            self.script
+                                .layout(name)
+                                .map(|layout| layout.export_code().to_string())
+                                .unwrap_or_else(|| name.to_string())
+                        })
+                        .unwrap_or_default();
+                    field_scripting::composition_layer_with_channel_layout_token(
+                        &composition,
+                        token,
+                    )
+                })
             } else {
                 (
                     field_variables::VariableTable::new(),
@@ -5014,10 +5025,18 @@ impl AppView {
                     field_variables::VariableTable::new()
                 }
             };
-            (
-                source,
-                field_scripting::composition_layer_variables(&composition),
-            )
+            (source, {
+                let token = composition
+                    .channel_layout()
+                    .map(|name| {
+                        self.script
+                            .layout(name)
+                            .map(|layout| layout.export_code().to_string())
+                            .unwrap_or_else(|| name.to_string())
+                    })
+                    .unwrap_or_default();
+                field_scripting::composition_layer_with_channel_layout_token(&composition, token)
+            })
         } else {
             (
                 field_variables::VariableTable::new(),

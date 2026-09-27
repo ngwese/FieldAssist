@@ -27,6 +27,7 @@ local started = os.clock()
 
 field.layouts.define({
   name = "mono",
+  code = "mn",
   description = "Single channel",
   channels = { [0] = "C" },
   monitor = { chain = "mono" },
@@ -34,6 +35,7 @@ field.layouts.define({
 
 field.layouts.define({
   name = "stereo",
+  code = "st",
   description = "Left / Right",
   channels = { [0] = "L", [1] = "R" },
   monitor = { chain = "stereo" },
@@ -41,6 +43,7 @@ field.layouts.define({
 
 field.layouts.define({
   name = "MS",
+  code = "ms",
   description = "Mid / Side",
   channels = { [0] = "M", [1] = "S" },
   monitor = { chain = "ms" },
@@ -48,6 +51,7 @@ field.layouts.define({
 
 field.layouts.define({
   name = "B-Format (AmbiX)",
+  code = "ambix",
   description = "First-order Ambisonics (Ambix ACN/SN3D)",
   channels = { [0] = "W", [1] = "Y", [2] = "Z", [3] = "X" },
   monitor = { chain = "foa" },
@@ -55,6 +59,7 @@ field.layouts.define({
 
 field.layouts.define({
   name = "B-Format (FuMa)",
+  code = "fuma",
   description = "First-order Ambisonics (Furse-Malham)",
   channels = { [0] = "W", [1] = "X", [2] = "Y", [3] = "Z" },
   monitor = { chain = "foa_fuma" },

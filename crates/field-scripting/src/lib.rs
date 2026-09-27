@@ -71,9 +71,10 @@ pub use layout::ChannelLayoutDef;
 pub use package_policy::{install_package_policy, PackagePolicy};
 pub use url::bind_url;
 pub use variables::{
-    composition_layer_variables, composition_site_bindings, composition_source_variables,
-    export_site_bindings, resolve_composition_variable, resolve_with_active, session_site_bindings,
-    ResolverDef,
+    composition_layer_variables, composition_layer_variables_for_host,
+    composition_layer_with_channel_layout_token, composition_site_bindings,
+    composition_source_variables, export_site_bindings, resolve_composition_variable,
+    resolve_with_active, session_site_bindings, ResolverDef,
 };
 pub use workflow::{WorkflowDef, WorkflowMeta};
 pub use workflow_app::{

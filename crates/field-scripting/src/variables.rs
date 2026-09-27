@@ -371,15 +371,50 @@ pub fn composition_source_variables(composition: &Composition) -> VariableTable 
 }
 
 /// Composition-scope table for compose / resolve: stored variables plus derived
-/// leaves such as `channel_layout` (layout name, or empty when unset).
+/// leaves such as `channel_layout` (layout export `code`, or empty when unset).
+///
+/// Prefer [`composition_layer_variables_for_host`] when a layout registry is
+/// available so `${channel_layout}` uses the filename-safe layout `code`.
 pub fn composition_layer_variables(composition: &Composition) -> VariableTable {
+    composition_layer_variables_with_channel_layout(
+        composition,
+        composition.channel_layout().unwrap_or(""),
+    )
+}
+
+/// Like [`composition_layer_variables`], but resolve `channel_layout` through
+/// the host layout registry (`code`, falling back to the stored layout name).
+pub fn composition_layer_variables_for_host(
+    host: &crate::host::HostHandle,
+    composition: &Composition,
+) -> VariableTable {
+    let token = match composition.channel_layout() {
+        Some(name) => host.layout_export_code(name),
+        None => String::new(),
+    };
+    composition_layer_variables_with_channel_layout(composition, token)
+}
+
+fn composition_layer_variables_with_channel_layout(
+    composition: &Composition,
+    channel_layout: impl Into<String>,
+) -> VariableTable {
     let mut table = composition.variables().clone();
     table.upsert(VariableEntry::new(
         "composition",
         "channel_layout",
-        composition.channel_layout().unwrap_or("").to_string(),
+        channel_layout.into(),
     ));
     table
+}
+
+/// Build a composition layer using an explicit `channel_layout` token (typically
+/// the layout export `code`).
+pub fn composition_layer_with_channel_layout_token(
+    composition: &Composition,
+    channel_layout: impl Into<String>,
+) -> VariableTable {
+    composition_layer_variables_with_channel_layout(composition, channel_layout)
 }
 
 /// Detached composition-site Bindings for an open document (Variables pane order).
@@ -388,13 +423,21 @@ pub fn composition_site_detached(
     id: DocumentId,
 ) -> mlua::Result<Vec<LuaBindings>> {
     let host = host_from_lua(lua)?;
-    let (source, composition_vars) = crate::composition::with_document(lua, id, |doc| {
-        let composition = doc.composition.read().unwrap();
-        Ok((
-            composition_source_variables(&composition),
-            composition_layer_variables(&composition),
-        ))
-    })?;
+    let (source, layout_name, composition_store) =
+        crate::composition::with_document(lua, id, |doc| {
+            let composition = doc.composition.read().unwrap();
+            Ok((
+                composition_source_variables(&composition),
+                composition.channel_layout().map(str::to_string),
+                composition.variables().clone(),
+            ))
+        })?;
+    let token = match layout_name.as_deref() {
+        Some(name) => host.layout_export_code(name),
+        None => String::new(),
+    };
+    let mut composition_vars = composition_store;
+    composition_vars.upsert(VariableEntry::new("composition", "channel_layout", token));
     let user = host.user_variables();
     let session = host.session_variables(None);
     let mut list = split_readonly_by_scope(&source);
