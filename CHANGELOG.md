@@ -2,6 +2,25 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.18.0] - 2026-09-27
+
+### Features
+
+- Add scoped variables, resolvers, and Variables pane
+- Add User Variables window and shared table chrome
+- Version settings.json with kind and format_version
+- Wire Export sheet variables and path templates
+
+### Bug Fixes
+
+- Give dpkg-shlibdeps a valid Architecture field
+- Make soft_resolved_path test OS-agnostic
+
+### Documentation
+
+- Document clearing DMG quarantine with xattr
+
+
 ## [0.17.0] - 2026-09-26
 
 ### Features
