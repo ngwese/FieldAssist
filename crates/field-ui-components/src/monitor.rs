@@ -23,6 +23,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
+use crate::channel_toggle::ChannelToggle;
 use crate::param_ui::{ChainChoice, MonitorSnapshot, ParamUiNode};
 
 /// Host callbacks for monitor panel interactions.
@@ -297,8 +298,7 @@ impl MonitorPanel {
                         None => true,
                     };
                     let callbacks = callbacks.clone();
-                    Checkbox::new(("monitor-ch", i as u64))
-                        .xsmall()
+                    ChannelToggle::new(("monitor-ch", i as u64))
                         .label(label.clone())
                         .checked(checked)
                         .on_click(move |enabled: &bool, window, cx| {

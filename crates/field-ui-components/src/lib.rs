@@ -49,6 +49,7 @@
 //! ```
 
 mod app_menu;
+mod channel_toggle;
 mod dock_skin;
 mod edits;
 mod markers;
@@ -67,6 +68,7 @@ mod waveform_data;
 mod waveform_editor;
 
 pub use app_menu::AppMenuBar;
+pub use channel_toggle::ChannelToggle;
 pub use dock_skin::{tool_dock_min_size, CenterTabBarHandler, CompactDockSkin};
 pub use edits::{
     EditActivateHandler, EditCard, EditClickHandler, EditHoverHandler, EditsData, EditsPanel,
