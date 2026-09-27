@@ -23,7 +23,7 @@ use gpui_kit::{
     AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
     InteractiveElement as _, IntoElement, KeyContext, KeyDownEvent, Menu, MenuItem,
     ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TitlebarOptions, WeakEntity, Window,
+    Styled as _, TitlebarOptions, WeakEntity, Window,
     WindowBounds, WindowId, WindowOptions,
 };
 
@@ -242,6 +242,8 @@ pub struct AppView {
     pending_loaded_scripts: Vec<(DocumentId, f64)>,
     export_sheet: Entity<ExportSheet>,
     export_sheet_open: bool,
+    /// Focus target while the export sheet is open (Escape dismiss).
+    export_sheet_focus: FocusHandle,
     /// App-owned modal for aggregated open failures (avoids Root::update).
     load_problems: Option<Entity<crate::components::load_problems_sheet::LoadProblemsSheet>>,
     load_problems_focus: FocusHandle,
@@ -585,6 +587,7 @@ impl AppView {
             pending_loaded_scripts: Vec::new(),
             export_sheet,
             export_sheet_open: false,
+            export_sheet_focus: cx.focus_handle(),
             load_problems: None,
             load_problems_focus: cx.focus_handle(),
             quick_note: None,
@@ -4962,9 +4965,9 @@ impl AppView {
             sheet.set_actions(
                 {
                     let app = app.clone();
-                    std::rc::Rc::new(move |_window, cx| {
+                    std::rc::Rc::new(move |window, cx| {
                         app.update(cx, |this, cx| {
-                            this.close_export_sheet(cx);
+                            this.close_export_sheet(window, cx);
                         });
                     })
                 },
@@ -4980,6 +4983,7 @@ impl AppView {
             );
         });
         self.export_sheet_open = true;
+        self.export_sheet_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -5095,31 +5099,40 @@ impl AppView {
         self.session.properties().get(key).cloned()
     }
 
-    fn close_export_sheet(&mut self, cx: &mut Context<Self>) {
+    fn close_export_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.export_sheet_open {
             return;
         }
         self.export_sheet_open = false;
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
     fn export_sheet_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let sheet = self.export_sheet.clone();
+        // Backdrop is visual only — dismiss via Escape or Cancel.
         div()
             .id("export-sheet-layer")
             .absolute()
             .inset_0()
             .occlude()
+            .track_focus(&self.export_sheet_focus)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                if event.keystroke.key.as_str() == "escape" {
+                    this.close_export_sheet(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 div()
                     .id("export-sheet-backdrop")
                     .absolute()
                     .inset_0()
-                    .bg(hsla(0., 0., 0., 0.25))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.close_export_sheet(cx);
-                    })),
+                    .bg(hsla(0., 0., 0., 0.25)),
             )
             .child(
                 v_flex()
@@ -5143,7 +5156,7 @@ impl AppView {
     fn start_export(
         &mut self,
         sheet: &Entity<ExportSheet>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(id) = self.session.active() else {
@@ -5172,7 +5185,7 @@ impl AppView {
         let Some(views) = self.views.get(&id).cloned() else {
             return;
         };
-        self.close_export_sheet(cx);
+        self.close_export_sheet(window, cx);
         let epoch = views.document.read(cx).progress.begin("exporting");
         let progress = views.document.read(cx).progress.clone();
         views.waveform.update(cx, |_, cx| cx.notify());
