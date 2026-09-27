@@ -529,7 +529,7 @@ fn chain_header(
     muted: gpui_kit::Hsla,
     cx: &App,
 ) -> impl IntoElement {
-    let color = if pinned { cx.theme().cyan } else { muted };
+    let color = if pinned { cx.theme().primary } else { muted };
     h_flex()
         .w_full()
         .items_center()

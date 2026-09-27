@@ -919,7 +919,7 @@ impl Render for ExplorerPanel {
         let active_tool = self.active_tool;
         let highlight_bg = ghost_hover_bg(cx);
         let muted = cx.theme().muted_foreground;
-        let cyan = cx.theme().cyan;
+        let primary = cx.theme().primary;
         let radius = cx.theme().radius;
         let border = cx.theme().border;
         let (drop_slot, group_drop_slot) = self.take_reorder_drop_slots(cx);
@@ -1095,7 +1095,7 @@ impl Render for ExplorerPanel {
                                             .py_0p5()
                                             .cursor_pointer()
                                             .when(show_group_marker.is_some(), |this| {
-                                                this.child(insertion_marker_overlay(cyan))
+                                                this.child(insertion_marker_overlay(primary))
                                             })
                                             .can_drop(|data, _, _| {
                                                 accepts_composition_drag(data)
@@ -1331,7 +1331,7 @@ impl Render for ExplorerPanel {
                                                         })
                                                         .when(marker_top, |this| {
                                                             this.child(insertion_marker_overlay(
-                                                                cyan,
+                                                                primary,
                                                             ))
                                                         })
                                                         .when(!renaming_this, |this| {
@@ -1696,7 +1696,7 @@ impl Render for ExplorerPanel {
                                                                         .whitespace_nowrap()
                                                                         .text_xs()
                                                                         .when(is_active, |this| {
-                                                                            this.text_color(cyan)
+                                                                            this.text_color(primary)
                                                                         })
                                                                         .child(name)
                                                                         .into_any_element()
@@ -1709,7 +1709,7 @@ impl Render for ExplorerPanel {
                                                                     .whitespace_nowrap()
                                                                     .text_xs()
                                                                     .when(is_active, |this| {
-                                                                        this.text_color(cyan)
+                                                                        this.text_color(primary)
                                                                     })
                                                                     .child(name)
                                                                     .into_any_element()
@@ -1858,7 +1858,7 @@ impl Render for ExplorerPanel {
                                                         }
                                                     })
                                                     .when(end_marker, |this| {
-                                                        this.child(insertion_marker_overlay(cyan))
+                                                        this.child(insertion_marker_overlay(primary))
                                                     })
                                                     .into_any_element(),
                                             );
@@ -1920,7 +1920,7 @@ impl Render for ExplorerPanel {
                                         drop_group(&explorer, drag, named_count, window, cx);
                                     })
                                     .when(end_marker, |this| {
-                                        this.child(insertion_marker_overlay(cyan))
+                                        this.child(insertion_marker_overlay(primary))
                                     })
                                     .into_any_element(),
                             );
