@@ -652,4 +652,72 @@ mod tests {
             .expect("decode via session:open");
         assert!(peak(&buf) > 0.1, "peak={}", peak(&buf));
     }
+
+    #[test]
+    fn enrich_composition_fires_on_new_media_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("enrich_me.wav");
+        write_stereo_sine(&path, 512, 44_100);
+        let path_lit = path.display().to_string().replace('\\', "\\\\");
+
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .expect("host");
+        let out = host.eval(&format!(
+            r#"
+            _G.enrich_count = 0
+            field.on("enrich_composition", function(c)
+              _G.enrich_count = _G.enrich_count + 1
+              c.variables.values.project = "from-hook"
+            end)
+            local c = field.composition.open("{path_lit}")
+            assert(c.variables.values.project == "from-hook", c.variables.values.project)
+            assert(_G.enrich_count == 1, _G.enrich_count)
+            -- focus existing: must not re-fire
+            field.composition.open("{path_lit}")
+            assert(_G.enrich_count == 1, _G.enrich_count)
+            return _G.enrich_count
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn enrich_composition_skips_facomp_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("take.wav");
+        write_stereo_sine(&wav, 256, 44_100);
+        let facomp = dir.path().join("take.facomp");
+        {
+            let mut composition = Composition::load_from_path_with_warnings(&wav)
+                .expect("load")
+                .0;
+            composition.save_to_path(&facomp).expect("save facomp");
+        }
+        let path_lit = facomp.display().to_string().replace('\\', "\\\\");
+
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .expect("host");
+        let out = host.eval(&format!(
+            r#"
+            _G.enrich_count = 0
+            field.on("enrich_composition", function(c)
+              _G.enrich_count = _G.enrich_count + 1
+              c.variables.values.enriched = "yes"
+            end)
+            local c = field.composition.open("{path_lit}")
+            assert(_G.enrich_count == 0, _G.enrich_count)
+            assert(c.variables.values.enriched == nil)
+            return _G.enrich_count
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("0"));
+    }
 }

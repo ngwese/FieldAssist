@@ -237,7 +237,8 @@ cannot go past that Trim. Each child gets a default display title of `N-` +
 parent name (or `N.M-` when breaking out from a child whose name already
 matches that pattern), with `N` / `M` unique among open siblings. Saving the
 child writes a standalone `.facomp` that still references the media it uses.
-After creation the host runs `detect_layout` on each child.
+After creation the host runs `enrich_composition` then `detect_layout` on
+each child.
 
 **Composition from Channels** (waveform context menu /
 `edit.break_out_channels`) creates one child whose channels are the current
@@ -246,13 +247,16 @@ also trimmed to those spans (multi-span uses the same concatenation as Trim);
 otherwise the full parent duration is kept. The child stores a
 `source_channels` map (dest → media) and a reduced `channel_count`. Nested
 channel break-outs compose maps. Chosen layout and `monitor_chain` are cleared
-so `detect_layout` can assign a layout (and its default monitor chain) that
-matches the new channel count.
+so `enrich_composition` then `detect_layout` can assign a layout (and its
+default monitor chain) that matches the new channel count.
 
-On open, if probed media disagrees with the recorded descriptor (identity
-stats or mtime-only), the app warns (Messages + dialog) and still opens,
-keeping the recorded `media:` id. Decoded blocks may spill under the process
-temp directory (`FieldAssist/blocks/…`); that cache is not the source file.
+Opening a media file (not a `.facomp` or session restore) runs
+`enrich_composition` then `detect_layout` then `loaded` after the composition
+is built. On open, if probed media disagrees with the recorded descriptor
+(identity stats or mtime-only), the app warns (Messages + dialog) and still
+opens, keeping the recorded `media:` id. Decoded blocks may spill under the
+process temp directory (`FieldAssist/blocks/…`); that cache is not the source
+file.
 
 **Channel layout** is a named Lua layout (see [SPEC-workflows.md](SPEC-workflows.md)).
 It labels waveform lanes and can default a monitor chain. `playback_channels` is

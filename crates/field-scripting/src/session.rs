@@ -361,7 +361,18 @@ impl HostHandle {
 
     pub(crate) fn open_path(&self, path: &str) -> mlua::Result<DocumentId> {
         let path = PathBuf::from(path);
-        self.with_backend_mut(|b| b.open_path(&path))
+        let docs_before = self.with_backend(|b| b.session_documents(None));
+        let fire_enrich = self.with_backend(|b| b.should_fire_enrich_on_open());
+        let id = self.with_backend_mut(|b| b.open_path(&path))?;
+        let is_new = !docs_before.contains(&id);
+        if fire_enrich
+            && is_new
+            && !field_composition::is_facomp_path(&path)
+            && !field_session::is_fasession_path(&path)
+        {
+            self.fire_enrich_composition(id);
+        }
+        Ok(id)
     }
 
     #[allow(dead_code)]
