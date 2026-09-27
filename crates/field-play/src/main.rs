@@ -561,6 +561,7 @@ fn open_with_detect(
 
     host.load_init()
         .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
+    host.fire_enrich_session(None);
     flush_script_output(&host);
 
     let id = world

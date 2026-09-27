@@ -61,6 +61,7 @@ fn run() -> Result<ExitCode> {
 
     host.load_init()
         .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
+    host.fire_enrich_session(None);
 
     if let Some(expr) = args.eval.as_ref() {
         flush_alerts(&host);
