@@ -13,11 +13,10 @@ use field_scripting::{
     resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
     ResolvedExportSettings,
 };
-use field_ui_components::VariableRow;
+use field_ui_components::{ChannelToggle, VariableRow};
 use field_variables::{compose, interpolate, interpolate_strict, VariableEntry, VariableTable};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -1141,8 +1140,7 @@ impl Render for ExportSheet {
                             self.channel_labels.iter().enumerate().map(|(i, label)| {
                                 let checked =
                                     self.channels_selected.get(i).copied().unwrap_or(false);
-                                Checkbox::new(("export-ch", i as u64))
-                                    .xsmall()
+                                ChannelToggle::new(("export-ch", i as u64))
                                     .label(label.clone())
                                     .checked(checked)
                                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {
