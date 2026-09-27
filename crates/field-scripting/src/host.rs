@@ -118,6 +118,7 @@ pub(crate) struct HostInner {
     pub(crate) session_selected: Vec<Function>,
     pub(crate) composition_selected: Vec<Function>,
     pub(crate) detect_layout: Vec<Function>,
+    pub(crate) enrich_composition: Vec<Function>,
     pub(crate) layouts: Vec<ChannelLayoutDef>,
     pub(crate) export_profiles: Vec<crate::export::ExportProfileDef>,
     pub(crate) workflows: BTreeMap<String, WorkflowDef>,
@@ -191,6 +192,7 @@ impl ScriptHost {
                 session_selected: Vec::new(),
                 composition_selected: Vec::new(),
                 detect_layout: Vec::new(),
+                enrich_composition: Vec::new(),
                 layouts: Vec::new(),
                 export_profiles: Vec::new(),
                 workflows: BTreeMap::new(),
@@ -503,6 +505,11 @@ impl ScriptHost {
     /// Fire `detect_layout` hooks for a composition.
     pub fn fire_detect_layout(&self, id: DocumentId) {
         self.handle.fire_detect_layout(id);
+    }
+
+    /// Fire `enrich_composition` hooks for a composition built from media.
+    pub fn fire_enrich_composition(&self, id: DocumentId) {
+        self.handle.fire_enrich_composition(id);
     }
 
     /// Apply a named channel layout to a document (user-explicit choice).
@@ -993,6 +1000,21 @@ impl HostHandle {
                 Ok(())
             })
         })
+    }
+
+    pub(crate) fn fire_enrich_composition(&self, id: DocumentId) {
+        let hooks = self.inner.borrow().enrich_composition.clone();
+        let handle = crate::composition::LuaComposition { id };
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>(handle) {
+                self.note_hook_error("enrich_composition", &err);
+            }
+        }
+        for (instance, hook) in self.workflow_handlers("enrich_composition") {
+            if let Err(err) = hook.call::<()>((instance, handle)) {
+                self.note_hook_error("enrich_composition", &err);
+            }
+        }
     }
 
     pub(crate) fn fire_detect_layout(&self, id: DocumentId) {

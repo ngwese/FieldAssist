@@ -5,8 +5,9 @@
 //! on the system default output.
 //!
 //! Loads `init.lua` (user config else embedded) via `field-scripting`, runs
-//! `detect_layout` to choose a channel layout / monitor chain when unset, then
-//! plays through the composition's monitoring chain (or Direct).
+//! `enrich_composition` then `detect_layout` to choose a channel layout /
+//! monitor chain when unset, then plays through the composition's monitoring
+//! chain (or Direct).
 //!
 //! When stdin and stderr are TTYs, shows an in-place playhead and accepts
 //! keyboard transport, markers, notes, and save.
@@ -50,7 +51,8 @@ const NOTE_MARKER_COLOR: [f32; 4] = [0.13, 0.77, 0.37, 1.0];
     long_about = "Loads a FieldAssist composition and plays it on the system \
 default output. A media file is opened as a single-clip composition (no \
 session). Startup loads init.lua (user config else embedded) and runs \
-detect_layout so the default monitoring chain matches FieldAssist. When the \
+enrich_composition then detect_layout so the default monitoring chain \
+matches FieldAssist. When the \
 composition already defines a monitoring chain, that Faust listen path is \
 kept; otherwise Direct is used if detect leaves the chain unset. On an \
 interactive terminal, shows a playhead and accepts keyboard transport, \
@@ -537,8 +539,9 @@ fn add_marker_at_playhead(
     Ok(())
 }
 
-/// Load path into a headless script world, run init + `detect_layout`, return
-/// the shared composition (monitor chain may have been filled by layout defaults).
+/// Load path into a headless script world, run init + enrich + `detect_layout`,
+/// return the shared composition (monitor chain may have been filled by layout
+/// defaults).
 fn open_with_detect(
     path: &std::path::Path,
     config_dir: Option<PathBuf>,
@@ -564,6 +567,8 @@ fn open_with_detect(
         .borrow_mut()
         .open_path(path)
         .with_context(|| format!("open {}", path.display()))?;
+    // Bypass HostHandle::open_path so we control hook order explicitly.
+    host.fire_enrich_composition(id);
     host.fire_detect_layout(id);
     flush_script_output(&host);
 

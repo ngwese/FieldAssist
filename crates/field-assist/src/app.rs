@@ -22,9 +22,8 @@ use gpui_kit::{
     div, hsla, img, point, prelude::FluentBuilder as _, px, relative, size, AnyWindowHandle, App,
     AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
     InteractiveElement as _, IntoElement, KeyContext, KeyDownEvent, Menu, MenuItem,
-    ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
-    Styled as _, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowId, WindowOptions,
+    ParentElement as _, PathPromptOptions, Pixels, Render, SharedString, Styled as _,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId, WindowOptions,
 };
 
 use crate::assets::AppAssets;
@@ -239,7 +238,9 @@ pub struct AppView {
     pending_analysis: Arc<Mutex<Vec<DocumentId>>>,
     /// Info lines produced by analysis workers (drained onto the Messages panel).
     pending_analysis_logs: Arc<Mutex<Vec<LogLine>>>,
-    pending_loaded_scripts: Vec<(DocumentId, f64)>,
+    /// `(id, elapsed, run_enrich)` — `run_enrich` when the composition was
+    /// freshly built from media (not `.facomp` / session restore).
+    pending_loaded_scripts: Vec<(DocumentId, f64, bool)>,
     export_sheet: Entity<ExportSheet>,
     export_sheet_open: bool,
     /// Focus target while the export sheet is open (Escape dismiss).
@@ -626,6 +627,7 @@ impl AppView {
                 panel.append(vec![LogLine::new(LogLevel::Error, "output", fault)], cx);
             });
         }
+        let from_session_restore = session_path.is_some();
         if let Some(path) = session_path {
             if let Err(err) = this.replace_session_from_path(&path, window, cx) {
                 // AppView::new runs before Root wraps the window; defer so
@@ -637,7 +639,15 @@ impl AppView {
             }
         }
         if let Some(id) = this.session.active() {
-            this.fire_document_scripts(id, initial_load_elapsed.unwrap_or(0.0), window, cx);
+            let run_enrich =
+                !from_session_restore && this.session.get(id).is_some_and(|doc| doc.is_media());
+            this.fire_document_scripts(
+                id,
+                initial_load_elapsed.unwrap_or(0.0),
+                run_enrich,
+                window,
+                cx,
+            );
         }
         this.refresh_explorer(cx);
         if let Some(id) = this.session.active() {
@@ -950,6 +960,7 @@ impl AppView {
         self.adopt_shared_media_from_lineage(cx);
         for &id in &created_ids {
             let _guard = crate::script::enter(self, window, cx);
+            self.script.fire_enrich_composition(id);
             self.script.fire_detect_layout(id);
             self.flush_script_logs(cx);
         }
@@ -1012,6 +1023,7 @@ impl AppView {
         self.adopt_shared_media_from_lineage(cx);
         {
             let _guard = crate::script::enter(self, window, cx);
+            self.script.fire_enrich_composition(id);
             self.script.fire_detect_layout(id);
             self.flush_script_logs(cx);
         }
@@ -1938,7 +1950,9 @@ impl AppView {
         self.refresh_explorer(cx);
         self.adopt_shared_media_from_lineage(cx);
         self.refresh_media_panel(cx);
-        self.pending_loaded_scripts.push((id, elapsed));
+        let run_enrich =
+            nest_under_parent && self.session.get(id).is_some_and(|doc| doc.is_media());
+        self.pending_loaded_scripts.push((id, elapsed, run_enrich));
         cx.notify();
     }
 
@@ -2296,10 +2310,14 @@ impl AppView {
         &mut self,
         id: DocumentId,
         elapsed: f64,
+        run_enrich: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let _guard = crate::script::enter(self, window, cx);
+        if run_enrich {
+            self.script.fire_enrich_composition(id);
+        }
         self.script.fire_detect_layout(id);
         self.script.fire_loaded(id, elapsed);
         let prints = self.script.take_prints();
@@ -5239,9 +5257,9 @@ impl AppView {
 
     fn drain_pending_loaded_scripts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids = std::mem::take(&mut self.pending_loaded_scripts);
-        for (id, elapsed) in ids {
+        for (id, elapsed, run_enrich) in ids {
             if self.views.contains_key(&id) {
-                self.fire_document_scripts(id, elapsed, window, cx);
+                self.fire_document_scripts(id, elapsed, run_enrich, window, cx);
             }
         }
     }

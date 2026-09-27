@@ -44,14 +44,14 @@ examples are under
 | ------------------- | ---------------- | ------------------------------------------------------------ |
 | FieldAssist desktop | `"field-assist"` | GPUI app; embedded Add / Replace / Review workflows          |
 | field-batch CLI     | `"field-batch"`  | Headless REPL / script / Unix shebang over `field-scripting` |
-| field-play CLI      | `"field-play"`   | Headless playback; `init.lua` + one-shot `detect_layout`     |
+| field-play CLI      | `"field-play"`   | Headless playback; `init.lua` + enrich + `detect_layout`     |
 
 
 ```bash
 field-batch                     # interactive REPL
 field-batch script.lua a b      # app.args = { "a", "b" }
 #!/usr/bin/env field-batch      # script path is argv[1]
-field-play take.wav             # init.lua → detect_layout → play
+field-play take.wav             # init.lua → enrich → detect_layout → play
 field-play --config-dir DIR …   # optional init override
 ```
 
@@ -59,12 +59,12 @@ field-play --config-dir DIR …   # optional init override
 fully available in FieldAssist. FieldAssist supplies a desktop
 `ScriptBackend`, its host-only `app` facade, and GPUI toolbar paint glue.
 field-play uses the headless backend only long enough to load init and fire
-`detect_layout`; it does not run workflows or a REPL.
+`enrich_composition` then `detect_layout`; it does not run workflows or a REPL.
 
 
 | Module                                        | field-batch / field-scripting             | field-play     | FieldAssist today                        |
 | --------------------------------------------- | ----------------------------------------- | -------------- | ---------------------------------------- |
-| `field.log` / `field.on`                      | full                                      | init + detect  | full                                     |
+| `field.log` / `field.on`                      | full                                      | init + enrich + detect | full                              |
 | `field.include`                               | path or `field.url`; cache + search stack | via init       | full                                     |
 | `field.scripting`                             | full                                      | via init       | full                                     |
 | `field.url`                                   | full                                      | via init       | full                                     |
@@ -137,15 +137,18 @@ system Lua paths or native C modules.
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 user `init.lua` if present, else the shared embedded default. Does **not**
-auto-load Add / Replace / Review.
+auto-load Add / Replace / Review. Opening a **new media** path via
+`field.composition.open` (or session open of media) fires
+`enrich_composition` before the open returns. Re-focusing an already-open
+path or opening a `.facomp` does not.
 
 ### field-play
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 user `init.lua` if present, else the shared embedded default (layouts +
 `detect_layout`). Does **not** load workflow bundles. After opening the
-path, fires `detect_layout` once so unset `monitor_chain` values pick up
-the layout default before playback.
+path, fires `enrich_composition` then `detect_layout` once so unset
+`monitor_chain` values pick up the layout default before playback.
 
 ## Conventions
 
@@ -278,12 +281,31 @@ Registers process-wide model/host hooks. Unknown event names error.
 | ---------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
 | `loaded`               | `composition`, `elapsed`                    | `elapsed` is seconds since open started                                       |
 | `saved`                | `composition`, `elapsed`                    |                                                                               |
+| `enrich_composition`   | `composition`                               | Fired when a composition is **built from media**; mutate `c.variables` in place |
 | `detect_layout`        | `composition`, `chosen` → `string` or `nil` | `chosen` is the current layout name or `nil`; return a registered layout name |
 | `session_loaded`       | `session`                                   |                                                                               |
 | `session_saved`        | `session`                                   |                                                                               |
 | `session_selected`     | `session`                                   |                                                                               |
 | `composition_selected` | `composition` or `nil`                      |                                                                               |
 
+`enrich_composition` runs before `detect_layout` (and before `loaded` when
+that event also fires). Use it to set composition variables from paths,
+probe/`source.*` metadata (`c:resolve_variable`), or external lookups. It does
+**not** run for `.facomp` opens or session restore. FieldAssist also fires it
+after break-out regions/channels.
+
+```lua
+field.on("enrich_composition", function(c)
+  local dir = c.dirname
+  if dir then
+    c.variables.values.project = field.url(dir).basename or dir
+  end
+  local flag = c:resolve_variable("TIMECODE_FLAG")
+  if flag then
+    c.variables.values.timecode_flag = flag
+  end
+end)
+```
 
 Workflow prototypes can also `:on` the same events; those handlers receive the
 **instance** as the first argument (see [field.workflow](#field-workflow)).

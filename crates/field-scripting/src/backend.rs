@@ -287,6 +287,14 @@ pub trait ScriptBackend {
     /// Open a media or `.facomp` path into the **shared** world session.
     fn open_path(&mut self, path: &Path) -> mlua::Result<DocumentId>;
 
+    /// When `true`, a successful media `open_path` has a fully loaded
+    /// composition and the host should fire `enrich_composition` for new media
+    /// documents. Headless backends return `true`; desktop loads asynchronously
+    /// and fires the hook after load completes.
+    fn should_fire_enrich_on_open(&self) -> bool {
+        false
+    }
+
     /// Reset the **shared** world session and clear all open documents.
     fn reset_session(&mut self) -> mlua::Result<()>;
 
@@ -848,6 +856,10 @@ impl ScriptBackend for HeadlessBackend {
         world
             .open_path(path)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
+    }
+
+    fn should_fire_enrich_on_open(&self) -> bool {
+        true
     }
 
     fn reset_session(&mut self) -> mlua::Result<()> {

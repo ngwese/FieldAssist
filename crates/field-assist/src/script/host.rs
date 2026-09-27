@@ -309,6 +309,9 @@ impl ScriptHost {
     pub fn fire_composition_selected(&self, id: Option<DocumentId>) {
         self.inner.fire_composition_selected(id)
     }
+    pub fn fire_enrich_composition(&self, id: DocumentId) {
+        self.inner.fire_enrich_composition(id)
+    }
     pub fn fire_detect_layout(&self, id: DocumentId) {
         self.inner.fire_detect_layout(id)
     }
