@@ -309,6 +309,7 @@ fn is_field_event(event: &str) -> bool {
             | "saved"
             | "detect_layout"
             | "enrich_composition"
+            | "enrich_session"
             | "session_loaded"
             | "session_saved"
             | "session_selected"
@@ -318,7 +319,7 @@ fn is_field_event(event: &str) -> bool {
 
 fn unknown_field_event(event: &str) -> String {
     format!(
-        "unknown event `{event}`; expected \"loaded\", \"detect_layout\", \"enrich_composition\", \"saved\", \"session_loaded\", \"session_saved\", \"session_selected\", or \"composition_selected\""
+        "unknown event `{event}`; expected \"loaded\", \"detect_layout\", \"enrich_composition\", \"enrich_session\", \"saved\", \"session_loaded\", \"session_saved\", \"session_selected\", or \"composition_selected\""
     )
 }
 

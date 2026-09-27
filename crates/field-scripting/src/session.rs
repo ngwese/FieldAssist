@@ -388,7 +388,9 @@ impl HostHandle {
     }
 
     pub(crate) fn new_detached_session(&self) -> SessionId {
-        self.with_backend_mut(|b| b.new_detached_session())
+        let id = self.with_backend_mut(|b| b.new_detached_session());
+        self.fire_enrich_session(Some(id));
+        id
     }
 
     pub(crate) fn save_session(
@@ -525,5 +527,96 @@ mod tests {
         );
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("test\ttrue"), "{:?}", out.error);
+    }
+
+    #[test]
+    fn enrich_session_fires_on_session_new() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval(
+            r#"
+            _G.enrich_count = 0
+            field.on("enrich_session", function(s)
+              _G.enrich_count = _G.enrich_count + 1
+              s.variables.values.studio = "from-hook"
+            end)
+            local s = field.session.new()
+            local studio = s.variables.values.studio
+            assert(studio == "from-hook", "studio=" .. tostring(studio) .. " count=" .. tostring(_G.enrich_count))
+            assert(_G.enrich_count == 1, _G.enrich_count)
+            field.session.new()
+            assert(_G.enrich_count == 2, _G.enrich_count)
+            return _G.enrich_count
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn enrich_session_skips_session_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.fasession");
+        {
+            let session = field_session::Session::new();
+            let json = session
+                .to_json_at(&path, |_| "doc".into(), None)
+                .expect("to_json");
+            std::fs::write(&path, json).unwrap();
+        }
+        let path_lit = path.display().to_string().replace('\\', "\\\\");
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval(&format!(
+            r#"
+            _G.enrich_count = 0
+            field.on("enrich_session", function(s)
+              _G.enrich_count = _G.enrich_count + 1
+              s.variables.values.studio = "from-hook"
+            end)
+            local s = field.session.open("{path_lit}")
+            assert(_G.enrich_count == 0, _G.enrich_count)
+            assert(s.variables.values.studio == nil)
+            return _G.enrich_count
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn enrich_session_fires_for_focused_after_create() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval(
+            r#"
+            _G.enrich_count = 0
+            field.on("enrich_session", function(s)
+              _G.enrich_count = _G.enrich_count + 1
+              s.variables.values.studio = "focused"
+            end)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        host.fire_enrich_session(None);
+        let out = host.eval(
+            r#"
+            local s = field.session.focused()
+            assert(s.variables.values.studio == "focused", s.variables.values.studio)
+            assert(_G.enrich_count == 1, _G.enrich_count)
+            return _G.enrich_count
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("1"));
     }
 }

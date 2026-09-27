@@ -175,7 +175,9 @@ documents are rejected.
 **Close Session** (File → Close Session / `file.close_session`) prompts for
 modified compositions and a dirty saved session (same rules as quit / open
 session), then replaces the window with a new untitled empty session and an
-empty shared media pool.
+empty shared media pool. The host runs `enrich_session` then `session_loaded`
+then `session_selected` for that new empty session (not when opening a
+`.fasession`).
 
 **Tabs:** a newly opened document is a transient (unpinned) tab. Opening another
 file while a transient tab exists can replace that tab. Pinning keeps the tab.

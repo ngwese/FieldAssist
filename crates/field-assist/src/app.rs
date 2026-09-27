@@ -637,6 +637,8 @@ impl AppView {
                     this.show_load_error(&message, window, cx);
                 });
             }
+        } else {
+            this.fire_enrich_session_script(window, cx);
         }
         if let Some(id) = this.session.active() {
             let run_enrich =
@@ -5673,6 +5675,7 @@ impl AppView {
         });
         self.update_window_title(window, cx);
         self.sync_view_menus(cx);
+        self.fire_enrich_session_script(window, cx);
         self.fire_session_loaded_script(window, cx);
         self.fire_session_selected_script(window, cx);
         cx.notify();
@@ -5771,6 +5774,12 @@ impl AppView {
                 self.hide_script_dock(window, cx);
             }
         }
+    }
+
+    fn fire_enrich_session_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _guard = crate::script::enter(self, window, cx);
+        self.script.fire_enrich_session(None);
+        self.flush_script_hook_output(cx);
     }
 
     fn fire_session_loaded_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {

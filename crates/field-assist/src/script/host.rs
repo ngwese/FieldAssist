@@ -312,6 +312,9 @@ impl ScriptHost {
     pub fn fire_enrich_composition(&self, id: DocumentId) {
         self.inner.fire_enrich_composition(id)
     }
+    pub fn fire_enrich_session(&self, which: Option<field_session::SessionId>) {
+        self.inner.fire_enrich_session(which)
+    }
     pub fn fire_detect_layout(&self, id: DocumentId) {
         self.inner.fire_detect_layout(id)
     }

@@ -270,6 +270,7 @@ chains.
 | `session_selected` | `(session)` |
 | `composition_selected` | `(composition)` |
 | `enrich_composition` | `(composition)` |
+| `enrich_session` | `(session)` |
 | `detect_layout` | `(composition, chosen) → name or nil` |
 
 `enrich_composition` fires when a composition is built from media (media
@@ -278,6 +279,13 @@ return a merge table. Order when both apply: `enrich_composition`, then
 `detect_layout`, then `loaded`. Not fired for `.facomp` open or session
 restore. field-batch fires it on new media `open`; field-play fires it before
 `detect_layout` after CLI open.
+
+`enrich_session` fires when an empty session is **created** (cold start without
+a `.fasession`, Close Session / new empty, `field.session.new`, CLI after
+init). Hooks mutate `session.variables` / `session.properties` in place. When
+`session_loaded` also runs: `enrich_session`, then `session_loaded`, then
+`session_selected`. Not fired for `.fasession` open / restore or
+`field.session.open`.
 
 `session_selected` fires after the UI session is installed or replaced.
 `composition_selected` fires when the focused composition changes, including

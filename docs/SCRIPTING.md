@@ -137,18 +137,21 @@ system Lua paths or native C modules.
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 user `init.lua` if present, else the shared embedded default. Does **not**
-auto-load Add / Replace / Review. Opening a **new media** path via
+auto-load Add / Replace / Review. After init, fires `enrich_session` for the
+empty focused session. Opening a **new media** path via
 `field.composition.open` (or session open of media) fires
 `enrich_composition` before the open returns. Re-focusing an already-open
-path or opening a `.facomp` does not.
+path or opening a `.facomp` does not. `field.session.new()` fires
+`enrich_session`; `field.session.open` (load `.fasession`) does not.
 
 ### field-play
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 user `init.lua` if present, else the shared embedded default (layouts +
-`detect_layout`). Does **not** load workflow bundles. After opening the
-path, fires `enrich_composition` then `detect_layout` once so unset
-`monitor_chain` values pick up the layout default before playback.
+`detect_layout`). Does **not** load workflow bundles. After init, fires
+`enrich_session` for the empty world session. After opening the path, fires
+`enrich_composition` then `detect_layout` once so unset `monitor_chain`
+values pick up the layout default before playback.
 
 ## Conventions
 
@@ -282,6 +285,7 @@ Registers process-wide model/host hooks. Unknown event names error.
 | `loaded`               | `composition`, `elapsed`                    | `elapsed` is seconds since open started                                       |
 | `saved`                | `composition`, `elapsed`                    |                                                                               |
 | `enrich_composition`   | `composition`                               | Fired when a composition is **built from media**; mutate `c.variables` in place |
+| `enrich_session`       | `session`                                   | Fired when an **empty session is created**; mutate `s.variables` / `s.properties` |
 | `detect_layout`        | `composition`, `chosen` → `string` or `nil` | `chosen` is the current layout name or `nil`; return a registered layout name |
 | `session_loaded`       | `session`                                   |                                                                               |
 | `session_saved`        | `session`                                   |                                                                               |
@@ -304,6 +308,20 @@ field.on("enrich_composition", function(c)
   if flag then
     c.variables.values.timecode_flag = flag
   end
+end)
+```
+
+`enrich_session` runs when a session is **initially created** (cold start with
+no `.fasession`, File → Close Session / new empty, `field.session.new`,
+field-batch / field-play after `load_init`). When `session_loaded` also runs
+(empty-session reset), order is `enrich_session` → `session_loaded` →
+`session_selected`. It does **not** run for `.fasession` open / restore or
+`field.session.open`.
+
+```lua
+field.on("enrich_session", function(s)
+  s.variables.values.studio = "default"
+  s.properties = { review_mode = "todo" }
 end)
 ```
 
