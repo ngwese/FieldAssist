@@ -28,7 +28,8 @@ field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
 field-features          (feature flag registry; no gpui)
 
 field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
-field-ui-components     (gpui widgets + host traits / DTOs)
+field-ui-components     (gpui widgets + host traits / DTOs; field-variables
+                         for `${…}` template completion)
 
 field-scripting         (mlua host; NO gpui, NO field-ui-components)
     ├── field-batch     (CLI: REPL + script + shebang)
@@ -48,7 +49,7 @@ field-scripting         (mlua host; NO gpui, NO field-ui-components)
 | `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops ([SPEC-analysis.md](spec/SPEC-analysis.md)) |
 | `field-audio-monitor` | mid | Monitor chain Faust DSP, UI schema, lock-free params |
 | `field-audio-playback` | mid | Realtime device I/O, transport, playhead |
-| `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits; Variables table |
+| `field-ui-components` | mid | Reusable GPUI chrome; host-owned tab titles; data traits; Variables table; `${…}` template completion |
 | `field-composition` | high | `.facomp` I/O (v10), EDL, clip tree; re-exports `CompositionId` |
 | `field-session` | high | `.fasession` I/O (v3) and membership; media\|composition targets |
 | `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `ScriptBackend` / `HeadlessWorld` ([README](../crates/field-scripting/README.md)) |

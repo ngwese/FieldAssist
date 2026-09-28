@@ -61,6 +61,7 @@ mod repl;
 mod status_bar;
 mod theme;
 mod transport;
+mod variable_completion;
 mod variables;
 mod waveform;
 mod waveform_axis;
@@ -87,6 +88,7 @@ pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
 pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
 pub use theme::{content_foreground, ContentForeground};
 pub use transport::{Transport, TransportAction};
+pub use variable_completion::VariableCompletion;
 pub use variables::{
     VariableAddHandler, VariableRemoveHandler, VariableRow, VariableScopeHandler,
     VariableValueHandler, VariablesTable, VariablesTableOptions,

@@ -2344,6 +2344,7 @@ dependencies = [
 name = "field-ui-components"
 version = "0.20.0-pre"
 dependencies = [
+ "field-variables",
  "gpui-kit",
  "image",
  "smallvec",

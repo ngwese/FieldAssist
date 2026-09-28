@@ -101,7 +101,10 @@ Unknown encoder keys are skipped; missing tags are omitted.
 
 The sheet Profile row holds Cancel / Export. **Format**, **Location**, and
 **Variables** use outlined group boxes. Location includes a read-only **Resolved** path (soft `${…}` interpolate of
-Directory + Name). Defaults when the profile omits them: Directory
+Directory + Name). Directory and Name offer `${…}` completions from the Export-site
+composed table while the caret is inside an expression: a scrollable list of matching
+scopes and variable names; Tab accepts a unique match, inserts a shared prefix when
+several match, or moves focus into the list. Defaults when the profile omits them: Directory
 `${source.parent}`, Name
 `${source.stem}-${sample_rate}-${channel_layout}.${export.encoder}`. Variables is
 collapsed by default; when open it shows Export-site composed rows with the

@@ -13,12 +13,12 @@ use field_scripting::{
     resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
     ResolvedExportSettings,
 };
-use field_ui_components::{ChannelSelector, VariableRow};
+use field_ui_components::{ChannelSelector, VariableCompletion, VariableRow};
 use field_variables::{compose, interpolate, interpolate_strict, VariableEntry, VariableTable};
 use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::InputEvent,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
@@ -139,8 +139,8 @@ pub struct ExportSheet {
     sample_rate: u32,
     channels_selected: Vec<bool>,
     channel_labels: Vec<String>,
-    directory: Entity<InputState>,
-    filename: Entity<InputState>,
+    directory: Entity<VariableCompletion>,
+    filename: Entity<VariableCompletion>,
     /// Profile Lua `variables` plus live Format/channel upserts.
     export_vars: VariableTable,
     /// Profile `metadata` templates for tag write-out.
@@ -157,15 +157,17 @@ pub struct ExportSheet {
 
 impl ExportSheet {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let directory = cx.new(|cx| InputState::new(window, cx));
-        let filename = cx.new(|cx| InputState::new(window, cx));
-        cx.subscribe(&directory, |_, _, event: &InputEvent, cx| {
+        let directory = cx.new(|cx| VariableCompletion::new(window, cx));
+        let filename = cx.new(|cx| VariableCompletion::new(window, cx));
+        let directory_input = directory.read(cx).input().clone();
+        let filename_input = filename.read(cx).input().clone();
+        cx.subscribe(&directory_input, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
         })
         .detach();
-        cx.subscribe(&filename, |_, _, event: &InputEvent, cx| {
+        cx.subscribe(&filename_input, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
@@ -249,18 +251,14 @@ impl ExportSheet {
             .collect();
 
         // Clear location fields so template defaults apply on open.
-        self.directory.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
-        self.filename.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
+        self.set_directory_text("", window, cx);
+        self.set_filename_text("", window, cx);
 
         let overlay = prefs.map(prefs_as_profile).unwrap_or_default();
         let resolved = resolve_export_settings(&self.source, &overlay)
             .unwrap_or_else(|_| fallback_resolved(&self.source));
         self.apply_resolved(&resolved, window, cx);
-        self.rebuild_export_vars(VariableTable::new());
+        self.rebuild_export_vars(VariableTable::new(), window, cx);
         self.filter.ensure_search(window, cx, |_, cx| cx.notify());
         cx.notify();
     }
@@ -288,7 +286,7 @@ impl ExportSheet {
                         return;
                     }
                 }
-                self.rebuild_export_vars(profile.variables);
+                self.rebuild_export_vars(profile.variables, window, cx);
             }
             None => {
                 self.profile_name = None;
@@ -296,7 +294,7 @@ impl ExportSheet {
                 let resolved = resolve_export_settings(&self.source, &ExportProfileDef::default())
                     .unwrap_or_else(|_| fallback_resolved(&self.source));
                 self.apply_resolved(&resolved, window, cx);
-                self.rebuild_export_vars(VariableTable::new());
+                self.rebuild_export_vars(VariableTable::new(), window, cx);
             }
         }
         cx.notify();
@@ -316,20 +314,18 @@ impl ExportSheet {
             .map(|i| resolved.channel_indices.contains(&i))
             .collect();
 
-        let (dir, name) = destination_for_sheet(
-            resolved,
-            &self.directory.read(cx).value().to_string(),
-            &self.filename.read(cx).value().to_string(),
-        );
-        self.directory.update(cx, |input, cx| {
-            input.set_value(dir, window, cx);
-        });
-        self.filename.update(cx, |input, cx| {
-            input.set_value(name, window, cx);
-        });
+        let (dir, name) =
+            destination_for_sheet(resolved, &self.directory_text(cx), &self.filename_text(cx));
+        self.set_directory_text(dir, window, cx);
+        self.set_filename_text(name, window, cx);
     }
 
-    fn rebuild_export_vars(&mut self, profile_vars: VariableTable) {
+    fn rebuild_export_vars(
+        &mut self,
+        profile_vars: VariableTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let channels = self.selected_count();
         self.export_vars = profile_vars;
         upsert_format_export_vars(
@@ -339,9 +335,10 @@ impl ExportSheet {
             self.sample_rate,
             channels,
         );
+        self.refresh_completion_tables(window, cx);
     }
 
-    fn sync_format_export_vars(&mut self) {
+    fn sync_format_export_vars(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let channels = self.selected_count();
         upsert_format_export_vars(
             &mut self.export_vars,
@@ -350,6 +347,64 @@ impl ExportSheet {
             self.sample_rate,
             channels,
         );
+        self.refresh_completion_tables(window, cx);
+    }
+
+    fn refresh_completion_tables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let table = self.compose_rust();
+        self.directory.update(cx, |completion, cx| {
+            completion.set_table(table.clone(), window, cx);
+        });
+        self.filename.update(cx, |completion, cx| {
+            completion.set_table(table, window, cx);
+        });
+    }
+
+    fn directory_text(&self, cx: &App) -> String {
+        self.directory.read(cx).input().read(cx).value().to_string()
+    }
+
+    fn filename_text(&self, cx: &App) -> String {
+        self.filename.read(cx).input().read(cx).value().to_string()
+    }
+
+    fn set_directory_text(
+        &mut self,
+        value: impl Into<gpui_kit::SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.directory.read(cx).input().clone();
+        input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+        });
+    }
+
+    fn set_filename_text(
+        &mut self,
+        value: impl Into<gpui_kit::SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.filename.read(cx).input().clone();
+        input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+        });
+    }
+
+    /// Whether either Location field has an open completion menu.
+    pub fn completion_menu_open(&self, cx: &App) -> bool {
+        self.directory.read(cx).menu_open() || self.filename.read(cx).menu_open()
+    }
+
+    /// Dismiss completion menus on Directory / Name without closing the sheet.
+    pub fn dismiss_completion_menus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.directory.update(cx, |completion, cx| {
+            completion.dismiss(window, cx);
+        });
+        self.filename.update(cx, |completion, cx| {
+            completion.dismiss(window, cx);
+        });
     }
 
     fn selected_count(&self) -> u16 {
@@ -364,7 +419,7 @@ impl ExportSheet {
         }
     }
 
-    fn set_encoder(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
+    fn set_encoder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(encoder) = encoder(id) else {
             return;
         };
@@ -391,7 +446,7 @@ impl ExportSheet {
         if let Ok(resolved) = resolve_export_settings(&self.source, &overlay) {
             self.sample_format = resolved.sample_format;
         }
-        self.sync_format_export_vars();
+        self.sync_format_export_vars(window, cx);
         cx.notify();
     }
 
@@ -402,10 +457,10 @@ impl ExportSheet {
         if self.selected_count() == 0 {
             return false;
         }
-        if self.directory.read(cx).value().trim().is_empty() {
+        if self.directory_text(cx).trim().is_empty() {
             return false;
         }
-        if self.filename.read(cx).value().trim().is_empty() {
+        if self.filename_text(cx).trim().is_empty() {
             return false;
         }
         encoder.supports(&self.spec())
@@ -430,8 +485,8 @@ impl ExportSheet {
     /// Soft-interpolated destination path for the Resolved preview row.
     pub fn resolved_path_preview(&self, cx: &App) -> String {
         soft_resolved_path(
-            &self.directory.read(cx).value().to_string(),
-            &self.filename.read(cx).value().to_string(),
+            &self.directory_text(cx),
+            &self.filename_text(cx),
             &self.compose_rust(),
         )
     }
@@ -441,8 +496,8 @@ impl ExportSheet {
         if !self.can_export(cx) {
             return None;
         }
-        let directory_raw = self.directory.read(cx).value().to_string();
-        let filename_raw = self.filename.read(cx).value().to_string();
+        let directory_raw = self.directory_text(cx);
+        let filename_raw = self.filename_text(cx);
         let directory = interpolate_strict(directory_raw.trim(), composed).ok()?;
         let filename = interpolate_strict(filename_raw.trim(), composed).ok()?;
         if directory.is_empty() || filename.is_empty() {
@@ -482,9 +537,7 @@ impl ExportSheet {
             };
             let _ = cx.update(|window, cx| {
                 view.update(cx, |this, cx| {
-                    this.directory.update(cx, |input, cx| {
-                        input.set_value(path.to_string_lossy().into_owned(), window, cx);
-                    });
+                    this.set_directory_text(path.to_string_lossy().into_owned(), window, cx);
                     cx.notify();
                 });
             });
@@ -500,9 +553,7 @@ impl ExportSheet {
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| path.to_path_buf())
         };
-        self.directory.update(cx, |input, cx| {
-            input.set_value(dir.to_string_lossy().into_owned(), window, cx);
-        });
+        self.set_directory_text(dir.to_string_lossy().into_owned(), window, cx);
         cx.notify();
     }
 
@@ -971,11 +1022,11 @@ impl Render for ExportSheet {
                         PopupMenuItem::new(format.label())
                             .disabled(disabled)
                             .checked(spec.sample_format == Some(format))
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 this.update(cx, |sheet, cx| {
                                     sheet.profile_name = None;
                                     sheet.sample_format = Some(format);
-                                    sheet.sync_format_export_vars();
+                                    sheet.sync_format_export_vars(window, cx);
                                     cx.notify();
                                 });
                             }),
@@ -1002,11 +1053,11 @@ impl Render for ExportSheet {
                         PopupMenuItem::new(format_rate(rate))
                             .disabled(disabled)
                             .checked(spec.sample_rate == rate)
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 this.update(cx, |sheet, cx| {
                                     sheet.profile_name = None;
                                     sheet.sample_rate = rate;
-                                    sheet.sync_format_export_vars();
+                                    sheet.sync_format_export_vars(window, cx);
                                     cx.notify();
                                 });
                             }),
@@ -1153,12 +1204,12 @@ impl Render for ExportSheet {
                                         (label.clone(), checked)
                                     },
                                 ))
-                                .on_toggle(cx.listener(|this, &(i, enabled), _, cx| {
+                                .on_toggle(cx.listener(|this, &(i, enabled), window, cx| {
                                     this.profile_name = None;
                                     if let Some(slot) = this.channels_selected.get_mut(i) {
                                         *slot = enabled;
                                     }
-                                    this.sync_format_export_vars();
+                                    this.sync_format_export_vars(window, cx);
                                     cx.notify();
                                 })),
                         )),
@@ -1207,7 +1258,7 @@ impl Render for ExportSheet {
                                             }
                                         },
                                     ))
-                                    .child(Input::new(&self.directory).xsmall().w_full()),
+                                    .child(self.directory.clone()),
                             )
                             .child(
                                 div().w(ACTION_BUTTON_WIDTH).flex_none().child(
@@ -1222,12 +1273,7 @@ impl Render for ExportSheet {
                                 ),
                             ),
                     ))
-                    .child(form_row(
-                        "Name",
-                        muted,
-                        None,
-                        Input::new(&self.filename).xsmall().w_full(),
-                    ))
+                    .child(form_row("Name", muted, None, self.filename.clone()))
                     .child(form_row(
                         "Resolved",
                         muted,

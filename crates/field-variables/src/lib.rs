@@ -14,10 +14,15 @@
 //! Default compose order (last wins for a given leaf name):
 //! `source` → `user` → `session` → `composition` → `export`.
 
+mod complete;
 mod compose;
 mod interpolate;
 mod table;
 
+pub use complete::{
+    accept_edit, completion_context, completion_items, prefix_edit, tab_action, AcceptEdit,
+    CompletionContext, CompletionItem, CompletionKind, TabAction,
+};
 pub use compose::{compose, compose_with_order, DEFAULT_SCOPE_ORDER};
 pub use interpolate::{interpolate, interpolate_strict, InterpolateError};
 pub use table::{

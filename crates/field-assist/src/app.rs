@@ -5143,6 +5143,18 @@ impl AppView {
                     return;
                 }
                 if event.keystroke.key.as_str() == "escape" {
+                    let dismissed = this.export_sheet.update(cx, |sheet, cx| {
+                        if sheet.completion_menu_open(cx) {
+                            sheet.dismiss_completion_menus(window, cx);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if dismissed {
+                        cx.stop_propagation();
+                        return;
+                    }
                     this.close_export_sheet(window, cx);
                     cx.stop_propagation();
                 }
