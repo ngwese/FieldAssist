@@ -213,6 +213,7 @@ impl ScriptHost {
     }
     pub fn load_init_from(&mut self, config: Option<&Path>) -> Result<(), String> {
         self.inner.load_init_from(config)?;
+        self.inner.load_resolvers_from(config)?;
         for (source, name) in [
             (EMBEDDED_WORKFLOW_ADD, "workflow_add.lua"),
             (EMBEDDED_WORKFLOW_REPLACE, "workflow_replace.lua"),
@@ -225,24 +226,7 @@ impl ScriptHost {
                 .exec()
                 .map_err(|e| format!("{name}: {e}"))?;
         }
-        if let Some(dir) = config {
-            let mut files = std::fs::read_dir(dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("workflow_") && n.ends_with(".lua"))
-                })
-                .collect::<Vec<_>>();
-            files.sort();
-            for path in files {
-                self.inner.load_file(&path)?;
-            }
-        }
+        self.inner.load_workflows_from(config)?;
         Ok(())
     }
     pub fn invoke_workflow(&self, n: &str, p: &[PathBuf]) -> Result<(), String> {

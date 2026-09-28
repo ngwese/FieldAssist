@@ -58,10 +58,14 @@ indices are 0-based samples.
 
 ### Load order at startup
 
-1. `init.lua`: the user file in the config directory if it exists, otherwise
+1. Embedded `resolver_default.lua`
+2. `init.lua`: the user file in the config directory if it exists, otherwise
    the embedded default (`field_scripting::EMBEDDED_INIT`)
-2. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
-3. User `workflow_*.lua` next to `init.lua`, sorted by path
+3. User `resolver_*.lua` along the scripting Search Path (config directory,
+   then `settings.json` `scripting.search_path`), sorted by name within each
+   folder
+4. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
+5. User `workflow_*.lua` along the same Search Path
 
 `app:declare_workflow` with an existing `name` replaces the previous
 registration. Declaring during an in-progress drag does not rebuild that

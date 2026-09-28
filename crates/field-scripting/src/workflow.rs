@@ -401,6 +401,20 @@ pub fn bind_workflow_module(lua: &mlua::Lua, field: &mlua::Table) -> mlua::Resul
         "cancel",
         lua.create_function(|lua, ()| host_from_lua(lua)?.cancel_workflow(lua))?,
     )?;
+    workflow.set(
+        "load_workflows",
+        lua.create_function(|lua, ()| {
+            let host = host_from_lua(lua)?;
+            let config = host.inner.borrow().profile.config_dir.clone();
+            crate::host::load_matching_scripts(
+                lua,
+                &host,
+                config.as_deref(),
+                crate::script_search::WORKFLOW_PREFIX,
+            )
+            .map_err(mlua::Error::runtime)
+        })?,
+    )?;
     field.set("workflow", workflow)?;
     Ok(())
 }

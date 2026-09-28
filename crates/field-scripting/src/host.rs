@@ -283,8 +283,10 @@ impl ScriptHost {
 
     /// Load user `{config_dir}/init.lua` if present, else [`EMBEDDED_INIT`].
     ///
-    /// Uses the host profile's `config_dir`. Does not load workflow bundles
-    /// (FieldAssist loads those after this).
+    /// Uses the host profile's `config_dir`. Does not load user
+    /// `resolver_*.lua` / `workflow_*.lua` (call [`Self::load_resolvers`] /
+    /// [`Self::load_workflows`]). FieldAssist loads those after this along with
+    /// embedded workflow bundles.
     pub fn load_init(&mut self) -> Result<(), String> {
         let config = self.config_dir();
         self.load_init_from(config.as_deref())
@@ -293,7 +295,9 @@ impl ScriptHost {
     /// Load `{config}/init.lua` if it is a file, else [`EMBEDDED_INIT`].
     ///
     /// Always loads [`EMBEDDED_RESOLVER_DEFAULT`] first so `"default"` is
-    /// registered before user scripts run.
+    /// registered before user scripts run. Does not load user
+    /// `resolver_*.lua` / `workflow_*.lua` (call [`Self::load_resolvers`] /
+    /// [`Self::load_workflows`], or let FieldAssist do so after this).
     pub fn load_init_from(&mut self, config: Option<&Path>) -> Result<(), String> {
         self.lua
             .load(EMBEDDED_RESOLVER_DEFAULT)
@@ -309,6 +313,34 @@ impl ScriptHost {
                 .exec()
                 .map_err(|err| format!("init.lua: {err}"))
         }
+    }
+
+    /// Load `resolver_*.lua` from the scripting search path (config dir, then
+    /// `settings.json` `scripting.search_path`).
+    pub fn load_resolvers(&mut self) -> Result<(), String> {
+        let config = self.config_dir();
+        self.load_resolvers_from(config.as_deref())
+    }
+
+    /// Load `resolver_*.lua` using `config` as the primary search directory.
+    pub fn load_resolvers_from(&mut self, config: Option<&Path>) -> Result<(), String> {
+        self.load_matching_scripts(config, crate::script_search::RESOLVER_PREFIX)
+    }
+
+    /// Load `workflow_*.lua` from the scripting search path (config dir, then
+    /// `settings.json` `scripting.search_path`).
+    pub fn load_workflows(&mut self) -> Result<(), String> {
+        let config = self.config_dir();
+        self.load_workflows_from(config.as_deref())
+    }
+
+    /// Load `workflow_*.lua` using `config` as the primary search directory.
+    pub fn load_workflows_from(&mut self, config: Option<&Path>) -> Result<(), String> {
+        self.load_matching_scripts(config, crate::script_search::WORKFLOW_PREFIX)
+    }
+
+    fn load_matching_scripts(&mut self, config: Option<&Path>, prefix: &str) -> Result<(), String> {
+        load_matching_scripts(&self.lua, &self.handle, config, prefix)
     }
 
     /// Replace host-held user-scoped variables (FieldAssist `variables.json`).
@@ -334,23 +366,7 @@ impl ScriptHost {
     /// A leading Unix shebang (`#!…`) is stripped so scripts can use
     /// `#!/usr/bin/env field-batch`.
     pub fn load_file(&mut self, path: &Path) -> Result<(), String> {
-        let source =
-            std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
-        let chunk = strip_shebang(&source);
-        let parent = path.parent().map(Path::to_path_buf);
-        if let Some(parent) = parent {
-            self.handle.inner.borrow_mut().include_stack.push(parent);
-        }
-        let result = self
-            .lua
-            .load(chunk)
-            .set_name(path.display().to_string())
-            .exec()
-            .map_err(|err| format!("{}: {err}", path.display()));
-        if !self.handle.inner.borrow().include_stack.is_empty() {
-            self.handle.inner.borrow_mut().include_stack.pop();
-        }
-        result
+        exec_lua_file(&self.lua, &self.handle, path)
     }
 
     /// Drain captured log entries.
@@ -1216,6 +1232,39 @@ fn control_string(row: &Table, key: &str) -> mlua::Result<String> {
     }
 }
 
+/// Execute a Lua file with shebang stripping and `field.include` parent push.
+pub(crate) fn exec_lua_file(lua: &Lua, host: &HostHandle, path: &Path) -> Result<(), String> {
+    let source =
+        std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let chunk = strip_shebang(&source);
+    let parent = path.parent().map(Path::to_path_buf);
+    if let Some(parent) = parent {
+        host.inner.borrow_mut().include_stack.push(parent);
+    }
+    let result = lua
+        .load(chunk)
+        .set_name(path.display().to_string())
+        .exec()
+        .map_err(|err| format!("{}: {err}", path.display()));
+    if !host.inner.borrow().include_stack.is_empty() {
+        host.inner.borrow_mut().include_stack.pop();
+    }
+    result
+}
+
+/// Load all `{prefix}*.lua` along the scripting search path.
+pub(crate) fn load_matching_scripts(
+    lua: &Lua,
+    host: &HostHandle,
+    config: Option<&Path>,
+    prefix: &str,
+) -> Result<(), String> {
+    for path in crate::script_search::collect_matching_lua(config, prefix) {
+        exec_lua_file(lua, host, &path)?;
+    }
+    Ok(())
+}
+
 fn strip_shebang(source: &str) -> &str {
     let trimmed = source.strip_prefix('\u{feff}').unwrap_or(source);
     if let Some(rest) = trimmed.strip_prefix("#!") {
@@ -1332,6 +1381,82 @@ mod tests {
             "print(1)\n"
         );
         assert_eq!(strip_shebang("print(1)\n"), "print(1)\n");
+    }
+
+    #[test]
+    fn load_resolvers_and_workflows_scan_search_path() {
+        let config = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        std::fs::write(config.path().join("init.lua"), "-- init\n").unwrap();
+        std::fs::write(
+            config.path().join("settings.json"),
+            format!(
+                r#"{{ "scripting": {{ "search_path": ["{}"] }} }}"#,
+                extra.path().display().to_string().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            config.path().join("resolver_config.lua"),
+            r#"
+            local R = field.variables.create_resolver({ name = "from_config" })
+            function R:init(b) self._b = b end
+            function R:names() return {} end
+            function R:resolve() return nil, nil end
+            field.variables.declare_resolver(R)
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            extra.path().join("resolver_extra.lua"),
+            r#"
+            local R = field.variables.create_resolver({ name = "from_extra" })
+            function R:init(b) self._b = b end
+            function R:names() return {} end
+            function R:resolve() return nil, nil end
+            field.variables.declare_resolver(R)
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            extra.path().join("workflow_extra.lua"),
+            r#"
+            field.workflow.declare({
+              name = "extra",
+              display_name = "Extra",
+              scopes = { "run" },
+            }, function() end)
+            "#,
+        )
+        .unwrap();
+
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: Some(config.path().to_path_buf()),
+        })
+        .unwrap();
+        host.load_init_from(Some(config.path())).unwrap();
+        host.load_resolvers().unwrap();
+        host.load_workflows().unwrap();
+
+        let out = host.eval(
+            r#"
+            field.variables.set_resolver("from_config")
+            field.variables.set_resolver("from_extra")
+            return true
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(
+            host.workflow_metas().iter().any(|m| m.name == "extra"),
+            "{:?}",
+            host.workflow_metas()
+        );
+
+        // Lua APIs are the same helpers.
+        let out = host
+            .eval("field.variables.load_resolvers(); field.workflow.load_workflows(); return true");
+        assert!(out.error.is_none(), "{:?}", out.error);
     }
 
     fn write_minimal_wav(path: &std::path::Path) {

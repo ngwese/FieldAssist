@@ -2376,6 +2376,67 @@ mod tests {
     }
 
     #[test]
+    fn search_path_loads_resolvers_and_workflows_from_extra_dirs() {
+        let config = std::env::temp_dir().join("fieldassist-search-path-config");
+        let extra = std::env::temp_dir().join("fieldassist-search-path-extra");
+        let _ = std::fs::remove_dir_all(&config);
+        let _ = std::fs::remove_dir_all(&extra);
+        std::fs::create_dir_all(&config).expect("config");
+        std::fs::create_dir_all(&extra).expect("extra");
+        std::fs::write(config.join("init.lua"), "-- user init\n").expect("init");
+        std::fs::write(
+            config.join("settings.json"),
+            format!(
+                r#"{{
+                    "kind": "settings",
+                    "format_version": 1,
+                    "scripting": {{ "search_path": ["{}"] }}
+                }}"#,
+                extra.display().to_string().replace('\\', "/")
+            ),
+        )
+        .expect("settings");
+        std::fs::write(
+            extra.join("resolver_studio.lua"),
+            r#"
+            local R = field.variables.create_resolver({ name = "studio" })
+            function R:init(bindings) self._b = bindings end
+            function R:names() return {} end
+            function R:resolve() return nil, nil end
+            field.variables.declare_resolver(R)
+            "#,
+        )
+        .expect("resolver");
+        std::fs::write(
+            extra.join("workflow_studio.lua"),
+            r#"
+            field.workflow.declare({
+              name = "studio",
+              display_name = "Studio",
+              scopes = { "menu" },
+            }, function() end)
+            "#,
+        )
+        .expect("workflow");
+        std::fs::write(extra.join("ignored.lua"), "error('should not load')").expect("ignore");
+
+        let (mut host, _) = test_host();
+        host.load_init_from(Some(&config))
+            .expect("load with search path");
+        let out = host.eval(r#"field.variables.set_resolver("studio"); return true"#);
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(
+            host.workflow_metas()
+                .iter()
+                .any(|m| m.name == "studio" && m.display_name == "Studio"),
+            "{:?}",
+            host.workflow_metas()
+        );
+        let _ = std::fs::remove_dir_all(&config);
+        let _ = std::fs::remove_dir_all(&extra);
+    }
+
+    #[test]
     fn load_session_does_not_replace_active() {
         let dir = std::env::temp_dir().join("fieldassist-load-session");
         std::fs::create_dir_all(&dir).expect("temp dir");

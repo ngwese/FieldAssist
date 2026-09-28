@@ -56,6 +56,7 @@ pub struct AppSettings {
     pub waveform: WaveformSettings,
     pub selection: SelectionSettings,
     pub audio: AudioSettings,
+    pub scripting: ScriptingSettings,
     pub experimental: ExperimentalSettings,
 }
 
@@ -69,6 +70,7 @@ impl Default for AppSettings {
             waveform: WaveformSettings::default(),
             selection: SelectionSettings::default(),
             audio: AudioSettings::default(),
+            scripting: ScriptingSettings::default(),
             experimental: ExperimentalSettings::default(),
         }
     }
@@ -361,6 +363,59 @@ impl Default for AudioSettings {
     }
 }
 
+/// Lua resolver / workflow discovery preferences.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ScriptingSettings {
+    /// Extra folders searched after the user config directory for
+    /// `resolver_*.lua` and `workflow_*.lua` (order preserved).
+    ///
+    /// The config directory itself is always searched first and is not stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_path: Vec<String>,
+}
+
+impl Default for ScriptingSettings {
+    fn default() -> Self {
+        Self {
+            search_path: Vec::new(),
+        }
+    }
+}
+
+impl ScriptingSettings {
+    /// Drop blanks and entries equal to the user config directory.
+    pub fn normalize(&mut self) {
+        let config = crate::commands::user_config_dir();
+        self.search_path.retain(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+            if let Some(config) = config.as_ref() {
+                let path = PathBuf::from(trimmed);
+                if paths_equal(&path, config) {
+                    return false;
+                }
+            }
+            true
+        });
+        for entry in &mut self.search_path {
+            *entry = entry.trim().to_string();
+        }
+    }
+}
+
+fn paths_equal(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Unstable / preview preferences.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -391,7 +446,10 @@ impl AppSettings {
             Ok(text) => match serde_json::from_str::<AppSettings>(&text) {
                 // Legacy files omit `kind`; `#[serde(default)]` fills
                 // `SETTINGS_KIND`. Reject only an explicit wrong marker.
-                Ok(settings) if settings.kind == SETTINGS_KIND => settings,
+                Ok(mut settings) if settings.kind == SETTINGS_KIND => {
+                    settings.scripting.normalize();
+                    settings
+                }
                 Ok(settings) => {
                     eprintln!(
                         "FieldAssist: ignoring settings.json with unexpected kind {:?} ({})",
@@ -428,6 +486,7 @@ impl AppSettings {
         let mut out = self.clone();
         out.kind = SETTINGS_KIND.into();
         out.format_version = SETTINGS_FORMAT_VERSION;
+        out.scripting.normalize();
         let text = serde_json::to_string_pretty(&out).map_err(|err| format!("{err:#}"))?;
         std::fs::write(&path, text + "\n").map_err(|err| format!("{err:#}"))
     }
@@ -520,6 +579,7 @@ mod tests {
         assert!(!s.selection.snap_to_marker);
         assert!(s.selection.add_at_hover);
         assert!(s.audio.output_device.is_none());
+        assert!(s.scripting.search_path.is_empty());
         assert!(!s.experimental.flags.content_credentials);
         assert!(!s.experimental.flags.analysis_ops);
     }
@@ -535,12 +595,35 @@ mod tests {
         s.waveform.set_threaded_shell_value_reduce(0.15);
         s.waveform.set_threaded_ribbon_db(-6.0);
         s.audio.output_device = Some("Speakers".into());
+        s.scripting.search_path = vec!["C:/scripts".into(), "D:/workflows".into()];
         s.experimental.flags.analysis_ops = true;
         let text = serde_json::to_string_pretty(&s).unwrap();
         assert!(text.contains("\"kind\": \"settings\""), "{text}");
         assert!(text.contains("\"format_version\": 1"), "{text}");
+        assert!(text.contains("\"search_path\""), "{text}");
         let back: AppSettings = serde_json::from_str(&text).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn scripting_search_path_defaults_when_omitted() {
+        let json = r#"{
+            "appearance": { "theme_name": "Default Dark", "theme_mode": "dark" }
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert!(s.scripting.search_path.is_empty());
+    }
+
+    #[test]
+    fn scripting_normalize_drops_blanks() {
+        let mut s = ScriptingSettings {
+            search_path: vec!["  ".into(), "C:/ok".into(), "".into(), "  D:/also  ".into()],
+        };
+        s.normalize();
+        assert_eq!(
+            s.search_path,
+            vec!["C:/ok".to_string(), "D:/also".to_string()]
+        );
     }
 
     #[test]

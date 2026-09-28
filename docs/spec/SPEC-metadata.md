@@ -244,8 +244,14 @@ Fallback compose uses the same per-site lists.
 
 1. Embedded `resolver_default.lua`
 2. User `init.lua` if present, else embedded `init.lua`
-3. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
-4. User `workflow_*.lua` next to `init.lua`, sorted by path
+3. User `resolver_*.lua` along the scripting Search Path (config directory,
+   then Settings → Scripting → Search Path), sorted by name within each folder
+4. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
+5. User `workflow_*.lua` along the same Search Path
+
+Extra search-path folders are stored in `settings.json` as
+`scripting.search_path` and apply on the next launch. The config directory is
+always first and is not stored.
 
 ## Non-goals (v1)
 

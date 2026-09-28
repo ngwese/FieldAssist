@@ -12,6 +12,7 @@ pub mod load_problems_sheet;
 pub mod media_panel;
 pub mod quick_note;
 pub mod quit_unsaved;
+pub mod script_search_path;
 pub mod settings_window;
 pub mod spectrum_gradient_editor;
 pub mod status_bar;

@@ -513,6 +513,20 @@ pub fn bind_variables_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()>
         "user",
         lua.create_function(|_, ()| Ok(LuaBindings::user()))?,
     )?;
+    variables.set(
+        "load_resolvers",
+        lua.create_function(|lua, ()| {
+            let host = host_from_lua(lua)?;
+            let config = host.inner.borrow().profile.config_dir.clone();
+            crate::host::load_matching_scripts(
+                lua,
+                &host,
+                config.as_deref(),
+                crate::script_search::RESOLVER_PREFIX,
+            )
+            .map_err(mlua::Error::runtime)
+        })?,
+    )?;
     field.set("variables", variables)?;
     Ok(())
 }

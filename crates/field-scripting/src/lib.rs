@@ -43,6 +43,7 @@ mod media;
 mod package_policy;
 mod prototype;
 mod region;
+mod script_search;
 mod selection;
 mod session;
 mod ui;
@@ -69,6 +70,9 @@ pub use host::{
 };
 pub use layout::ChannelLayoutDef;
 pub use package_policy::{install_package_policy, PackagePolicy};
+pub use script_search::{
+    collect_matching_lua, matching_lua_files, script_search_dirs, RESOLVER_PREFIX, WORKFLOW_PREFIX,
+};
 pub use url::bind_url;
 pub use variables::{
     composition_layer_variables, composition_layer_variables_for_host,

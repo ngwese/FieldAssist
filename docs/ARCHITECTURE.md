@@ -139,7 +139,9 @@ whenever source and device rates differ.
   system default device (no session). Loads user `init.lua` else the shared
   embedded default, runs `detect_layout` once after open, then uses the
   composition's monitoring chain when set (otherwise Direct).
-- **`FieldAssist`**: desktop app (`crates/field-assist`).
+- **`FieldAssist`**: desktop app (`crates/field-assist`). Loads embedded
+  workflows plus user `resolver_*.lua` / `workflow_*.lua` along the scripting
+  Search Path (Settings → Scripting).
 
 ```bash
 cargo run -p field-batch -- --eval 'return app.name'

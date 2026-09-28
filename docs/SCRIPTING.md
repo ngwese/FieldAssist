@@ -90,8 +90,17 @@ field-play uses the headless backend only long enough to load init and fire
    variable resolver (see [field.variables](#field-variables))
 2. `init.lua` — user config file if present, else embedded default
    (`field_scripting::EMBEDDED_INIT`)
-3. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
-4. User `workflow_*.lua` next to `init.lua` (sorted by name)
+3. `resolver_*.lua` along the scripting **Search Path** (config directory
+   first, then extra folders from Settings → Scripting; sorted by name
+   within each folder)
+4. Embedded `workflow_add.lua`, `workflow_replace.lua`, `workflow_review.lua`
+5. `workflow_*.lua` along the same Search Path (same order). A later
+   `declare` / `declare_resolver` replaces an earlier registration with the
+   same name.
+
+Extra Search Path folders are stored in `settings.json` under
+`scripting.search_path` and apply on the **next** launch. The config
+directory is always searched first and is not stored.
 
 
 | OS      | Config directory                                            |
@@ -112,8 +121,10 @@ The same directory may also hold:
 | ---------------- | -------------------------------------------------------------------------- |
 | `init.lua`       | Startup script (user override or embedded default)                         |
 | `keymap.json`    | Optional keybinding overlay                                                |
-| `settings.json`  | FieldAssist preferences (theme, docks, waveform, selection, output device) |
+| `settings.json`  | FieldAssist preferences (theme, docks, waveform, selection, output device, scripting search path) |
 | `variables.json` | User-scoped variables (independent of settings reset)                      |
+| `resolver_*.lua` | Optional user resolvers (auto-loaded after `init.lua`)                     |
+| `workflow_*.lua` | Optional user workflows (auto-loaded after embedded workflows)             |
 
 
 Embedded `init.lua` loads settings only on FieldAssist:
@@ -969,6 +980,7 @@ Product contract: [spec/SPEC-metadata.md](spec/SPEC-metadata.md).
 | `declare_resolver`  | prototype                         | —         | Register by `:name()`; `"default"` replaces the built-in |
 | `set_resolver`      | `name: string`                    | —         | Select the active resolver (process lifetime; startup script) |
 | `resolve`           | `{ bindings, … }`                 | table     | Resolve a bindings list with the active resolver (row array + map) |
+| `load_resolvers`    | —                                 | —         | Load `resolver_*.lua` from the scripting Search Path |
 
 
 ### Returned type: bindings
@@ -1063,6 +1075,7 @@ Declare and run named workflow prototypes. Prototypes and instances are
 | `run`     | `name` [, `payload`]                      | instance table or `nil` | Start a registered workflow. Default payload `{ scope = "run" }`.         |
 | `finish`  | —                                         | —                       | End the active run; calls instance `:finish(session)` if present          |
 | `cancel`  | —                                         | —                       | Cancel the active run; calls instance `:cancel(session)` if present       |
+| `load_workflows` | —                                    | —                       | Load `workflow_*.lua` from the scripting Search Path                      |
 
 
 

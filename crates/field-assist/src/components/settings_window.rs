@@ -369,6 +369,38 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                 ),
         )
         .page(
+            SettingPage::new("Scripting")
+                .icon(IconName::SquareTerminal)
+                .description("Lua resolvers and workflows")
+                .group(
+                    SettingGroup::new().title("Search Path").item(
+                        SettingItem::render(|options, window, cx| {
+                            window
+                                .use_keyed_state(
+                                    SharedString::from(format!(
+                                        "script-search-path-{}-{}-{}",
+                                        options.page_ix(),
+                                        options.group_ix(),
+                                        options.item_ix()
+                                    )),
+                                    cx,
+                                    |window, cx| {
+                                        crate::components::script_search_path::ScriptSearchPathEditor::new(
+                                            window, cx,
+                                        )
+                                    },
+                                )
+                                .clone()
+                        })
+                        .keywords(["script", "lua", "search", "path", "resolver", "workflow"])
+                        .on_reset(
+                            crate::components::script_search_path::script_search_path_is_dirty,
+                            crate::components::script_search_path::script_search_path_reset,
+                        ),
+                    ),
+                ),
+        )
+        .page(
             SettingPage::new("Experimental")
                 .icon(IconName::Settings)
                 .description("Unstable and preview features")
