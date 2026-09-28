@@ -242,6 +242,9 @@ Fallback compose uses the same per-site lists.
 
 ## Startup load order (FieldAssist)
 
+0. Load `settings.json` (`field-settings`); apply scripting / device /
+   experimental / application / waveform from Rust (extends `package.path`
+   from Search Path; optional system paths / native modules)
 1. Embedded `resolver_default.lua`
 2. User `init.lua` if present, else embedded `init.lua`
 3. User `resolver_*.lua` along the scripting Search Path (config directory,
@@ -250,8 +253,9 @@ Fallback compose uses the same per-site lists.
 5. User `workflow_*.lua` along the same Search Path
 
 Extra search-path folders are stored in `settings.json` as
-`scripting.search_path` and apply on the next launch. The config directory is
-always first and is not stored.
+`scripting.search_path`. They extend Lua `package.path` / `package.cpath` and
+resolver/workflow discovery. The config directory is always first and is not
+stored. Path extras changed mid-session apply on the next launch.
 
 ## Non-goals (v1)
 

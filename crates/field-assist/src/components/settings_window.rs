@@ -14,8 +14,8 @@ use gpui_kit::component::setting::{
     SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
-    v_flex, ActiveTheme as _, AxisExt as _, Disableable as _, IconName, Root, Sizable as _, Size,
-    Theme, ThemeRegistry,
+    v_flex, ActiveTheme as _, AxisExt as _, Disableable as _, Icon, IconName, IconNamed, Root,
+    Sizable as _, Size, Theme, ThemeRegistry,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -29,6 +29,14 @@ use crate::settings::{self, AppSettings};
 const DECIMAL_STEP: f64 = 0.1;
 const DECIMAL_FINE_STEP: f64 = 0.01;
 const DECIMAL_PLACES: usize = 2;
+
+struct AudioWaveformIcon;
+
+impl IconNamed for AudioWaveformIcon {
+    fn path(self) -> SharedString {
+        "icons/audio-waveform.svg".into()
+    }
+}
 
 /// Build the Settings tree bound to the global [`settings::AppSettingsStore`].
 pub fn build_settings_ui(cx: &App) -> Settings {
@@ -54,7 +62,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
         .with_size(Size::Small)
         .with_group_variant(GroupBoxVariant::Fill)
         .page(
-            SettingPage::new("General")
+            SettingPage::new("Application")
                 .icon(IconName::Settings)
                 .default_open(true)
                 .description("Appearance, layout, and selection defaults")
@@ -198,7 +206,8 @@ pub fn build_settings_ui(cx: &App) -> Settings {
         )
         .page(
             SettingPage::new("Waveform")
-                .icon(IconName::HardDrive)
+                .icon(Icon::new(AudioWaveformIcon))
+                .default_open(true)
                 .description("Playhead, representation, peak and spectrum styling")
                 .group(
                     SettingGroup::new()
@@ -371,7 +380,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
         .page(
             SettingPage::new("Scripting")
                 .icon(IconName::SquareTerminal)
-                .description("Lua resolvers and workflows")
+                .description("Lua resolvers, workflows, and modules")
                 .group(
                     SettingGroup::new().title("Search Path").item(
                         SettingItem::render(|options, window, cx| {
@@ -392,12 +401,30 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                                 )
                                 .clone()
                         })
-                        .keywords(["script", "lua", "search", "path", "resolver", "workflow"])
+                        .keywords(["script", "lua", "search", "path", "resolver", "workflow", "package"])
                         .on_reset(
                             crate::components::script_search_path::script_search_path_is_dirty,
                             crate::components::script_search_path::script_search_path_reset,
                         ),
                     ),
+                )
+                .group(
+                    SettingGroup::new()
+                        .title("Modules")
+                        .item(scripting_policy_switch(
+                            "System Package Paths",
+                            "Append system-wide Lua package.path / package.cpath templates",
+                            |s| s.scripting.enable_system_package_paths,
+                            |s, v| s.scripting.enable_system_package_paths = v,
+                            false,
+                        ))
+                        .item(scripting_policy_switch(
+                            "Native Modules",
+                            "Allow loading C modules via package.cpath / loadlib",
+                            |s| s.scripting.enable_native_modules,
+                            |s, v| s.scripting.enable_native_modules = v,
+                            false,
+                        )),
                 ),
         )
         .page(
@@ -439,6 +466,27 @@ fn flag_switch(
             move |on, cx| {
                 let _ = settings::update_and_save(cx, |s| set(s, on));
                 crate::app::apply_experimental_from_settings(cx);
+            },
+        )
+        .default_value(default),
+    )
+    .description(description)
+}
+
+fn scripting_policy_switch(
+    title: &'static str,
+    description: &'static str,
+    get: fn(&AppSettings) -> bool,
+    set: fn(&mut AppSettings, bool),
+    default: bool,
+) -> SettingItem {
+    SettingItem::new(
+        title,
+        SettingField::switch(
+            move |cx| get(&settings::store(cx).settings),
+            move |on, cx| {
+                let _ = settings::update_and_save(cx, |s| set(s, on));
+                crate::app::apply_scripting_policy_from_settings(cx);
             },
         )
         .default_value(default),

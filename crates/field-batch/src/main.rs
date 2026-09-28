@@ -53,12 +53,21 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let args = Args::parse();
     let config_dir = args.config_dir.or_else(field_scripting::user_config_dir);
+    let settings = field_settings::load_from_dir(config_dir.as_deref());
+    // Shared groups: scripting applied to the host; experimental kept in-process
+    // for future batch feature gates; device ignored until batch needs playback.
+    let _features =
+        field_features::FeatureRegistry::from_flags(settings.experimental.flags.clone());
+    let _preferred_output = settings.audio.output_device.clone();
+
     let mut host = ScriptHost::new(HostProfile {
         name: "field-batch",
         config_dir,
     })
     .map_err(|err| anyhow::anyhow!("create script host: {err}"))?;
 
+    host.apply_scripting_settings(&settings.scripting)
+        .map_err(|err| anyhow::anyhow!("apply scripting settings: {err}"))?;
     host.load_init()
         .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
     host.fire_enrich_session(None);

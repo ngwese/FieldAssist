@@ -315,6 +315,34 @@ impl ScriptHost {
         }
     }
 
+    /// Apply scripting preferences to `package.path` / policy before `init.lua`.
+    ///
+    /// Appends search-path templates (once), then optionally enables system
+    /// package paths and native modules. Idempotent for the enable flags.
+    pub fn apply_scripting_settings(
+        &self,
+        settings: &field_settings::ScriptingSettings,
+    ) -> Result<(), String> {
+        {
+            let mut inner = self.handle.inner.borrow_mut();
+            inner
+                .package_policy
+                .append_search_path_dirs(&self.lua, &settings.search_path)
+                .map_err(|err| err.to_string())?;
+        }
+        if settings.enable_system_package_paths {
+            self.handle
+                .enable_system_package_paths(&self.lua)
+                .map_err(|err| err.to_string())?;
+        }
+        if settings.enable_native_modules {
+            self.handle
+                .enable_native_modules(&self.lua)
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Load `resolver_*.lua` from the scripting search path (config dir, then
     /// `settings.json` `scripting.search_path`).
     pub fn load_resolvers(&mut self) -> Result<(), String> {
@@ -1457,6 +1485,57 @@ mod tests {
         let out = host
             .eval("field.variables.load_resolvers(); field.workflow.load_workflows(); return true");
         assert!(out.error.is_none(), "{:?}", out.error);
+    }
+
+    #[test]
+    fn apply_scripting_settings_extends_path_before_init() {
+        let config = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        std::fs::write(extra.path().join("preinit.lua"), "return { ok = true }").unwrap();
+        let mut settings = field_settings::ScriptingSettings::default();
+        settings.search_path = vec![extra.path().display().to_string()];
+        settings.enable_native_modules = true;
+
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: Some(config.path().to_path_buf()),
+        })
+        .unwrap();
+        host.apply_scripting_settings(&settings).unwrap();
+
+        let path: String = host
+            .lua()
+            .globals()
+            .get::<mlua::Table>("package")
+            .unwrap()
+            .get("path")
+            .unwrap();
+        let marker = format!(
+            "{}/?.lua",
+            extra
+                .path()
+                .display()
+                .to_string()
+                .trim_end_matches(['/', '\\'])
+        );
+        assert!(path.contains(&marker), "{path}");
+
+        let ok: bool = host
+            .lua()
+            .load("return require('preinit').ok")
+            .eval()
+            .unwrap();
+        assert!(ok);
+
+        // Native modules enabled without going through Lua.
+        assert!(host
+            .handle
+            .inner
+            .borrow()
+            .package_policy
+            .native_modules_enabled());
+
+        host.load_init_from(Some(config.path())).unwrap();
     }
 
     fn write_minimal_wav(path: &std::path::Path) {

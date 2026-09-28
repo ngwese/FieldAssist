@@ -14,7 +14,7 @@ use gpui_kit::{
     Styled as _, TextAlign, Window,
 };
 
-use crate::settings;
+use crate::settings::{self, WaveformSettingsExt};
 
 const TRACK_HEIGHT: f32 = 28.0;
 const CHIP_SIZE: f32 = 22.0;
@@ -55,7 +55,7 @@ impl SpectrumGradientEditor {
                     };
                     let rgb = hsla_to_rgb(*color);
                     let _ = settings::update_and_save(cx, |s| {
-                        s.waveform.set_spectrum_stop_rgb(index, rgb);
+                        s.waveform.set_spectrum_stop_rgb_normalized(index, rgb);
                     });
                     crate::app::apply_waveform_default_from_settings(cx);
                     cx.notify();
@@ -101,7 +101,7 @@ impl SpectrumGradientEditor {
         let local = ((x - self.track_bounds.origin.x.as_f32()) / width).clamp(0.0, 1.0);
         let db = SPECTRUM_GRADIENT_DB_FLOOR + local * (0.0 - SPECTRUM_GRADIENT_DB_FLOOR);
         let _ = settings::update_and_save(cx, |s| {
-            s.waveform.set_spectrum_stop_db(index, db);
+            s.waveform.set_spectrum_stop_db_normalized(index, db);
         });
         crate::app::apply_waveform_default_from_settings(cx);
         cx.notify();

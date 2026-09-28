@@ -58,6 +58,8 @@ indices are 0-based samples.
 
 ### Load order at startup
 
+0. Load `settings.json` and apply shared scripting settings (extends
+   `package.path` / policy) from Rust before Lua
 1. Embedded `resolver_default.lua`
 2. `init.lua`: the user file in the config directory if it exists, otherwise
    the embedded default (`field_scripting::EMBEDDED_INIT`)
@@ -73,7 +75,8 @@ gesture’s overlay.
 
 Embedded `init.lua` defines layouts, `detect_layout`, and `loaded` / `saved`
 logging. It does not register `session_loaded` / `session_saved`; those hooks
-exist for user scripts.
+exist for user scripts. It does not call `app:load_settings()` — hosts apply
+settings from Rust before init.
 
 ## Session and documents from Lua
 

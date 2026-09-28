@@ -229,6 +229,14 @@ impl ScriptHost {
         self.inner.load_workflows_from(config)?;
         Ok(())
     }
+
+    /// Apply scripting search path / package policy before `load_init`.
+    pub fn apply_scripting_settings(
+        &self,
+        settings: &field_settings::ScriptingSettings,
+    ) -> Result<(), String> {
+        self.inner.apply_scripting_settings(settings)
+    }
     pub fn invoke_workflow(&self, n: &str, p: &[PathBuf]) -> Result<(), String> {
         self.inner.invoke_workflow(n, p)
     }

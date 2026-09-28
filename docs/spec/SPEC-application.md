@@ -88,7 +88,7 @@ Symphonia.
 **Encode (render):** WAV, FLAC, and Ogg Vorbis only.
 
 Default window is 1280×760; launch theme is dark (override from `settings.json`
-via `app:load_settings()` in embedded `init.lua`, or from `init.lua` via
+applied by FieldAssist from Rust before `init.lua`, or from `init.lua` via
 `app.theme.mode` / `app.theme.name`). macOS uses the system application menu;
 Windows and Linux put menus in the title bar and Quit on File.
 
@@ -98,10 +98,13 @@ Windows and Linux put menus in the title bar and Quit on File.
 - **Windows / Linux**: Edit → Settings… (`ctrl-,`)
 
 Preferences live in `settings.json` next to `init.lua` and `keymap.json` in
-the user config directory. Embedded `init.lua` calls `app:load_settings()` when
-`app.name == "field-assist"` so FieldAssist applies them at startup;
-field-batch and field-play skip that call. CLI `--output` wins over the saved
-output device when both are present.
+the user config directory. Schema and load/save live in the `field-settings`
+leaf crate. FieldAssist applies shared groups (scripting, device/audio,
+experimental) plus application and waveform from Rust **before** `init.lua`.
+field-batch and field-play apply the shared groups the same way.
+`app:load_settings()` remains a FieldAssist-only manual reload API and is not
+required at startup. CLI `--output` wins over the saved output device when both
+are present.
 
 FieldAssist remains a single-editor-window product. On macOS, closing that
 window leaves the process alive (`QuitMode::Default`). Dock reopen and

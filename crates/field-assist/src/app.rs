@@ -79,6 +79,7 @@ use crate::script::{
     DropLayout, EvalOutput, LogEntry, LogLevel as ScriptLogLevel, ResumeWorkflow, ScriptHost,
     ToolbarItem,
 };
+use crate::settings::WaveformSettingsExt;
 use field_ui_components::{
     content_foreground, tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice,
     CompactDockSkin, ContentForeground, EditsPanel, LayoutPicker, LogLevel, LogLine, MarkersPanel,
@@ -614,12 +615,9 @@ impl AppView {
             follow_playhead: true,
         };
         crate::settings::ensure_store(cx);
-        {
-            let defaults = crate::settings::store(cx).settings.clone();
-            this.add_marker_at_hover = defaults.selection.add_at_hover;
-            this.waveform_representation = defaults.waveform.representation_enum();
-            this.follow_playhead = defaults.waveform.follow_playhead;
-        }
+        crate::settings::reload_from_disk(cx);
+        this.apply_scripting_settings_from_store(cx);
+        this.apply_loaded_settings(window, cx);
         this.load_init_lua(window, cx);
         this.refresh_output_devices_cache();
         if let Some(fault) = this.playback.output_fault().map(str::to_string) {
@@ -2297,6 +2295,14 @@ impl AppView {
         self.apply_spectrum_gradient_settings(&waveform, cx);
         self.sync_view_menus(cx);
         cx.notify();
+    }
+
+    /// Apply scripting search path / package policy from the settings store.
+    pub(crate) fn apply_scripting_settings_from_store(&mut self, cx: &mut Context<Self>) {
+        let scripting = crate::settings::store(cx).settings.scripting.clone();
+        if let Err(err) = self.script.apply_scripting_settings(&scripting) {
+            eprintln!("FieldAssist: scripting settings: {err}");
+        }
     }
 
     fn eval_lua(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -6901,6 +6907,17 @@ pub(crate) fn apply_audio_device_from_settings(cx: &mut App) {
         if let Err(err) = this.set_output_device(device.as_deref(), window, cx) {
             eprintln!("FieldAssist: settings output device: {err}");
         }
+    });
+}
+
+/// Live-apply scripting package-policy toggles to the open editor host.
+///
+/// Enabling system paths / native modules takes effect immediately. Disabling
+/// mid-session leaves the runtime enabled until relaunch. Search-path extras
+/// for `package.path` also require relaunch after change.
+pub(crate) fn apply_scripting_policy_from_settings(cx: &mut App) {
+    update_open_view(cx, |this, _window, cx| {
+        this.apply_scripting_settings_from_store(cx);
     });
 }
 

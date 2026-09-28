@@ -23,6 +23,7 @@ field-audio-monitor = { path = "../field-audio-monitor" }
 field-audio-playback = { path = "../field-audio-playback" }
 field-composition = { path = "../field-composition" }
 field-scripting = { path = "../field-scripting" }
+field-settings = { path = "../field-settings" }
 
 [dev-dependencies]
 cpal = { workspace = true }

@@ -4,6 +4,7 @@ members = [
     "crates/field-assist",
     "crates/field-batch",
     "crates/field-scripting",
+    "crates/field-settings",
     "crates/field-core",
     "crates/field-variables",
     "crates/field-features",

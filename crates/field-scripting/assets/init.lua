@@ -5,11 +5,11 @@
 -- Note: field.variables loads resolver_default.lua before this file, so the
 -- `"default"` last-wins resolver is already declared. Override with
 -- field.variables.declare_resolver / set_resolver in this file if needed.
-
--- FieldAssist: load settings.json (theme, docks, waveform, selection, device).
-if app.name == "field-assist" then
-  app:load_settings()
-end
+--
+-- Hosts apply settings.json (scripting / device / experimental, and FieldAssist
+-- application + waveform) from Rust before this file runs. Prefer Settings UI
+-- or settings.json over app:load_settings() at startup; that method remains for
+-- manual reload from scripts.
 
 -- Optional: pin an output device across launches (substring match).
 -- app.output_device = "Focusrite"

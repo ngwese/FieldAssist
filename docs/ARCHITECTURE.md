@@ -26,17 +26,18 @@ field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
     └── field-audio-playback     (device list for field.audio_devices)
 
 field-features          (feature flag registry; no gpui)
+field-settings          (settings.json schema + I/O; no gpui)
 
 field-audio-monitor     (Faust listen DSP; lock-free ParamStore)
 field-ui-components     (gpui widgets + host traits / DTOs; field-variables
                          for `${…}` template completion)
 
-field-scripting         (mlua host; NO gpui, NO field-ui-components)
+field-scripting         (mlua host; depends on field-settings; NO gpui)
     ├── field-batch     (CLI: REPL + script + shebang)
     ├── field-play      (CLI: composition → default device + monitor;
     │                    init.lua + detect_layout)
-    └── FieldAssist     (GPUI app; also monitor, ui-components, playback,
-                         field-features)
+    └── FieldAssist     (GPUI app; Settings UI; also monitor, ui-components,
+                         playback, field-features, field-settings)
 ```
 
 | Crate | Level | Responsibility |
@@ -44,6 +45,7 @@ field-scripting         (mlua host; NO gpui, NO field-ui-components)
 | `field-core` | leaf | File URLs, `ProgressHandle`, prefixed `CompositionId` |
 | `field-variables` | leaf | Scoped string variables, compose (last-wins), `${…}` interpolate |
 | `field-features` | leaf | Feature flag IDs, defaults, and in-memory registry |
+| `field-settings` | leaf | Shared `settings.json` schema and load/save (no GPUI) |
 | `field-audio-model` | leaf | `PcmBuffer`, regions, markers, `MediaId` / descriptors, `MediaPool` / `MediaStore`, `BlockPager` / `BlockSource` |
 | `field-audio-io` | leaf | Probe/decode/encode above Symphonia and format encoders; source metadata → variables; tagged encode |
 | `field-audio-process` | mid | Offline peaks, resampling; future analysis/ops ([SPEC-analysis.md](spec/SPEC-analysis.md)) |
@@ -55,13 +57,14 @@ field-scripting         (mlua host; NO gpui, NO field-ui-components)
 | `field-scripting` | high | Shared Lua 5.4 host (`field.*` + thin `app`); `ScriptBackend` / `HeadlessWorld` ([README](../crates/field-scripting/README.md)) |
 | `field-batch` | app | Headless REPL / script runner / Unix shebang over `field-scripting` |
 | `field-play` | app | Headless composition playback; `init.lua` + `detect_layout` for monitor chain |
-| `FieldAssist` | app | Document editor, GPUI host bridge, docks, playback; embeds workflows |
+| `FieldAssist` | app | Document editor, GPUI host bridge, docks, playback, Settings UI; embeds workflows |
 
 `field-scripting` sits at the same layer as the app hosts: it may depend on
 both `field-session` and `field-composition`. Its `ScriptBackend` trait lets
 each host supply session/document/media storage. FieldAssist keeps GPUI-only
 script bridges (`access`, theme, toolbar rendering) and binds host-only `app`
-fields (`name`, `theme`, `command`, chrome flags).
+fields (`name`, `theme`, `command`, chrome flags). Settings schema lives in
+`field-settings`; FieldAssist owns the Settings window only.
 
 ## Trait-at-leaf composition
 
@@ -131,17 +134,19 @@ whenever source and device rates differ.
 ## Binaries
 
 - **`field-batch`**: headless Lua (`field.*`) — REPL with no args, script file +
-  `app.args`, Unix shebang (`#!/usr/bin/env field-batch`). Loads user
-  `init.lua` else the shared embedded default. Does not auto-load
-  Add/Replace/Review (those stay FieldAssist-embedded).
+  `app.args`, Unix shebang (`#!/usr/bin/env field-batch`). Loads
+  `settings.json` (scripting apply), then user `init.lua` else the shared
+  embedded default. Does not auto-load Add/Replace/Review (those stay
+  FieldAssist-embedded).
 - **`field-play`**: `field-composition` + `field-audio-playback` +
   `field-audio-monitor` + `field-scripting` — plays a composition on the
-  system default device (no session). Loads user `init.lua` else the shared
-  embedded default, runs `detect_layout` once after open, then uses the
-  composition's monitoring chain when set (otherwise Direct).
-- **`FieldAssist`**: desktop app (`crates/field-assist`). Loads embedded
-  workflows plus user `resolver_*.lua` / `workflow_*.lua` along the scripting
-  Search Path (Settings → Scripting).
+  preferred / default device (no session). Loads `settings.json` (scripting +
+  preferred output), then user `init.lua` else the shared embedded default,
+  runs `detect_layout` once after open, then uses the composition's
+  monitoring chain when set (otherwise Direct).
+- **`FieldAssist`**: desktop app (`crates/field-assist`). Applies settings from
+  Rust before init; loads embedded workflows plus user `resolver_*.lua` /
+  `workflow_*.lua` along the scripting Search Path (Settings → Scripting).
 
 ```bash
 cargo run -p field-batch -- --eval 'return app.name'

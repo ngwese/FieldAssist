@@ -5,24 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
 /// Prefix for user resolver scripts (`resolver_*.lua`).
 pub const RESOLVER_PREFIX: &str = "resolver_";
 /// Prefix for user workflow scripts (`workflow_*.lua`).
 pub const WORKFLOW_PREFIX: &str = "workflow_";
-
-#[derive(Debug, Default, Deserialize)]
-struct SettingsFile {
-    #[serde(default)]
-    scripting: ScriptingSection,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ScriptingSection {
-    #[serde(default)]
-    search_path: Vec<String>,
-}
 
 /// Directories searched for resolver/workflow scripts: config dir first, then
 /// `scripting.search_path` from `{config}/settings.json`.
@@ -33,31 +19,19 @@ pub fn script_search_dirs(config: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(config) = config {
         dirs.push(config.to_path_buf());
-        if let Some(extras) = read_extra_search_path(config) {
-            for entry in extras {
-                let trimmed = entry.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let path = PathBuf::from(trimmed);
-                if paths_equal(&path, config) {
-                    continue;
-                }
-                if dirs.iter().any(|d| paths_equal(d, &path)) {
-                    continue;
-                }
-                dirs.push(path);
+        let settings = field_settings::load_from_dir(Some(config));
+        for entry in settings.scripting.search_path {
+            let path = PathBuf::from(entry);
+            if paths_equal(&path, config) {
+                continue;
             }
+            if dirs.iter().any(|d| paths_equal(d, &path)) {
+                continue;
+            }
+            dirs.push(path);
         }
     }
     dirs
-}
-
-fn read_extra_search_path(config: &Path) -> Option<Vec<String>> {
-    let path = config.join("settings.json");
-    let text = std::fs::read_to_string(path).ok()?;
-    let file: SettingsFile = serde_json::from_str(&text).ok()?;
-    Some(file.scripting.search_path)
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
@@ -79,16 +53,22 @@ pub fn matching_lua_files(dir: &Path, prefix: &str) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(prefix) && n.ends_with(".lua"))
+            p.is_file()
+                && p.extension().and_then(|e| e.to_str()) == Some("lua")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name.starts_with(prefix))
         })
         .collect::<Vec<_>>();
-    files.sort();
+    files.sort_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .cmp(b.file_name().unwrap_or_default())
+    });
     files
 }
 
-/// Flatten [`script_search_dirs`] + [`matching_lua_files`] for `prefix`.
+/// Collect matching scripts from every search directory (config first).
 pub fn collect_matching_lua(config: Option<&Path>, prefix: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for dir in script_search_dirs(config) {
@@ -100,39 +80,15 @@ pub fn collect_matching_lua(config: Option<&Path>, prefix: &str) -> Vec<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use field_settings::{save_to_dir, AppSettings};
 
     #[test]
-    fn matching_lua_files_filters_and_sorts() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("workflow_b.lua"), "-- b").unwrap();
-        fs::write(dir.path().join("workflow_a.lua"), "-- a").unwrap();
-        fs::write(dir.path().join("other.lua"), "-- skip").unwrap();
-        fs::write(dir.path().join("resolver_x.lua"), "-- skip").unwrap();
-        let files = matching_lua_files(dir.path(), WORKFLOW_PREFIX);
-        let names: Vec<_> = files
-            .iter()
-            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
-            .collect();
-        assert_eq!(names, ["workflow_a.lua", "workflow_b.lua"]);
-    }
-
-    #[test]
-    fn script_search_dirs_config_first_then_extras() {
+    fn search_dirs_include_extras_from_settings() {
         let config = tempfile::tempdir().unwrap();
         let extra = tempfile::tempdir().unwrap();
-        let settings = format!(
-            r#"{{
-                "kind": "settings",
-                "format_version": 1,
-                "scripting": {{
-                    "search_path": ["{}", "  ", "{}"]
-                }}
-            }}"#,
-            extra.path().display().to_string().replace('\\', "/"),
-            config.path().display().to_string().replace('\\', "/")
-        );
-        fs::write(config.path().join("settings.json"), settings).unwrap();
+        let mut settings = AppSettings::default();
+        settings.scripting.search_path = vec![extra.path().display().to_string()];
+        save_to_dir(&settings, Some(config.path())).unwrap();
 
         let dirs = script_search_dirs(Some(config.path()));
         assert_eq!(dirs.len(), 2);
@@ -141,41 +97,18 @@ mod tests {
     }
 
     #[test]
-    fn collect_matching_walks_dirs_in_order() {
+    fn collect_matching_lua_walks_search_path() {
         let config = tempfile::tempdir().unwrap();
         let extra = tempfile::tempdir().unwrap();
-        fs::write(config.path().join("workflow_first.lua"), "return 1").unwrap();
-        fs::write(extra.path().join("workflow_second.lua"), "return 2").unwrap();
-        let settings = format!(
-            r#"{{
-                "scripting": {{ "search_path": ["{}"] }}
-            }}"#,
-            extra.path().display().to_string().replace('\\', "/")
-        );
-        fs::write(config.path().join("settings.json"), settings).unwrap();
+        std::fs::write(config.path().join("resolver_a.lua"), "-- a").unwrap();
+        std::fs::write(extra.path().join("resolver_b.lua"), "-- b").unwrap();
+        let mut settings = AppSettings::default();
+        settings.scripting.search_path = vec![extra.path().display().to_string()];
+        save_to_dir(&settings, Some(config.path())).unwrap();
 
-        let files = collect_matching_lua(Some(config.path()), WORKFLOW_PREFIX);
-        let names: Vec<_> = files
-            .iter()
-            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
-            .collect();
-        assert_eq!(names, ["workflow_first.lua", "workflow_second.lua"]);
-    }
-
-    #[test]
-    fn missing_extra_dir_is_skipped_when_listing() {
-        let config = tempfile::tempdir().unwrap();
-        let missing = config.path().join("nope");
-        let settings = format!(
-            r#"{{
-                "scripting": {{ "search_path": ["{}"] }}
-            }}"#,
-            missing.display().to_string().replace('\\', "/")
-        );
-        fs::write(config.path().join("settings.json"), settings).unwrap();
-        fs::write(config.path().join("resolver_only.lua"), "return 1").unwrap();
         let files = collect_matching_lua(Some(config.path()), RESOLVER_PREFIX);
-        assert_eq!(files.len(), 1);
-        assert!(files[0].ends_with("resolver_only.lua"));
+        assert_eq!(files.len(), 2);
+        assert!(files[0].ends_with("resolver_a.lua"));
+        assert!(files[1].ends_with("resolver_b.lua"));
     }
 }

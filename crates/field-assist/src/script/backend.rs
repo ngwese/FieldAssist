@@ -252,6 +252,7 @@ impl DesktopBackend {
         access::with_view(|view, window, cx| {
             crate::settings::ensure_store(cx);
             crate::settings::reload_from_disk(cx);
+            view.apply_scripting_settings_from_store(cx);
             view.apply_loaded_settings(window, cx);
         })
         .map_err(mlua::Error::runtime)

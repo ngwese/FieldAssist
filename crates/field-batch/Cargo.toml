@@ -15,6 +15,8 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 field-scripting = { path = "../field-scripting" }
+field-settings = { path = "../field-settings" }
+field-features = { path = "../field-features" }
 mlua = { workspace = true }
 rustyline = "15"
 

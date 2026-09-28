@@ -16,6 +16,8 @@ pub struct PackagePolicy {
     native_searcher_4: Option<Value>,
     system_package_paths_enabled: bool,
     native_modules_enabled: bool,
+    /// Whether [`Self::append_search_path_dirs`] has already run for this host.
+    search_path_appended: bool,
 }
 
 impl PackagePolicy {
@@ -66,6 +68,7 @@ pub fn install_package_policy(lua: &Lua, config_dir: Option<&Path>) -> mlua::Res
         native_searcher_4,
         system_package_paths_enabled: false,
         native_modules_enabled: false,
+        search_path_appended: false,
     })
 }
 
@@ -103,6 +106,45 @@ impl PackagePolicy {
             }
         }
         self.native_modules_enabled = true;
+        Ok(())
+    }
+
+    /// Append `{dir}/?.lua;{dir}/?/init.lua` (and matching `cpath`) for each
+    /// scripting search-path directory.
+    ///
+    /// Idempotent for the lifetime of this policy. Directories should already
+    /// be normalized (config dir excluded). Templates are appended after the
+    /// config/cwd baseline from [`install_package_policy`].
+    pub fn append_search_path_dirs(&mut self, lua: &Lua, dirs: &[String]) -> mlua::Result<()> {
+        if self.search_path_appended {
+            return Ok(());
+        }
+        self.search_path_appended = true;
+        let mut path_parts = Vec::new();
+        let mut cpath_parts = Vec::new();
+        #[cfg(target_os = "windows")]
+        let ext = "dll";
+        #[cfg(not(target_os = "windows"))]
+        let ext = "so";
+        for dir in dirs {
+            let trimmed = dir.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let base = trimmed.trim_end_matches(['/', '\\']);
+            if base.is_empty() {
+                continue;
+            }
+            path_parts.push(format!("{base}/?.lua"));
+            path_parts.push(format!("{base}/?/init.lua"));
+            cpath_parts.push(format!("{base}/?.{ext}"));
+        }
+        if path_parts.is_empty() && cpath_parts.is_empty() {
+            return Ok(());
+        }
+        let package: Table = lua.globals().get("package")?;
+        append_templates(&package, "path", &path_parts.join(";"))?;
+        append_templates(&package, "cpath", &cpath_parts.join(";"))?;
         Ok(())
     }
 }
@@ -304,5 +346,34 @@ mod tests {
         let path = local_lua_path(Some(PathBuf::from("/tmp/cfg").as_path()));
         assert!(path.contains("/tmp/cfg/?.lua"));
         assert!(path.contains("./?.lua"));
+    }
+
+    #[test]
+    fn search_path_dirs_extend_package_path() {
+        let extra = tempfile::tempdir().unwrap();
+        std::fs::write(extra.path().join("mymod.lua"), "return { n = 9 }").unwrap();
+        let lua = unsafe { Lua::unsafe_new() };
+        let mut policy = install_package_policy(&lua, None).unwrap();
+        let dir = extra.path().display().to_string();
+        policy
+            .append_search_path_dirs(&lua, &[dir.clone()])
+            .unwrap();
+        policy
+            .append_search_path_dirs(&lua, &[dir.clone()])
+            .unwrap();
+        let path: String = lua
+            .globals()
+            .get::<mlua::Table>("package")
+            .unwrap()
+            .get("path")
+            .unwrap();
+        let expected = format!("{}/?.lua", dir.trim_end_matches(['/', '\\']));
+        assert_eq!(
+            path.matches(&expected).count(),
+            1,
+            "path should contain search dir once: {path}"
+        );
+        let n: i64 = lua.load("return require('mymod').n").eval().unwrap();
+        assert_eq!(n, 9);
     }
 }

@@ -1138,20 +1138,29 @@ mod tests {
     }
 
     #[test]
-    fn embedded_init_loads_settings_for_field_assist() {
+    fn embedded_init_does_not_call_load_settings() {
+        assert!(
+            !crate::script::EMBEDDED_INIT.contains("app:load_settings()\n")
+                && !crate::script::EMBEDDED_INIT.contains("app:load_settings()\r"),
+            "hosts apply settings from Rust before init.lua"
+        );
+        // Comment may mention the API; ensure there is no live call.
+        let without_comments: String = crate::script::EMBEDDED_INIT
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !without_comments.contains("load_settings"),
+            "embedded init must not invoke load_settings"
+        );
         let (mut host, world) = test_host();
         world.borrow_mut().explorer = true;
         world.borrow_mut().detail = true;
         host.load_init_from(None).expect("embedded init");
-        assert!(
-            crate::script::EMBEDDED_INIT.contains("app:load_settings()"),
-            "embedded init must call load_settings"
-        );
-        assert!(!world.borrow().explorer, "defaults hide explorer");
-        assert!(!world.borrow().detail, "defaults hide detail");
-        assert!(!world.borrow().script, "defaults hide script");
-        assert_eq!(world.borrow().theme_name, "Default Dark");
-        assert_eq!(world.borrow().theme_mode, "dark");
+        // Without an explicit load_settings call, test-world chrome is unchanged.
+        assert!(world.borrow().explorer);
+        assert!(world.borrow().detail);
     }
 
     #[test]

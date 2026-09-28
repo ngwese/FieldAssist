@@ -16,6 +16,7 @@ field-composition = { path = "../field-composition" }
 field-core = { path = "../field-core" }
 field-session = { path = "../field-session" }
 field-variables = { path = "../field-variables" }
+field-settings = { path = "../field-settings" }
 mlua = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

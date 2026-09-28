@@ -86,6 +86,10 @@ field-play uses the headless backend only long enough to load init and fire
 
 ### FieldAssist
 
+Before Lua runs, FieldAssist loads `settings.json` via `field-settings` and
+applies scripting + device + experimental + application + waveform groups from
+Rust. Then:
+
 1. Embedded `resolver_default.lua` — declares the `"default"` last-wins
    variable resolver (see [field.variables](#field-variables))
 2. `init.lua` — user config file if present, else embedded default
@@ -98,9 +102,19 @@ field-play uses the headless backend only long enough to load init and fire
    `declare` / `declare_resolver` replaces an earlier registration with the
    same name.
 
-Extra Search Path folders are stored in `settings.json` under
-`scripting.search_path` and apply on the **next** launch. The config
-directory is always searched first and is not stored.
+**Search Path** (`scripting.search_path`) is both:
+
+- Extra folders scanned for `resolver_*.lua` / `workflow_*.lua`
+- Extra templates appended to Lua `package.path` / `package.cpath` before
+  `init.lua` (after the config-dir + cwd baseline)
+
+The config directory is always first for discovery and path templates and is
+not stored. Path extras for `package.path` apply on the **next** launch when
+changed mid-session (same as discovery). Settings → Scripting → **Modules**
+toggles (`enable_system_package_paths`, `enable_native_modules`) apply before
+`init.lua`; enabling them live from Settings also updates the running host.
+Disabling mid-session leaves the runtime enabled until relaunch. Lua
+`field.scripting.enable_*` remains available for late opt-in.
 
 
 | OS      | Config directory                                            |
@@ -121,48 +135,45 @@ The same directory may also hold:
 | ---------------- | -------------------------------------------------------------------------- |
 | `init.lua`       | Startup script (user override or embedded default)                         |
 | `keymap.json`    | Optional keybinding overlay                                                |
-| `settings.json`  | FieldAssist preferences (theme, docks, waveform, selection, output device, scripting search path) |
+| `settings.json`  | Shared preferences (`field-settings`); hosts choose which groups to apply |
 | `variables.json` | User-scoped variables (independent of settings reset)                      |
 | `resolver_*.lua` | Optional user resolvers (auto-loaded after `init.lua`)                     |
 | `workflow_*.lua` | Optional user workflows (auto-loaded after embedded workflows)             |
 
 
-Embedded `init.lua` loads settings only on FieldAssist:
+Schema and I/O live in the `field-settings` leaf crate (no GPUI). FieldAssist
+keeps a thin Global store + Settings UI. Hosts apply groups **before**
+`init.lua`; embedded init does **not** call `app:load_settings()`. That method
+remains for manual reload from scripts or the Settings UI. Missing or invalid
+`settings.json` keeps built-in defaults (no error). CLI `--output` still wins
+over the saved device.
 
-```lua
-if app.name == "field-assist" then
-  app:load_settings()
-end
-```
-
-Copy that snippet to the top of a dumped user `init.lua` if you want the same
-startup behavior. Missing or invalid `settings.json` keeps built-in defaults
-(no error). CLI `--output` still wins over the saved device.
-
-`require` search paths default to this config directory plus the process
-cwd (see [field.scripting](#field-scripting)). Call
-`field.scripting.enable_*` at the top of `init.lua` when a script needs
-system Lua paths or native C modules.
+`require` search paths default to the config directory plus cwd, then Search
+Path extras (see [field.scripting](#field-scripting)). Prefer Settings →
+Scripting → Modules (or `settings.json`) over calling `field.scripting.enable_*`
+at the top of every `init.lua`; the Lua helpers stay for late opt-in.
 
 ### field-batch
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
-user `init.lua` if present, else the shared embedded default. Does **not**
-auto-load Add / Replace / Review. After init, fires `enrich_session` for the
-empty focused session. Opening a **new media** path via
-`field.composition.open` (or session open of media) fires
-`enrich_composition` before the open returns. Re-focusing an already-open
-path or opening a `.facomp` does not. `field.session.new()` fires
+`settings.json`, applies scripting (+ keeps experimental flags in a local
+registry; device ignored until needed), then loads user `init.lua` if present,
+else the shared embedded default. Does **not** auto-load Add / Replace /
+Review. After init, fires `enrich_session` for the empty focused session.
+Opening a **new media** path via `field.composition.open` (or session open of
+media) fires `enrich_composition` before the open returns. Re-focusing an
+already-open path or opening a `.facomp` does not. `field.session.new()` fires
 `enrich_session`; `field.session.open` (load `.fasession`) does not.
 
 ### field-play
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
-user `init.lua` if present, else the shared embedded default (layouts +
-`detect_layout`). Does **not** load workflow bundles. After init, fires
-`enrich_session` for the empty world session. After opening the path, fires
-`enrich_composition` then `detect_layout` once so unset `monitor_chain`
-values pick up the layout default before playback.
+`settings.json`, applies scripting, uses `audio.output_device` when resolving
+playback, then loads user `init.lua` if present, else the shared embedded
+default (layouts + `detect_layout`). Does **not** load workflow bundles. After
+init, fires `enrich_session` for the empty world session. After opening the
+path, fires `enrich_composition` then `detect_layout` once so unset
+`monitor_chain` values pick up the layout default before playback.
 
 ## Conventions
 
@@ -212,7 +223,7 @@ APIs live under `field.*`, not here.
 | ------------------- | ----------------- | ------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `app:alert`         | `subject`, `body` | —       | all         | Host alert (dialog / stderr). Args are stringified.                                                                     |
 | `app:command`       | `id: string`      | —       | FieldAssist | Invoke a UI command (e.g. `"view.show-explorer"`)                                                                       |
-| `app:load_settings` | —                 | —       | FieldAssist | Read `settings.json` (or defaults), update the Global store, apply theme / docks / waveform / selection / output device |
+| `app:load_settings` | —                 | —       | FieldAssist | Manual reload: read `settings.json` (or defaults), update the Global store, re-apply theme / docks / waveform / selection / output device / scripting policy |
 
 
 field-scripting also keeps temporary migration shims
@@ -232,7 +243,8 @@ field-scripting also keeps temporary migration shims
 
 
 ```lua
-if app.name == "field-assist" then
+-- Manual reload (startup already applied settings from Rust):
+if app.name == "field-assist" and app.load_settings then
   app:load_settings()
 end
 

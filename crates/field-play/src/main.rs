@@ -82,7 +82,8 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut session = PlaySession::new(args.path.clone());
-    let composition = open_with_detect(session.opened(), args.config_dir.clone())?;
+    let (composition, preferred_output) =
+        open_with_detect(session.opened(), args.config_dir.clone())?;
 
     let chain = composition
         .read()
@@ -131,7 +132,8 @@ fn main() -> Result<()> {
 
     let provider = Arc::new(CompositionProvider::new(composition.clone()));
 
-    let device = resolve_output_device(None).context("resolve default output device")?;
+    let device =
+        resolve_output_device(preferred_output.as_deref()).context("resolve output device")?;
     eprintln!("Output device: {}", output_device_name(&device));
 
     let engine = PlaybackEngine::open(&device, provider).context("open playback engine")?;
@@ -541,12 +543,13 @@ fn add_marker_at_playhead(
 
 /// Load path into a headless script world, run init + enrich + `detect_layout`,
 /// return the shared composition (monitor chain may have been filled by layout
-/// defaults).
+/// defaults) and the preferred output device from settings.
 fn open_with_detect(
     path: &std::path::Path,
     config_dir: Option<PathBuf>,
-) -> Result<Arc<RwLock<Composition>>> {
+) -> Result<(Arc<RwLock<Composition>>, Option<String>)> {
     let config_dir = config_dir.or_else(field_scripting::user_config_dir);
+    let settings = field_settings::load_from_dir(config_dir.as_deref());
     let world = Rc::new(RefCell::new(HeadlessWorld::new()));
     let backend: BackendHandle =
         Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world.clone())));
@@ -559,6 +562,8 @@ fn open_with_detect(
     )
     .map_err(|err| anyhow::anyhow!("create script host: {err}"))?;
 
+    host.apply_scripting_settings(&settings.scripting)
+        .map_err(|err| anyhow::anyhow!("apply scripting settings: {err}"))?;
     host.load_init()
         .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
     host.fire_enrich_session(None);
@@ -579,7 +584,7 @@ fn open_with_detect(
         .get(&id)
         .map(|doc| doc.composition.clone())
         .context("document missing after open")?;
-    Ok(composition)
+    Ok((composition, settings.audio.output_device))
 }
 
 fn flush_script_output(host: &ScriptHost) {

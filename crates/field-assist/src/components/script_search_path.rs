@@ -105,9 +105,10 @@ impl ScriptSearchPathEditor {
 
     fn persist(&mut self, cx: &mut Context<Self>) {
         let extras = self.extras.clone();
+        let config = crate::commands::user_config_dir();
         let _ = settings::update_and_save(cx, |s| {
             s.scripting.search_path = extras;
-            s.scripting.normalize();
+            s.scripting.normalize(config.as_deref());
         });
         self.extras = settings::store(cx).settings.scripting.search_path.clone();
     }
@@ -705,8 +706,9 @@ impl Render for ScriptSearchPathEditor {
             .w_full()
             .gap_1()
             .child(div().text_xs().text_color(muted).child(
-                "Folders searched for resolver_*.lua and workflow_*.lua at startup \
-                         (applied on next launch).",
+                "Extends Lua package.path / package.cpath and folders searched \
+                         for resolver_*.lua and workflow_*.lua (path extras apply \
+                         on next launch).",
             ))
             .child(
                 v_flex()
