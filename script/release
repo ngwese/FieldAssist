@@ -284,9 +284,25 @@ if [[ "$YES" != true ]]; then
 fi
 
 log "syncing main"
-git fetch origin
+git fetch origin --tags --force
 git checkout main
 git pull --ff-only origin main
+
+# Prefer the previous stable tag so git-cliff does not emit the entire
+# history when tags were missing from the local clone.
+if ! git tag -l --sort=-v:refname '[0-9]*.[0-9]*.[0-9]*' \
+  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  | grep -vxF "$release" \
+  | grep -q .; then
+  die "no prior X.Y.Z tags found after fetch; cannot build a scoped changelog"
+fi
+prev_tag="$(
+  git tag -l --sort=-v:refname '[0-9]*.[0-9]*.[0-9]*' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    | grep -vxF "$release" \
+    | head -1
+)"
+log "previous release tag: $prev_tag"
 
 main_ver="$(read_workspace_version)"
 if [[ -z "$RELEASE_OVERRIDE" && "$main_ver" != "$current" ]]; then
@@ -314,7 +330,8 @@ sync_lockfile
 
 log "refreshing CHANGELOG.md for $release"
 ensure_changelog_header
-git cliff --unreleased --tag "$release" --prepend CHANGELOG.md
+# Scope to commits since the previous X.Y.Z tag (not full history).
+git cliff "${prev_tag}.." --tag "$release" --prepend CHANGELOG.md
 normalize_changelog_header
 
 git add Cargo.toml Cargo.lock CHANGELOG.md
