@@ -24,7 +24,7 @@ pub use complete::{
     CompletionContext, CompletionItem, CompletionKind, TabAction,
 };
 pub use compose::{compose, compose_with_order, DEFAULT_SCOPE_ORDER};
-pub use interpolate::{interpolate, interpolate_strict, InterpolateError};
+pub use interpolate::{interpolate, interpolate_strict, InterpolateError, MAX_INTERPOLATE_DEPTH};
 pub use table::{
     split_variable_id, top_level_scope, StoredVariable, VariableEntry, VariableTable,
     TOP_LEVEL_SCOPES,

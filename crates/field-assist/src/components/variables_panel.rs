@@ -598,13 +598,13 @@ impl VariablesPanel {
     fn remove_editable(&mut self, scope: &str, name: &str) {
         match top_level_scope(scope) {
             "user" => {
-                let _ = self.state.user.remove_in_scope("user", name);
+                let _ = self.state.user.remove_in_scope(scope, name);
             }
             "session" => {
-                let _ = self.state.session.remove_in_scope("session", name);
+                let _ = self.state.session.remove_in_scope(scope, name);
             }
             _ => {
-                let _ = self.state.composition.remove_in_scope("composition", name);
+                let _ = self.state.composition.remove_in_scope(scope, name);
             }
         }
     }
@@ -624,19 +624,19 @@ impl VariablesPanel {
             "user" => {
                 self.state.session.remove_in_scope("session", name);
                 self.state.composition.remove_in_scope("composition", name);
-                entry.scope = "user".into();
+                entry.scope = scope.to_string();
                 self.state.user.upsert(entry);
             }
             "session" => {
                 self.state.user.remove_in_scope("user", name);
                 self.state.composition.remove_in_scope("composition", name);
-                entry.scope = "session".into();
+                entry.scope = scope.to_string();
                 self.state.session.upsert(entry);
             }
             _ => {
                 self.state.user.remove_in_scope("user", name);
                 self.state.session.remove_in_scope("session", name);
-                entry.scope = "composition".into();
+                entry.scope = scope.to_string();
                 self.state.composition.upsert(entry);
             }
         }

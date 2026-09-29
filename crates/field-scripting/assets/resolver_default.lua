@@ -22,6 +22,14 @@ function Default:names()
 end
 
 function Default:resolve(scope, name)
+  -- Virtual scope: process environment (not a compose-layer Bindings).
+  if scope == "env" then
+    local v = os.getenv(name)
+    if v ~= nil then
+      return v, "env"
+    end
+    return nil, nil
+  end
   if scope ~= nil then
     for i = #self._bindings, 1, -1 do
       local b = self._bindings[i]

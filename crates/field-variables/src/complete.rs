@@ -160,6 +160,11 @@ pub fn completion_items(ctx: &CompletionContext, vars: &VariableTable) -> Vec<Co
         }
     }
 
+    // Virtual `env` scope is always available at the root (process environment).
+    if parent.is_empty() && "env".starts_with(prefix) {
+        scopes.insert("env".to_string(), ());
+    }
+
     let mut items = Vec::with_capacity(scopes.len() + variables.len());
     for label in scopes.into_keys() {
         // Prefer scope when a leaf shares the same label at this level.
@@ -332,6 +337,7 @@ mod tests {
         let labs = labels(&items);
         assert!(labs.contains(&"source"));
         assert!(labs.contains(&"user"));
+        assert!(labs.contains(&"env"));
         assert!(labs.contains(&"title"));
         assert!(labs.contains(&"stem"));
         assert!(labs.contains(&"basename"));
@@ -341,6 +347,20 @@ mod tests {
         let source_ix = labs.iter().position(|l| *l == "source").unwrap();
         let title_ix = labs.iter().position(|l| *l == "title").unwrap();
         assert!(source_ix < title_ix);
+    }
+
+    #[test]
+    fn root_offers_env_scope_even_on_empty_table() {
+        let vars = VariableTable::new();
+        let t = "${e";
+        let ctx = completion_context(t, t.len()).unwrap();
+        let items = completion_items(&ctx, &vars);
+        assert!(labels(&items).contains(&"env"));
+        // Do not enumerate process env var names under env.
+        let t2 = "${env.";
+        let ctx2 = completion_context(t2, t2.len()).unwrap();
+        assert_eq!(ctx2.parent_scope, "env");
+        assert!(completion_items(&ctx2, &vars).is_empty());
     }
 
     #[test]

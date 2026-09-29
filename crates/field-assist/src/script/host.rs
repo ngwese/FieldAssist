@@ -168,10 +168,10 @@ impl ScriptHost {
         session: &field_variables::VariableTable,
         composition: &field_variables::VariableTable,
     ) -> Result<field_variables::VariableTable, String> {
-        use field_scripting::{split_readonly_by_scope, LuaBindings};
+        use field_scripting::{split_readonly_by_scope, split_user_detached, LuaBindings};
 
         let mut bindings = split_readonly_by_scope(source);
-        bindings.push(LuaBindings::detached("user", user.clone(), true));
+        bindings.extend(split_user_detached(user, true));
         bindings.push(LuaBindings::detached("session", session.clone(), true));
         bindings.push(LuaBindings::detached(
             "composition",
@@ -192,10 +192,10 @@ impl ScriptHost {
         composition: &field_variables::VariableTable,
         export: &field_variables::VariableTable,
     ) -> Result<field_variables::VariableTable, String> {
-        use field_scripting::{split_readonly_by_scope, LuaBindings};
+        use field_scripting::{split_readonly_by_scope, split_user_detached, LuaBindings};
 
         let mut bindings = split_readonly_by_scope(source);
-        bindings.push(LuaBindings::detached("user", user.clone(), true));
+        bindings.extend(split_user_detached(user, true));
         bindings.push(LuaBindings::detached("session", session.clone(), true));
         bindings.push(LuaBindings::detached(
             "composition",

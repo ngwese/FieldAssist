@@ -57,7 +57,9 @@ mod world;
 
 pub use audio_devices::bind_audio_devices;
 pub use backend::{BackendHandle, HeadlessBackend, ScriptBackend};
-pub use bindings::{split_readonly_by_scope, LuaBindings};
+pub use bindings::{
+    live_user_bindings, split_readonly_by_scope, split_user_detached, user_scope_paths, LuaBindings,
+};
 pub use config_dir::user_config_dir;
 pub use export::{
     resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,

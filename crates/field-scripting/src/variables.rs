@@ -16,7 +16,10 @@ use field_variables::{VariableEntry, VariableTable};
 use mlua::{MultiValue, Table, UserData, UserDataFields, Value};
 use std::path::Path;
 
-use crate::bindings::{bindings_from_lua, split_readonly_by_scope, LuaBindings};
+use crate::bindings::{
+    bindings_from_lua, live_user_bindings, split_readonly_by_scope, split_user_detached,
+    LuaBindings,
+};
 use crate::host::host_from_lua;
 use crate::prototype::{base_properties, create_prototype_table};
 
@@ -288,16 +291,17 @@ fn compose_bindings_fallback(
     Ok(compose(&tables))
 }
 
-/// Session site: user, session.
+/// Session site: user (including user.* sub-scopes), session.
 pub fn session_site_bindings(
     lua: &mlua::Lua,
     detached_id: Option<field_session::SessionId>,
 ) -> mlua::Result<Vec<LuaBindings>> {
-    let _ = lua;
-    Ok(vec![LuaBindings::user(), LuaBindings::session(detached_id)])
+    let mut list = live_user_bindings(lua)?;
+    list.push(LuaBindings::session(detached_id));
+    Ok(list)
 }
 
-/// Composition site: source.* (r/o), user, session, composition.
+/// Composition site: source.* (r/o), user (including user.*), session, composition.
 pub fn composition_site_bindings(
     lua: &mlua::Lua,
     source: &VariableTable,
@@ -305,7 +309,7 @@ pub fn composition_site_bindings(
     session_id: Option<field_session::SessionId>,
 ) -> mlua::Result<Vec<LuaBindings>> {
     let mut list = split_readonly_by_scope(source);
-    list.push(LuaBindings::user());
+    list.extend(live_user_bindings(lua)?);
     list.push(LuaBindings::session(session_id));
     if let Some(id) = composition_id {
         list.push(LuaBindings::composition(id));
@@ -317,7 +321,6 @@ pub fn composition_site_bindings(
             true,
         ));
     }
-    let _ = lua;
     Ok(list)
 }
 
@@ -441,7 +444,7 @@ pub fn composition_site_detached(
     let user = host.user_variables();
     let session = host.session_variables(None);
     let mut list = split_readonly_by_scope(&source);
-    list.push(LuaBindings::detached("user", user, true));
+    list.extend(split_user_detached(&user, true));
     list.push(LuaBindings::detached("session", session, true));
     list.push(LuaBindings::detached("composition", composition_vars, true));
     Ok(list)
@@ -545,6 +548,63 @@ mod tests {
         .unwrap();
         host.load_init_from(None).unwrap();
         host
+    }
+
+    #[test]
+    fn default_resolver_sees_user_subscopes() {
+        use crate::bindings::split_user_detached;
+
+        let mut host = host_with_resolver();
+        let mut user = VariableTable::new();
+        user.upsert(VariableEntry::new("user.ingest", "root_dir", "/data"));
+        let bindings = split_user_detached(&user, true);
+        host.lua()
+            .globals()
+            .set("bindings", {
+                let t = host.lua().create_table().unwrap();
+                for (i, b) in bindings.into_iter().enumerate() {
+                    t.set(i + 1, b).unwrap();
+                }
+                t
+            })
+            .unwrap();
+        let out = host.eval(
+            r#"
+            local rows = field.variables.resolve(bindings)
+            local exact
+            for _, b in ipairs(bindings) do
+              if b:scope() == "user.ingest" then
+                exact = b.values.root_dir
+              end
+            end
+            return rows.root_dir, exact
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("/data\t/data"));
+    }
+
+    #[test]
+    fn default_resolver_reads_env_scope() {
+        let key = "FIELDASSIST_RESOLVER_ENV_TEST";
+        let value = "from-env-resolver";
+        // SAFETY: test-only unique key; no parallel test shares this name.
+        unsafe { std::env::set_var(key, value) };
+        let host = host_with_resolver();
+        let bindings = [LuaBindings::create("user")];
+        let got =
+            crate::variables::resolve_one_with_active(host.lua(), &bindings, Some("env"), key)
+                .unwrap();
+        let missing = crate::variables::resolve_one_with_active(
+            host.lua(),
+            &bindings,
+            Some("env"),
+            "FIELDASSIST_ENV_MISSING_XYZ",
+        )
+        .unwrap();
+        unsafe { std::env::remove_var(key) };
+        assert_eq!(got, Some((value.to_string(), "env".to_string())));
+        assert_eq!(missing, None);
     }
 
     #[test]

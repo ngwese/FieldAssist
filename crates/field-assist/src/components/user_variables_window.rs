@@ -22,7 +22,9 @@ use gpui_kit::{
 };
 
 use crate::components::variables_filter::{self, VariablesFilter};
-use crate::user_variables::{self, UserVariablesFile};
+use crate::user_variables::{
+    self, parse_user_variable_name, user_variable_display_name, UserVariablesFile, USER_SCOPE,
+};
 
 const MIN_COLUMN_WIDTH: f32 = 32.;
 const RESIZE_HANDLE_WIDTH: f32 = 5.;
@@ -382,7 +384,7 @@ impl UserVariablesView {
             return;
         }
         let seed = match column {
-            EditColumn::Name => self.rows[row_ix].name.clone(),
+            EditColumn::Name => row_display_name(&self.rows[row_ix]),
             EditColumn::Value => self.rows[row_ix].value.clone(),
             EditColumn::Description => self.rows[row_ix].description.clone().unwrap_or_default(),
         };
@@ -433,20 +435,22 @@ impl UserVariablesView {
         }
         match edit.column {
             EditColumn::Name => {
-                if text.is_empty() || text.contains('.') {
+                let Some((scope, leaf)) = parse_user_variable_name(&text) else {
                     cx.notify();
                     return;
-                }
+                };
                 if self
                     .rows
                     .iter()
                     .enumerate()
-                    .any(|(i, r)| i != edit.row_ix && r.name == text)
+                    .any(|(i, r)| i != edit.row_ix && r.scope == scope && r.name == leaf)
                 {
                     cx.notify();
                     return;
                 }
-                self.rows[edit.row_ix].name = text;
+                self.rows[edit.row_ix].scope = scope;
+                self.rows[edit.row_ix].name = leaf;
+                self.filter.sync_scopes_from_rows(&self.rows);
             }
             EditColumn::Value => {
                 self.rows[edit.row_ix].value = text;
@@ -971,7 +975,7 @@ fn render_row(
             let mut cells = Vec::new();
             let text = match col {
                 TableColumn::Row => (display_ix + 1).to_string(),
-                TableColumn::Name => single_line_display(&row.name),
+                TableColumn::Name => single_line_display(&row_display_name(row)),
                 TableColumn::Value => single_line_display(&row.value),
                 TableColumn::Description => {
                     single_line_display(row.description.as_deref().unwrap_or(""))
@@ -1084,14 +1088,23 @@ fn single_line_display(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn row_display_name(row: &VariableRow) -> String {
+    user_variable_display_name(&row.scope, &row.name).unwrap_or_else(|| row.name.clone())
+}
+
 fn rows_from_file(file: &UserVariablesFile) -> Vec<VariableRow> {
-    file.variables
+    file.to_table()
+        .entries()
         .iter()
-        .map(|v| VariableRow {
-            name: v.name.clone(),
-            value: v.value.clone(),
-            scope: "user".into(),
-            description: v.description.clone(),
+        .map(|e| VariableRow {
+            name: e.name.clone(),
+            value: e.value.clone(),
+            scope: if e.scope.is_empty() {
+                USER_SCOPE.into()
+            } else {
+                e.scope.clone()
+            },
+            description: e.description.clone(),
         })
         .collect()
 }
@@ -1102,7 +1115,12 @@ fn table_from_rows(rows: &[VariableRow]) -> VariableTable {
         if row.name.trim().is_empty() {
             continue;
         }
-        let mut entry = VariableEntry::new("user", &row.name, &row.value);
+        let scope = if row.scope.is_empty() {
+            USER_SCOPE
+        } else {
+            row.scope.as_str()
+        };
+        let mut entry = VariableEntry::new(scope, &row.name, &row.value);
         if let Some(desc) = &row.description {
             entry = entry.with_description(desc.clone());
         }

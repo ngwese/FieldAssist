@@ -4,12 +4,12 @@
 //! Bindings userdata for `field.variables` (scope + values proxy).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use field_session::DocumentId;
 use field_session::SessionId;
-use field_variables::{VariableEntry, VariableTable};
+use field_variables::{top_level_scope, VariableEntry, VariableTable};
 use mlua::{MetaMethod, UserData, UserDataFields, UserDataMethods, UserDataRef, Value};
 
 use crate::host::host_from_lua;
@@ -70,10 +70,16 @@ impl LuaBindings {
         }
     }
 
-    /// Live user Bindings (host-held).
+    /// Live user Bindings (host-held) for the top-level `user` scope.
     pub fn user() -> Self {
+        Self::user_scope("user")
+    }
+
+    /// Live user Bindings for a specific scope path under `user` (e.g.
+    /// `"user"` or `"user.ingest"`).
+    pub fn user_scope(scope: impl Into<String>) -> Self {
         Self {
-            scope: "user".into(),
+            scope: scope.into(),
             store: BindingsStore::User,
         }
     }
@@ -171,9 +177,9 @@ impl LuaBindings {
                 let host = host_from_lua(lua)?;
                 let mut t = host.user_variables();
                 if let Some(value) = value {
-                    t.upsert(VariableEntry::new("user", name, value));
+                    t.upsert(VariableEntry::new(&self.scope, name, value));
                 } else {
-                    t.remove_in_scope("user", name);
+                    t.remove_in_scope(&self.scope, name);
                 }
                 host.set_user_variables(t);
                 Ok(())
@@ -277,6 +283,47 @@ impl UserData for LuaBindings {
             Ok(table)
         });
     }
+}
+
+/// Distinct user scope paths present in `table`, always including `"user"`.
+///
+/// Non-`user` top-level scopes are ignored. Order is `"user"` first, then
+/// remaining scopes in first-seen order.
+pub fn user_scope_paths(table: &VariableTable) -> Vec<String> {
+    let mut scopes = vec!["user".to_string()];
+    let mut seen = BTreeSet::from(["user".to_string()]);
+    for entry in table.entries() {
+        let scope = if entry.scope.is_empty() {
+            "user".to_string()
+        } else {
+            entry.scope.clone()
+        };
+        if top_level_scope(&scope) != "user" {
+            continue;
+        }
+        if seen.insert(scope.clone()) {
+            scopes.push(scope);
+        }
+    }
+    scopes
+}
+
+/// One detached Bindings per user scope path in `table` (always includes
+/// `"user"`), sharing the full table and filtering by Bindings scope.
+pub fn split_user_detached(table: &VariableTable, writable: bool) -> Vec<LuaBindings> {
+    user_scope_paths(table)
+        .into_iter()
+        .map(|scope| LuaBindings::detached(scope, table.clone(), writable))
+        .collect()
+}
+
+/// Live host user Bindings, one per scope path currently in the user table.
+pub fn live_user_bindings(lua: &mlua::Lua) -> mlua::Result<Vec<LuaBindings>> {
+    let table = host_from_lua(lua)?.user_variables();
+    Ok(user_scope_paths(&table)
+        .into_iter()
+        .map(LuaBindings::user_scope)
+        .collect())
 }
 
 /// Split a multi-scope table into one Bindings per distinct scope (ingest order).

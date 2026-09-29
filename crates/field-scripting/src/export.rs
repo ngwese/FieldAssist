@@ -620,7 +620,7 @@ fn compose_export_variables(
     let session = host.session_variables(None);
     let user = host.user_variables();
     let mut list = crate::bindings::split_readonly_by_scope(&source);
-    list.push(crate::bindings::LuaBindings::detached("user", user, true));
+    list.extend(crate::bindings::split_user_detached(&user, true));
     list.push(crate::bindings::LuaBindings::detached(
         "session", session, true,
     ));

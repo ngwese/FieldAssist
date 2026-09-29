@@ -56,8 +56,14 @@ Default compose order (last wins for a given leaf name):
 
 - `${title}` — leaf lookup in the resolved table
 - `${source.bwf.Originator}` — exact scoped lookup
+- `${env.HOME}` — process environment (`env` is virtual; not a compose layer)
 - Soft (UI): unresolved refs left as-is
 - Strict (export): missing refs error
+- Recursive: if a resolved value contains `${…}`, expand it again (limit 32;
+  soft stops nesting, strict errors)
+
+Exact scope must be `env` (so `${env.a.b}` is scope `env.a` / leaf `b`, not
+env var `a.b`). Unset variables are unresolved.
 
 ## Persistence
 
@@ -69,7 +75,7 @@ Default compose order (last wins for a given leaf name):
 | `composition` | `.facomp` v10 (`variables` on the project file), plus derived `channel_layout` (layout export `code`, defaulting to layout name) |
 | `export` | Export profile Lua tables (`variables = { … }`) |
 
-`variables.json` envelope: `{ "kind": "variables", "format_version": 1, "variables": [ { "name", "value", "description"? } ] }` — entries are implicitly scope `user`.
+`variables.json` envelope: `{ "kind": "variables", "format_version": 1, "variables": [ { "name", "value", "description"? } ] }` — entries are implicitly under scope `user`. Dots in `name` introduce sub-scopes (`ingest.root_dir` → qualified id `user.ingest.root_dir`).
 
 Resetting settings must not clear user variables.
 
@@ -223,6 +229,11 @@ Embedded `resolver_default.lua` (loaded **before** `init.lua`, then workflows):
 - Declares name `"default"`
 - Last-wins across the `:init` list (matches Rust `compose`)
 - `:names()` returns the union of binding names
+- Virtual scope `env`: `:resolve("env", NAME)` returns `os.getenv(NAME), "env"`
+  (unset → `nil, nil`). Env vars are **not** listed in `:names()` / the
+  Variables pane. Template `${env.NAME}` is resolved in Rust interpolate via
+  the process environment (templates substitute against the materialized table;
+  `env` is the virtual exception).
 
 A user `init.lua` may `declare_resolver` with name `"default"` or
 `set_resolver("…")` to override. If `init.lua` fails early, `"default"` is

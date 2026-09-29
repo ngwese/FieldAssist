@@ -101,7 +101,8 @@ impl VariablesFilter {
         if q.is_empty() {
             return true;
         }
-        row.name.to_lowercase().contains(&q.to_lowercase())
+        let q = q.to_lowercase();
+        row.name.to_lowercase().contains(&q) || row.scope.to_lowercase().contains(&q)
     }
 
     /// Indices of rows that pass the filter (stable order).

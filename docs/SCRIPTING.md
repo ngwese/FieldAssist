@@ -1043,7 +1043,11 @@ Sites pass different lists (same active prototype):
 - **Export** — composition list, then profile `export` bindings
 
 Embedded `resolver_default.lua` (loaded before `init.lua`) declares `"default"`
-as last-wins across the `:init` list.
+as last-wins across the `:init` list. It also resolves virtual scope `env` via
+`os.getenv`: `:resolve("env", "HOME")` → value, `"env"` (unset → `nil, nil`).
+Env names are not added to `:names()`. Template `${env.NAME}` is substituted by
+Rust interpolate against the process environment (templates use the materialized
+variable table; `env` is the virtual exception).
 
 ```lua
 local R = field.variables.create_resolver({ name = "studio" })
