@@ -2,6 +2,37 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.21.0] - 2026-09-30
+
+### Features
+
+- Add user sub-scopes, env vars, and recursive interpolate
+- Add site VariableResolver with resolve and expand
+- Load variables.json in the shared scripting host
+- Add streaming bandlimited StreamingResampler
+- Add streaming EncodeStream and file transcode
+- Add field.media.open, pool intern, and transcode
+- Add export registry find and profile extension
+- Expand VariableResolver resolve values on demand
+- Add workflow toolbar select and path browse prefix
+- Stage ingest media via field.media.transcode
+- Add modal workflow sheets for batch ingest
+- Poll background transcode progress in ingest sheet
+
+### Bug Fixes
+
+- Scope release changelogs to commits since prior tag
+
+### Documentation
+
+- Document media open/transcode and add staging example
+
+### Miscellaneous Tasks
+
+- Ignore .DS_Store files
+- Upgrade gpui-kit to 0.7.0
+
+
 ## [0.20.0] - 2026-09-29
 
 ### Features
