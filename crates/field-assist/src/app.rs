@@ -15,8 +15,8 @@ use gpui_kit::component::{
         panel_handle, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
         PaneRef, PanelId, PanelStyle,
     },
-    h_flex, v_flex, ActiveTheme as _, GlobalState, Icon, IconName, Root, Selectable as _,
-    Sizable as _, StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    h_flex, v_flex, ActiveTheme as _, GlobalState, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
 };
 use gpui_kit::{
     div, hsla, img, point, prelude::FluentBuilder as _, px, relative, size, AnyWindowHandle, App,
@@ -6362,8 +6362,6 @@ impl Render for AppView {
                             }),
                     ),
             )
-            .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -6497,13 +6495,13 @@ fn open_about_window(cx: &mut App) {
         crate::components::window_chrome::window_size(480., 340.),
     );
 
-    match cx.open_window(options, |window, cx| {
+    match gpui_kit::open_window(options, cx, |window, cx| {
         let view = cx.new(AboutView::new);
         window.focus(&view.focus_handle(cx), cx);
-        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+        view
     }) {
-        Ok(handle) => {
-            cx.set_global(AboutWindow(handle.into()));
+        Ok((handle, _)) => {
+            cx.set_global(AboutWindow(handle));
         }
         Err(err) => {
             eprintln!("failed to open About window: {err}");
@@ -6738,7 +6736,7 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
         ..TitleBar::window_options()
     };
 
-    let handle = match cx.open_window(options, move |window, cx| {
+    let handle = match gpui_kit::open_window(options, cx, move |window, cx| {
         let view = cx.new(|cx| {
             AppView::new(
                 shared_composition.clone(),
@@ -6802,16 +6800,16 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
             this.drain_pending_opens(window, cx);
         });
         window.focus(&view.focus_handle(cx), cx);
-        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+        view
     }) {
-        Ok(handle) => handle,
+        Ok((handle, _)) => handle,
         Err(err) => {
             eprintln!("failed to open window: {err}");
             return;
         }
     };
 
-    cx.set_global(EditorWindow(handle.into()));
+    cx.set_global(EditorWindow(handle));
     refresh_menus_for_editor_presence(cx);
 
     // Stragglers that arrive after the window is up (Dock drop while running

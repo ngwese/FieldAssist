@@ -1,5 +1,5 @@
 //! Vendored GPUI theme packs from [gpui-kit](https://github.com/longbridge/gpui-kit)
-//! `themes/` at tag **v0.6.1** (Apache-2.0; see `assets/themes/LICENSE-APACHE`).
+//! `themes/` at tag **v0.7.0** (Apache-2.0; see `assets/themes/LICENSE-APACHE`).
 //!
 //! Call [`register_bundled`] after `gpui_kit::init` so Default Light/Dark already
 //! exist; extra packs then appear in `app.themes`.

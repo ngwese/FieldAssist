@@ -34,7 +34,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 blake3 = "1"
 schemars = "1.0"
-gpui-kit = "0.6.1"
+gpui-kit = "0.7.0"
 symphonia = { version = "0.6", features = ["all"] }
 cpal = "0.18"
 arc-swap = "1"

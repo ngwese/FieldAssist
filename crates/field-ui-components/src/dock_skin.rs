@@ -8,7 +8,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{
         BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, NodeId, PanelHandle,
-        TabGroupContext, TabGroupRenderer, TilesRenderer,
+        TabGroupContext, TabGroupRenderer,
     },
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -130,10 +130,6 @@ impl DockAreaRenderer for CompactDockSkin {
         Rc::new(CompactTabGroup {
             inner: DockAreaRenderer::tab_group_renderer(self.skin.as_ref()),
         })
-    }
-
-    fn tiles_renderer(&self) -> Rc<dyn TilesRenderer> {
-        DockAreaRenderer::tiles_renderer(self.skin.as_ref())
     }
 }
 

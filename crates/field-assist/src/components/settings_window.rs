@@ -14,7 +14,7 @@ use gpui_kit::component::setting::{
     SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
-    v_flex, ActiveTheme as _, AxisExt as _, Disableable as _, Icon, IconName, IconNamed, Root,
+    v_flex, ActiveTheme as _, AxisExt as _, Disableable as _, Icon, IconName, IconNamed,
     Sizable as _, Size, Theme, ThemeRegistry,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -859,13 +859,13 @@ pub fn open_settings_window(cx: &mut App) {
     );
     let options = crate::components::window_chrome::themed_window_options("Settings", origin, size);
 
-    match cx.open_window(options, |window, cx| {
+    match gpui_kit::open_window(options, cx, |window, cx| {
         let view = cx.new(SettingsView::new);
         window.focus(&view.focus_handle(cx), cx);
-        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+        view
     }) {
-        Ok(handle) => {
-            cx.set_global(SettingsWindow(handle.into()));
+        Ok((handle, _)) => {
+            cx.set_global(SettingsWindow(handle));
         }
         Err(err) => {
             eprintln!("failed to open Settings window: {err}");

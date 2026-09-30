@@ -10,7 +10,7 @@ use field_variables::{VariableEntry, VariableTable};
 use gpui_kit::component::{
     h_flex,
     input::{IndentInline, Input, InputEvent, InputState, OutdentInline},
-    v_flex, ActiveTheme as _, Root, Sizable as _, Theme,
+    v_flex, ActiveTheme as _, Sizable as _, Theme,
 };
 use gpui_kit::{
     canvas, div, fill, point, prelude::FluentBuilder as _, px, size, uniform_list, App,
@@ -1159,8 +1159,7 @@ pub fn open_user_variables_window(cx: &mut App) {
 
     use gpui_kit::{point, px};
 
-    let view = cx.new(UserVariablesView::new);
-    let view_for_window = view.clone();
+    let view_for_window = cx.new(UserVariablesView::new);
     let (origin, size) = (
         point(px(180.), px(140.)),
         crate::components::window_chrome::window_size(720., 480.),
@@ -1168,15 +1167,12 @@ pub fn open_user_variables_window(cx: &mut App) {
     let options =
         crate::components::window_chrome::themed_window_options("User Variables", origin, size);
 
-    match cx.open_window(options, move |window, cx| {
+    match gpui_kit::open_window(options, cx, move |window, cx| {
         window.focus(&view_for_window.focus_handle(cx), cx);
-        cx.new(|cx| Root::new(view_for_window.clone(), window, cx).bg(cx.theme().background))
+        view_for_window
     }) {
-        Ok(handle) => {
-            cx.set_global(UserVariablesWindow {
-                handle: handle.into(),
-                view,
-            });
+        Ok((handle, view)) => {
+            cx.set_global(UserVariablesWindow { handle, view });
         }
         Err(err) => {
             eprintln!("failed to open User Variables window: {err}");

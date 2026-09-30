@@ -1568,7 +1568,7 @@ fn paint_lane(
                 let p_origin_y = peaks.origin.y.as_f32();
                 let p_height = peaks.size.height.as_f32();
                 let y_scale =
-                    ScaleLinear::new(vec![-1.0_f64, 1.0], vec![p_origin_y + p_height, p_origin_y]);
+                    ScaleLinear::new(vec![-1.0_f64, 1.0], [p_origin_y + p_height, p_origin_y]);
                 paint_envelope_overlay(
                     peaks,
                     provider,
@@ -1714,7 +1714,7 @@ fn paint_peaks_body(
     }
     let origin_x = bounds.origin.x.as_f32();
     let origin_y = bounds.origin.y.as_f32();
-    let y_scale = ScaleLinear::new(vec![-1.0_f64, 1.0], vec![origin_y + height, origin_y]);
+    let y_scale = ScaleLinear::new(vec![-1.0_f64, 1.0], [origin_y + height, origin_y]);
 
     if let Some(mid) = y_scale.tick(&0.0) {
         let mut builder = PathBuilder::stroke(px(1.0));

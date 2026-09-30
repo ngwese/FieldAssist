@@ -376,7 +376,7 @@ impl ExportSheet {
     ) {
         let input = self.directory.read(cx).input().clone();
         input.update(cx, |input, cx| {
-            input.set_value(value, window, cx);
+            input.set_value(value.into(), window, cx);
         });
     }
 
@@ -388,7 +388,7 @@ impl ExportSheet {
     ) {
         let input = self.filename.read(cx).input().clone();
         input.update(cx, |input, cx| {
-            input.set_value(value, window, cx);
+            input.set_value(value.into(), window, cx);
         });
     }
 
