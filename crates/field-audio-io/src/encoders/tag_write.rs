@@ -29,10 +29,18 @@ pub fn encode_with_optional_tags(
     let dir = tempfile::tempdir().context("temp dir for tags")?;
     let path = dir.path().join(format!("export.{extension}"));
     std::fs::write(&path, &bytes).context("stage encoded file")?;
-    apply_vorbis_tags(&path, tags)?;
+    apply_tags_to_path(&path, extension, tags)?;
     let tagged = std::fs::read(&path).context("read tagged file")?;
     writer.write_all(&tagged).context("write tagged audio")?;
     Ok(())
+}
+
+/// Stamp tags onto an already-written audio file at `path`.
+pub fn apply_tags_to_path(path: &std::path::Path, _extension: &str, tags: &TagMap) -> Result<()> {
+    if tags.is_empty() {
+        return Ok(());
+    }
+    apply_vorbis_tags(path, tags)
 }
 
 fn apply_vorbis_tags(path: &std::path::Path, tags: &TagMap) -> Result<()> {

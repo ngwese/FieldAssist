@@ -27,6 +27,8 @@ mod pcm;
 #[cfg(test)]
 mod roundtrip;
 mod spec;
+mod stream;
+mod transcode;
 
 use std::io::Write;
 
@@ -46,6 +48,8 @@ pub use pcm::{
 pub use spec::{
     format_rate, snap_format, spec_supported, EncodeSpec, EncoderCaps, PcmFormat, RATE_PRESETS,
 };
+pub use stream::{begin_stream, finish_with_tags, EncodeStream};
+pub use transcode::{transcode, TranscodeRequest, DEFAULT_BLOCK_FRAMES};
 
 /// Streaming / buffer encoder for a container format.
 pub trait FormatEncoder: Send + Sync {
