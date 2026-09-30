@@ -22,6 +22,7 @@
 ### Bug Fixes
 
 - Scope release changelogs to commits since prior tag
+- Read env variables via Rust so Windows matches templates
 
 ### Documentation
 

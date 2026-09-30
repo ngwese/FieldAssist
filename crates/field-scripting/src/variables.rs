@@ -606,6 +606,18 @@ pub fn bind_variables_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()>
             crate::util::variables_to_lua(lua, &table)
         })?,
     )?;
+    // Process environment via Rust (not Lua os.getenv). On Windows, CRT
+    // getenv may miss vars set after process start; std::env::var matches
+    // `${env.NAME}` interpolation in field-variables.
+    variables.set(
+        "getenv",
+        lua.create_function(|lua, name: String| -> mlua::Result<Value> {
+            match std::env::var(&name) {
+                Ok(v) => Ok(Value::String(lua.create_string(v)?)),
+                Err(_) => Ok(Value::Nil),
+            }
+        })?,
+    )?;
     // Convenience: live user bindings.
     variables.set(
         "user",

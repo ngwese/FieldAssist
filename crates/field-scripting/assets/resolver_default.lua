@@ -23,8 +23,9 @@ end
 
 function Default:resolve(scope, name)
   -- Virtual scope: process environment (not a compose-layer Bindings).
+  -- Use field.variables.getenv (Rust) so Windows matches `${env.NAME}`.
   if scope == "env" then
-    local v = os.getenv(name)
+    local v = field.variables.getenv(name)
     if v ~= nil then
       return v, "env"
     end
