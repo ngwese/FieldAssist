@@ -10,6 +10,7 @@ use mlua::{Function, Table, UserData, UserDataFields, Value};
 use crate::host::host_from_lua;
 use crate::marker::color_from_value;
 use crate::prototype::{base_properties, create_prototype_table, new_instance};
+use crate::workflow_sheet;
 use crate::workflow_toolbar;
 
 pub const DEFAULT_WORKFLOW_COLOR: [f32; 4] = [0.45, 0.45, 0.5, 1.0];
@@ -77,6 +78,7 @@ pub fn workflow_create_prototype(lua: &mlua::Lua, properties: Table) -> mlua::Re
     )?;
     proto.set("on", lua.create_function(prototype_on)?)?;
     workflow_toolbar::install_methods(lua, &proto)?;
+    workflow_sheet::install_methods(lua, &proto)?;
     Ok(proto)
 }
 

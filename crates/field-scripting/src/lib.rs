@@ -52,6 +52,7 @@ mod util;
 mod variables;
 mod workflow;
 mod workflow_app;
+mod workflow_sheet;
 mod workflow_toolbar;
 mod world;
 
@@ -86,7 +87,8 @@ pub use workflow::{WorkflowDef, WorkflowMeta};
 pub use workflow_app::{
     layout_drop_targets, workflows_for_menu, DropLayout, SCOPE_DRAG_DROP, SCOPE_MENU,
 };
-pub use workflow_toolbar::{PathBrowse, ToolbarAlign, ToolbarItem};
+pub use workflow_sheet::{SheetPane, SheetSnapshot};
+pub use workflow_toolbar::{PathBrowse, ProgressVariant, ToolbarAlign, ToolbarItem};
 pub use world::{HeadlessWorld, OpenDocument};
 
 pub use composition::LuaComposition;

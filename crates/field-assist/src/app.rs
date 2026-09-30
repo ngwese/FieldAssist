@@ -212,7 +212,7 @@ pub struct AppView {
     messages: Entity<MessagesPanel>,
     media_panel: Entity<MediaPoolPanel>,
     variables_panel: Entity<VariablesPanel>,
-    script: ScriptHost,
+    pub(crate) script: ScriptHost,
     idle_composition: Arc<RwLock<Composition>>,
     playback: PlaybackSession,
     playback_faults: PlaybackFaultFlusher,
@@ -269,6 +269,9 @@ pub struct AppView {
     pending_replace: Option<(DocumentId, PathBuf)>,
     workflow_bar: Option<(String, Vec<ToolbarItem>)>,
     workflow_bar_view: Entity<WorkflowBar>,
+    workflow_sheet: Option<Entity<crate::components::workflow_sheet::WorkflowSheetView>>,
+    /// Coalesce `:defer` drains onto one next-frame timer spawn.
+    deferred_drain_scheduled: bool,
     restoring_session: bool,
     /// View → Peaks / Spectrum / Peaks + Spectrum (app-wide, not per document).
     waveform_representation: field_ui_components::WaveformRepresentation,
@@ -610,6 +613,8 @@ impl AppView {
             pending_replace: None,
             workflow_bar: None,
             workflow_bar_view,
+            workflow_sheet: None,
+            deferred_drain_scheduled: false,
             restoring_session: false,
             waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
             follow_playhead: true,
@@ -2370,7 +2375,7 @@ impl AppView {
         self.flush_script_logs(cx);
     }
 
-    fn flush_script_logs(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn flush_script_logs(&mut self, cx: &mut Context<Self>) {
         let logs = self.script.take_logs();
         if !logs.is_empty() {
             self.messages.update(cx, |panel, cx| {
@@ -2380,6 +2385,72 @@ impl AppView {
         }
         self.refresh_workflow_bar(cx);
         self.sync_view_menus(cx);
+    }
+
+    pub(crate) fn refresh_workflow_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Snapshot from `self` — never `cx.entity().read()`; this runs inside
+        // AppView::update (script enter / drop handlers).
+        let snapshot = self.script.sheet_snapshot();
+        let app = cx.entity();
+        crate::components::workflow_sheet::refresh_workflow_sheet(
+            app,
+            snapshot,
+            &mut self.workflow_sheet,
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn drain_deferred_callbacks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One batch only. Callbacks that `:defer` again wait for the next
+        // scheduled frame so the sheet can paint between files.
+        let batch = self.script.take_deferred();
+        if batch.is_empty() {
+            return;
+        }
+        let _guard = crate::script::enter(self, window, cx);
+        for (instance, func) in batch {
+            if let Err(err) = func.call::<()>((instance,)) {
+                self.repl.update(cx, |repl, cx| {
+                    repl.append_error(&format!("deferred: {err}"), cx);
+                });
+            }
+        }
+        self.flush_script_logs(cx);
+        self.refresh_workflow_sheet(window, cx);
+    }
+
+    /// Queue a real frame yield for `:defer` work (SPEC: later UI frame).
+    ///
+    /// GPUI `window.defer` runs at the end of the *current* effect cycle —
+    /// before paint — so nested `:defer` would still block the UI. Spawn a
+    /// zero-delay timer so the Stage pane can paint first.
+    pub(crate) fn schedule_deferred_callbacks(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.deferred_drain_scheduled {
+            return;
+        }
+        self.deferred_drain_scheduled = true;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(0))
+                .await;
+            let _ = cx.update(|window, cx| {
+                this.update(cx, |this, cx| {
+                    this.deferred_drain_scheduled = false;
+                    this.drain_deferred_callbacks(window, cx);
+                })
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn refresh_workflow_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_workflow_bar(cx);
+        self.refresh_workflow_sheet(window, cx);
     }
 
     fn flush_playback_faults(&mut self, cx: &mut Context<Self>) {
@@ -3249,6 +3320,8 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+        self.refresh_workflow_sheet(window, cx);
+        // `:defer` drains on the next UI frame via schedule_deferred_callbacks.
         cx.notify();
     }
 
@@ -3276,6 +3349,7 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+        self.refresh_workflow_sheet(window, cx);
         cx.notify();
     }
 
@@ -3303,6 +3377,7 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+        self.refresh_workflow_sheet(window, cx);
         cx.notify();
     }
 

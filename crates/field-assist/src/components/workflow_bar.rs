@@ -637,6 +637,8 @@ impl WorkflowBar {
                 .my_1()
                 .bg(cx.theme().border)
                 .into_any_element(),
+            // Sheet-only; never appear on the toolbar.
+            ToolbarItem::Progress { .. } | ToolbarItem::Log { .. } => div().into_any_element(),
         }
     }
 }

@@ -11,6 +11,7 @@
 | 3 | 2026-09-20 | Toolbar controls are `app.ui` constructors with `action(control, workflow)` |
 | 4 | 2026-09-20 | Workflow `:on` for app events; `session_selected` and `composition_selected` |
 | 5 | 2026-09-21 | Composing workflows; link to field-recording pipeline |
+| 6 | 2026-09-30 | Modal workflow sheets (wizard panes for batch jobs) |
 
 This document specifies the Lua host, workflow system, and how they support
 incremental review. The Lua surface is defined in [SCRIPTING.md](../SCRIPTING.md);
@@ -190,12 +191,46 @@ Items come from `field.ui` functions: `button`, `toggle`, `message`,
 may set `action = function(control, workflow)`. Buttons may set `icon` to show
 an icon-only control (`label` becomes the tooltip). Toggle may set `on_icon`.
 Icon names: `"check"`, `"circle-check"`, `"circle-x"`, `"circle-alert"`,
-`"arrow-left"`, `"arrow-right"` (underscores also accepted). Omitting
-`off_color` uses the same foreground as ghost toolbar buttons. `select`
+`"arrow-left"`, `"arrow-right"` (underscores also accepted). `off_color` uses the same foreground as ghost toolbar buttons. `select`
 `choices` are strings or `{ value, label? }` tables (workflow builds the
 list). Assigning `label`, `value`, `text`, `color`, `on_color`, `off_color`,
-`icon`, `on_icon`, `choices`, or `align` on that control updates the bar.
-There is no workflow `:on("command")`, and toolbar ids are not keymap ids.
+`icon`, `on_icon`, `choices`, `align`, or `enabled` on that control updates
+the bar. There is no workflow `:on("command")`, and toolbar ids are not
+keymap ids.
+
+### Sheet
+
+Batch workflows (Ingest, Catalog) use a **modal sheet** instead of the
+toolbar. The sheet is a presentation surface: one-shot vs stateful still
+depends only on `:suspend` / `:resume`. Opening a sheet keeps the instance
+on screen until `:close_sheet()` (or dismiss); it does not by itself bind
+`session.workflow_name`. While a sheet is open, the host hides the bottom
+toolbar even for a stateful binding.
+
+`:set_sheet({ title?, panes, current? })` opens or replaces the sheet.
+Each pane is `{ id, name, text, controls?, buttons? }`. The host paints:
+
+- a **Stepper** trail of pane names (omitted for a single pane; not clickable)
+- read-only **guide** text (`text`) under the trail
+- a horizontal **Form** of `controls` (labels and controls start-aligned)
+- a fixed **button bar** from `buttons` (`field.ui.button` only; `align =
+  "left"` for Back, default right cluster for Next / Finish)
+
+`:go(id)` selects a pane. `:set_pane(id, props)` merges guide / controls /
+buttons. `:close_sheet()` dismisses without calling `:finish` / `:cancel`.
+`:defer(fn)` queues `fn(self)` for a later UI frame so a Run loop can update
+progress between files. The sheet has no window close button; Escape calls
+`:close_sheet()` only (no `:cancel` / `:finish`). Workflows that need an
+explicit dismiss should put a Cancel button on a pane.
+
+`field.ui.progress` and `field.ui.log` are sheet-only (`:set_toolbar`
+rejects them). Progress wraps GPUI `Progress` / `ProgressCircle` (`variant`
+`"bar"` \| `"circle"`, `value` 0–100, or `loading`). Log is a read-only
+scrolling textarea with `:append(line)`.
+
+While a sheet is open, starting another workflow alerts and returns `nil`.
+One-shot Add / Replace stay toolbar-free; optional summary sheets use a
+single pane. Review stays on the toolbar.
 
 ## Built-in workflows
 

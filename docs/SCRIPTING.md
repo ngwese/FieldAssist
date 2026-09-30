@@ -876,6 +876,7 @@ Export) strict path interpolate plus tag map build — matching
 | `:define` | `spec: table`          | —                | Register or replace a profile by `name`      |
 | `:remove` | profile or name string | —                | Drop a registered profile (no-op if missing) |
 | `:find`   | `name: string`         | profile or `nil` | Look up a registered profile by name         |
+| `:names`  | —                      | `{ string, … }`  | Registered profile names in definition order |
 | `:items`  | —                      | `{ profile, … }` | Registered profiles in definition order      |
 
 ### Returned type: export profile
@@ -1074,6 +1075,20 @@ prototype returned by `create` and instances produced by `run` / declare.
 | `:on`           | `event`, `handler`        | —               | Instance hook; handler gets `(self, …)` then the same args as [field.on](#fieldon) |
 | `:set_toolbar`  | `{ control, … }` or `nil` | —               | Replace the toolbar from [field.ui](#fieldui) controls                             |
 | `:set_item`     | `id`, `props`             | —               | Merge properties into a control by `id`                                             |
+| `:set_sheet`    | `{ title?, panes, current? }` | —           | Open / replace a modal sheet (see below)                                            |
+| `:set_pane`     | `id`, `{ text?, controls?, buttons? }` | —  | Merge into one sheet pane                                                           |
+| `:go`           | `pane_id`                 | —               | Select the current sheet pane                                                       |
+| `:close_sheet`  | —                         | —               | Dismiss the sheet; does not call `:finish` / `:cancel`                              |
+| `:defer`        | `function`                | —               | Run `fn(self)` on a later UI frame                                                  |
+
+#### Sheet panes
+
+`panes` is a list of `{ id, name, text?, controls?, buttons? }`. `name` is
+the trail label. `text` is the read-only guide. `controls` are body
+[field.ui](#fieldui) controls (including sheet-only `progress` / `log`).
+`buttons` must be `field.ui.button` only (`align = "left"` for the left
+cluster; omit `align` or use `"right"` for the right-justified primary
+cluster). Control ids are unique across all panes.
 
 #### Optional user methods (host calls)
 
@@ -1117,11 +1132,15 @@ defaults.
 | `path_entry` | `props: table`   | control table | Path field with optional browse |
 | `select`     | `props: table`   | control table | Dropdown of fixed choices       |
 | `divider`    | `props` or `nil` | control table | Visual separator                |
+| `progress`   | `props: table`   | control table | Sheet-only progress bar/circle  |
+| `log`        | `props: table`   | control table | Sheet-only scrolling log        |
 
 Controls are tables with a control metatable and a `kind` field. Optional
 `action = function(control, workflow)` runs on click / commit. Assigning
 watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
-`align`, `icon`, `on_icon`, `choices`) refreshes the host toolbar.
+`align`, `icon`, `on_icon`, `choices`, `enabled`, `loading`, `variant`)
+refreshes the host toolbar or sheet. `progress` and `log` are rejected by
+`:set_toolbar`.
 
 ### Returned type: control table
 
@@ -1131,20 +1150,23 @@ watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
 | -------- | ------ | -------------------- | ----------------------------------- |
 | `kind`   | **ro** | `string`             | Set by the constructor              |
 | `id`     | **rw** | `string`             | Stable id (required for most kinds) |
-| `align`  | **rw** | `"left"` \| `"right"` | Toolbar alignment (default left)    |
+| `align`  | **rw** | `"left"` \| `"right"` | Toolbar / button-bar alignment (default left) |
+| `enabled`| **rw** | `boolean`            | Interactive controls (default true) |
 | `action` | **rw** | `function` or `nil`  | `function(control, workflow)`       |
 
 #### Per-kind properties
 
 | Kind           | Properties                                                                                                                                                                   |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **button**     | `id?`, `label?` (one of id/label required), `icon?` (`check`, `circle-check` / `circle_check`, `circle-x`, `circle-alert`, `arrow-left`, `arrow-right`), `align?`, `action?` |
-| **toggle**     | `id` (required), `label?` (defaults to id), `value?` bool (default `false`), `on_color?`, `off_color?`, `on_icon?` (default `"check"`), `align?`, `action?`                  |
+| **button**     | `id?`, `label?` (one of id/label required), `icon?` (`check`, `circle-check` / `circle_check`, `circle-x`, `circle-alert`, `arrow-left`, `arrow-right`), `align?`, `enabled?`, `action?` |
+| **toggle**     | `id` (required), `label?` (defaults to id), `value?` bool (default `false`), `on_color?`, `off_color?`, `on_icon?` (default `"check"`), `align?`, `enabled?`, `action?`                  |
 | **message**    | `id` (required), `text` (required string; may be `""`), `color?`, `align?`                                                                                                   |
-| **text_entry** | `id` (required), `label?`, `value` (string, default `""`), `align?`, `action?`                                                                                               |
-| **path_entry** | `id` (required), `label?`, `value` (string), `browse?` (`"file"` \| `"directory"` \| `true` (=directory) \| `false` \| `nil`), `align?`, `action?`                               |
-| **select**     | `id` (required), `label?`, `value` (selected choice id, default `""`), `choices` (array of strings or `{ value, label? }`), `align?`, `action?`                                 |
+| **text_entry** | `id` (required), `label?`, `value` (string, default `""`), `align?`, `enabled?`, `action?`                                                                                               |
+| **path_entry** | `id` (required), `label?`, `value` (string), `browse?` (`"file"` \| `"directory"` \| `true` (=directory) \| `false` \| `nil`), `align?`, `enabled?`, `action?`                               |
+| **select**     | `id` (required), `label?`, `value` (selected choice id, default `""`), `choices` (array of strings or `{ value, label? }`), `align?`, `enabled?`, `action?`                                 |
 | **divider**    | `id?`, `align?`                                                                                                                                                              |
+| **progress**   | `id` (required), `label?`, `variant?` (`"bar"` default \| `"circle"`), `value?` (0–100), `loading?` bool, `text?` caption. Omit `value` or set `loading` for indeterminate |
+| **log**        | `id` (required), `label?`, `text?`. Method `:append(line)` appends a line (cap 1000)                                                                                          |
 
 ### Palette: `field.ui.named`
 

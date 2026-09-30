@@ -304,6 +304,15 @@ impl UserData for LuaExportRegistry {
             }
             Ok(table)
         });
+        methods.add_method("names", |lua, _, ()| {
+            let host = host_from_lua(lua)?;
+            let names = host.export_profile_names();
+            let table = lua.create_table_with_capacity(names.len(), 0)?;
+            for (index, name) in names.into_iter().enumerate() {
+                table.set(index + 1, name)?;
+            }
+            Ok(table)
+        });
         methods.add_method("find", |lua, _, name: String| {
             if name.is_empty() {
                 return Ok(None);
@@ -900,5 +909,49 @@ mod tests {
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
+    }
+
+    #[test]
+    fn registry_names_returns_profile_name_strings() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::backend::{BackendHandle, HeadlessBackend};
+        use crate::host::{HostProfile, ScriptHost};
+        use crate::world::HeadlessWorld;
+
+        let world = Rc::new(RefCell::new(HeadlessWorld::new()));
+        let backend: BackendHandle = Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world)));
+        let mut host = ScriptHost::with_backend(
+            HostProfile {
+                name: "field-batch",
+                config_dir: None,
+            },
+            backend,
+        )
+        .expect("host");
+        host.load_init().expect("init");
+        let out = host.eval(
+            r#"
+            field.exports.define({ name = "alpha", encoder = "wav" })
+            field.exports.define({ name = "beta", encoder = "flac" })
+            local names = field.exports.shared_registry():names()
+            assert(type(names[1]) == "string")
+            local seen = {}
+            for _, name in ipairs(names) do
+              seen[name] = true
+            end
+            assert(seen.alpha and seen.beta)
+            local items = field.exports.shared_registry():items()
+            assert(#names == #items)
+            for i, name in ipairs(names) do
+              assert(items[i].name == name)
+            end
+            return #names
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let n: usize = out.result.as_deref().unwrap().parse().unwrap();
+        assert!(n >= 2);
     }
 }

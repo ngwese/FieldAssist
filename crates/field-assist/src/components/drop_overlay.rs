@@ -58,12 +58,18 @@ pub fn file_drop_overlay(layout: Arc<DropLayout>, app: WeakEntity<AppView>) -> i
                             let app = app.clone();
                             let name = name.clone();
                             move |paths: &ExternalPaths, window, cx| {
+                                // Defer out of perform_drag_operation (cannot
+                                // unwind) so script/sheet work cannot abort.
                                 let paths: Vec<PathBuf> = paths.paths().to_vec();
-                                if let Some(app) = app.upgrade() {
-                                    app.update(cx, |this, cx| {
-                                        this.invoke_drop_workflow(&name, &paths, window, cx);
-                                    });
-                                }
+                                let app = app.clone();
+                                let name = name.clone();
+                                window.defer(cx, move |window, cx| {
+                                    if let Some(app) = app.upgrade() {
+                                        app.update(cx, |this, cx| {
+                                            this.invoke_drop_workflow(&name, &paths, window, cx);
+                                        });
+                                    }
+                                });
                             }
                         })
                         .child(display)

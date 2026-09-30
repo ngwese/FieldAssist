@@ -26,6 +26,15 @@ pub enum PathBrowse {
     Directory,
 }
 
+/// Progress indicator shape for sheet [`ToolbarItem::Progress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressVariant {
+    /// Horizontal bar ([`gpui_kit::component::progress::Progress`]).
+    Bar,
+    /// Circular indicator ([`gpui_kit::component::progress::ProgressCircle`]).
+    Circle,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolbarItem {
     Button {
@@ -35,6 +44,7 @@ pub enum ToolbarItem {
         /// for tooltip and accessibility.
         icon: Option<String>,
         align: ToolbarAlign,
+        enabled: bool,
     },
     PathEntry {
         id: String,
@@ -42,12 +52,14 @@ pub enum ToolbarItem {
         value: String,
         browse: Option<PathBrowse>,
         align: ToolbarAlign,
+        enabled: bool,
     },
     Text {
         id: String,
         label: Option<String>,
         value: String,
         align: ToolbarAlign,
+        enabled: bool,
     },
     /// Dropdown of fixed choices (`value` is the selected choice id).
     Select {
@@ -57,6 +69,7 @@ pub enum ToolbarItem {
         /// `(value, label)` pairs; label is shown in the menu / button.
         choices: Vec<(String, String)>,
         align: ToolbarAlign,
+        enabled: bool,
     },
     Toggle {
         id: String,
@@ -70,6 +83,7 @@ pub enum ToolbarItem {
         /// `circle_x`, or `circle_alert` (hyphens also accepted).
         on_icon: String,
         align: ToolbarAlign,
+        enabled: bool,
     },
     Message {
         id: String,
@@ -79,6 +93,25 @@ pub enum ToolbarItem {
     },
     Divider {
         id: Option<String>,
+        align: ToolbarAlign,
+    },
+    /// Sheet-only determinate / indeterminate progress. Rejected by
+    /// [`parse_toolbar`].
+    Progress {
+        id: String,
+        label: Option<String>,
+        variant: ProgressVariant,
+        /// Percent `0..=100`. Ignored while [`Self::Progress::loading`] is true.
+        value: Option<f32>,
+        loading: bool,
+        text: Option<String>,
+        align: ToolbarAlign,
+    },
+    /// Sheet-only scrolling log. Rejected by [`parse_toolbar`].
+    Log {
+        id: String,
+        label: Option<String>,
+        text: String,
         align: ToolbarAlign,
     },
 }
@@ -91,7 +124,9 @@ impl ToolbarItem {
             | Self::Text { id, .. }
             | Self::Select { id, .. }
             | Self::Toggle { id, .. }
-            | Self::Message { id, .. } => Some(id.as_str()),
+            | Self::Message { id, .. }
+            | Self::Progress { id, .. }
+            | Self::Log { id, .. } => Some(id.as_str()),
             Self::Divider { id, .. } => id.as_deref(),
         }
     }
@@ -104,7 +139,9 @@ impl ToolbarItem {
             | Self::Select { align, .. }
             | Self::Toggle { align, .. }
             | Self::Message { align, .. }
-            | Self::Divider { align, .. } => *align,
+            | Self::Divider { align, .. }
+            | Self::Progress { align, .. }
+            | Self::Log { align, .. } => *align,
         }
     }
 
@@ -113,9 +150,26 @@ impl ToolbarItem {
             Self::Button { label, .. } | Self::Toggle { label, .. } => Some(label.as_str()),
             Self::PathEntry { label, .. }
             | Self::Text { label, .. }
-            | Self::Select { label, .. } => label.as_deref(),
+            | Self::Select { label, .. }
+            | Self::Progress { label, .. }
+            | Self::Log { label, .. } => label.as_deref(),
             _ => None,
         }
+    }
+
+    pub fn enabled(&self) -> bool {
+        match self {
+            Self::Button { enabled, .. }
+            | Self::PathEntry { enabled, .. }
+            | Self::Text { enabled, .. }
+            | Self::Select { enabled, .. }
+            | Self::Toggle { enabled, .. } => *enabled,
+            _ => true,
+        }
+    }
+
+    pub fn is_sheet_only(&self) -> bool {
+        matches!(self, Self::Progress { .. } | Self::Log { .. })
     }
 }
 
@@ -149,6 +203,14 @@ pub fn ui_namespace(lua: &mlua::Lua) -> mlua::Result<Table> {
         "select",
         lua.create_function(|lua, props: Value| constructor(lua, "select", props))?,
     )?;
+    ui.set(
+        "progress",
+        lua.create_function(|lua, props: Value| constructor(lua, "progress", props))?,
+    )?;
+    ui.set(
+        "log",
+        lua.create_function(|lua, props: Value| constructor(lua, "log", props))?,
+    )?;
     ui.set("divider", lua.create_function(divider_constructor)?)?;
     lua.set_named_registry_value(UI_NAMESPACE_KEY, ui.clone())?;
     Ok(ui)
@@ -180,7 +242,14 @@ pub fn parse_toolbar(value: Value) -> mlua::Result<Vec<ToolbarItem>> {
                         "toolbar items must be field.ui controls",
                     ));
                 }
-                items.push(parse_toolbar_item(&row)?);
+                let item = parse_control_item(&row)?;
+                if item.is_sheet_only() {
+                    return Err(mlua::Error::runtime(format!(
+                        "`{}` controls are sheet-only; use set_sheet",
+                        toolbar_kind(&row)?
+                    )));
+                }
+                items.push(item);
             }
             Ok(items)
         }
@@ -192,6 +261,18 @@ pub fn parse_toolbar(value: Value) -> mlua::Result<Vec<ToolbarItem>> {
 }
 
 pub fn parse_toolbar_item(row: &Table) -> mlua::Result<ToolbarItem> {
+    let item = parse_control_item(row)?;
+    if item.is_sheet_only() {
+        return Err(mlua::Error::runtime(format!(
+            "`{}` controls are sheet-only; use set_sheet",
+            toolbar_kind(row)?
+        )));
+    }
+    Ok(item)
+}
+
+/// Parse any field.ui control, including sheet-only kinds.
+pub fn parse_control_item(row: &Table) -> mlua::Result<ToolbarItem> {
     let align = parse_align(row.get("align")?)?;
     let kind = toolbar_kind(row)?;
     match kind.as_str() {
@@ -201,12 +282,14 @@ pub fn parse_toolbar_item(row: &Table) -> mlua::Result<ToolbarItem> {
         "select" => parse_select_item(row, align),
         "toggle" => parse_toggle_item(row, align),
         "message" => parse_message_item(row, align),
+        "progress" => parse_progress_item(row, align),
+        "log" => parse_log_item(row, align),
         "divider" => Ok(ToolbarItem::Divider {
             id: optional_nonempty_string(row.get("id")?)?,
             align,
         }),
         other => Err(mlua::Error::runtime(format!(
-            "unknown toolbar kind `{other}`"
+            "unknown control kind `{other}`"
         ))),
     }
 }
@@ -301,7 +384,10 @@ fn make_control(lua: &mlua::Lua, kind: &str, props: Option<Table>) -> mlua::Resu
     }
     control.raw_set("__fa_store", store)?;
     control.set_metatable(Some(control_metatable(lua)?))?;
-    parse_toolbar_item(&control)?;
+    if kind == "log" {
+        control.set("append", lua.create_function(log_append)?)?;
+    }
+    parse_control_item(&control)?;
     Ok(control)
 }
 
@@ -353,6 +439,9 @@ fn key_is_watched(key: &Value) -> mlua::Result<bool> {
             | "icon"
             | "on_icon"
             | "choices"
+            | "enabled"
+            | "loading"
+            | "variant"
     ))
 }
 
@@ -364,6 +453,16 @@ fn is_control(row: &Table) -> mlua::Result<bool> {
         meta.raw_get::<Value>("__fa_control")?,
         Value::Boolean(true)
     ))
+}
+
+/// True when `row` is a field.ui control table.
+pub fn control_is_control(row: &Table) -> mlua::Result<bool> {
+    is_control(row)
+}
+
+/// Stamp the owning workflow instance onto a control for watched-prop refresh.
+pub fn stamp_control_owner(row: &Table, owner: &Table) -> mlua::Result<()> {
+    stamp_owner(row, owner)
 }
 
 fn stamp_owner(row: &Table, owner: &Table) -> mlua::Result<()> {
@@ -441,6 +540,7 @@ fn parse_button_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
         Some(name) => Some(parse_toolbar_icon(&name)?),
         None => None,
     };
+    let enabled = lua_bool(row.get("enabled")?, true)?;
     let (id, label) = match (id, label, icon.is_some()) {
         (Some(id), Some(label), _) => (id, label),
         (Some(id), None, _) => {
@@ -465,6 +565,7 @@ fn parse_button_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
         label,
         icon,
         align,
+        enabled,
     })
 }
 
@@ -473,12 +574,14 @@ fn parse_path_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem
     let label = optional_nonempty_string(row.get("label")?)?;
     let value = string_field(row.get("value")?, "path_entry value")?;
     let browse = parse_browse(row.get("browse")?)?;
+    let enabled = lua_bool(row.get("enabled")?, true)?;
     Ok(ToolbarItem::PathEntry {
         id,
         label,
         value,
         browse,
         align,
+        enabled,
     })
 }
 
@@ -486,11 +589,13 @@ fn parse_text_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem
     let id = required_nonempty_string(row.get("id")?, "text_entry id")?;
     let label = optional_nonempty_string(row.get("label")?)?;
     let value = string_field(row.get("value")?, "text_entry value")?;
+    let enabled = lua_bool(row.get("enabled")?, true)?;
     Ok(ToolbarItem::Text {
         id,
         label,
         value,
         align,
+        enabled,
     })
 }
 
@@ -499,12 +604,14 @@ fn parse_select_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
     let label = optional_nonempty_string(row.get("label")?)?;
     let value = string_field(row.get("value")?, "select value")?;
     let choices = parse_choices(row.get("choices")?)?;
+    let enabled = lua_bool(row.get("enabled")?, true)?;
     Ok(ToolbarItem::Select {
         id,
         label,
         value,
         choices,
         align,
+        enabled,
     })
 }
 
@@ -571,6 +678,7 @@ fn parse_toggle_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
         off_color,
         on_icon,
         align,
+        enabled: lua_bool(row.get("enabled")?, true)?,
     })
 }
 
@@ -599,6 +707,99 @@ fn parse_message_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarI
         color,
         align,
     })
+}
+
+fn parse_progress_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem> {
+    let id = required_nonempty_string(row.get("id")?, "progress id")?;
+    let label = optional_nonempty_string(row.get("label")?)?;
+    let variant = parse_progress_variant(row.get("variant")?)?;
+    let loading_flag = lua_bool(row.get("loading")?, false)?;
+    let value = parse_progress_value(row.get("value")?)?;
+    let text = optional_nonempty_string(row.get("text")?)?;
+    Ok(ToolbarItem::Progress {
+        id,
+        label,
+        variant,
+        value,
+        loading: loading_flag || value.is_none(),
+        text,
+        align,
+    })
+}
+
+fn parse_progress_variant(value: Value) -> mlua::Result<ProgressVariant> {
+    match value {
+        Value::Nil => Ok(ProgressVariant::Bar),
+        Value::String(text) => match text.to_str()?.as_ref() {
+            "bar" => Ok(ProgressVariant::Bar),
+            "circle" => Ok(ProgressVariant::Circle),
+            other => Err(mlua::Error::runtime(format!(
+                "progress variant must be \"bar\" or \"circle\", got `{other}`"
+            ))),
+        },
+        other => Err(mlua::Error::runtime(format!(
+            "progress variant must be \"bar\" or \"circle\", got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn parse_progress_value(value: Value) -> mlua::Result<Option<f32>> {
+    match value {
+        Value::Nil => Ok(None),
+        Value::Integer(n) => Ok(Some((n as f32).clamp(0.0, 100.0))),
+        Value::Number(n) => Ok(Some((n as f32).clamp(0.0, 100.0))),
+        other => Err(mlua::Error::runtime(format!(
+            "progress value must be a number or nil, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn parse_log_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem> {
+    let id = required_nonempty_string(row.get("id")?, "log id")?;
+    let label = optional_nonempty_string(row.get("label")?)?;
+    let text = string_field(row.get("text")?, "log text")?;
+    Ok(ToolbarItem::Log {
+        id,
+        label,
+        text,
+        align,
+    })
+}
+
+const LOG_LINE_CAP: usize = 1000;
+
+fn log_append(lua: &mlua::Lua, (this, line): (Table, Value)) -> mlua::Result<()> {
+    let line = match line {
+        Value::String(text) => text.to_str()?.to_owned(),
+        Value::Nil => String::new(),
+        other => {
+            return Err(mlua::Error::runtime(format!(
+                "log:append expects a string, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let store = control_store(&this)?;
+    let mut text = string_field(store.raw_get("text")?, "log text")?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&line);
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() > LOG_LINE_CAP {
+        text = lines[lines.len() - LOG_LINE_CAP..].join("\n");
+        text.push('\n');
+    }
+    store.raw_set("text", text)?;
+    if let Value::Table(owner) = store.raw_get::<Value>("__fa_owner")? {
+        host_from_lua(lua)?.toolbar_changed(&owner)?;
+    }
+    Ok(())
 }
 
 fn parse_align(value: Value) -> mlua::Result<ToolbarAlign> {
@@ -719,6 +920,7 @@ mod tests {
                 label,
                 icon,
                 align,
+                ..
             } => {
                 assert_eq!(id, "next");
                 assert_eq!(label, "Next");
@@ -872,6 +1074,7 @@ mod tests {
                 value,
                 choices,
                 align,
+                ..
             }] => {
                 assert_eq!(id, "format");
                 assert_eq!(label.as_deref(), Some("Format"));
@@ -899,5 +1102,58 @@ mod tests {
             .unwrap();
         let err = parse_toolbar(value).expect_err("plain table");
         assert!(err.to_string().contains("field.ui"), "{err}");
+    }
+
+    #[test]
+    fn toolbar_rejects_sheet_only_kinds() {
+        let lua = mlua::Lua::new();
+        let ui = ui_namespace(&lua).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+        let value: Value = lua
+            .load(r#"{ ui.progress({ id = "p", value = 10 }) }"#)
+            .eval()
+            .unwrap();
+        let err = parse_toolbar(value).expect_err("progress");
+        assert!(err.to_string().contains("sheet-only"), "{err}");
+    }
+
+    #[test]
+    fn progress_and_log_parse_for_sheets() {
+        let lua = mlua::Lua::new();
+        let ui = ui_namespace(&lua).unwrap();
+        lua.globals().set("ui", ui).unwrap();
+        let bar: Table = lua
+            .load(r#"ui.progress({ id = "p", variant = "circle", value = 40, text = "2/5" })"#)
+            .eval()
+            .unwrap();
+        match parse_control_item(&bar).unwrap() {
+            ToolbarItem::Progress {
+                variant: ProgressVariant::Circle,
+                value: Some(v),
+                loading: false,
+                text: Some(t),
+                ..
+            } => {
+                assert!((v - 40.0).abs() < f32::EPSILON);
+                assert_eq!(t, "2/5");
+            }
+            other => panic!("{other:?}"),
+        }
+        let loading: Table = lua
+            .load(r#"ui.progress({ id = "p2", loading = true })"#)
+            .eval()
+            .unwrap();
+        assert!(matches!(
+            parse_control_item(&loading).unwrap(),
+            ToolbarItem::Progress { loading: true, .. }
+        ));
+        let log: Table = lua
+            .load(r#"ui.log({ id = "log", text = "hello" })"#)
+            .eval()
+            .unwrap();
+        match parse_control_item(&log).unwrap() {
+            ToolbarItem::Log { text, .. } => assert_eq!(text, "hello"),
+            other => panic!("{other:?}"),
+        }
     }
 }

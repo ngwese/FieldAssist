@@ -1,9 +1,13 @@
 -- Spec example: Ingest workflow for the field-recording pipeline.
 -- See docs/spec/SPEC-field-recording.md.
 --
--- Staging convert uses field.media.open + field.media.transcode (ships today).
--- Still deferred: app:confirm, bit-exact backup + checksums, app.sqlite ledger,
--- background jobs, field.workflow.finish({ next = "…" }), C2PA / media tags.
+-- Modal sheet: Configure → Stage → Finish.
+-- Configure gathers parameters; Run starts staging on the Stage pane.
+-- Finish will later offer optional source cleanup (TBD); Finish ends the run.
+--
+-- Staging convert uses field.media.open + field.media.transcode. Still deferred:
+-- app:confirm, bit-exact backup + checksums, app.sqlite ledger, background jobs
+-- / :defer pump, field.workflow.finish({ next = "…" }), C2PA / media tags.
 --
 -- Staging defaults to user.ingest.staging_dir from variables.json (expanded).
 -- Set e.g. ingest.staging_dir → ${env.HOME}/Music/FieldAssist/staging.
@@ -47,12 +51,17 @@ function Ingest:persist(session)
   shared.set_prop(session, "staging_root", self.staging_root)
 end
 
-function Ingest:set_progress(text)
+function Ingest:set_progress(text, fraction)
   if self.progress then
     self.progress.text = text
+    if fraction then
+      self.progress.value = fraction * 100
+      self.progress.loading = false
+    end
   end
-  -- Intended determinate progress:
-  --   self:set_progress_state({ label = text, fraction = n / total, current = n, total = total })
+  if self.log then
+    self.log:append(text)
+  end
 end
 
 --- Expand `${user.…}` / bare `user.*`, else treat as a concrete path.
@@ -78,69 +87,121 @@ function Ingest:resolved_staging()
   return self:resolve_path_or_var(self.staging_root, "user.ingest.staging_dir")
 end
 
-function Ingest:build_toolbar()
-  self.progress = field.ui.message({
+function Ingest:build_sheet()
+  self.progress = field.ui.progress({
     id = "progress",
+    label = "Progress",
+    loading = true,
     text = "Idle",
-    color = app.theme.semantic.muted_foreground,
+  })
+  self.log = field.ui.log({
+    id = "log",
+    label = "Log",
+    text = "",
+  })
+  self.continue_btn = field.ui.button({
+    id = "continue",
+    label = "Continue",
+    enabled = false,
+    action = function(_, workflow)
+      workflow:go("finish")
+    end,
   })
 
-  self:set_toolbar({
-    field.ui.path_entry({
-      id = "source",
-      label = "Source",
-      value = self.source or "",
-      browse = "directory",
-      action = function(ctrl, workflow)
-        workflow.source = ctrl.value or ""
-      end,
-    }),
-    -- field.ui.path_entry({
-    --   id = "backup",
-    --   label = "Backup",
-    --   value = self.backup_root or "",
-    --   browse = "directory",
-    --   action = function(ctrl, workflow)
-    --     workflow.backup_root = ctrl.value or ""
-    --   end,
-    -- }),
-    -- field.ui.path_entry({
-    --   id = "staging",
-    --   label = "Staging",
-    --   value = self.staging_root or "",
-    --   browse = "directory",
-    --   action = function(ctrl, workflow)
-    --     workflow.staging_root = ctrl.value or ""
-    --   end,
-    -- }),
+  local source = field.ui.path_entry({
+    id = "source",
+    label = "Source",
+    value = self.source or "",
+    browse = "directory",
+    action = function(ctrl, workflow)
+      workflow.source = ctrl.value or ""
+    end,
+  })
+  local profile = field.ui.select({
+    id = "profile",
+    label = "Profile",
+    value = self.profile or "",
+    choices = field.exports.shared_registry():names(),
+    action = function(ctrl, workflow)
+      workflow.profile = ctrl.value or ""
+    end,
+  })
 
-    field.ui.select({
-      id = "profile",
-      label = "Profile",
-      value = self.profile or "",
-      choices = field.exports.shared_registry():items(),
-      action = function(ctrl, workflow)
-        workflow.profile = ctrl.value or ""
-      end,
-    }),
-    field.ui.divider(),
-    self.progress,
-    field.ui.button({
-      id = "run",
-      label = "Run",
-      align = "right",
-      action = function(_, workflow)
-        workflow:run_ingest()
-      end,
-    }),
-    field.ui.button({
-      id = "finish",
-      label = "Finish → Review",
-      align = "right",
-      action = function(_, workflow)
-        workflow:finish_to_review()
-      end,
-    }),
+  self:set_sheet({
+    panes = {
+      {
+        id = "configure",
+        name = "Configure",
+        text = "Choose a source folder and a staging profile, then Run.",
+        controls = { source, profile },
+        buttons = {
+          field.ui.button({
+            id = "cancel",
+            label = "Cancel",
+            align = "left",
+            action = function(_, workflow)
+              workflow:close_sheet()
+              field.workflow.cancel()
+            end,
+          }),
+          field.ui.button({
+            id = "run",
+            label = "Run",
+            action = function(_, workflow)
+              workflow:go("stage")
+              -- Next UI frame so Stage paints before work starts.
+              workflow:defer(function(wf)
+                wf:run_ingest()
+              end)
+            end,
+          }),
+        },
+      },
+      {
+        id = "stage",
+        name = "Stage",
+        text = "Staging media into backup and staging. Watch progress below.",
+        controls = { self.progress, self.log },
+        buttons = {
+          field.ui.button({
+            id = "back_stage",
+            label = "Back",
+            align = "left",
+            enabled = false,
+            action = function(_, workflow)
+              if not workflow.busy then
+                workflow:go("configure")
+              end
+            end,
+          }),
+          self.continue_btn,
+        },
+      },
+      {
+        id = "finish",
+        name = "Finish",
+        text = "Staging is complete. Optional source cleanup controls will live here (TBD). Finish closes the sheet and ends the workflow.",
+        -- TBD: toggles / confirms to remove source files and parent directory.
+        controls = {},
+        buttons = {
+          field.ui.button({
+            id = "back_finish",
+            label = "Back",
+            align = "left",
+            action = function(_, workflow)
+              workflow:go("stage")
+            end,
+          }),
+          field.ui.button({
+            id = "finish",
+            label = "Finish",
+            action = function(_, workflow)
+              workflow:end_ingest()
+            end,
+          }),
+        },
+      },
+    },
   })
 end
 
@@ -148,15 +209,14 @@ function Ingest:collect_sources(payload)
   local paths = {}
   local incoming = payload.paths or {}
   if #incoming > 0 then
+    -- A drop always defines this run's source (override any restored path).
+    self.source = incoming[1]
     for _, item in ipairs(incoming) do
       if not shared.is_session_path(item) then
         for _, path in ipairs(shared.expand_media(item)) do
           paths[#paths + 1] = path
         end
       end
-    end
-    if self.source == "" and #incoming > 0 then
-      self.source = incoming[1]
     end
   elseif self.source ~= "" then
     for _, path in ipairs(shared.expand_media(self.source)) do
@@ -166,10 +226,11 @@ function Ingest:collect_sources(payload)
   return paths
 end
 
--- Today :start / Run are synchronous. When background jobs land, enqueue work
--- and return from :start / Run immediately.
+-- Process one file per deferred frame so the Stage pane can paint progress.
+-- When background jobs land, enqueue work and return immediately; enable
+-- Continue from a job_done handler.
 function Ingest:process_one(source_path, index, total, staging, profile)
-  self:set_progress(string.format("Ingest %d / %d", index, total))
+  self:set_progress(string.format("Stage %d / %d", index, total), (index - 1) / total)
 
   local backup = self:resolve_path_or_var(self.backup_root, nil)
   if backup and backup ~= "" then
@@ -195,12 +256,14 @@ function Ingest:process_one(source_path, index, total, staging, profile)
     if frames <= 0 then
       return
     end
+    local file_frac = done / frames
+    local overall = ((index - 1) + file_frac) / total
     self:set_progress(string.format(
-      "Ingest %d / %d  (%d%%)",
+      "Stage %d / %d  (%d%%)",
       index,
       total,
-      math.floor((done * 100) / frames)
-    ))
+      math.floor(file_frac * 100)
+    ), overall)
   end)
 
   -- Future: tags / C2PA on the derivative only; ledger row with checksums.
@@ -222,18 +285,28 @@ function Ingest:run_ingest()
   local session = field.session.focused()
   self:persist(session)
 
+  if self.continue_btn then
+    self.continue_btn.enabled = false
+  end
+  if self.progress then
+    self.progress.loading = true
+    self.progress.text = "Starting…"
+  end
+
   local staging = self:resolved_staging()
   if not staging or staging == "" then
     app:alert(
       "Ingest",
       "Set user.ingest.staging_dir in variables.json (or a Staging path) before running."
     )
+    self:go("configure")
     return
   end
 
   local profile = field.exports.shared_registry():find(self.profile)
   if not profile then
     app:alert("Ingest", "Unknown export profile: " .. tostring(self.profile))
+    self:go("configure")
     return
   end
 
@@ -243,6 +316,7 @@ function Ingest:run_ingest()
   end
   if #paths == 0 then
     app:alert("Ingest", "No media paths to ingest.")
+    self:go("configure")
     return
   end
 
@@ -254,63 +328,65 @@ function Ingest:run_ingest()
   -- local db = app.sqlite.open(shared.ledger_path(staging))
 
   self.busy = true
-  for i, path in ipairs(paths) do
-    local ok, err = pcall(function()
-      self:process_one(path, i, #paths, staging, profile)
-    end)
-    if not ok then
-      field.log.error("ingest", tostring(err))
-    end
-  end
-  self.busy = false
-  self.queue = {}
-  self:set_progress(string.format("Done: %d file(s)", #paths))
-
-  if self.source and self.source ~= "" then
-    -- Intended confirm before wiping the recorder:
-    -- if app:confirm(
-    --   "Remove source media?",
-    --   "Delete verified files from the recorder?",
-    --   { destructive = true }
-    -- ) then
-    --   for each verified source: app.fs.remove(src)
-    -- end
-    field.log.info(
-      "ingest",
-      "source delete skipped (app:confirm not available); use Finish when ready"
-    )
-  end
-
-  -- db:close()
+  self._ingest_paths = paths
+  self._ingest_index = 1
+  self._ingest_staging = staging
+  self._ingest_profile = profile
+  self:set_progress(string.format("Stage 0 / %d", #paths), 0)
+  self:defer(function(wf)
+    wf:process_next()
+  end)
 end
 
-function Ingest:finish_to_review()
+function Ingest:process_next()
+  local paths = self._ingest_paths or {}
+  local i = self._ingest_index or 1
+  local total = #paths
+  if i > total then
+    self.busy = false
+    self.queue = {}
+    self._ingest_paths = nil
+    self._ingest_index = nil
+    self._ingest_staging = nil
+    self._ingest_profile = nil
+    self:set_progress(string.format("Done: %d file(s)", total), 1)
+    if self.continue_btn then
+      self.continue_btn.enabled = true
+    end
+    return
+  end
+
+  local path = paths[i]
+  local ok, err = pcall(function()
+    self:process_one(path, i, total, self._ingest_staging, self._ingest_profile)
+  end)
+  if not ok then
+    field.log.error("ingest", tostring(err))
+    if self.log then
+      self.log:append("error: " .. tostring(err))
+    end
+  end
+  self._ingest_index = i + 1
+  self:set_progress(string.format("Stage %d / %d", i, total), i / total)
+  self:defer(function(wf)
+    wf:process_next()
+  end)
+end
+
+function Ingest:end_ingest()
   self:persist(field.session.focused())
-  -- Intended handoff:
+  -- Intended handoff after Finish:
   --   field.workflow.finish({ next = "review" })
-  -- Until that ships, finish and prompt the user.
+  self:close_sheet()
   field.workflow.finish()
-  app:alert(
-    "Ingest complete",
-    "Start Review from the Workflow menu to continue the pipeline."
-  )
 end
 
 function Ingest:start(payload)
   local session = field.session.focused()
   self:restore(session)
+  -- Drop paths override restored source inside collect_sources.
   self.queue = self:collect_sources(payload or {})
-  if #self.queue > 0 and (not self.source or self.source == "") then
-    self.source = self.queue[1]
-  end
-  self:build_toolbar()
-  self:set_progress(
-    #self.queue > 0 and string.format("%d path(s) ready", #self.queue) or "Set paths, then Run"
-  )
-  if payload and payload.scope == "drag-drop" and #self.queue > 0 then
-    -- Auto-run on drop once background jobs exist; for the sketch, wait for Run
-    -- so the user can confirm Backup / Staging first.
-  end
+  self:build_sheet()
 end
 
 function Ingest:suspend(session)
@@ -320,8 +396,7 @@ end
 
 function Ingest:resume(session)
   self:restore(session)
-  self:build_toolbar()
-  self:set_progress("Resumed")
+  self:build_sheet()
 end
 
 function Ingest:cancel(_session)

@@ -48,6 +48,8 @@ mod tests {
             ToolbarItem::Toggle { .. } => "toggle",
             ToolbarItem::Message { .. } => "message",
             ToolbarItem::Divider { .. } => "divider",
+            ToolbarItem::Progress { .. } => "progress",
+            ToolbarItem::Log { .. } => "log",
         }
     }
 

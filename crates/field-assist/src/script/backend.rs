@@ -910,7 +910,25 @@ impl ScriptBackend for DesktopBackend {
     }
     fn toolbar_changed(&mut self) -> mlua::Result<()> {
         if self.test().is_none() {
-            let _ = access::with_view(|v, _, cx| v.refresh_workflow_bar(cx));
+            let _ = access::with_view(|v, window, cx| {
+                v.refresh_workflow_ui(window, cx);
+            });
+        }
+        Ok(())
+    }
+    fn sheet_changed(&mut self) -> mlua::Result<()> {
+        if self.test().is_none() {
+            let _ = access::with_view(|v, window, cx| {
+                v.refresh_workflow_ui(window, cx);
+            });
+        }
+        Ok(())
+    }
+    fn deferred_scheduled(&mut self) -> mlua::Result<()> {
+        if self.test().is_none() {
+            let _ = access::with_view(|v, window, cx| {
+                v.schedule_deferred_callbacks(window, cx);
+            });
         }
         Ok(())
     }

@@ -280,6 +280,19 @@ impl ScriptHost {
     pub fn toolbar_snapshot(&self) -> Option<(String, Vec<field_scripting::ToolbarItem>)> {
         self.inner.toolbar_snapshot()
     }
+    pub fn sheet_snapshot(&self) -> Option<field_scripting::SheetSnapshot> {
+        self.inner.sheet_snapshot()
+    }
+    pub fn close_workflow_sheet(&self) -> Result<(), String> {
+        self.inner.close_workflow_sheet();
+        Ok(())
+    }
+    pub fn take_deferred(&self) -> Vec<(mlua::Table, mlua::Function)> {
+        self.inner.take_deferred()
+    }
+    pub fn drain_deferred(&self) -> Result<(), String> {
+        self.inner.drain_deferred().map_err(|e| e.to_string())
+    }
     pub fn active_workflow_name(&self) -> Option<String> {
         self.inner.active_workflow_name()
     }

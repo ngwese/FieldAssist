@@ -4,7 +4,7 @@
 //! Host construction and eval.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -21,6 +21,7 @@ use crate::workflow::{
     workflow_start, WorkflowDef, WorkflowMeta,
 };
 use crate::workflow_app::{layout_drop_targets, workflows_for_menu, DropLayout};
+use crate::workflow_sheet::{has_sheet, sheet_control_row, sheet_from_table, SheetSnapshot};
 use crate::workflow_toolbar::{
     control_store, invoke_action, toolbar_from_table, toolbar_row, ToolbarItem,
 };
@@ -129,6 +130,10 @@ pub(crate) struct HostInner {
     /// User-scoped variables (`variables.json` in FieldAssist).
     pub(crate) user_variables: VariableTable,
     pub(crate) active: Option<Table>,
+    /// Non-stateful (or unbound) instance retained while its modal sheet is open.
+    pub(crate) sheet: Option<Table>,
+    /// Deferred callbacks `(workflow, fn)` drained by the host on a later frame.
+    pub(crate) deferred: VecDeque<(Table, Function)>,
     /// Backend — owns session, open documents, media pool.
     pub(crate) backend: BackendHandle,
     pub(crate) include_stack: Vec<PathBuf>,
@@ -202,6 +207,8 @@ impl ScriptHost {
                 active_resolver: String::new(),
                 user_variables: VariableTable::new(),
                 active: None,
+                sheet: None,
+                deferred: VecDeque::new(),
                 backend,
                 include_stack: Vec::new(),
                 include_cache: HashMap::new(),
@@ -470,11 +477,64 @@ impl ScriptHost {
     }
 
     /// Toolbar snapshot for the active workflow.
+    ///
+    /// Returns `None` when a modal sheet is open (sheet owns chrome) or when
+    /// the toolbar has no items (avoids a title-only strip).
     pub fn toolbar_snapshot(&self) -> Option<(String, Vec<ToolbarItem>)> {
         let active = self.handle.inner.borrow().active.clone()?;
-        let name = instance_display_name(&active).ok()?;
+        if has_sheet(&active) {
+            return None;
+        }
         let items = toolbar_from_table(&active);
+        if items.is_empty() {
+            return None;
+        }
+        let name = instance_display_name(&active).ok()?;
         Some((name, items))
+    }
+
+    /// Sheet snapshot for the open workflow sheet (active or sheet-retained).
+    pub fn sheet_snapshot(&self) -> Option<SheetSnapshot> {
+        let instance = self.sheet_instance()?;
+        let mut snap = sheet_from_table(&instance)?;
+        if snap.title.is_empty() {
+            snap.title = instance_display_name(&instance).ok()?;
+        }
+        Some(snap)
+    }
+
+    /// Workflow instance that owns the open sheet, if any.
+    pub fn sheet_instance(&self) -> Option<Table> {
+        let inner = self.handle.inner.borrow();
+        if let Some(active) = &inner.active {
+            if has_sheet(active) {
+                return Some(active.clone());
+            }
+        }
+        inner.sheet.clone()
+    }
+
+    /// Close any open workflow sheet and drop the sheet-retained instance.
+    pub fn close_workflow_sheet(&self) {
+        self.handle.close_open_sheet();
+    }
+
+    /// Drain deferred workflow callbacks. Each is `(workflow, fn)`.
+    pub fn take_deferred(&self) -> Vec<(Table, Function)> {
+        self.handle.inner.borrow_mut().deferred.drain(..).collect()
+    }
+
+    /// Run all pending deferred callbacks (headless / tests).
+    pub fn drain_deferred(&self) -> mlua::Result<()> {
+        loop {
+            let batch = self.take_deferred();
+            if batch.is_empty() {
+                return Ok(());
+            }
+            for (instance, func) in batch {
+                func.call::<()>((instance,))?;
+            }
+        }
     }
 
     /// Run a registered workflow by name.
@@ -705,6 +765,7 @@ impl ScriptHost {
             .handle
             .with_backend_mut(|b| b.set_session_workflow(None, None));
         self.handle.inner.borrow_mut().active = None;
+        self.handle.close_open_sheet();
     }
 
     /// Dispatch a toolbar button press.
@@ -754,6 +815,15 @@ impl HostHandle {
         name: &str,
         payload: Table,
     ) -> mlua::Result<Option<Table>> {
+        if self.inner.borrow().sheet.is_some()
+            || self.inner.borrow().active.as_ref().is_some_and(has_sheet)
+        {
+            self.alert(
+                "Cannot start workflow".into(),
+                "A workflow sheet is already open.".into(),
+            )?;
+            return Ok(None);
+        }
         let proto = {
             self.inner
                 .borrow()
@@ -778,6 +848,10 @@ impl HostHandle {
         }
         let instance = workflow_new(lua, proto)?;
         workflow_start(&instance, payload)?;
+        if has_sheet(&instance) {
+            self.inner.borrow_mut().sheet = Some(instance.clone());
+            self.with_backend_mut(|backend| backend.sheet_changed())?;
+        }
         if stateful {
             self.bind_active_workflow(instance.clone())?;
         }
@@ -795,12 +869,17 @@ impl HostHandle {
         let Some(instance) = self.inner.borrow_mut().active.take() else {
             return Ok(());
         };
+        let had_sheet = has_sheet(&instance);
         if let Some(finish) = table_method(&instance, "finish") {
             let session = crate::session::LuaSession::focused();
             finish.call::<()>((instance.clone(), session))?;
         }
         let _ = lua;
         self.with_backend_mut(|backend| backend.set_session_workflow(None, None))?;
+        if had_sheet {
+            let _ = instance.set("__fa_sheet", Value::Nil);
+            self.close_open_sheet();
+        }
         Ok(())
     }
 
@@ -808,12 +887,17 @@ impl HostHandle {
         let Some(instance) = self.inner.borrow_mut().active.take() else {
             return Ok(());
         };
+        let had_sheet = has_sheet(&instance);
         if let Some(cancel) = table_method(&instance, "cancel") {
             let session = crate::session::LuaSession::focused();
             cancel.call::<()>((instance.clone(), session))?;
         }
         let _ = lua;
         self.with_backend_mut(|backend| backend.set_session_workflow(None, None))?;
+        if had_sheet {
+            let _ = instance.set("__fa_sheet", Value::Nil);
+            self.close_open_sheet();
+        }
         Ok(())
     }
 
@@ -846,7 +930,39 @@ impl HostHandle {
     }
 
     pub(crate) fn toolbar_changed(&self, _instance: &Table) -> mlua::Result<()> {
-        Ok(())
+        self.with_backend_mut(|backend| {
+            backend.toolbar_changed()?;
+            backend.sheet_changed()?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn sheet_opened(&self, instance: &Table) -> mlua::Result<()> {
+        self.inner.borrow_mut().sheet = Some(instance.clone());
+        self.with_backend_mut(|backend| backend.sheet_changed())
+    }
+
+    pub(crate) fn sheet_closed(&self, _instance: &Table) -> mlua::Result<()> {
+        self.inner.borrow_mut().sheet = None;
+        self.with_backend_mut(|backend| backend.sheet_changed())
+    }
+
+    pub(crate) fn close_open_sheet(&self) {
+        let sheet = self.inner.borrow_mut().sheet.take();
+        if let Some(instance) = sheet {
+            let _ = instance.set("__fa_sheet", Value::Nil);
+        }
+        if let Some(active) = self.inner.borrow().active.clone() {
+            if has_sheet(&active) {
+                let _ = active.set("__fa_sheet", Value::Nil);
+            }
+        }
+        let _ = self.with_backend_mut(|backend| backend.sheet_changed());
+    }
+
+    pub(crate) fn defer_workflow(&self, instance: Table, func: Function) -> mlua::Result<()> {
+        self.inner.borrow_mut().deferred.push_back((instance, func));
+        self.with_backend_mut(|backend| backend.deferred_scheduled())
     }
 
     /// Borrow the backend for read operations.
@@ -940,20 +1056,36 @@ impl HostHandle {
     }
 
     fn toolbar_target(&self, id: &str) -> mlua::Result<Option<(Table, Table)>> {
-        let Some(instance) = self.inner.borrow().active.clone() else {
-            return Ok(None);
-        };
-        let row = match toolbar_row(&instance, id) {
-            Ok(row) => row,
-            Err(mlua::Error::RuntimeError(message))
-                if message.starts_with("no toolbar item")
-                    || message == "workflow has no toolbar" =>
-            {
-                return Ok(None);
+        if let Some(instance) = self.inner.borrow().active.clone() {
+            match toolbar_row(&instance, id) {
+                Ok(row) => return Ok(Some((instance, row))),
+                Err(mlua::Error::RuntimeError(message))
+                    if message.starts_with("no toolbar item")
+                        || message == "workflow has no toolbar" => {}
+                Err(err) => return Err(err),
             }
-            Err(err) => return Err(err),
-        };
-        Ok(Some((instance, row)))
+            if has_sheet(&instance) {
+                match sheet_control_row(&instance, id) {
+                    Ok(row) => return Ok(Some((instance, row))),
+                    Err(mlua::Error::RuntimeError(message))
+                        if message.starts_with("no sheet control") => {}
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+        if let Some(instance) = self.inner.borrow().sheet.clone() {
+            match sheet_control_row(&instance, id) {
+                Ok(row) => return Ok(Some((instance, row))),
+                Err(mlua::Error::RuntimeError(message))
+                    if message.starts_with("no sheet control")
+                        || message.contains("require an open sheet") =>
+                {
+                    return Ok(None);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(None)
     }
 
     // ── Event firing helpers ─────────────────────────────────────────────────
@@ -1358,6 +1490,104 @@ mod tests {
         assert_eq!(out.result.as_deref(), Some("field-batch"));
         let out = host.eval("app.name = 'x'");
         assert!(out.error.is_some());
+    }
+
+    #[test]
+    fn one_shot_sheet_retains_instance_without_binding_session() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval(
+            r#"
+            local W = field.workflow.create({
+              name = "wizard",
+              display_name = "Wizard",
+              scopes = { "run" },
+            })
+            function W:start(_payload)
+              self:set_sheet({
+                panes = {
+                  {
+                    id = "one",
+                    name = "One",
+                    text = "Hello",
+                    controls = {
+                      field.ui.progress({ id = "p", value = 50 }),
+                      field.ui.log({ id = "log", text = "" }),
+                    },
+                    buttons = {
+                      field.ui.button({
+                        id = "ok",
+                        label = "OK",
+                        action = function(_, wf) wf:close_sheet() end,
+                      }),
+                    },
+                  },
+                },
+              })
+            end
+            field.workflow.declare(W)
+            field.workflow.run("wizard")
+            return app.workflow ~= nil, field.session.focused().workflow_name
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        // One-shot: not bound as app.workflow / session.workflow_name.
+        assert_eq!(out.result.as_deref(), Some("false\tnil"));
+        let snap = host.sheet_snapshot().expect("sheet open");
+        assert_eq!(snap.current, "one");
+        assert_eq!(snap.panes.len(), 1);
+        assert!(matches!(
+            &snap.panes[0].controls[0],
+            crate::workflow_toolbar::ToolbarItem::Progress { .. }
+        ));
+        host.close_workflow_sheet();
+        assert!(host.sheet_snapshot().is_none());
+    }
+
+    #[test]
+    fn stateful_sheet_hides_toolbar_snapshot() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval(
+            r#"
+            local W = field.workflow.create({
+              name = "ingestish",
+              display_name = "Ingestish",
+              scopes = { "run" },
+            })
+            function W:suspend(_session) return true end
+            function W:start(_payload)
+              self:set_sheet({
+                panes = {
+                  {
+                    id = "configure",
+                    name = "Configure",
+                    text = "Go",
+                    buttons = {
+                      field.ui.button({ id = "run", label = "Run" }),
+                    },
+                  },
+                },
+              })
+            end
+            field.workflow.declare(W)
+            field.workflow.run("ingestish")
+            return app.workflow ~= nil
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+        assert!(host.sheet_snapshot().is_some());
+        assert!(
+            host.toolbar_snapshot().is_none(),
+            "sheet-open stateful workflow must not paint a toolbar"
+        );
     }
 
     #[test]

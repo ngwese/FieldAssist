@@ -451,6 +451,16 @@ pub trait ScriptBackend {
         Ok(())
     }
 
+    /// Notify a host-specific workflow sheet renderer.
+    fn sheet_changed(&mut self) -> mlua::Result<()> {
+        Ok(())
+    }
+
+    /// Notify that deferred workflow callbacks should run on a later UI frame.
+    fn deferred_scheduled(&mut self) -> mlua::Result<()> {
+        Ok(())
+    }
+
     // ── Desktop chrome stubs ────────────────────────────────────────────────
     //
     // Headless returns `Ok(None)` / `Ok(vec![])` / `Err(unsupported)`.

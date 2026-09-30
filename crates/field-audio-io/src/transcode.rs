@@ -3,9 +3,9 @@
 
 //! Streaming file-to-file transcode with optional sample-rate conversion.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use field_audio_model::BLOCK_FRAMES;
@@ -44,6 +44,10 @@ pub struct TranscodeRequest<'a> {
 ///
 /// Peak memory stays O(block × channels + resampler delay), independent of
 /// media length. Progress reports **source** frames.
+///
+/// Encodes to a sibling `*.partial` file, fsyncs, then renames over `dest` so
+/// readers never see an empty or half-written destination (FLAC especially
+/// truncates only at final publish).
 pub fn transcode(mut req: TranscodeRequest<'_>) -> Result<()> {
     validate_paths(req.source, req.dest)?;
 
@@ -96,56 +100,86 @@ pub fn transcode(mut req: TranscodeRequest<'_>) -> Result<()> {
         resampler.expected_output_frames(source_total)
     };
 
-    // Ensure dest is creatable / writable before starting the heavy work.
-    {
-        let mut probe = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(req.dest)
-            .with_context(|| format!("open {} for write", req.dest.display()))?;
-        probe.write_all(&[]).ok();
-    }
+    let staging = staging_path(req.dest);
+    // Drop any leftover partial from a crashed prior run.
+    let _ = fs::remove_file(&staging);
 
-    let mut stream = begin_stream(req.encoder_id, &req.spec, req.dest, expected_out)?;
-    if let Some(cb) = req.on_progress.as_deref_mut() {
-        cb(0, source_total);
-    }
+    let publish = (|| {
+        // Prove the staging path is creatable before the heavy decode loop.
+        {
+            let mut probe = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&staging)
+                .with_context(|| format!("open {} for write", staging.display()))?;
+            probe.write_all(&[]).ok();
+        }
 
-    let mut start = 0u64;
-    while start < source_total {
-        let n = block_frames.min(source_total - start);
-        let decoded = decode_range(req.source, start, n)
-            .with_context(|| format!("decode {} @ {start}", req.source.display()))?;
-        let selected = select_channels(&decoded, req.channel_indices);
+        let mut stream = begin_stream(req.encoder_id, &req.spec, &staging, expected_out)?;
+        if let Some(cb) = req.on_progress.as_deref_mut() {
+            cb(0, source_total);
+        }
 
-        if resampler.is_passthrough() {
-            stream.write_planar(&selected)?;
-        } else {
+        let mut start = 0u64;
+        while start < source_total {
+            let n = block_frames.min(source_total - start);
+            let decoded = decode_range(req.source, start, n)
+                .with_context(|| format!("decode {} @ {start}", req.source.display()))?;
+            let selected = select_channels(&decoded, req.channel_indices);
+
+            if resampler.is_passthrough() {
+                stream.write_planar(&selected)?;
+            } else {
+                let mut converted = vec![Vec::new(); out_channels];
+                resampler.process_planar(&selected, &mut converted)?;
+                if planar_nonempty(&converted) {
+                    stream.write_planar(&converted)?;
+                }
+            }
+
+            let done = (start + n).min(source_total);
+            if let Some(cb) = req.on_progress.as_deref_mut() {
+                cb(done, source_total);
+            }
+            start += n;
+        }
+
+        if !resampler.is_passthrough() {
             let mut converted = vec![Vec::new(); out_channels];
-            resampler.process_planar(&selected, &mut converted)?;
+            resampler.flush_planar(&mut converted)?;
             if planar_nonempty(&converted) {
                 stream.write_planar(&converted)?;
             }
         }
 
-        let done = (start + n).min(source_total);
-        if let Some(cb) = req.on_progress.as_deref_mut() {
-            cb(done, source_total);
-        }
-        start += n;
-    }
+        stream.finish()?;
+        finish_with_tags(&staging, req.encoder_id, req.tags)?;
+        sync_file(&staging)?;
+        fs::rename(&staging, req.dest)
+            .with_context(|| format!("publish {} → {}", staging.display(), req.dest.display()))?;
+        Ok(())
+    })();
 
-    if !resampler.is_passthrough() {
-        let mut converted = vec![Vec::new(); out_channels];
-        resampler.flush_planar(&mut converted)?;
-        if planar_nonempty(&converted) {
-            stream.write_planar(&converted)?;
-        }
+    if publish.is_err() {
+        let _ = fs::remove_file(&staging);
     }
+    publish
+}
 
-    stream.finish()?;
-    finish_with_tags(req.dest, req.encoder_id, req.tags)?;
+fn staging_path(dest: &Path) -> PathBuf {
+    let mut os = dest.as_os_str().to_owned();
+    os.push(".partial");
+    PathBuf::from(os)
+}
+
+fn sync_file(path: &Path) -> Result<()> {
+    let file = File::options()
+        .write(true)
+        .open(path)
+        .with_context(|| format!("reopen {} for sync", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("fsync {}", path.display()))?;
     Ok(())
 }
 
@@ -188,7 +222,7 @@ fn validate_paths(source: &Path, dest: &Path) -> Result<()> {
         }
         None => {
             // Dest is a bare filename in the cwd; cwd writability is checked
-            // when creating the dest file.
+            // when creating the staging file.
         }
     }
     Ok(())
