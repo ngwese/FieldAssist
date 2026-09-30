@@ -1,9 +1,12 @@
 -- Spec example: Ingest workflow for the field-recording pipeline.
 -- See docs/spec/SPEC-field-recording.md.
 --
--- NOT embedded. NOT expected to run until intended host APIs ship:
---   app:confirm, app.url, app.fs, app.sqlite, media convert/tags,
---   background jobs, field.workflow.finish({ next = "…" })
+-- Staging convert uses field.media.open + field.media.transcode (ships today).
+-- Still deferred: app:confirm, bit-exact backup + checksums, app.sqlite ledger,
+-- background jobs, field.workflow.finish({ next = "…" }), C2PA / media tags.
+--
+-- Staging defaults to user.ingest.staging_dir from variables.json (expanded).
+-- Set e.g. ingest.staging_dir → ${env.HOME}/Music/FieldAssist/staging.
 --
 -- Copy into the FieldAssist config directory next to init.lua.
 -- Requires shared.lua in the same directory (via field.include).
@@ -21,7 +24,9 @@ local Ingest = field.workflow.create({
 function Ingest:init()
   self.source = ""
   self.backup_root = "${user.ingest.backup_root}"
-  self.staging_root = "${user.ingest.staging_root}"
+  -- Session prop name stays staging_root; value may be a concrete path or a
+  -- ${user.…} expression. Empty → resolve user.ingest.staging_dir.
+  self.staging_root = "${user.ingest.staging_dir}"
   self.profile = "FLAC (Source Equivalent)"
   self.queue = {}
   self.busy = false
@@ -48,6 +53,29 @@ function Ingest:set_progress(text)
   end
   -- Intended determinate progress:
   --   self:set_progress_state({ label = text, fraction = n / total, current = n, total = total })
+end
+
+--- Expand `${user.…}` / bare `user.*`, else treat as a concrete path.
+function Ingest:resolve_path_or_var(raw, fallback_name)
+  if not raw or raw == "" then
+    raw = fallback_name
+  end
+  if not raw or raw == "" then
+    return nil
+  end
+  local resolver = field.variables.user():variable_resolver()
+  local name = raw:match("^%$%{(.+)%}$")
+  if name then
+    return resolver:resolve(name, true)
+  end
+  if raw:match("^user%.") then
+    return resolver:resolve(raw, true)
+  end
+  return raw
+end
+
+function Ingest:resolved_staging()
+  return self:resolve_path_or_var(self.staging_root, "user.ingest.staging_dir")
 end
 
 function Ingest:build_toolbar()
@@ -138,40 +166,52 @@ function Ingest:collect_sources(payload)
   return paths
 end
 
--- Intended background job body. Today :start is synchronous; when jobs land,
--- enqueue work and return from :start / Run immediately.
-function Ingest:process_one(source_path, index, total)
+-- Today :start / Run are synchronous. When background jobs land, enqueue work
+-- and return from :start / Run immediately.
+function Ingest:process_one(source_path, index, total, staging, profile)
   self:set_progress(string.format("Ingest %d / %d", index, total))
 
-  -- local src = app.url(source_path)
-  -- local staging_root = app.url(self.staging_root)
-  -- app.fs.mkdir(staging_root, { recursive = true })
-
-  if self.backup_root and self.backup_root ~= "" then
-    -- local backup = app.url(self.backup_root):join(rel)
-    -- app.fs.mkdir(backup.parent, { recursive = true })
-    -- app.fs.copy(src, backup)
-    -- assert(app.fs.checksum(src) == app.fs.checksum(backup))
-    field.log.info("ingest", "backup (intended): " .. source_path)
+  local backup = self:resolve_path_or_var(self.backup_root, nil)
+  if backup and backup ~= "" then
+    -- Intended bit-exact backup (still deferred):
+    -- local dest = field.url.from_path(backup):join(rel)
+    -- field.fs.mkdir(dest.parent, { recursive = true })
+    -- field.fs.copy(source_path, dest:as_path())
+    field.log.info("ingest", "backup (intended): " .. source_path .. " → " .. backup)
   end
 
-  -- Convert to preferred format in staging (not bit-exact):
-  -- local dest = staging_root:join(rel):with_extension(self.format)
-  -- app.fs.mkdir(dest.parent, { recursive = true })
-  -- local tags = app.media_tags.canonical(app.media_tags.read(src))
-  -- app.media_convert(src, dest, { format = self.format, tags = tags })
-  -- Future C2PA on derivative only: app.c2pa.sign(dest, { ... })
-  -- local sum = app.fs.checksum(dest)
-  -- ledger insert: source_url, backup_url, staging_url, checksums, status=verified
+  local src = field.media.open(source_path)
+  local dest = field.url
+    .from_path(staging)
+    :join(src.url.stem .. "." .. profile.extension)
+    :as_path()
 
-  field.log.info("ingest", string.format("stage (intended) → %s: %s", self.format, source_path))
+  field.log.info(
+    "ingest",
+    string.format("transcode → %s (%s)", dest, profile.name or self.profile)
+  )
+
+  field.media.transcode(src, dest, profile, function(done, frames)
+    if frames <= 0 then
+      return
+    end
+    self:set_progress(string.format(
+      "Ingest %d / %d  (%d%%)",
+      index,
+      total,
+      math.floor((done * 100) / frames)
+    ))
+  end)
+
+  -- Future: tags / C2PA on the derivative only; ledger row with checksums.
 
   local ok, doc = pcall(function()
-    -- When convert exists, open the staging path instead of the source.
-    return field.session.focused():open(source_path)
+    return field.session.focused():open(dest)
   end)
   if ok and doc then
     doc.group = "todo"
+  else
+    error(ok and "session:open returned nil" or tostring(doc), 0)
   end
 end
 
@@ -182,8 +222,18 @@ function Ingest:run_ingest()
   local session = field.session.focused()
   self:persist(session)
 
-  if not self.staging_root or self.staging_root == "" then
-    app:alert("Ingest", "Set a Staging directory before running.")
+  local staging = self:resolved_staging()
+  if not staging or staging == "" then
+    app:alert(
+      "Ingest",
+      "Set user.ingest.staging_dir in variables.json (or a Staging path) before running."
+    )
+    return
+  end
+
+  local profile = field.exports.shared_registry():find(self.profile)
+  if not profile then
+    app:alert("Ingest", "Unknown export profile: " .. tostring(self.profile))
     return
   end
 
@@ -196,13 +246,17 @@ function Ingest:run_ingest()
     return
   end
 
+  if not field.fs.exists(staging) then
+    field.fs.mkdir(staging)
+  end
+
   -- Intended: open ledger once
-  -- local db = app.sqlite.open(shared.ledger_path(self.staging_root))
+  -- local db = app.sqlite.open(shared.ledger_path(staging))
 
   self.busy = true
   for i, path in ipairs(paths) do
     local ok, err = pcall(function()
-      self:process_one(path, i, #paths)
+      self:process_one(path, i, #paths, staging, profile)
     end)
     if not ok then
       field.log.error("ingest", tostring(err))
