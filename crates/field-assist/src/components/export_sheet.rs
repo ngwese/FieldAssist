@@ -848,6 +848,7 @@ fn prefs_as_profile(prefs: &ExportPrefs) -> ExportProfileDef {
 fn fallback_resolved(source: &ExportSourceDefaults) -> ResolvedExportSettings {
     ResolvedExportSettings {
         encoder_id: "wav".into(),
+        extension: "wav".into(),
         sample_format: source.sample_format.or(Some(PcmFormat::S24)),
         sample_rate: source.sample_rate,
         channel_indices: (0..source.channel_count).collect(),

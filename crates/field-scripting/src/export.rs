@@ -24,6 +24,8 @@ pub struct ExportProfileDef {
     pub description: String,
     /// Encoder id (`wav`, `flac`, `ogg`, …).
     pub encoder: Option<String>,
+    /// Output file extension without a leading dot (defaults to [`Self::encoder`]).
+    pub extension: Option<String>,
     /// PCM sample format when the encoder stores one.
     pub sample_format: Option<PcmFormat>,
     /// Output sample rate in Hz.
@@ -40,6 +42,21 @@ pub struct ExportProfileDef {
     pub variables: VariableTable,
     /// Metadata templates: canonical key → `${…}` template (interpolated at export).
     pub metadata: std::collections::BTreeMap<String, String>,
+}
+
+impl ExportProfileDef {
+    /// File extension without a leading dot.
+    ///
+    /// Uses [`Self::extension`] when set, otherwise [`Self::encoder`], otherwise
+    /// `"wav"`.
+    pub fn effective_extension(&self) -> String {
+        self.extension
+            .as_deref()
+            .or(self.encoder.as_deref())
+            .unwrap_or("wav")
+            .trim_start_matches('.')
+            .to_string()
+    }
 }
 
 /// How an export profile selects composition channels.
@@ -84,6 +101,8 @@ impl ExportSourceDefaults {
 pub struct ResolvedExportSettings {
     /// Encoder id.
     pub encoder_id: String,
+    /// Output file extension without a leading dot.
+    pub extension: String,
     /// PCM format after encoder capability snap (`None` when the encoder does not store PCM).
     pub sample_format: Option<PcmFormat>,
     /// Output sample rate.
@@ -172,6 +191,7 @@ pub fn resolve_export_settings(
 
     Ok(ResolvedExportSettings {
         encoder_id,
+        extension: profile.effective_extension(),
         sample_format,
         sample_rate,
         channel_indices,
@@ -184,7 +204,8 @@ pub fn resolve_export_settings(
 /// Handle to one registered export profile (looked up live by name).
 #[derive(Clone, Debug)]
 pub struct LuaExportProfile {
-    name: String,
+    /// Registered profile name.
+    pub name: String,
 }
 
 impl FromLua for LuaExportProfile {
@@ -210,6 +231,9 @@ impl UserData for LuaExportProfile {
         });
         fields.add_field_method_get("encoder", |lua, this| {
             with_profile(lua, &this.name, |profile| Ok(profile.encoder.clone()))
+        });
+        fields.add_field_method_get("extension", |lua, this| {
+            with_profile(lua, &this.name, |profile| Ok(profile.effective_extension()))
         });
         fields.add_field_method_get("sample_format", |lua, this| {
             with_profile(lua, &this.name, |profile| {
@@ -280,6 +304,15 @@ impl UserData for LuaExportRegistry {
             }
             Ok(table)
         });
+        methods.add_method("find", |lua, _, name: String| {
+            if name.is_empty() {
+                return Ok(None);
+            }
+            let host = host_from_lua(lua)?;
+            Ok(host
+                .export_profile(&name)
+                .map(|_| LuaExportProfile { name }))
+        });
     }
 }
 
@@ -304,9 +337,11 @@ pub fn profile_from_lua(table: Table) -> mlua::Result<ExportProfileDef> {
     profile_fields_from_lua(table, name)
 }
 
-fn profile_fields_from_lua(table: Table, name: String) -> mlua::Result<ExportProfileDef> {
+/// Parse export profile fields from a Lua table (`name` supplied by caller).
+pub fn profile_fields_from_lua(table: Table, name: String) -> mlua::Result<ExportProfileDef> {
     let description: String = table.get("description").unwrap_or_default();
     let encoder = optional_string(table.get("encoder")?)?;
+    let extension = optional_string(table.get("extension")?)?;
     let sample_format = optional_pcm_format(table.get("sample_format")?)?;
     let sample_rate = optional_u32(table.get("sample_rate")?)?;
     let channels = optional_channels(table.get("channels")?)?;
@@ -325,6 +360,7 @@ fn profile_fields_from_lua(table: Table, name: String) -> mlua::Result<ExportPro
         name,
         description,
         encoder,
+        extension,
         sample_format,
         sample_rate,
         channels,
@@ -452,6 +488,11 @@ fn apply_overrides(mut base: ExportProfileDef, table: &Table) -> mlua::Result<Ex
     if let Ok(value) = table.get::<Value>("encoder") {
         if !matches!(value, Value::Nil) {
             base.encoder = optional_string(value)?;
+        }
+    }
+    if let Ok(value) = table.get::<Value>("extension") {
+        if !matches!(value, Value::Nil) {
+            base.extension = optional_string(value)?;
         }
     }
     if let Ok(value) = table.get::<Value>("sample_format") {
@@ -588,10 +629,7 @@ fn build_job(
         profile.filename = Some(text);
     }
     let resolved = resolve_export_settings(&source, &profile).map_err(mlua::Error::runtime)?;
-    let encoder = encoder(&resolved.encoder_id).ok_or_else(|| {
-        mlua::Error::runtime(format!("unknown encoder `{}`", resolved.encoder_id))
-    })?;
-    let dest = resolve_dest_from_resolved(&resolved, &source, encoder.extension())?;
+    let dest = resolve_dest_from_resolved(&resolved, &source, &resolved.extension)?;
     let tags = build_tag_map(&composed, &profile.metadata)
         .map_err(|err| mlua::Error::runtime(err.to_string()))?;
     Ok(ExportJob {
@@ -775,6 +813,7 @@ mod tests {
     fn empty_profile_keeps_source_defaults() {
         let resolved = resolve_export_settings(&source(), &ExportProfileDef::default()).unwrap();
         assert_eq!(resolved.encoder_id, "wav");
+        assert_eq!(resolved.extension, "wav");
         assert_eq!(resolved.sample_rate, 48_000);
         assert_eq!(resolved.sample_format, Some(PcmFormat::S24));
         assert_eq!(resolved.channel_indices, vec![0, 1]);
@@ -790,9 +829,30 @@ mod tests {
         };
         let resolved = resolve_export_settings(&source(), &profile).unwrap();
         assert_eq!(resolved.encoder_id, "flac");
+        assert_eq!(resolved.extension, "flac");
         assert_eq!(resolved.sample_rate, 44_100);
         assert_eq!(resolved.sample_format, Some(PcmFormat::S24));
         assert_eq!(resolved.channel_indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn profile_extension_defaults_to_encoder_and_can_override() {
+        let defaults_to_encoder = ExportProfileDef {
+            encoder: Some("flac".into()),
+            ..ExportProfileDef::default()
+        };
+        assert_eq!(defaults_to_encoder.effective_extension(), "flac");
+        let custom = ExportProfileDef {
+            encoder: Some("flac".into()),
+            extension: Some("fla".into()),
+            ..ExportProfileDef::default()
+        };
+        assert_eq!(custom.effective_extension(), "fla");
+        let dotted = ExportProfileDef {
+            extension: Some(".wav".into()),
+            ..ExportProfileDef::default()
+        };
+        assert_eq!(dotted.effective_extension(), "wav");
     }
 
     #[test]
@@ -803,5 +863,42 @@ mod tests {
         };
         let resolved = resolve_export_settings(&source(), &profile).unwrap();
         assert_eq!(resolved.channel_indices, vec![1]);
+    }
+
+    #[test]
+    fn registry_find_returns_profile_or_nil() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::backend::{BackendHandle, HeadlessBackend};
+        use crate::host::{HostProfile, ScriptHost};
+        use crate::world::HeadlessWorld;
+
+        let world = Rc::new(RefCell::new(HeadlessWorld::new()));
+        let backend: BackendHandle = Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world)));
+        let mut host = ScriptHost::with_backend(
+            HostProfile {
+                name: "field-batch",
+                config_dir: None,
+            },
+            backend,
+        )
+        .expect("host");
+        host.load_init().expect("init");
+        let out = host.eval(
+            r#"
+            field.exports.define({ name = "staging-flac", encoder = "flac" })
+            local hit = field.exports.shared_registry():find("staging-flac")
+            assert(hit ~= nil)
+            assert(hit.name == "staging-flac")
+            assert(hit.encoder == "flac")
+            assert(hit.extension == "flac")
+            field.exports.define({ name = "custom-ext", encoder = "flac", extension = "fla" })
+            assert(field.exports.shared_registry():find("custom-ext").extension == "fla")
+            assert(field.exports.shared_registry():find("nope") == nil)
+            assert(field.exports.shared_registry():find("") == nil)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
     }
 }
