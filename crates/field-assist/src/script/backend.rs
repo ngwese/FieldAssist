@@ -833,6 +833,14 @@ impl ScriptBackend for DesktopBackend {
             .map(|r| r.id)
             .map_err(mlua::Error::runtime)
     }
+    fn intern_media(&mut self, media: MediaRef) -> mlua::Result<MediaId> {
+        if let Some(test) = self.test() {
+            let (id, _) = test.borrow().media_store.lock().unwrap().intern(media);
+            return Ok(id);
+        }
+        access::with_view(|v, _, cx| v.script_intern_media(media, cx))
+            .map_err(mlua::Error::runtime)?
+    }
     fn remove_media(&mut self, id: MediaId) -> mlua::Result<()> {
         if let Some(test) = self.test() {
             let w = test.borrow();

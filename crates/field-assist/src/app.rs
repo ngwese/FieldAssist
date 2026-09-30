@@ -2774,6 +2774,16 @@ impl AppView {
         Ok(row)
     }
 
+    pub(crate) fn script_intern_media(
+        &mut self,
+        media: crate::model::MediaRef,
+        cx: &mut Context<Self>,
+    ) -> mlua::Result<crate::model::composition::MediaId> {
+        let (id, _) = self.media_store.lock().unwrap().intern(media);
+        self.refresh_media_panel(cx);
+        Ok(id)
+    }
+
     pub(crate) fn script_remove_media(
         &mut self,
         id: crate::model::composition::MediaId,

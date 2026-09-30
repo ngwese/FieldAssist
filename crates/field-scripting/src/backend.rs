@@ -422,6 +422,12 @@ pub trait ScriptBackend {
     /// Probe and intern a media file; return its id.
     fn add_media(&mut self, path: &Path) -> mlua::Result<MediaId>;
 
+    /// Intern an already-probed [`MediaRef`] without re-probing.
+    ///
+    /// Uses [`MediaPool::intern`](field_audio_model::MediaPool::intern) so a
+    /// second call with the same identity is idempotent.
+    fn intern_media(&mut self, media: MediaRef) -> mlua::Result<MediaId>;
+
     /// Remove a media entry from the pool.
     ///
     /// Returns `Err` if the media is still referenced by open compositions
@@ -1143,6 +1149,17 @@ impl ScriptBackend for HeadlessBackend {
             .borrow_mut()
             .add_media(path)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
+    }
+
+    fn intern_media(&mut self, media: MediaRef) -> mlua::Result<MediaId> {
+        let (id, _) = self
+            .world
+            .borrow_mut()
+            .media_store
+            .lock()
+            .unwrap()
+            .intern(media);
+        Ok(id)
     }
 
     fn remove_media(&mut self, id: MediaId) -> mlua::Result<()> {

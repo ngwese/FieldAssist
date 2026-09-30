@@ -133,7 +133,7 @@ impl UserData for LuaComposition {
                 let refs = doc.composition.read().unwrap().pool().into_refs();
                 let table = lua.create_table_with_capacity(refs.len(), 0)?;
                 for (index, media) in refs.into_iter().enumerate() {
-                    table.set(index + 1, LuaMedia { id: media.id })?;
+                    table.set(index + 1, LuaMedia::pooled(media.id))?;
                 }
                 Ok(table)
             })
