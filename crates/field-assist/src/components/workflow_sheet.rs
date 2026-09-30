@@ -30,9 +30,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, App, AppContext as _, Context, Entity, ExternalPaths, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
-    WeakEntity, Window,
+    div, px, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    SharedString, Styled as _, WeakEntity, Window,
 };
 
 use crate::app::AppView;
@@ -76,12 +76,29 @@ impl WorkflowSheetView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let focused_input = self.focused_input_id(window, cx);
         self.apply_snapshot(snapshot, window, cx);
+        if let Some(id) = focused_input {
+            if let Some(input) = self.inputs.get(&id) {
+                input.read(cx).focus_handle(cx).focus(window, cx);
+            }
+        }
         cx.notify();
     }
 
     pub fn title(&self) -> &str {
         &self.snapshot.title
+    }
+
+    /// Id of a path/text Input that currently holds keyboard focus, if any.
+    pub fn focused_input_id(&self, window: &Window, cx: &App) -> Option<String> {
+        self.inputs.iter().find_map(|(id, input)| {
+            input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+                .then(|| id.clone())
+        })
     }
 
     fn apply_snapshot(
@@ -103,9 +120,13 @@ impl WorkflowSheetView {
             self.logs.clear();
         }
         let current = snapshot.current.clone();
-        let _ = self.questionnaire.update(cx, |state, cx| {
-            let _ = state.set_current_item(current.as_str(), window, cx);
-        });
+        // Re-selecting the current pane on every keystroke refreshes the
+        // Questionnaire and steals focus from path Inputs into sibling rows.
+        if rebuild || self.snapshot.current != current {
+            let _ = self.questionnaire.update(cx, |state, cx| {
+                let _ = state.set_current_item(current.as_str(), window, cx);
+            });
+        }
         for pane in &snapshot.panes {
             self.sync_pane_controls(pane, window, cx);
         }
@@ -139,8 +160,10 @@ impl WorkflowSheetView {
                         self.inputs.insert(id.clone(), entity);
                     }
                     let input = self.inputs.get(id).expect("just inserted");
+                    // Match WorkflowBar: never clobber a focused field mid-edit.
+                    let focused = input.read(cx).focus_handle(cx).is_focused(window);
                     let current = input.read(cx).value().to_string();
-                    if current != *value {
+                    if !focused && current != *value {
                         input.update(cx, |state, cx| {
                             state.set_value(value.clone(), window, cx);
                         });

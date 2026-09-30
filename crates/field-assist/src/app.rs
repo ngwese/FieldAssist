@@ -3529,7 +3529,16 @@ impl AppView {
         // path InputEvent handler already updated local items, and refreshing
         // can nest a WorkflowBar update during text input flush_effects.
         self.workflow_bar = self.script.toolbar_snapshot();
-        self.refresh_workflow_sheet(window, cx);
+        // While a sheet path/text Input is focused, Lua actions may still
+        // refresh the sheet (e.g. resolved-path messages). Skip an extra
+        // refresh here so typing does not double-remount the form.
+        let sheet_typing = self
+            .workflow_sheet
+            .as_ref()
+            .is_some_and(|sheet| sheet.read(cx).focused_input_id(window, cx).is_some());
+        if !sheet_typing {
+            self.refresh_workflow_sheet(window, cx);
+        }
         let logs = self.script.take_logs();
         if !logs.is_empty() {
             self.messages.update(cx, |panel, cx| {

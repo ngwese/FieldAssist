@@ -11,8 +11,9 @@
 -- app:confirm, bit-exact backup + checksums, app.sqlite ledger, background jobs
 -- / :defer pump, field.workflow.finish({ next = "…" }), C2PA / media tags.
 --
--- Staging defaults to user.ingest.staging_dir from variables.json (expanded).
--- Set e.g. ingest.staging_dir → ${env.HOME}/Music/FieldAssist/staging.
+-- Staging / Backup default to ${user.ingest.staging_dir} /
+-- ${user.ingest.backup_root} (expanded); Configure shows path fields with
+-- muted resolved previews. Paths may use ${…} templates.
 --
 -- Copy into the FieldAssist config directory next to init.lua.
 -- Requires shared.lua in the same directory (via field.include).
@@ -133,7 +134,8 @@ function Ingest:log_issue(level, message)
   end
 end
 
---- Expand `${user.…}` / bare `user.*`, else treat as a concrete path.
+--- Expand path templates: whole `${name}` / bare `user.*`, inline `${…}`,
+--- or a concrete path. Empty `raw` uses optional `fallback_name`.
 function Ingest:resolve_path_or_var(raw, fallback_name)
   if not raw or raw == "" then
     raw = fallback_name
@@ -149,11 +151,38 @@ function Ingest:resolve_path_or_var(raw, fallback_name)
   if raw:match("^user%.") then
     return resolver:resolve(raw, true)
   end
+  if raw:find("${", 1, true) then
+    return resolver:expand(raw)
+  end
   return raw
 end
 
 function Ingest:resolved_staging()
   return self:resolve_path_or_var(self.staging_root, "user.ingest.staging_dir")
+end
+
+--- Soft-resolved path for muted configure previews (`—` when empty).
+function Ingest:preview_path(raw, fallback_name)
+  local resolved = self:resolve_path_or_var(raw, fallback_name)
+  if not resolved or resolved == "" then
+    return "—"
+  end
+  return resolved
+end
+
+function Ingest:refresh_path_previews()
+  local function set_preview(control, raw, fallback)
+    if not control then
+      return
+    end
+    local text = self:preview_path(raw, fallback)
+    if control.text ~= text then
+      control.text = text
+    end
+  end
+  set_preview(self.source_resolved, self.source, nil)
+  set_preview(self.staging_resolved, self.staging_root, "user.ingest.staging_dir")
+  set_preview(self.backup_resolved, self.backup_root, nil)
 end
 
 function Ingest:build_sheet()
@@ -194,7 +223,40 @@ function Ingest:build_sheet()
     browse = "directory",
     action = function(ctrl, workflow)
       workflow.source = ctrl.value or ""
+      workflow:refresh_path_previews()
     end,
+  })
+  self.source_resolved = field.ui.message({
+    id = "source_resolved",
+    text = "—",
+  })
+  local staging = field.ui.path_entry({
+    id = "staging",
+    label = "Staging",
+    value = self.staging_root or "",
+    browse = "directory",
+    action = function(ctrl, workflow)
+      workflow.staging_root = ctrl.value or ""
+      workflow:refresh_path_previews()
+    end,
+  })
+  self.staging_resolved = field.ui.message({
+    id = "staging_resolved",
+    text = "—",
+  })
+  local backup = field.ui.path_entry({
+    id = "backup",
+    label = "Backup",
+    value = self.backup_root or "",
+    browse = "directory",
+    action = function(ctrl, workflow)
+      workflow.backup_root = ctrl.value or ""
+      workflow:refresh_path_previews()
+    end,
+  })
+  self.backup_resolved = field.ui.message({
+    id = "backup_resolved",
+    text = "—",
   })
   local profile = field.ui.select({
     id = "profile",
@@ -206,13 +268,23 @@ function Ingest:build_sheet()
     end,
   })
 
+  self:refresh_path_previews()
+
   self:set_sheet({
     panes = {
       {
         id = "configure",
         name = "Configure",
-        text = "Choose a source folder and a staging profile, then Run.",
-        controls = { source, profile },
+        text = "Choose Source, Staging, Backup, and a staging profile, then Run. Paths may use ${…} variables.",
+        controls = {
+          source,
+          self.source_resolved,
+          staging,
+          self.staging_resolved,
+          backup,
+          self.backup_resolved,
+          profile,
+        },
         buttons = {
           field.ui.button({
             id = "cancel",
@@ -303,8 +375,11 @@ function Ingest:collect_sources(payload)
       end
     end
   elseif self.source ~= "" then
-    for _, path in ipairs(shared.expand_media(self.source)) do
-      paths[#paths + 1] = path
+    local resolved = self:resolve_path_or_var(self.source, nil)
+    if resolved and resolved ~= "" then
+      for _, path in ipairs(shared.expand_media(resolved)) do
+        paths[#paths + 1] = path
+      end
     end
   end
   return paths
