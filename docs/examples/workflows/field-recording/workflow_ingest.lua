@@ -1,9 +1,9 @@
 -- Spec example: Ingest workflow for the field-recording pipeline.
 -- See docs/spec/SPEC-field-recording.md.
 --
--- Modal sheet: Configure → Stage → Finish.
--- Configure gathers parameters; Run starts staging on the Stage pane.
--- Stage shows file-level and per-file transcode progress; the log is for
+-- Modal sheet: Configure → Run → Finish.
+-- Configure gathers parameters; Run starts staging on the Run pane.
+-- Run shows file-level and per-file transcode progress; the log is for
 -- errors/warnings only. Finish will later offer optional source cleanup
 -- (TBD); Finish ends the run.
 --
@@ -37,6 +37,7 @@ function Ingest:init()
   self.profile = "FLAC (Source Equivalent)"
   self.queue = {}
   self.busy = false
+  self.error_count = 0
 end
 
 function Ingest:restore(session)
@@ -129,6 +130,9 @@ end
 
 function Ingest:log_issue(level, message)
   field.log[level]("ingest", message)
+  if level == "error" then
+    self.error_count = (self.error_count or 0) + 1
+  end
   if self.log then
     self.log:append(string.format("%s: %s", level, message))
   end
@@ -299,8 +303,8 @@ function Ingest:build_sheet()
             id = "run",
             label = "Run",
             action = function(_, workflow)
-              workflow:go("stage")
-              -- Next UI frame so Stage paints before work starts.
+              workflow:go("run")
+              -- Next UI frame so Run paints before work starts.
               workflow:defer(function(wf)
                 wf:run_ingest()
               end)
@@ -309,8 +313,8 @@ function Ingest:build_sheet()
         },
       },
       {
-        id = "stage",
-        name = "Stage",
+        id = "run",
+        name = "Run",
         text = "Staging media into backup and staging. File queue above; current file and transcode below.",
         controls = {
           self.files_progress,
@@ -320,7 +324,7 @@ function Ingest:build_sheet()
         },
         buttons = {
           field.ui.button({
-            id = "back_stage",
+            id = "back_run",
             label = "Back",
             align = "left",
             enabled = false,
@@ -345,7 +349,7 @@ function Ingest:build_sheet()
             label = "Back",
             align = "left",
             action = function(_, workflow)
-              workflow:go("stage")
+              workflow:go("run")
             end,
           }),
           field.ui.button({
@@ -385,7 +389,7 @@ function Ingest:collect_sources(payload)
   return paths
 end
 
--- Process one file per deferred frame so the Stage pane can paint progress.
+-- Process one file per deferred frame so the Run pane can paint progress.
 -- Transcode runs on a background job; `:defer` polls it so the File bar
 -- updates without blocking the UI.
 function Ingest:begin_file(source_path, index, total, staging, profile)
@@ -507,6 +511,7 @@ function Ingest:run_ingest()
   if self.continue_btn then
     self.continue_btn.enabled = false
   end
+  self.error_count = 0
   self:set_files_progress(0, 0, "Starting…")
   self:set_file_progress(nil, "Waiting…")
   self:set_current_file(nil)
@@ -588,6 +593,9 @@ function Ingest:process_next()
     self:set_current_file(nil)
     if self.continue_btn then
       self.continue_btn.enabled = true
+    end
+    if (self.error_count or 0) == 0 then
+      self:go("finish")
     end
     return
   end
