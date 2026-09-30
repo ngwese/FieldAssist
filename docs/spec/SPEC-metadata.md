@@ -209,14 +209,19 @@ on a no-arg `new_instance` init.
 | `values` | Table-like proxy: leaf name → string (`__index` / `__newindex` / `__pairs`) |
 | `:scope()` | Scope string for this Bindings instance |
 | `:names()` | Keys of `values` |
+| `:variable_resolver()` | User-site resolver (`user.*` only). Available on `field.variables.user()` Bindings; other Bindings error |
 
 - `session.variables` / `composition.variables` — live **r/w** Bindings (writes
   hit the session / `.facomp` store). Assignment still accepts map / row-array
   tables and Bindings userdata. These are **single-scope stores**, not the
   Variables pane view.
-- `composition:resolve_variable(name)` / `(scope, name)` — composition **site**
-  lookup (`source.*` + user + session + composition), matching the Variables
-  pane. Returns `value, resolved_scope` or `nil, nil`.
+- `session:variable_resolver()` / `composition:variable_resolver()` /
+  `user:variable_resolver()` — site VariableResolver userdata with
+  `:resolve(expr)` → `value, scope` (or `nil, nil`) and
+  `:expand(template [, strict])` (soft by default). Composition site matches
+  the Variables pane (`source.*` + user + session + composition).
+- `field.variables.flatten({ bindings, … })` — materialize a custom bindings
+  list with the active resolver (row array + leaf map).
 - Probe / source Bindings — **r/o** (`values[k] = …` errors).
 - User and export-profile Bindings — r/w.
 - `values` holds strings only; `description` stays on the Rust entry and is not

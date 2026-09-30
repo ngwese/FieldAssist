@@ -6,14 +6,16 @@
 //! `composition.variables` / `session.variables` are **single-scope** Bindings
 //! (writable store). The Variables pane and export templates use the
 //! **composition site** resolution (`source.*` + user + session + composition).
-//! Call [`resolve_composition_variable`] / `composition:resolve_variable` to
-//! look up a leaf (or scoped name) the same way the pane does.
+//! Call [`composition_site_detached`] / `composition:variable_resolver()` for
+//! the same lookup the pane uses.
 
 use field_audio_io::{probe_source_variables, TechnicalSourceFields};
 use field_composition::Composition;
 use field_session::DocumentId;
-use field_variables::{VariableEntry, VariableTable};
-use mlua::{MultiValue, Table, UserData, UserDataFields, Value};
+use field_variables::{
+    interpolate, interpolate_strict, split_variable_id, VariableEntry, VariableTable,
+};
+use mlua::{MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
 use std::path::Path;
 
 use crate::bindings::{
@@ -301,6 +303,25 @@ pub fn session_site_bindings(
     Ok(list)
 }
 
+/// Detached session-site Bindings (user.* + session snapshots).
+pub fn session_site_detached(
+    lua: &mlua::Lua,
+    detached_id: Option<field_session::SessionId>,
+) -> mlua::Result<Vec<LuaBindings>> {
+    let host = host_from_lua(lua)?;
+    let user = host.user_variables();
+    let session = host.session_variables(detached_id);
+    let mut list = split_user_detached(&user, true);
+    list.push(LuaBindings::detached("session", session, true));
+    Ok(list)
+}
+
+/// Detached user-only site Bindings (all live `user` / `user.*` scopes).
+pub fn user_site_detached(lua: &mlua::Lua) -> mlua::Result<Vec<LuaBindings>> {
+    let user = host_from_lua(lua)?.user_variables();
+    Ok(split_user_detached(&user, true))
+}
+
 /// Composition site: source.* (r/o), user (including user.*), session, composition.
 pub fn composition_site_bindings(
     lua: &mlua::Lua,
@@ -463,6 +484,62 @@ pub fn resolve_composition_variable(
     resolve_one_with_active(lua, &bindings, scope, name)
 }
 
+/// Site-scoped variable resolver userdata (`:resolve` / `:expand`).
+#[derive(Clone)]
+pub struct LuaVariableResolver {
+    bindings: Vec<LuaBindings>,
+}
+
+impl LuaVariableResolver {
+    /// Wrap a bindings list for site resolve / expand.
+    pub fn new(bindings: Vec<LuaBindings>) -> Self {
+        Self { bindings }
+    }
+}
+
+impl UserData for LuaVariableResolver {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("resolve", |lua, this, expr: String| {
+            let expr = expr.trim();
+            if expr.is_empty() {
+                return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
+            }
+            let (scope, name) = split_variable_id(expr);
+            let scope_arg = if scope.is_empty() { None } else { Some(scope) };
+            match resolve_one_with_active(lua, &this.bindings, scope_arg, name)? {
+                Some((value, resolved_scope)) => Ok(MultiValue::from_vec(vec![
+                    Value::String(lua.create_string(value)?),
+                    Value::String(lua.create_string(resolved_scope)?),
+                ])),
+                None => Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil])),
+            }
+        });
+        methods.add_method(
+            "expand",
+            |lua, this, (template, strict): (String, Value)| {
+                let strict = match strict {
+                    Value::Nil => false,
+                    Value::Boolean(b) => b,
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "expand strict flag must be a boolean, got {}",
+                            other.type_name()
+                        )))
+                    }
+                };
+                let table = resolve_with_active(lua, &this.bindings)?;
+                if strict {
+                    interpolate_strict(&template, &table).map_err(|err| {
+                        mlua::Error::runtime(format!("variable expand failed: {err}"))
+                    })
+                } else {
+                    Ok(interpolate(&template, &table))
+                }
+            },
+        );
+    }
+}
+
 /// Install `field.variables`.
 pub fn bind_variables_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
     let variables = lua.create_table()?;
@@ -501,7 +578,7 @@ pub fn bind_variables_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()>
         })?,
     )?;
     variables.set(
-        "resolve",
+        "flatten",
         lua.create_function(|lua, list: Table| {
             let mut bindings = Vec::new();
             for i in 1..=list.raw_len() {
@@ -570,7 +647,7 @@ mod tests {
             .unwrap();
         let out = host.eval(
             r#"
-            local rows = field.variables.resolve(bindings)
+            local rows = field.variables.flatten(bindings)
             local exact
             for _, b in ipairs(bindings) do
               if b:scope() == "user.ingest" then
@@ -655,7 +732,7 @@ mod tests {
             field.variables.declare_resolver(R)
             field.variables.set_resolver("default")
             local b = field.variables.create_bindings("user")
-            local rows = field.variables.resolve({ b })
+            local rows = field.variables.flatten({ b })
             return rows.ping or rows[1].value
             "#,
         );
@@ -689,9 +766,9 @@ mod tests {
             local export = field.variables.create_bindings("export")
             export.values.title = "from-export"
 
-            local session_site = field.variables.resolve({ user, session })
-            local composition_site = field.variables.resolve({ user, session, composition })
-            local export_site = field.variables.resolve({ user, session, composition, export })
+            local session_site = field.variables.flatten({ user, session })
+            local composition_site = field.variables.flatten({ user, session, composition })
+            local export_site = field.variables.flatten({ user, session, composition, export })
             return session_site.title, composition_site.title, export_site.title
             "#,
         );
@@ -748,7 +825,7 @@ mod tests {
             local ixml = field.variables.create_bindings("source.ixml")
             ixml.values.NOTE = "Greg"
             local user = field.variables.create_bindings("user")
-            local rows = field.variables.resolve({ ixml, user })
+            local rows = field.variables.flatten({ ixml, user })
             return rows.today, rows.operator
             "#,
         );
@@ -757,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_variable_includes_source_not_on_composition_bindings() {
+    fn variable_resolver_includes_source_not_on_composition_bindings() {
         use crate::backend::{BackendHandle, HeadlessBackend};
         use crate::host::HostProfile;
         use crate::world::HeadlessWorld;
@@ -818,16 +895,94 @@ mod tests {
             local c = field.session.focused().composition
             c.variables.values.studio = "mine"
             local store_only = c.variables.values.basename
-            local basename, basename_scope = c:resolve_variable("basename")
-            local studio, studio_scope = c:resolve_variable("studio")
-            local scoped = c:resolve_variable("source", "basename")
-            return tostring(store_only), basename, basename_scope, studio, studio_scope, scoped
+            local r = c:variable_resolver()
+            local basename, basename_scope = r:resolve("basename")
+            local studio, studio_scope = r:resolve("studio")
+            local scoped, scoped_scope = r:resolve("source.basename")
+            return tostring(store_only), basename, basename_scope, studio, studio_scope, scoped, scoped_scope
             "#,
         );
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(
             out.result.as_deref(),
-            Some("nil\tresolve_comp.wav\tsource\tmine\tcomposition\tresolve_comp.wav")
+            Some("nil\tresolve_comp.wav\tsource\tmine\tcomposition\tresolve_comp.wav\tsource")
+        );
+    }
+
+    #[test]
+    fn session_and_user_variable_resolver() {
+        let mut host = host_with_resolver();
+        let out = host.eval(
+            r#"
+            local user = field.variables.user()
+            user.values.artist = "Ada"
+            field.session.focused().variables.values.studio = "Booth"
+            local uval, uscope = user:variable_resolver():resolve("artist")
+            local sval, sscope = field.session.focused():variable_resolver():resolve("studio")
+            return uscope, uval, sscope, sval
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("user\tAda\tsession\tBooth"));
+
+        let key = "FIELDASSIST_RESOLVER_API_ENV";
+        let value = "from-env-api";
+        // SAFETY: test-only unique key; no parallel test shares this name.
+        unsafe { std::env::set_var(key, value) };
+        let out = host.eval(
+            r#"
+            local val, scope = field.variables.user():variable_resolver():resolve("env.FIELDASSIST_RESOLVER_API_ENV")
+            return scope, val
+            "#,
+        );
+        unsafe { std::env::remove_var(key) };
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("env\tfrom-env-api"));
+    }
+
+    #[test]
+    fn variable_resolver_expand_soft_and_strict() {
+        let mut host = host_with_resolver();
+        let out = host.eval(
+            r#"
+            local b = field.variables.user()
+            b.values.title = "Song"
+            local r = b:variable_resolver()
+            local soft = r:expand("${title}/${missing}.wav")
+            local ok, err = pcall(function()
+              return r:expand("${title}/${missing}.wav", true)
+            end)
+            return soft, ok, tostring(err)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = out.result.unwrap();
+        assert!(
+            result.starts_with("Song/${missing}.wav\tfalse\t"),
+            "{result}"
+        );
+        assert!(
+            result.contains("variable expand failed") || result.contains("unresolved"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn non_user_bindings_reject_variable_resolver() {
+        let mut host = host_with_resolver();
+        let out = host.eval(
+            r#"
+            local b = field.variables.create_bindings("session")
+            local ok, err = pcall(function() return b:variable_resolver() end)
+            return ok, tostring(err)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let result = out.result.unwrap();
+        assert!(result.starts_with("false"), "{result}");
+        assert!(
+            result.contains("variable_resolver is only available"),
+            "{result}"
         );
     }
 

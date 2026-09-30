@@ -282,6 +282,17 @@ impl UserData for LuaBindings {
             }
             Ok(table)
         });
+        methods.add_method("variable_resolver", |lua, this, ()| match &this.store {
+            BindingsStore::User => {
+                let bindings = crate::variables::user_site_detached(lua)?;
+                Ok(crate::variables::LuaVariableResolver::new(bindings))
+            }
+            _ => Err(mlua::Error::runtime(
+                "variable_resolver is only available on field.variables.user() \
+                     Bindings; use session:variable_resolver(), \
+                     composition:variable_resolver(), or field.variables.flatten",
+            )),
+        });
     }
 }
 

@@ -1,5 +1,7 @@
 # Scripting
 
+<!-- markdownlint-disable MD013 MD060 -->
+
 As-built Lua 5.4 reference for FieldAssist, **field-batch**, and **field-play**.
 Hosts share the `field-scripting` API shape under the global `field`
 namespace. The global `app` object is a thin host facade; `app.name`
@@ -13,39 +15,95 @@ examples are under
 
 ## Table of contents
 
-1. [Hosts and scope](#hosts-and-scope)
-2. [Initialization](#initialization)
-3. [Conventions](#conventions)
-4. [app (host-only)](#app-host-only)
-5. [field.log](#field-log)
-6. [field.on](#field-on)
-7. [field.include](#field-include)
-8. [field.scripting](#field-scripting)
-9. [field.url](#field-url)
-10. [field.fs](#field-fs)
-11. [field.session](#field-session)
-12. [field.composition](#field-composition)
-13. [field.media](#field-media)
-14. [field.layouts](#field-layouts)
-15. [field.exports](#field-exports)
-16. [field.variables](#field-variables)
-17. [field.workflow](#field-workflow)
-18. [field.ui](#field-ui)
-19. [field.audio_devices](#field-audio-devices)
-20. [Nested types](#nested-types)
-21. [Migration from app:*](#migration-from-app)
-
-
+- [Hosts and scope](#hosts-and-scope)
+- [Initialization](#initialization)
+  - [FieldAssist](#fieldassist)
+  - [field-batch](#field-batch)
+  - [field-play](#field-play)
+- [Conventions](#conventions)
+- [app (host-only)](#app-host-only)
+  - [app Properties](#app-properties)
+  - [app Functions / methods](#app-functions--methods)
+  - [app.theme (FieldAssist)](#apptheme-fieldassist)
+- [field.log](#fieldlog)
+  - [field.log Properties](#fieldlog-properties)
+  - [field.log Functions](#fieldlog-functions)
+- [field.on](#fieldon)
+  - [field.on Properties](#fieldon-properties)
+  - [field.on Functions](#fieldon-functions)
+  - [field.on Events](#fieldon-events)
+- [field.include](#fieldinclude)
+  - [field.include Properties](#fieldinclude-properties)
+  - [field.include Functions](#fieldinclude-functions)
+- [field.scripting](#fieldscripting)
+  - [field.scripting Properties](#fieldscripting-properties)
+  - [Default package.path / package.cpath](#default-packagepath--packagecpath)
+  - [field.scripting Functions](#fieldscripting-functions)
+- [field.url](#fieldurl)
+  - [field.url Properties](#fieldurl-properties)
+  - [field.url Functions](#fieldurl-functions)
+  - [Returned type: url userdata](#returned-type-url-userdata)
+- [field.fs](#fieldfs)
+  - [field.fs Properties](#fieldfs-properties)
+  - [field.fs Functions](#fieldfs-functions)
+- [field.session](#fieldsession)
+  - [field.session Properties](#fieldsession-properties)
+  - [field.session Functions](#fieldsession-functions)
+  - [Returned type: session](#returned-type-session)
+- [field.composition](#fieldcomposition)
+  - [field.composition Properties](#fieldcomposition-properties)
+  - [field.composition Functions](#fieldcomposition-functions)
+  - [Returned type: composition](#returned-type-composition)
+- [field.media](#fieldmedia)
+  - [field.media Properties](#fieldmedia-properties)
+  - [field.media Functions](#fieldmedia-functions)
+  - [Returned type: media pool](#returned-type-media-pool)
+  - [Returned type: media](#returned-type-media)
+- [field.layouts](#fieldlayouts)
+  - [field.layouts Properties](#fieldlayouts-properties)
+  - [field.layouts Functions](#fieldlayouts-functions)
+  - [field.layouts define(spec) keys](#fieldlayouts-definespec-keys)
+  - [Returned type: layout registry](#returned-type-layout-registry)
+  - [Returned type: layout](#returned-type-layout)
+- [field.exports](#fieldexports)
+  - [field.exports Properties](#fieldexports-properties)
+  - [field.exports Functions](#fieldexports-functions)
+  - [field.exports define(spec) keys](#fieldexports-definespec-keys)
+  - [composition:export(arg)](#compositionexportarg)
+  - [Setting resolution](#setting-resolution)
+  - [Returned type: export registry](#returned-type-export-registry)
+  - [Returned type: export profile](#returned-type-export-profile)
+- [field.variables](#fieldvariables)
+  - [field.variables Functions](#fieldvariables-functions)
+  - [Returned type: VariableResolver](#returned-type-variableresolver)
+  - [Returned type: bindings](#returned-type-bindings)
+  - [Resolver prototype](#resolver-prototype)
+- [field.workflow](#fieldworkflow)
+  - [field.workflow Properties](#fieldworkflow-properties)
+  - [field.workflow Functions](#fieldworkflow-functions)
+  - [create / declare property table](#create--declare-property-table)
+  - [Returned type: workflow prototype / instance (table)](#returned-type-workflow-prototype--instance-table)
+- [field.ui](#fieldui)
+  - [field.ui Properties](#fieldui-properties)
+  - [field.ui Functions](#fieldui-functions)
+  - [Returned type: control table](#returned-type-control-table)
+  - [Palette: field.ui.named](#palette-fielduinamed)
+  - [Palette: field.ui.semantic](#palette-fielduisemantic)
+- [field.audio_devices](#fieldaudio_devices)
+  - [field.audio_devices Properties](#fieldaudio_devices-properties)
+  - [field.audio_devices Functions](#fieldaudio_devices-functions)
+- [Nested types](#nested-types)
+  - [collection](#collection)
+  - [region](#region)
+  - [marker](#marker)
 
 ## Hosts and scope
-
 
 | Host                | `app.name`       | Runtime                                                      |
 | ------------------- | ---------------- | ------------------------------------------------------------ |
 | FieldAssist desktop | `"field-assist"` | GPUI app; embedded Add / Replace / Review workflows          |
 | field-batch CLI     | `"field-batch"`  | Headless REPL / script / Unix shebang over `field-scripting` |
 | field-play CLI      | `"field-play"`   | Headless playback; `init.lua` + enrich + `detect_layout`     |
-
 
 ```bash
 field-batch                     # interactive REPL
@@ -60,7 +118,6 @@ fully available in FieldAssist. FieldAssist supplies a desktop
 `ScriptBackend`, its host-only `app` facade, and GPUI toolbar paint glue.
 field-play uses the headless backend only long enough to load init and fire
 `enrich_composition` then `detect_layout`; it does not run workflows or a REPL.
-
 
 | Module                                        | field-batch / field-scripting             | field-play     | FieldAssist today                        |
 | --------------------------------------------- | ----------------------------------------- | -------------- | ---------------------------------------- |
@@ -77,12 +134,7 @@ field-play uses the headless backend only long enough to load init and fire
 | `field.variables`                             | full                                      | via init       | full                                     |
 | `field.audio_devices`                         | full                                      | unused at play | full                                     |
 
-
-
-
 ## Initialization
-
-
 
 ### FieldAssist
 
@@ -91,7 +143,7 @@ applies scripting + device + experimental + application + waveform groups from
 Rust. Then:
 
 1. Embedded `resolver_default.lua` — declares the `"default"` last-wins
-   variable resolver (see [field.variables](#field-variables))
+   variable resolver (see [field.variables](#fieldvariables))
 2. `init.lua` — user config file if present, else embedded default
    (`field_scripting::EMBEDDED_INIT`)
 3. `resolver_*.lua` along the scripting **Search Path** (config directory
@@ -116,20 +168,17 @@ toggles (`enable_system_package_paths`, `enable_native_modules`) apply before
 Disabling mid-session leaves the runtime enabled until relaunch. Lua
 `field.scripting.enable_*` remains available for late opt-in.
 
-
 | OS      | Config directory                                            |
 | ------- | ----------------------------------------------------------- |
 | macOS   | `~/Library/Application Support/FieldAssist/`                |
 | Windows | `%APPDATA%\FieldAssist\`                                    |
 | Linux   | `$XDG_CONFIG_HOME/FieldAssist/` or `~/.config/FieldAssist/` |
 
-
 Resolved by `field_scripting::user_config_dir()` (shared by FieldAssist,
 field-batch, and field-play). Dump the embedded default with
 `FieldAssist --dump-init`.
 
 The same directory may also hold:
-
 
 | File             | Role                                                                       |
 | ---------------- | -------------------------------------------------------------------------- |
@@ -140,7 +189,6 @@ The same directory may also hold:
 | `resolver_*.lua` | Optional user resolvers (auto-loaded after `init.lua`)                     |
 | `workflow_*.lua` | Optional user workflows (auto-loaded after embedded workflows)             |
 
-
 Schema and I/O live in the `field-settings` leaf crate (no GPUI). FieldAssist
 keeps a thin Global store + Settings UI. Hosts apply groups **before**
 `init.lua`; embedded init does **not** call `app:load_settings()`. That method
@@ -149,7 +197,7 @@ remains for manual reload from scripts or the Settings UI. Missing or invalid
 over the saved device.
 
 `require` search paths default to the config directory plus cwd, then Search
-Path extras (see [field.scripting](#field-scripting)). Prefer Settings →
+Path extras (see [field.scripting](#fieldscripting)). Prefer Settings →
 Scripting → Modules (or `settings.json`) over calling `field.scripting.enable_*`
 at the top of every `init.lua`; the Lua helpers stay for late opt-in.
 
@@ -190,15 +238,12 @@ FieldAssist renders them; field-batch stores them and ignores paint.
 
 ---
 
-
-
 ## `app` (host-only)
 
 Process facade unique to the enclosing binary. Model constructors and shared
 APIs live under `field.*`, not here.
 
-### Properties
-
+### app Properties
 
 | Property         | Access | Hosts       | Type              | Description                                                             |
 | ---------------- | ------ | ----------- | ----------------- | ----------------------------------------------------------------------- |
@@ -213,18 +258,13 @@ APIs live under `field.*`, not here.
 | `output_device`  | **rw** | FieldAssist | `string` or `nil` | Preferred output device (substring match)                               |
 | `output_devices` | **ro** | FieldAssist | `{ string, … }`   | Known output device names                                               |
 
-
-
-
-### Functions / methods
-
+### app Functions / methods
 
 | Function            | Arguments         | Returns | Hosts       | Description                                                                                                             |
 | ------------------- | ----------------- | ------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `app:alert`         | `subject`, `body` | —       | all         | Host alert (dialog / stderr). Args are stringified.                                                                     |
 | `app:command`       | `id: string`      | —       | FieldAssist | Invoke a UI command (e.g. `"view.show-explorer"`)                                                                       |
 | `app:load_settings` | —                 | —       | FieldAssist | Manual reload: read `settings.json` (or defaults), update the Global store, re-apply theme / docks / waveform / selection / output device / scripting policy |
-
 
 field-scripting also keeps temporary migration shims
 `app:info` / `app:warn` / `app:error` and
@@ -233,14 +273,12 @@ field-scripting also keeps temporary migration shims
 
 ### `app.theme` (FieldAssist)
 
-
 | Property   | Access | Type                 | Description                                 |
 | ---------- | ------ | -------------------- | ------------------------------------------- |
 | `name`     | **rw** | `string`             | Theme registry name                         |
-| `mode`     | **rw** | `"light"` | `"dark"` | Appearance mode                             |
-| `named`    | **ro** | palette userdata     | Same keys as [field.ui.named](#field-ui)    |
-| `semantic` | **ro** | palette userdata     | Same keys as [field.ui.semantic](#field-ui) |
-
+| `mode`     | **rw** | `"light"` \| `"dark"` | Appearance mode                             |
+| `named`    | **ro** | palette userdata     | Same keys as [field.ui.named](#palette-fielduinamed)    |
+| `semantic` | **ro** | palette userdata     | Same keys as [field.ui.semantic](#palette-fielduisemantic) |
 
 ```lua
 -- Manual reload (startup already applied settings from Rust):
@@ -255,18 +293,15 @@ end
 
 ---
 
-
-
 ## `field.log`
 
 Structured logging into the host log sink (Script panel / stderr / Messages).
 
-### Properties
+### field.log Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.log Functions
 
 | Function | Arguments          | Returns | Description        |
 | -------- | ------------------ | ------- | ------------------ |
@@ -274,34 +309,26 @@ Structured logging into the host log sink (Script panel / stderr / Messages).
 | `warn`   | `topic`, `message` | —       | Warning line       |
 | `error`  | `topic`, `message` | —       | Error line         |
 
-
 On FieldAssist, `topic` / `message` may be any Lua values (stringified). On
 field-batch they are strings.
 
 ---
 
-
-
 ## `field.on`
 
 Registers process-wide model/host hooks. Unknown event names error.
 
-### Properties
+### field.on Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.on Functions
 
 | Function | Arguments                             | Returns | Description               |
 | -------- | ------------------------------------- | ------- | ------------------------- |
 | `on`     | `event: string`, `callback: function` | —       | Append a hook for `event` |
 
-
-
-
-### Events
-
+### field.on Events
 
 | Event                  | Callback arguments                          | Notes                                                                         |
 | ---------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -317,7 +344,7 @@ Registers process-wide model/host hooks. Unknown event names error.
 
 `enrich_composition` runs before `detect_layout` (and before `loaded` when
 that event also fires). Use it to set composition variables from paths,
-probe/`source.*` metadata (`c:resolve_variable`), or external lookups. It does
+probe/`source.*` metadata (`c:variable_resolver():resolve`), or external lookups. It does
 **not** run for `.facomp` opens or session restore. FieldAssist also fires it
 after break-out regions/channels.
 
@@ -327,7 +354,7 @@ field.on("enrich_composition", function(c)
   if dir then
     c.variables.values.project = field.url(dir).basename or dir
   end
-  local flag = c:resolve_variable("TIMECODE_FLAG")
+  local flag = c:variable_resolver():resolve("TIMECODE_FLAG")
   if flag then
     c.variables.values.timecode_flag = flag
   end
@@ -349,30 +376,26 @@ end)
 ```
 
 Workflow prototypes can also `:on` the same events; those handlers receive the
-**instance** as the first argument (see [field.workflow](#field-workflow)).
+**instance** as the first argument (see [field.workflow](#fieldworkflow)).
 
 ---
-
-
 
 ## `field.include`
 
 Load and run another Lua chunk relative to the caller (replaces
 `debug.getinfo` + `dofile`).
 
-### Properties
+### field.include Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.include Functions
 
 | Function  | Arguments | Returns               | Description                 |
 | --------- | --------- | --------------------- | --------------------------- |
 | `include` | `spec`    | chunk return value(s) | Load and execute a Lua file |
 
-
-`spec` **(field-scripting):** path `string` or [field.url](#field-url) userdata.
+`spec` **(field-scripting):** path `string` or [field.url](#fieldurl) userdata.
 Search: absolute path → directory of the calling file → config dir → relative
 to cwd. Results are cached by resolved path while the host lives.
 
@@ -381,42 +404,36 @@ to cwd. Results are cached by resolved path while the host lives.
 
 ---
 
-
-
 ## `field.scripting`
 
 Host controls for Lua `require` search paths and native C modules. Paths are
 locked down so workflows stay self-contained by default.
 
-### Properties
+### field.scripting Properties
 
-*(none)*
+(none)
 
 ### Default `package.path` / `package.cpath`
-
 
 | Kind | Templates                                                          |
 | ---- | ------------------------------------------------------------------ |
 | Lua  | `{config}/?.lua`, `{config}/?/init.lua`, `./?.lua`, `./?/init.lua` |
 | C    | `{config}/?.so` (`.dll` on Windows), `./?.so` / `./?.dll`          |
 
-
 `{config}` is the host config directory when known. System-wide bundled Lua
 locations (`/usr/local/...`, Windows `!\\...`) and foreign `LUA_PATH*` /
 `LUA_CPATH*` roots are **not** on the path until opted in. C loaders remain
 stubbed until opted in even if a `.so` sits on `package.cpath`.
 
-Prefer `[field.include](#field-include)` for FieldAssist/field-batch Lua that
+Prefer `[field.include](#fieldinclude)` for FieldAssist/field-batch Lua that
 should resolve relative to the caller or config dir.
 
-### Functions
-
+### field.scripting Functions
 
 | Function                      | Arguments | Returns | Description                                                    |
 | ----------------------------- | --------- | ------- | -------------------------------------------------------------- |
 | `enable_system_package_paths` | —         | —       | Append the saved system-wide path/cpath templates (idempotent) |
 | `enable_native_modules`       | —         | —       | Restore `package.loadlib` and C searchers (idempotent)         |
-
 
 Either call is independent. Typical place is the top of user `init.lua`:
 
@@ -431,20 +448,17 @@ field-batch and indexes audio paths into SQLite, see
 
 ---
 
-
-
 ## `field.url`
 
 Location userdata over `field_core::Location` (relative, `file://`, or
 `memory://` URLs). Bound on all hosts that use `field-scripting` (including
 FieldAssist).
 
-### Properties
+### field.url Properties
 
-*(none on the module table)*
+(none on the module table)
 
-### Functions
-
+### field.url Functions
 
 | Function         | Arguments       | Returns      | Description                                              |
 | ---------------- | --------------- | ------------ | -------------------------------------------------------- |
@@ -452,15 +466,9 @@ FieldAssist).
 | `from_path`      | `path: string`  | url userdata | Encode a filesystem path                                 |
 | `from_file_path` | `path: string`  | url userdata | Alias of `from_path`                                     |
 
-
-
-
 ### Returned type: url userdata
 
-
-
-#### Properties
-
+#### url Properties
 
 | Property     | Access | Type              | Description                            |
 | ------------ | ------ | ----------------- | -------------------------------------- |
@@ -475,11 +483,7 @@ FieldAssist).
 | `stem`       | **ro** | `string`          | Basename without extension             |
 | `extension`  | **ro** | `string`          | Extension without leading `.`          |
 
-
-
-
-#### Methods
-
+#### url Methods
 
 | Method            | Arguments                 | Returns      | Description                              |
 | ----------------- | ------------------------- | ------------ | ---------------------------------------- |
@@ -489,22 +493,18 @@ FieldAssist).
 | `:relative_to`    | `base` (url or string)    | `string`     | Relative path from `base`                |
 | `__tostring`      | —                         | `string`     | Stored raw form                          |
 
-
 ---
-
-
 
 ## `field.fs`
 
 Filesystem helpers. Paths accept a `string` or (in field-scripting) url
 userdata.
 
-### Properties
+### field.fs Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.fs Functions
 
 | Function     | Arguments                                | Returns                             | Hosts           | Description                                                                                                                                                  |
 | ------------ | ---------------------------------------- | ----------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -516,31 +516,26 @@ userdata.
 | `stat`       | `path`                                   | `{ size, is_dir, is_file, mtime? }` | field-scripting | Metadata; `mtime` is unix seconds when available                                                                                                             |
 | `checksum`   | `path [, algo]`                          | `string`                            | field-scripting | Hex digest; only `"blake3"` (default)                                                                                                                        |
 
-
 FieldAssist currently binds `find_files` **only**.
 
 ---
-
-
 
 ## `field.session`
 
 Constructors and accessors for session objects (`.fasession` membership,
 groups, properties, open compositions).
 
-### Properties
+### field.session Properties
 
-*(none on the module table)*
+(none on the module table)
 
-### Functions
-
+### field.session Functions
 
 | Function  | Arguments              | Returns | Hosts | Description                               |
 | --------- | ---------------------- | ------- | ----- | ----------------------------------------- |
 | `focused` | —                      | session | all   | Process / UI-active session               |
 | `new`     | —                      | session | all   | Create an empty detached session          |
 | `open`    | `path` (string or url) | session | all   | Load a `.fasession` as a detached session |
-
 
 `field.session.focused()` is the host's current world/UI session. In contrast,
 `field.session.new()` and `field.session.open(path)` create or load detached
@@ -551,10 +546,7 @@ metadata work. To load a `.fasession` into the focused desktop session, call
 
 ### Returned type: session
 
-
-
-#### Properties
-
+#### session Properties
 
 | Property        | Access | Type                                                            | Description                                    |
 | --------------- | ------ | --------------------------------------------------------------- | ---------------------------------------------- |
@@ -563,16 +555,12 @@ metadata work. To load a `.fasession` into the focused desktop session, call
 | `workflow_name` | **rw** | `string` or `nil`                                               | Persisted stateful workflow name               |
 | `capture_ui`    | **rw** | `boolean`                                                       | Whether UI chrome is captured with the session |
 | `properties`    | **rw** | `{ [string] = string }`                                         | Workflow string map (not variables)            |
-| `variables`     | **rw** | bindings userdata (see [field.variables](#field-variables)); assign also accepts map / row-array tables | Session-scoped variables |
+| `variables`     | **rw** | bindings userdata (see [field.variables](#fieldvariables)); assign also accepts map / row-array tables | Session-scoped variables |
 | `composition`   | **rw** | composition or `nil`                                            | Active document                                |
 | `compositions`  | **ro** | `{ composition, … }`                                            | Session documents in order                     |
 | `groups`        | **rw** | `{ string, … }`                                                 | Group name list                                |
 
-
-
-
-#### Methods
-
+#### session Methods
 
 | Method          | Arguments              | Returns     | Description                                                |
 | --------------- | ---------------------- | ----------- | ---------------------------------------------------------- |
@@ -586,37 +574,28 @@ metadata work. To load a `.fasession` into the focused desktop session, call
 | `:save`         | —                      | —           | Save session (FieldAssist; headless stub errors)           |
 | `:save_as`      | `path` (string or url) | —           | Save session to a new path                                 |
 | `:close`        | —                      | —           | Close / detach (FieldAssist; headless stub errors)         |
-
+| `:variable_resolver` | —                 | VariableResolver | Session site (`user.*` + session); see [field.variables](#fieldvariables) |
 
 ---
-
-
 
 ## `field.composition`
 
 Open compositions outside of (or in addition to) a session. Session membership
 still uses `session:open`.
 
-### Properties
+### field.composition Properties
 
-*(none on the module table)*
+(none on the module table)
 
-### Functions
-
+### field.composition Functions
 
 | Function | Arguments              | Returns     | Description             |
 | -------- | ---------------------- | ----------- | ----------------------- |
 | `open`   | `path` (string or url) | composition | Open audio or `.facomp` |
 
-
-
-
 ### Returned type: composition
 
-
-
-#### Properties
-
+#### composition Properties
 
 | Property       | Access | Type                                                            | Description                                                                      |
 | -------------- | ------ | --------------------------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -626,7 +605,7 @@ still uses `session:open`.
 | `group`        | **rw** | `string` or `nil`                                               | Session group membership                                                         |
 | `state`        | **rw** | `string` or `nil`                                               | Free-form document state                                                         |
 | `properties`   | **rw** | `{ [string] = string }`                                         | Workflow string map on the session document                                      |
-| `variables`    | **rw** | bindings userdata (see [field.variables](#field-variables)); assign also accepts map / row-array tables | Composition-scoped variables (`.facomp`)                                         |
+| `variables`    | **rw** | bindings userdata (see [field.variables](#fieldvariables)); assign also accepts map / row-array tables | Composition-scoped variables (`.facomp`)                                         |
 | `frames`       | **ro** | `integer`                                                       | Timeline length in samples                                                       |
 | `sample_rate`  | **ro** | `integer`                                                       | Hz                                                                               |
 | `channels`     | **ro** | `integer`                                                       | Channel count                                                                    |
@@ -637,17 +616,15 @@ still uses `session:open`.
 | `marker_types` | **ro** | `{ { name, color }, … }`                                        | Registered marker types                                                          |
 | `media`        | **ro** | `{ media, … }`                                                  | Media referenced by this composition                                             |
 
-
 **FieldAssist-only properties:** `parent`, `children`, `codec`, `bit_depth`,
 `basename`, `dirname`, `channel_layout` (**rw**), `monitor_chain` (**rw**),
 `playback_channels` (**rw**), `source_channels` (**ro**), `duration` (**ro**),
 `regions` (**ro** — selection as region userdata array).
 
-**Selection table setter:** `kind` = `"none"`  `"position"`  `"region"`;
+**Selection table setter:** `kind` = `"none"` \| `"position"` \| `"region"`;
 `start` / `stop` samples; `channels` as above.
 
-#### Methods
-
+#### composition Methods
 
 | Method                                                                      | Arguments                                                          | Returns                    | Description                                                                          |
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------ |
@@ -657,7 +634,7 @@ still uses `session:open`.
 | `:collection`                                                               | `name: string`                                                     | [collection](#collection)  | Named region collection                                                              |
 | `:add_region`                                                               | `{ start, stop, channels?, label?, collection? }`                  | [region](#region)          | Add a labeled region                                                                 |
 | `:remove_region`                                                            | `id: integer`                                                      | `boolean`                  | Remove by id                                                                         |
-| `:add_marker`                                                               | frame[, type] **or** `{ frame|sample, type|kind?, color?, note? }` | [marker](#marker) or `nil` | Add a marker                                                                         |
+| `:add_marker`                                                               | frame[, type] **or** `{ frame\|sample, type\|kind?, color?, note? }` | [marker](#marker) or `nil` | Add a marker                                                                         |
 | `:remove_marker`                                                            | marker or id                                                       | `boolean`                  | Remove one marker                                                                    |
 | `:remove_marker_at`                                                         | `frame` [, `type`]                                                 | `boolean`                  | Remove at sample                                                                     |
 | `:remove_marker_by_type`                                                    | `type: string`                                                     | `boolean`                  | Remove all of a type                                                                 |
@@ -669,61 +646,45 @@ still uses `session:open`.
 | `:replace`                                                                  | `path` (string or url)                                             | composition                | Replace media/project from path                                                      |
 | `:undo` / `:redo`                                                           | —                                                                  | `boolean`                  | Edit history                                                                         |
 | `:cut` / `:copy` / `:paste` / `:clear` / `:remove` / `:duplicate` / `:trim` | —                                                                  | `true`                     | Edit ops on the selection                                                            |
-| `:export`                                                                   | profile name, profile userdata, or options table                   | `true`                     | Encode to disk (same pipeline as File → Export); see [field.exports](#field-exports) |
-| `:resolve_variable`                                                         | `name` **or** `scope, name`                                        | `value, scope` or `nil, nil` | Composition site lookup (Variables pane); see [field.variables](#field-variables) |
-
+| `:export`                                                                   | profile name, profile userdata, or options table                   | `true`                     | Encode to disk (same pipeline as File → Export); see [field.exports](#fieldexports) |
+| `:variable_resolver`                                                        | —                                                                  | VariableResolver           | Composition site lookup (Variables pane); see [field.variables](#fieldvariables) |
 
 **FieldAssist-only methods:** `:break_out_regions()` → composition or array;
 `:break_out_channels(channels?)` → composition.
 
 ---
 
-
-
 ## `field.media`
 
 Shared media pool (interned media rows used by compositions).
 
-### Properties
+### field.media Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.media Functions
 
 | Function      | Arguments | Returns                   | Description                  |
 | ------------- | --------- | ------------------------- | ---------------------------- |
-| `shared_pool` | —         | [media pool](#media-pool) | Process singleton media pool |
-
-
-
+| `shared_pool` | —         | [media pool](#returned-type-media-pool) | Process singleton media pool |
 
 ### Returned type: media pool
 
+#### media pool Properties
 
+(none)
 
-#### Properties
-
-*(none)*
-
-#### Methods
-
+#### media pool Methods
 
 | Method    | Arguments              | Returns              | Description                            |
 | --------- | ---------------------- | -------------------- | -------------------------------------- |
-| `:add`    | `path` (string or url) | [media](#media)      | Probe and intern a file                |
+| `:add`    | `path` (string or url) | [media](#returned-type-media)      | Probe and intern a file                |
 | `:remove` | media or id string     | `boolean` (headless) | Remove from the pool when unreferenced |
 | `:items`  | —                      | `{ media, … }`       | Current pool rows                      |
 
-
-
-
 ### Returned type: media
 
-
-
-#### Properties
-
+#### media Properties
 
 | Property           | Access | Type               | Description                                      |
 | ------------------ | ------ | ------------------ | ------------------------------------------------ |
@@ -740,38 +701,28 @@ Shared media pool (interned media rows used by compositions).
 | `codec`            | **ro** | `string`           | Codec                                            |
 | `duration`         | **ro** | `number`           | Seconds                                          |
 
+#### media Methods
 
-
-
-#### Methods
-
-*(none)*
+(none)
 
 ---
-
-
 
 ## `field.layouts`
 
 Channel layout registry used by detect hooks and composition layout choice.
 
-### Properties
+### field.layouts Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.layouts Functions
 
 | Function          | Arguments     | Returns                             | Hosts           | Description                                |
 | ----------------- | ------------- | ----------------------------------- | --------------- | ------------------------------------------ |
 | `define`          | `spec: table` | —                                   | all             | Sugar for `shared_registry():define(spec)` |
-| `shared_registry` | —             | [layout registry](#layout-registry) | field-scripting | Process layout registry                    |
+| `shared_registry` | —             | [layout registry](#returned-type-layout-registry) | field-scripting | Process layout registry                    |
 
-
-
-
-### `define(spec)` keys
-
+### field.layouts `define(spec)` keys
 
 | Key           | Required | Type     | Description                                                                  |
 | ------------- | -------- | -------- | ---------------------------------------------------------------------------- |
@@ -781,19 +732,13 @@ Channel layout registry used by detect hooks and composition layout choice.
 | `channels`    | yes      | map      | **0-based** channel index → label string                                     |
 | `monitor`     | no       | table    | JSON-compatible monitor table (often `{ chain = "…" }`)                      |
 
-
-
-
 ### Returned type: layout registry
 
+#### layout registry Properties
 
+(none)
 
-#### Properties
-
-*(none)*
-
-#### Methods
-
+#### layout registry Methods
 
 | Method    | Arguments             | Returns         | Description                                 |
 | --------- | --------------------- | --------------- | ------------------------------------------- |
@@ -801,15 +746,9 @@ Channel layout registry used by detect hooks and composition layout choice.
 | `:remove` | layout or name string | —               | Drop a registered layout (no-op if missing) |
 | `:items`  | —                     | `{ layout, … }` | Registered layouts in definition order      |
 
-
-
-
 ### Returned type: layout
 
-
-
-#### Properties
-
+#### layout Properties
 
 | Property      | Access | Type           | Description                                              |
 | ------------- | ------ | -------------- | -------------------------------------------------------- |
@@ -819,39 +758,29 @@ Channel layout registry used by detect hooks and composition layout choice.
 | `channels`    | **ro** | map            | **0-based** channel index → label string                 |
 | `monitor`     | **ro** | table or `nil` | Monitor table from `define`                              |
 
+#### layout Methods
 
-
-
-#### Methods
-
-*(none)*
+(none)
 
 ---
-
-
 
 ## `field.exports`
 
 Export profile registry for scripted one-shot encodes (`composition:export`).
 Profiles express the same options as the File → Export sheet.
 
-### Properties
+### field.exports Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.exports Functions
 
 | Function          | Arguments     | Returns                             | Hosts           | Description                                |
 | ----------------- | ------------- | ----------------------------------- | --------------- | ------------------------------------------ |
 | `define`          | `spec: table` | —                                   | all             | Sugar for `shared_registry():define(spec)` |
-| `shared_registry` | —             | [export registry](#export-registry) | field-scripting | Process export profile registry            |
+| `shared_registry` | —             | [export registry](#returned-type-export-registry) | field-scripting | Process export profile registry            |
 
-
-
-
-### `define(spec)` keys
-
+### field.exports `define(spec)` keys
 
 | Key             | Required | Type                      | Description                                                                            |
 | --------------- | -------- | ------------------------- | -------------------------------------------------------------------------------------- |
@@ -866,9 +795,6 @@ Profiles express the same options as the File → Export sheet.
 | `path`          | no       | string or url             | Full destination; wins over `directory` + `filename` (`${…}` interpolated)             |
 | `variables`     | no       | table                     | Export-scoped variables (same shapes as `session.variables`)                           |
 | `metadata`      | no       | `{ [string] = string }`   | Canonical tag templates (`title`, `artist`, …) interpolated then written into the file |
-
-
-
 
 ### `composition:export(arg)`
 
@@ -888,15 +814,17 @@ Export settings are resolved in layers. A later layer supplies a value **only
 when that field is explicitly set**; omitted fields keep the previous layer.
 
 1. **Source defaults** from the open composition / primary media:
-  - `sample_rate` ← composition sample rate
-  - `sample_format` ← primary media bit depth (else preference `S24`)
-  - `channels` ← all composition channels
-  - `encoder` ← product default `"wav"`
-  - destination ← unset (caller must supply `path` or `directory`)
+
+   - `sample_rate` ← composition sample rate
+   - `sample_format` ← primary media bit depth (else preference `S24`)
+   - `channels` ← all composition channels
+   - `encoder` ← product default `"wav"`
+   - destination ← unset (caller must supply `path` or `directory`)
+
 2. **Profile** (`field.exports.define` / named profile): each set field
-  overrides the source for that field only
+   overrides the source for that field only
 3. **Call-time overrides** (inline table keys, or Export-sheet UI edits after
-  picking a profile): same sparse overlay as a profile
+   picking a profile): same sparse overlay as a profile
 
 After merging, the encoder's capabilities snap `sample_format` and validate
 rate / channel count. File → Export applies the same source ← profile merge
@@ -920,18 +848,13 @@ sheet’s Variables disclosure, the soft **Resolved** path preview, and (on
 Export) strict path interpolate plus tag map build — matching
 `composition:export` / `build_job`.
 
-
-
 ### Returned type: export registry
 
+#### export registry Properties
 
+(none)
 
-#### Properties
-
-*(none)*
-
-#### Methods
-
+#### export registry Methods
 
 | Method    | Arguments              | Returns          | Description                                  |
 | --------- | ---------------------- | ---------------- | -------------------------------------------- |
@@ -939,15 +862,9 @@ Export) strict path interpolate plus tag map build — matching
 | `:remove` | profile or name string | —                | Drop a registered profile (no-op if missing) |
 | `:items`  | —                      | `{ profile, … }` | Registered profiles in definition order      |
 
-
-
-
 ### Returned type: export profile
 
-
-
-#### Properties
-
+#### export profile Properties
 
 | Property        | Access | Type                      | Description       |
 | --------------- | ------ | ------------------------- | ----------------- |
@@ -961,28 +878,20 @@ Export) strict path interpolate plus tag map build — matching
 | `filename`      | **ro** | `string` or `nil`         | Filename          |
 | `path`          | **ro** | `string` or `nil`         | Full path         |
 
+#### export profile Methods
 
-
-
-#### Methods
-
-*(none)*
+(none)
 
 ---
 
-
-
 ---
-
-
 
 ## `field.variables`
 
 Scoped string variables, Bindings userdata, and user-extensible resolvers.
 Product contract: [spec/SPEC-metadata.md](spec/SPEC-metadata.md).
 
-### Functions
-
+### field.variables Functions
 
 | Function            | Arguments                         | Returns   | Description |
 | ------------------- | --------------------------------- | --------- | ----------- |
@@ -991,20 +900,19 @@ Product contract: [spec/SPEC-metadata.md](spec/SPEC-metadata.md).
 | `create_resolver`   | `{ name = string, … }`            | prototype | Build a resolver prototype (`:name()`) |
 | `declare_resolver`  | prototype                         | —         | Register by `:name()`; `"default"` replaces the built-in |
 | `set_resolver`      | `name: string`                    | —         | Select the active resolver (process lifetime; startup script) |
-| `resolve`           | `{ bindings, … }`                 | table     | Resolve a bindings list with the active resolver (row array + map) |
+| `flatten`           | `{ bindings, … }`                 | table     | Materialize a bindings list with the active resolver (row array + leaf map) |
 | `load_resolvers`    | —                                 | —         | Load `resolver_*.lua` from the scripting Search Path |
-
 
 ### Returned type: bindings
 
 One scope's leaf name → string map.
-
 
 | Member / method | Access | Description |
 | --------------- | ------ | ----------- |
 | `values`        | proxy  | Table-like: `values[name]` get/set string (r/o Bindings reject writes) |
 | `:scope()`      | —      | Scope string for this instance |
 | `:names()`      | —      | Array of leaf names |
+| `:variable_resolver()` | — | User-site VariableResolver (`user.*` only). Only on `field.variables.user()` / `user_scope` Bindings |
 
 `session.variables` and `composition.variables` return live **single-scope**
 Bindings for that store only (writes hit the session / `.facomp` file). They do
@@ -1012,16 +920,37 @@ Bindings for that store only (writes hit the session / `.facomp` file). They do
 site resolution also injects derived `channel_layout` (layout export `code`,
 or `""` when unset) into the composition layer for `${channel_layout}` / pane
 display; when `code` was omitted at `define` time it equals the layout `name`.
-It is not stored in `composition.variables` itself. To look up a
-value the same way the pane does (source + user + session + composition), use
-`composition:resolve_variable`:
+It is not stored in `composition.variables` itself.
+
+### Returned type: VariableResolver
+
+Site-scoped lookup / template expand (detached snapshots of the site bindings).
+Obtain via:
+
+| Receiver | Site bindings |
+| -------- | ------------- |
+| `session:variable_resolver()` | `user.*` + `session` |
+| `composition:variable_resolver()` | `source.*` + `user.*` + `session` + `composition` |
+| `field.variables.user():variable_resolver()` | all live `user` / `user.*` scopes |
+
+| Method | Arguments | Returns | Description |
+| ------ | --------- | ------- | ----------- |
+| `:resolve` | `expr: string` | `value, scope` or `nil, nil` | Bare leaf (`"title"`) or qualified (`"user.ingest.root_dir"`, `"env.HOME"`, `"source.basename"`) |
+| `:expand` | `template` [, `strict`] | `string` | Soft by default (unresolved `${…}` left as-is); `strict == true` errors like export |
 
 ```lua
 local c = field.session.focused().composition
-local value, scope = c:resolve_variable("TIMECODE_FLAG")
--- or exact scope:
-local value, scope = c:resolve_variable("source.ixml", "TIMECODE_FLAG")
+local r = c:variable_resolver()
+local value, scope = r:resolve("TIMECODE_FLAG")
+local value, scope = r:resolve("source.ixml.TIMECODE_FLAG")
+local path = r:expand("${source.parent}/${title}.wav")
 ```
+
+`flatten` is the low-level bindings-list materializer (rename of the former
+`field.variables.resolve`). Prefer site `:variable_resolver()` for lookups and
+templates. Migration: `composition:resolve_variable(…)` →
+`composition:variable_resolver():resolve(expr)`; `field.variables.resolve` →
+`flatten`.
 
 Probe / source Bindings used internally are read-only. Assignment to
 `session.variables` / `composition.variables` still accepts map / `{ name, value }`
@@ -1070,19 +999,16 @@ field.variables.set_resolver("studio")
 
 ---
 
-
-
 ## `field.workflow`
 
 Declare and run named workflow prototypes. Prototypes and instances are
 **Lua tables** meant to be extended with methods (`:start`, `:suspend`, …).
 
-### Properties
+### field.workflow Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.workflow Functions
 
 | Function  | Arguments                                 | Returns                 | Description                                                               |
 | --------- | ----------------------------------------- | ----------------------- | ------------------------------------------------------------------------- |
@@ -1093,11 +1019,7 @@ Declare and run named workflow prototypes. Prototypes and instances are
 | `cancel`  | —                                         | —                       | Cancel the active run; calls instance `:cancel(session)` if present       |
 | `load_workflows` | —                                    | —                       | Load `workflow_*.lua` from the scripting Search Path                      |
 
-
-
-
 ### `create` / `declare` property table
-
 
 | Key            | Required | Type            | Description                                                                           |
 | -------------- | -------- | --------------- | ------------------------------------------------------------------------------------- |
@@ -1107,9 +1029,6 @@ Declare and run named workflow prototypes. Prototypes and instances are
 | `scopes`       | yes      | `{ string, … }` | e.g. `"drag-drop"`, `"menu"`, `"run"`                                                 |
 | `drop`         | no       | table           | Overlay cell: `{ row`, `priority`, `color }` — defaults `row=1`, `priority=1.0`, gray |
 
-
-
-
 ### Returned type: workflow prototype / instance (table)
 
 Installed methods (and optional host-called methods) apply to both the
@@ -1117,19 +1036,16 @@ prototype returned by `create` and instances produced by `run` / declare.
 
 #### Properties (installed)
 
-
 | Property            | Access   | Type     | Description                                   |
 | ------------------- | -------- | -------- | --------------------------------------------- |
 | `__base_properties` | **ro**   | userdata | See below                                     |
 | `__fa_toolbar`      | internal | table    | Snapshot consumed by the host toolbar         |
 | user fields         | **rw**   | any      | Free-form instance state (e.g. `self.output`) |
 
-
 `__base_properties` getters: `name`, `display_name`, `description`, `scopes`,
 `row`, `priority`, `color` (**ro**).
 
 #### Methods (installed)
-
 
 | Method          | Arguments                 | Returns         | Description                                                                         |
 | --------------- | ------------------------- | --------------- | ----------------------------------------------------------------------------------- |
@@ -1137,32 +1053,25 @@ prototype returned by `create` and instances produced by `run` / declare.
 | `:display_name` | —                         | `string`        | Display name                                                                        |
 | `:description`  | —                         | `string`        | Description                                                                         |
 | `:scopes`       | —                         | `{ string, … }` | Scope list                                                                          |
-| `:on`           | `event`, `handler`        | —               | Instance hook; handler gets `(self, …)` then the same args as [field.on](#field-on) |
-| `:set_toolbar`  | `{ control, … }` or `nil` | —               | Replace the toolbar from [field.ui](#field-ui) controls                             |
+| `:on`           | `event`, `handler`        | —               | Instance hook; handler gets `(self, …)` then the same args as [field.on](#fieldon) |
+| `:set_toolbar`  | `{ control, … }` or `nil` | —               | Replace the toolbar from [field.ui](#fieldui) controls                             |
 | `:set_item`     | `id`, `props`             | —               | Merge properties into a control by `id`                                             |
 
-
-
-
 #### Optional user methods (host calls)
-
 
 | Method    | Signature                                  | When                                              |
 | --------- | ------------------------------------------ | ------------------------------------------------- |
 | `init`    | `:init()`                                  | New instance                                      |
 | `start`   | `:start(payload)`                          | `field.workflow.run` / menu / drop                |
-| `suspend` | `:suspend(session)` → `true`|`false`|`nil` | Before session save / quit (`nil`/`true` = allow) |
+| `suspend` | `:suspend(session)` → `true` \| `false` \| `nil` | Before session save / quit (`nil`/`true` = allow) |
 | `resume`  | `:resume(session)`                         | After load when `session.workflow_name` matches   |
 | `finish`  | `:finish(session)`                         | `field.workflow.finish`                           |
 | `cancel`  | `:cancel(session)`                         | `field.workflow.cancel`                           |
-
 
 A workflow is **stateful** when the prototype defines `suspend` and/or
 `resume`. Only one stateful workflow may bind the session at a time.
 
 ---
-
-
 
 ## `field.ui`
 
@@ -1172,19 +1081,14 @@ overridden after the shared namespace is bound, so every named and semantic
 color is read from the live GPUI theme. Headless hosts use the portable
 defaults.
 
-### Properties
-
+### field.ui Properties
 
 | Property   | Access | Type             | Description                                                   |
 | ---------- | ------ | ---------------- | ------------------------------------------------------------- |
 | `named`    | **ro** | palette userdata | Live GPUI named colors in FieldAssist; defaults headlessly    |
 | `semantic` | **ro** | palette userdata | Live GPUI semantic colors in FieldAssist; defaults headlessly |
 
-
-
-
-### Functions
-
+### field.ui Functions
 
 | Function     | Arguments        | Returns       | Description                     |
 | ------------ | ---------------- | ------------- | ------------------------------- |
@@ -1195,7 +1099,6 @@ defaults.
 | `path_entry` | `props: table`   | control table | Path field with optional browse |
 | `divider`    | `props` or `nil` | control table | Visual separator                |
 
-
 Controls are tables with a control metatable and a `kind` field. Optional
 `action = function(control, workflow)` runs on click / commit. Assigning
 watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
@@ -1203,23 +1106,16 @@ watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
 
 ### Returned type: control table
 
-
-
 #### Common properties
-
 
 | Property | Access | Type                 | Description                         |
 | -------- | ------ | -------------------- | ----------------------------------- |
 | `kind`   | **ro** | `string`             | Set by the constructor              |
 | `id`     | **rw** | `string`             | Stable id (required for most kinds) |
-| `align`  | **rw** | `"left"` | `"right"` | Toolbar alignment (default left)    |
+| `align`  | **rw** | `"left"` \| `"right"` | Toolbar alignment (default left)    |
 | `action` | **rw** | `function` or `nil`  | `function(control, workflow)`       |
 
-
-
-
 #### Per-kind properties
-
 
 | Kind           | Properties                                                                                                                                                                   |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1227,52 +1123,38 @@ watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
 | **toggle**     | `id` (required), `label?` (defaults to id), `value?` bool (default `false`), `on_color?`, `off_color?`, `on_icon?` (default `"check"`), `align?`, `action?`                  |
 | **message**    | `id` (required), `text` (required string; may be `""`), `color?`, `align?`                                                                                                   |
 | **text_entry** | `id` (required), `label?`, `value` (string, default `""`), `align?`, `action?`                                                                                               |
-| **path_entry** | `id` (required), `label?`, `value` (string), `browse?` (`"file"` | `"directory"` | `true` (=directory) | `false` | `nil`), `align?`, `action?`                               |
+| **path_entry** | `id` (required), `label?`, `value` (string), `browse?` (`"file"` \| `"directory"` \| `true` (=directory) \| `false` \| `nil`), `align?`, `action?`                               |
 | **divider**    | `id?`, `align?`                                                                                                                                                              |
 
-
-
-
 ### Palette: `field.ui.named`
-
 
 | Property                                                                                                                                     | Access | Type             |
 | -------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------------- |
 | `red`, `red_light`, `green`, `green_light`, `blue`, `blue_light`, `yellow`, `yellow_light`, `magenta`, `magenta_light`, `cyan`, `cyan_light` | **ro** | `{ r, g, b, a }` |
 
-
-
-
 ### Palette: `field.ui.semantic`
-
 
 | Property                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Access | Type             |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---------------- |
 | `accent`, `accent_foreground`, `background`, `border`, `danger`, `danger_active`, `danger_foreground`, `danger_hover`, `drop_target`, `foreground`, `info`, `info_active`, `info_foreground`, `info_hover`, `input`, `link`, `link_active`, `link_hover`, `muted`, `muted_foreground`, `popover`, `popover_foreground`, `primary`, `primary_active`, `primary_foreground`, `primary_hover`, `ring`, `secondary`, `secondary_active`, `secondary_foreground`, `secondary_hover`, `selection`, `success`, `success_active`, `success_foreground`, `success_hover`, `warning`, `warning_active`, `warning_foreground`, `warning_hover`, `chart_1`…`chart_5`, `chart_bullish`, `chart_bearish` | **ro** | `{ r, g, b, a }` |
 
-
 ---
-
-
 
 ## `field.audio_devices`
 
 Enumerate playback output devices (via `field-audio-playback`).
 
-### Properties
+### field.audio_devices Properties
 
-*(none)*
+(none)
 
-### Functions
-
+### field.audio_devices Functions
 
 | Function | Arguments | Returns         | Description                         |
 | -------- | --------- | --------------- | ----------------------------------- |
 | `list`   | —         | `{ device, … }` | Output devices (may be empty in CI) |
 
-
 Each device table has:
-
 
 | Property        | Type               | Description                  |
 | --------------- | ------------------ | ---------------------------- |
@@ -1283,46 +1165,34 @@ Each device table has:
 | `channels`      | `integer` or `nil` | Default config channel count |
 | `sample_format` | `string` or `nil`  | e.g. `F32`, `I16`            |
 
-
 **Index:** field-scripting uses the device’s native `index`. FieldAssist’s
 `field.audio_devices.list` currently returns `{ index, name }` only
 (1-based `index`).
 
 ---
 
-
-
 ## Nested types
-
-
 
 ### collection
 
 Region list returned by `composition.selection` or `composition:collection(name)`.
 
-#### Properties
-
+#### collection Properties
 
 | Property  | Access | Type            | Description                |
 | --------- | ------ | --------------- | -------------------------- |
 | `name`    | **ro** | `string`        | `"selection"` or user name |
 | `regions` | **ro** | `{ region, … }` | Regions in the collection  |
 
-
 `#collection` is the region count.
 
-#### Methods
+#### collection Methods
 
-*(none)*
-
-
+(none)
 
 ### region
 
-
-
-#### Properties
-
+#### region Properties
 
 | Property     | Access | Type                    | Description                           |
 | ------------ | ------ | ----------------------- | ------------------------------------- |
@@ -1333,14 +1203,8 @@ Region list returned by `composition.selection` or `composition:collection(name)
 | `label`      | **ro** | `string` or `nil`       | Optional label                        |
 | `collection` | **ro** | `string`                | Owning collection name                |
 
+#### region Methods
 
-
-
-#### Methods
-
-*(none)*
-
-
+(none)
 
 ### marker
-

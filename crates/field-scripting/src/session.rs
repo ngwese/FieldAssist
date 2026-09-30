@@ -118,6 +118,10 @@ impl UserData for LuaSession {
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("variable_resolver", |lua, this, ()| {
+            let bindings = crate::variables::session_site_detached(lua, this.detached_id)?;
+            Ok(crate::variables::LuaVariableResolver::new(bindings))
+        });
         methods.add_method("group_count", |lua, this, group: String| {
             Ok(host_from_lua(lua)?.session_group_count(this.detached_id, &group) as i64)
         });

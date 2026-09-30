@@ -269,20 +269,9 @@ impl UserData for LuaComposition {
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("resolve_variable", |lua, this, args: mlua::MultiValue| {
-            let (scope, name) = parse_resolve_variable_args(args)?;
-            match crate::variables::resolve_composition_variable(
-                lua,
-                this.id,
-                scope.as_deref(),
-                &name,
-            )? {
-                Some((value, resolved_scope)) => Ok(mlua::MultiValue::from_vec(vec![
-                    Value::String(lua.create_string(value)?),
-                    Value::String(lua.create_string(resolved_scope)?),
-                ])),
-                None => Ok(mlua::MultiValue::from_vec(vec![Value::Nil, Value::Nil])),
-            }
+        methods.add_method("variable_resolver", |lua, this, ()| {
+            let bindings = crate::variables::composition_site_detached(lua, this.id)?;
+            Ok(crate::variables::LuaVariableResolver::new(bindings))
         });
         methods.add_method(
             "select",
@@ -485,36 +474,6 @@ pub fn bind_composition_module(lua: &Lua, field: &Table) -> mlua::Result<()> {
     )?;
     field.set("composition", composition)?;
     Ok(())
-}
-
-/// Parse `resolve_variable(name)` or `resolve_variable(scope, name)`.
-fn parse_resolve_variable_args(args: mlua::MultiValue) -> mlua::Result<(Option<String>, String)> {
-    let mut iter = args.into_iter();
-    let first = iter
-        .next()
-        .ok_or_else(|| mlua::Error::runtime("resolve_variable requires a name"))?;
-    let second = iter.next();
-    if iter.next().is_some() {
-        return Err(mlua::Error::runtime(
-            "resolve_variable expects name or (scope, name)",
-        ));
-    }
-    match (first, second) {
-        (Value::String(name), None) => Ok((None, name.to_str()?.to_owned())),
-        (Value::Nil, Some(Value::String(name))) => Ok((None, name.to_str()?.to_owned())),
-        (Value::String(scope), Some(Value::String(name))) => {
-            Ok((Some(scope.to_str()?.to_owned()), name.to_str()?.to_owned()))
-        }
-        (other, None) => Err(mlua::Error::runtime(format!(
-            "resolve_variable name must be a string, got {}",
-            other.type_name()
-        ))),
-        (scope, Some(other)) => Err(mlua::Error::runtime(format!(
-            "resolve_variable expects (scope: string|nil, name: string), got ({}, {})",
-            scope.type_name(),
-            other.type_name()
-        ))),
-    }
 }
 
 /// Read-only access to an open document.
