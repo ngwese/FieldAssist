@@ -89,5 +89,8 @@ pub use workflow_app::{
 pub use workflow_toolbar::{PathBrowse, ToolbarAlign, ToolbarItem};
 pub use world::{HeadlessWorld, OpenDocument};
 
+pub use composition::LuaComposition;
+pub use session::LuaSession;
+
 /// Install the shared `field.*` namespace (used by field-batch and FieldAssist).
 pub use field_ns::bind_field;

@@ -43,7 +43,7 @@ field-scripting         (mlua host; depends on field-settings; NO gpui)
 | Crate | Level | Responsibility |
 | --- | --- | --- |
 | `field-core` | leaf | File URLs, `ProgressHandle`, prefixed `CompositionId` |
-| `field-variables` | leaf | Scoped string variables, compose (last-wins), `${…}` interpolate |
+| `field-variables` | leaf | Scoped string variables, compose (last-wins), `${…}` interpolate, `variables.json` I/O |
 | `field-features` | leaf | Feature flag IDs, defaults, and in-memory registry |
 | `field-settings` | leaf | Shared `settings.json` schema and load/save (no GPUI) |
 | `field-audio-model` | leaf | `PcmBuffer`, regions, markers, `MediaId` / descriptors, `MediaPool` / `MediaStore`, `BlockPager` / `BlockSource` |

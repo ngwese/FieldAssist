@@ -34,6 +34,18 @@ impl LuaSession {
     pub fn focused() -> Self {
         Self { detached_id: None }
     }
+
+    /// Active composition for this session, if any (`session.composition`).
+    pub fn composition(&self, lua: &Lua) -> mlua::Result<Option<LuaComposition>> {
+        Ok(host_from_lua(lua)?
+            .session_active_document(self.detached_id)
+            .map(|id| LuaComposition { id }))
+    }
+
+    /// Set the active composition (`session.composition = doc`).
+    pub fn set_composition(&self, lua: &Lua, id: DocumentId) -> mlua::Result<()> {
+        host_from_lua(lua)?.set_active_document(self.detached_id, id)
+    }
 }
 
 impl FromLua for LuaSession {
@@ -87,14 +99,10 @@ impl UserData for LuaSession {
                 crate::bindings::variables_table_from_value(value, "session")?,
             )
         });
-        fields.add_field_method_get("composition", |lua, this| {
-            Ok(host_from_lua(lua)?
-                .session_active_document(this.detached_id)
-                .map(|id| LuaComposition { id }))
-        });
+        fields.add_field_method_get("composition", |lua, this| this.composition(lua));
         fields.add_field_method_set("composition", |lua, this, value: Value| {
             let doc = LuaComposition::from_lua(value, lua)?;
-            host_from_lua(lua)?.set_active_document(this.detached_id, doc.id)
+            this.set_composition(lua, doc.id)
         });
         fields.add_field_method_get("compositions", |lua, this| {
             let docs: Vec<LuaComposition> = host_from_lua(lua)?

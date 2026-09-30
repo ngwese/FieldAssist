@@ -3,9 +3,11 @@
 
 //! Base `app` userdata (host-only facade).
 
-use mlua::{MultiValue, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{FromLua, MultiValue, UserData, UserDataFields, UserDataMethods, Value};
 
+use crate::composition::LuaComposition;
 use crate::host::{host_from_lua, LogLevel};
+use crate::session::LuaSession;
 
 /// Global `app` userdata.
 pub struct LuaApp;
@@ -26,6 +28,14 @@ impl UserData for LuaApp {
             let host = host_from_lua(lua)?;
             let active = host.inner.borrow().active.clone();
             Ok(active)
+        });
+        fields.add_field_method_get("session", |_, _| Ok(LuaSession::focused()));
+        fields.add_field_method_get("composition", |lua, _| {
+            LuaSession::focused().composition(lua)
+        });
+        fields.add_field_method_set("composition", |lua, _, value: Value| {
+            let doc = LuaComposition::from_lua(value, lua)?;
+            LuaSession::focused().set_composition(lua, doc.id)
         });
     }
 

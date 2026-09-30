@@ -18,6 +18,7 @@ mod complete;
 mod compose;
 mod interpolate;
 mod table;
+mod user_file;
 
 pub use complete::{
     accept_edit, completion_context, completion_items, prefix_edit, tab_action, AcceptEdit,
@@ -28,6 +29,10 @@ pub use interpolate::{interpolate, interpolate_strict, InterpolateError, MAX_INT
 pub use table::{
     split_variable_id, top_level_scope, StoredVariable, VariableEntry, VariableTable,
     TOP_LEVEL_SCOPES,
+};
+pub use user_file::{
+    parse_user_variable_name, user_variable_display_name, UserVariablesFile, USER_SCOPE,
+    VARIABLES_FORMAT_VERSION, VARIABLES_KIND,
 };
 
 /// Re-export serde for callers that store tables.

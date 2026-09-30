@@ -283,8 +283,9 @@ impl ScriptHost {
 
     /// Load user `{config_dir}/init.lua` if present, else [`EMBEDDED_INIT`].
     ///
-    /// Uses the host profile's `config_dir`. Does not load user
-    /// `resolver_*.lua` / `workflow_*.lua` (call [`Self::load_resolvers`] /
+    /// Uses the host profile's `config_dir`. Reads `{config_dir}/variables.json`
+    /// into host user variables first (missing/invalid → empty). Does not load
+    /// user `resolver_*.lua` / `workflow_*.lua` (call [`Self::load_resolvers`] /
     /// [`Self::load_workflows`]). FieldAssist loads those after this along with
     /// embedded workflow bundles.
     pub fn load_init(&mut self) -> Result<(), String> {
@@ -295,10 +296,12 @@ impl ScriptHost {
     /// Load `{config}/init.lua` if it is a file, else [`EMBEDDED_INIT`].
     ///
     /// Always loads [`EMBEDDED_RESOLVER_DEFAULT`] first so `"default"` is
-    /// registered before user scripts run. Does not load user
-    /// `resolver_*.lua` / `workflow_*.lua` (call [`Self::load_resolvers`] /
+    /// registered before user scripts run. Reads `{config}/variables.json` into
+    /// host user variables before init (missing/invalid → empty). Does not load
+    /// user `resolver_*.lua` / `workflow_*.lua` (call [`Self::load_resolvers`] /
     /// [`Self::load_workflows`], or let FieldAssist do so after this).
     pub fn load_init_from(&mut self, config: Option<&Path>) -> Result<(), String> {
+        self.load_user_variables_from(config);
         self.lua
             .load(EMBEDDED_RESOLVER_DEFAULT)
             .set_name("@<embedded>/resolver_default.lua")
@@ -313,6 +316,14 @@ impl ScriptHost {
                 .exec()
                 .map_err(|err| format!("init.lua: {err}"))
         }
+    }
+
+    /// Replace host user variables from `{config}/variables.json` (read-only).
+    ///
+    /// Missing or invalid files leave an empty table. Does not write disk.
+    pub fn load_user_variables_from(&self, config: Option<&Path>) {
+        let table = field_variables::UserVariablesFile::load_from_dir(config).to_table();
+        self.set_user_variables(table);
     }
 
     /// Apply scripting preferences to `package.path` / policy before `init.lua`.
@@ -1347,6 +1358,65 @@ mod tests {
         assert_eq!(out.result.as_deref(), Some("field-batch"));
         let out = host.eval("app.name = 'x'");
         assert!(out.error.is_some());
+    }
+
+    #[test]
+    fn app_session_and_composition_sugar() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval(
+            r#"
+            local focused = field.session.focused()
+            local same_session = app.session.id == focused.id
+            local same_via_session = (app.composition == nil) == (focused.composition == nil)
+            if app.composition and focused.composition then
+              same_via_session = app.composition.id == focused.composition.id
+            end
+            local same_via_app = (app.composition == nil) == (app.session.composition == nil)
+            if app.composition and app.session.composition then
+              same_via_app = app.composition.id == app.session.composition.id
+            end
+            return same_session, same_via_session, same_via_app
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true\ttrue\ttrue"));
+    }
+
+    #[test]
+    fn load_init_reads_variables_json() {
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("variables.json"),
+            r#"{
+  "kind": "variables",
+  "format_version": 1,
+  "variables": [
+    { "name": "artist", "value": "Ada" },
+    { "name": "ingest.root_dir", "value": "/data" }
+  ]
+}
+"#,
+        )
+        .unwrap();
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: Some(config.path().to_path_buf()),
+        })
+        .unwrap();
+        host.load_init_from(Some(config.path())).unwrap();
+        let out = host.eval(
+            r#"
+            local u = field.variables.user()
+            local value, scope = u:variable_resolver():resolve("user.ingest.root_dir")
+            return u.values.artist, value, scope
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("Ada\t/data\tuser.ingest"));
     }
 
     #[test]

@@ -81,6 +81,22 @@ mod tests {
     }
 
     #[test]
+    fn app_session_and_composition_sugar() {
+        let (mut host, _) = test_host();
+        let out = host.eval(
+            r#"
+            local focused = field.session.focused()
+            return app.session.id == focused.id,
+              app.composition ~= nil,
+              app.composition.id == focused.composition.id,
+              app.composition.id == app.session.composition.id
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true\ttrue\ttrue\ttrue"));
+    }
+
+    #[test]
     fn print_is_captured() {
         let (mut host, _) = test_host();
         let out = host.eval(r#"print("hello")"#);

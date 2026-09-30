@@ -3,7 +3,9 @@
 
 //! Host-only `app` facade for FieldAssist (`app.name == "field-assist"`).
 
-use mlua::{UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{FromLua, UserData, UserDataFields, UserDataMethods, Value};
+
+use field_scripting::{host_from_lua, LuaComposition, LuaSession};
 
 use super::backend::backend_from_lua;
 use super::theme::LuaTheme;
@@ -17,8 +19,16 @@ impl UserData for LuaApp {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("name", |_, _| Ok(HOST_NAME));
         fields.add_field_method_get("workflow", |lua, _| {
-            let host = field_scripting::host_from_lua(lua)?;
+            let host = host_from_lua(lua)?;
             Ok(host.active_workflow())
+        });
+        fields.add_field_method_get("session", |_, _| Ok(LuaSession::focused()));
+        fields.add_field_method_get("composition", |lua, _| {
+            LuaSession::focused().composition(lua)
+        });
+        fields.add_field_method_set("composition", |lua, _, value: Value| {
+            let doc = LuaComposition::from_lua(value, lua)?;
+            LuaSession::focused().set_composition(lua, doc.id)
         });
         fields.add_field_method_get("output_device", |lua, _| {
             Ok(backend_from_lua(lua)?.output_device())
@@ -60,7 +70,7 @@ impl UserData for LuaApp {
                 Value::String(v) => v.to_string_lossy(),
                 other => other.to_string().unwrap_or_else(|_| "<unprintable>".into()),
             };
-            field_scripting::host_from_lua(lua)?.alert(stringify(subject), stringify(body))
+            host_from_lua(lua)?.alert(stringify(subject), stringify(body))
         });
     }
 }

@@ -77,6 +77,10 @@ env var `a.b`). Unset variables are unresolved.
 
 `variables.json` envelope: `{ "kind": "variables", "format_version": 1, "variables": [ { "name", "value", "description"? } ] }` — entries are implicitly under scope `user`. Dots in `name` introduce sub-scopes (`ingest.root_dir` → qualified id `user.ingest.root_dir`).
 
+All scripting hosts (`field-batch`, `field-play`, FieldAssist) read
+`variables.json` at `load_init` into host user variables. FieldAssist also
+keeps an editable in-memory copy and may write the file from the Variables UI.
+
 Resetting settings must not clear user variables.
 
 ## Source ingest

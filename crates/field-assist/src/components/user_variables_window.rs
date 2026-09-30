@@ -160,7 +160,7 @@ impl UserVariablesView {
         }
         let table = table_from_rows(&self.rows);
         let file = UserVariablesFile::from_table(&table);
-        if let Err(err) = file.save() {
+        if let Err(err) = user_variables::save(&file) {
             eprintln!("FieldAssist: failed to save variables.json: {err}");
             return;
         }
@@ -171,7 +171,7 @@ impl UserVariablesView {
     pub fn save_to_disk_no_window(&mut self, cx: &mut Context<Self>) {
         let table = table_from_rows(&self.rows);
         let file = UserVariablesFile::from_table(&table);
-        if let Err(err) = file.save() {
+        if let Err(err) = user_variables::save(&file) {
             eprintln!("FieldAssist: failed to save variables.json: {err}");
             return;
         }

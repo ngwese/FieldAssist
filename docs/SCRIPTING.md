@@ -185,7 +185,7 @@ The same directory may also hold:
 | `init.lua`       | Startup script (user override or embedded default)                         |
 | `keymap.json`    | Optional keybinding overlay                                                |
 | `settings.json`  | Shared preferences (`field-settings`); hosts choose which groups to apply |
-| `variables.json` | User-scoped variables (independent of settings reset)                      |
+| `variables.json` | User-scoped variables (independent of settings reset); read into the scripting host on `load_init` |
 | `resolver_*.lua` | Optional user resolvers (auto-loaded after `init.lua`)                     |
 | `workflow_*.lua` | Optional user workflows (auto-loaded after embedded workflows)             |
 
@@ -205,22 +205,24 @@ at the top of every `init.lua`; the Lua helpers stay for late opt-in.
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 `settings.json`, applies scripting (+ keeps experimental flags in a local
-registry; device ignored until needed), then loads user `init.lua` if present,
-else the shared embedded default. Does **not** auto-load Add / Replace /
-Review. After init, fires `enrich_session` for the empty focused session.
-Opening a **new media** path via `field.composition.open` (or session open of
-media) fires `enrich_composition` before the open returns. Re-focusing an
-already-open path or opening a `.facomp` does not. `field.session.new()` fires
-`enrich_session`; `field.session.open` (load `.fasession`) does not.
+registry; device ignored until needed), then loads `{config}/variables.json`
+into host user variables (missing/invalid → empty), then loads user `init.lua`
+if present, else the shared embedded default. Does **not** auto-load Add /
+Replace / Review. After init, fires `enrich_session` for the empty focused
+session. Opening a **new media** path via `field.composition.open` (or session
+open of media) fires `enrich_composition` before the open returns. Re-focusing
+an already-open path or opening a `.facomp` does not. `field.session.new()`
+fires `enrich_session`; `field.session.open` (load `.fasession`) does not.
 
 ### field-play
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 `settings.json`, applies scripting, uses `audio.output_device` when resolving
-playback, then loads user `init.lua` if present, else the shared embedded
-default (layouts + `detect_layout`). Does **not** load workflow bundles. After
-init, fires `enrich_session` for the empty world session. After opening the
-path, fires `enrich_composition` then `detect_layout` once so unset
+playback, then loads `{config}/variables.json` into host user variables
+(missing/invalid → empty), then loads user `init.lua` if present, else the
+shared embedded default (layouts + `detect_layout`). Does **not** load workflow
+bundles. After init, fires `enrich_session` for the empty world session. After
+opening the path, fires `enrich_composition` then `detect_layout` once so unset
 `monitor_chain` values pick up the layout default before playback.
 
 ## Conventions
@@ -249,6 +251,8 @@ APIs live under `field.*`, not here.
 | ---------------- | ------ | ----------- | ----------------- | ----------------------------------------------------------------------- |
 | `name`           | **ro** | all         | `string`          | Stable process id (`"field-assist"` / `"field-batch"` / `"field-play"`) |
 | `args`           | **ro** | field-batch | `{ string, … }`   | Script argv after the file / `--`                                       |
+| `session`        | **ro** | all         | session           | Sugar for `field.session.focused()`                                     |
+| `composition`    | **rw** | all         | composition or `nil` | Sugar for `app.session.composition`                                  |
 | `workflow`       | **ro** | all         | `table` or `nil`  | Active workflow instance                                                |
 | `theme`          | **ro** | FieldAssist | theme userdata    | Live GPUI theme (see below)                                             |
 | `themes`         | **ro** | FieldAssist | `{ string, … }`   | Registered theme names                                                  |

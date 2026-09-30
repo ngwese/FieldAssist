@@ -475,7 +475,7 @@ impl AppView {
                         // Persist user variables independently of settings.
                         let file =
                             crate::user_variables::UserVariablesFile::from_table(&state.user);
-                        let _ = file.save();
+                        let _ = crate::user_variables::save(&file);
                         crate::user_variables::store_mut(cx).file = file;
                         this.session.set_variables(state.session.clone());
                         if let Some(views) = this.active_views() {

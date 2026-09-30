@@ -14,7 +14,7 @@ to adapt the same Lua surface to headless batch work or a full desktop GUI.
 
 | Table | Purpose |
 |-------|---------|
-| `app` | Identity / environment: `app.name`, `app.args`, `app.alert` |
+| `app` | Identity / environment: `app.name`, `app.session`, `app.composition`, `app.alert` |
 | `field` | Domain APIs: `field.session`, `field.composition`, `field.media`, … |
 
 ### `HeadlessWorld`
