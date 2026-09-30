@@ -671,6 +671,16 @@ Shared media pool (interned media rows used by compositions).
 | Function      | Arguments | Returns                   | Description                  |
 | ------------- | --------- | ------------------------- | ---------------------------- |
 | `shared_pool` | —         | [media pool](#returned-type-media-pool) | Process singleton media pool |
+| `open`        | `path` (string or url) | [media](#returned-type-media) | Probe a file without adding it to the pool (detached media) |
+| `transcode`   | `media`, `dest`, `profile` [, `on_progress`] | — | Stream-transcode `media` to `dest` using an export profile |
+
+`field.media.transcode(media, dest, profile [, on_progress])` writes `dest`
+without loading the whole source into memory. `profile` may be a registered
+profile name, export-profile userdata, or an options table (`encoder`,
+`sample_rate`, `sample_format`, `channels`, …) resolved the same way as
+`composition:export`. Sample-rate and PCM format from the profile are applied
+(bandlimited SRC when rates differ). Optional `on_progress(done, total)`
+receives **source** frame counts.
 
 ### Returned type: media pool
 
@@ -682,7 +692,7 @@ Shared media pool (interned media rows used by compositions).
 
 | Method    | Arguments              | Returns              | Description                            |
 | --------- | ---------------------- | -------------------- | -------------------------------------- |
-| `:add`    | `path` (string or url) | [media](#returned-type-media)      | Probe and intern a file                |
+| `:add`    | `path` (string or url) **or** [media](#returned-type-media) | [media](#returned-type-media) | Probe+intern a path, or intern detached media (no re-probe); already-pooled media is idempotent |
 | `:remove` | media or id string     | `boolean` (headless) | Remove from the pool when unreferenced |
 | `:items`  | —                      | `{ media, … }`       | Current pool rows                      |
 
@@ -791,6 +801,7 @@ Profiles express the same options as the File → Export sheet.
 | `name`          | yes      | `string`                  | Non-empty profile id                                                                   |
 | `description`   | no       | `string`                  | Human label (default `""`)                                                             |
 | `encoder`       | no       | `string`                  | Encoder id (`wav`, `flac`, `ogg`; default `wav` at export)                             |
+| `extension`     | no       | `string`                  | Output file extension without a leading dot (default: same as `encoder`)               |
 | `sample_format` | no       | `string`                  | PCM label (`S16`, `S24`, `F32`, …); snapped when the encoder stores PCM                |
 | `sample_rate`   | no       | `integer`                 | Output Hz (default: composition rate)                                                  |
 | `channels`      | no       | `"all"` or `{ indices… }` | **0-based** channel indices (default all)                                              |
@@ -864,6 +875,7 @@ Export) strict path interpolate plus tag map build — matching
 | --------- | ---------------------- | ---------------- | -------------------------------------------- |
 | `:define` | `spec: table`          | —                | Register or replace a profile by `name`      |
 | `:remove` | profile or name string | —                | Drop a registered profile (no-op if missing) |
+| `:find`   | `name: string`         | profile or `nil` | Look up a registered profile by name         |
 | `:items`  | —                      | `{ profile, … }` | Registered profiles in definition order      |
 
 ### Returned type: export profile
@@ -875,6 +887,7 @@ Export) strict path interpolate plus tag map build — matching
 | `name`          | **ro** | `string`                  | Profile id        |
 | `description`   | **ro** | `string`                  | Human label       |
 | `encoder`       | **ro** | `string` or `nil`         | Encoder id        |
+| `extension`     | **ro** | `string`                  | File extension (defaults to `encoder`, else `"wav"`) |
 | `sample_format` | **ro** | `string` or `nil`         | PCM label         |
 | `sample_rate`   | **ro** | `integer` or `nil`        | Hz                |
 | `channels`      | **ro** | `"all"` or `{ indices… }` | Channel selection |
@@ -939,7 +952,7 @@ Obtain via:
 
 | Method | Arguments | Returns | Description |
 | ------ | --------- | ------- | ----------- |
-| `:resolve` | `expr: string` | `value, scope` or `nil, nil` | Bare leaf (`"title"`) or qualified (`"user.ingest.root_dir"`, `"env.HOME"`, `"source.basename"`) |
+| `:resolve` | `expr: string` [, `expand: boolean`] | `value, scope` or `nil, nil` | Bare leaf (`"title"`) or qualified (`"user.ingest.root_dir"`, `"env.HOME"`, `"source.basename"`). When `expand == true`, soft-expand `${…}` in the resolved value against this site before returning (same soft rules as `:expand`) |
 | `:expand` | `template` [, `strict`] | `string` | Soft by default (unresolved `${…}` left as-is); `strict == true` errors like export |
 
 ```lua
@@ -947,6 +960,7 @@ local c = field.session.focused().composition
 local r = c:variable_resolver()
 local value, scope = r:resolve("TIMECODE_FLAG")
 local value, scope = r:resolve("source.ixml.TIMECODE_FLAG")
+local staging, scope = r:resolve("user.ingest.staging_dir", true)  -- expand value
 local path = r:expand("${source.parent}/${title}.wav")
 ```
 
@@ -1101,12 +1115,13 @@ defaults.
 | `message`    | `props: table`   | control table | Static / updatable text         |
 | `text_entry` | `props: table`   | control table | Single-line text field          |
 | `path_entry` | `props: table`   | control table | Path field with optional browse |
+| `select`     | `props: table`   | control table | Dropdown of fixed choices       |
 | `divider`    | `props` or `nil` | control table | Visual separator                |
 
 Controls are tables with a control metatable and a `kind` field. Optional
 `action = function(control, workflow)` runs on click / commit. Assigning
 watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
-`align`, `icon`, `on_icon`) refreshes the host toolbar.
+`align`, `icon`, `on_icon`, `choices`) refreshes the host toolbar.
 
 ### Returned type: control table
 
@@ -1128,6 +1143,7 @@ watched props (`label`, `value`, `text`, `color`, `on_color`, `off_color`,
 | **message**    | `id` (required), `text` (required string; may be `""`), `color?`, `align?`                                                                                                   |
 | **text_entry** | `id` (required), `label?`, `value` (string, default `""`), `align?`, `action?`                                                                                               |
 | **path_entry** | `id` (required), `label?`, `value` (string), `browse?` (`"file"` \| `"directory"` \| `true` (=directory) \| `false` \| `nil`), `align?`, `action?`                               |
+| **select**     | `id` (required), `label?`, `value` (selected choice id, default `""`), `choices` (array of strings or `{ value, label? }`), `align?`, `action?`                                 |
 | **divider**    | `id?`, `align?`                                                                                                                                                              |
 
 ### Palette: `field.ui.named`
