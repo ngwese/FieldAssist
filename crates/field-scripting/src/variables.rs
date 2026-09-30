@@ -499,7 +499,17 @@ impl LuaVariableResolver {
 
 impl UserData for LuaVariableResolver {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("resolve", |lua, this, expr: String| {
+        methods.add_method("resolve", |lua, this, (expr, expand): (String, Value)| {
+            let expand = match expand {
+                Value::Nil => false,
+                Value::Boolean(b) => b,
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "resolve expand flag must be a boolean, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
             let expr = expr.trim();
             if expr.is_empty() {
                 return Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil]));
@@ -507,10 +517,18 @@ impl UserData for LuaVariableResolver {
             let (scope, name) = split_variable_id(expr);
             let scope_arg = if scope.is_empty() { None } else { Some(scope) };
             match resolve_one_with_active(lua, &this.bindings, scope_arg, name)? {
-                Some((value, resolved_scope)) => Ok(MultiValue::from_vec(vec![
-                    Value::String(lua.create_string(value)?),
-                    Value::String(lua.create_string(resolved_scope)?),
-                ])),
+                Some((value, resolved_scope)) => {
+                    let value = if expand {
+                        let table = resolve_with_active(lua, &this.bindings)?;
+                        interpolate(&value, &table)
+                    } else {
+                        value
+                    };
+                    Ok(MultiValue::from_vec(vec![
+                        Value::String(lua.create_string(value)?),
+                        Value::String(lua.create_string(resolved_scope)?),
+                    ]))
+                }
                 None => Ok(MultiValue::from_vec(vec![Value::Nil, Value::Nil])),
             }
         });
@@ -938,6 +956,38 @@ mod tests {
         unsafe { std::env::remove_var(key) };
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("env\tfrom-env-api"));
+    }
+
+    #[test]
+    fn variable_resolver_resolve_expand_flag() {
+        use field_variables::{VariableEntry, VariableTable};
+
+        let mut host = host_with_resolver();
+        let key = "FIELDASSIST_RESOLVE_EXPAND_ENV";
+        let value = "/tmp/fieldassist-expand";
+        // SAFETY: test-only unique key; no parallel test shares this name.
+        unsafe { std::env::set_var(key, value) };
+        let mut user = VariableTable::new();
+        user.upsert(VariableEntry::new(
+            "user.ingest",
+            "staging_dir",
+            "${env.FIELDASSIST_RESOLVE_EXPAND_ENV}/staging",
+        ));
+        host.set_user_variables(user);
+        let out = host.eval(
+            r#"
+            local r = field.variables.user():variable_resolver()
+            local raw = select(1, r:resolve("user.ingest.staging_dir"))
+            local expanded = select(1, r:resolve("user.ingest.staging_dir", true))
+            return raw, expanded
+            "#,
+        );
+        unsafe { std::env::remove_var(key) };
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(
+            out.result.as_deref(),
+            Some("${env.FIELDASSIST_RESOLVE_EXPAND_ENV}/staging\t/tmp/fieldassist-expand/staging")
+        );
     }
 
     #[test]
