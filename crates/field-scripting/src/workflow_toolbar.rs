@@ -49,6 +49,15 @@ pub enum ToolbarItem {
         value: String,
         align: ToolbarAlign,
     },
+    /// Dropdown of fixed choices (`value` is the selected choice id).
+    Select {
+        id: String,
+        label: Option<String>,
+        value: String,
+        /// `(value, label)` pairs; label is shown in the menu / button.
+        choices: Vec<(String, String)>,
+        align: ToolbarAlign,
+    },
     Toggle {
         id: String,
         label: String,
@@ -80,6 +89,7 @@ impl ToolbarItem {
             Self::Button { id, .. }
             | Self::PathEntry { id, .. }
             | Self::Text { id, .. }
+            | Self::Select { id, .. }
             | Self::Toggle { id, .. }
             | Self::Message { id, .. } => Some(id.as_str()),
             Self::Divider { id, .. } => id.as_deref(),
@@ -91,6 +101,7 @@ impl ToolbarItem {
             Self::Button { align, .. }
             | Self::PathEntry { align, .. }
             | Self::Text { align, .. }
+            | Self::Select { align, .. }
             | Self::Toggle { align, .. }
             | Self::Message { align, .. }
             | Self::Divider { align, .. } => *align,
@@ -100,7 +111,9 @@ impl ToolbarItem {
     pub fn label(&self) -> Option<&str> {
         match self {
             Self::Button { label, .. } | Self::Toggle { label, .. } => Some(label.as_str()),
-            Self::PathEntry { label, .. } | Self::Text { label, .. } => label.as_deref(),
+            Self::PathEntry { label, .. }
+            | Self::Text { label, .. }
+            | Self::Select { label, .. } => label.as_deref(),
             _ => None,
         }
     }
@@ -131,6 +144,10 @@ pub fn ui_namespace(lua: &mlua::Lua) -> mlua::Result<Table> {
     ui.set(
         "path_entry",
         lua.create_function(|lua, props: Value| constructor(lua, "path_entry", props))?,
+    )?;
+    ui.set(
+        "select",
+        lua.create_function(|lua, props: Value| constructor(lua, "select", props))?,
     )?;
     ui.set("divider", lua.create_function(divider_constructor)?)?;
     lua.set_named_registry_value(UI_NAMESPACE_KEY, ui.clone())?;
@@ -181,6 +198,7 @@ pub fn parse_toolbar_item(row: &Table) -> mlua::Result<ToolbarItem> {
         "button" => parse_button_item(row, align),
         "path_entry" => parse_path_item(row, align),
         "text_entry" => parse_text_item(row, align),
+        "select" => parse_select_item(row, align),
         "toggle" => parse_toggle_item(row, align),
         "message" => parse_message_item(row, align),
         "divider" => Ok(ToolbarItem::Divider {
@@ -334,6 +352,7 @@ fn key_is_watched(key: &Value) -> mlua::Result<bool> {
             | "align"
             | "icon"
             | "on_icon"
+            | "choices"
     ))
 }
 
@@ -473,6 +492,62 @@ fn parse_text_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem
         value,
         align,
     })
+}
+
+fn parse_select_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem> {
+    let id = required_nonempty_string(row.get("id")?, "select id")?;
+    let label = optional_nonempty_string(row.get("label")?)?;
+    let value = string_field(row.get("value")?, "select value")?;
+    let choices = parse_choices(row.get("choices")?)?;
+    Ok(ToolbarItem::Select {
+        id,
+        label,
+        value,
+        choices,
+        align,
+    })
+}
+
+fn parse_choices(value: Value) -> mlua::Result<Vec<(String, String)>> {
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Table(table) => {
+            let mut choices = Vec::new();
+            for entry in table.sequence_values::<Value>() {
+                match entry? {
+                    Value::String(text) => {
+                        let value = text.to_str()?.to_owned();
+                        if value.is_empty() {
+                            return Err(mlua::Error::runtime(
+                                "select choices string entries must be non-empty",
+                            ));
+                        }
+                        let label = value.clone();
+                        choices.push((value, label));
+                    }
+                    Value::Table(row) => {
+                        let value = required_nonempty_string(row.get("value")?, "choice value")?;
+                        let label = match optional_nonempty_string(row.get("label")?)? {
+                            Some(label) => label,
+                            None => value.clone(),
+                        };
+                        choices.push((value, label));
+                    }
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "select choices entries must be strings or {{ value, label? }} tables, got {}",
+                            other.type_name()
+                        )))
+                    }
+                }
+            }
+            Ok(choices)
+        }
+        other => Err(mlua::Error::runtime(format!(
+            "select choices must be an array, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn parse_toggle_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarItem> {
@@ -769,6 +844,47 @@ mod tests {
                 assert_eq!(b, "next");
                 assert_eq!(lb, "next");
                 assert_eq!(ib, "arrow_right");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_parses_string_and_table_choices() {
+        let items = lua_toolbar(
+            r#"{
+              ui.select({
+                id = "format",
+                label = "Format",
+                value = "flac",
+                choices = {
+                  "wav",
+                  { value = "flac", label = "FLAC archive" },
+                  { value = "ogg" },
+                },
+              }),
+            }"#,
+        );
+        match &items[..] {
+            [ToolbarItem::Select {
+                id,
+                label,
+                value,
+                choices,
+                align,
+            }] => {
+                assert_eq!(id, "format");
+                assert_eq!(label.as_deref(), Some("Format"));
+                assert_eq!(value, "flac");
+                assert_eq!(*align, ToolbarAlign::Left);
+                assert_eq!(
+                    choices,
+                    &[
+                        ("wav".into(), "wav".into()),
+                        ("flac".into(), "FLAC archive".into()),
+                        ("ogg".into(), "ogg".into()),
+                    ]
+                );
             }
             other => panic!("{other:?}"),
         }

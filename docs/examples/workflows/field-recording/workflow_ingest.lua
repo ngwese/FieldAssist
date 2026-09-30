@@ -20,9 +20,9 @@ local Ingest = field.workflow.create({
 
 function Ingest:init()
   self.source = ""
-  self.backup_root = ""
-  self.staging_root = ""
-  self.format = "flac"
+  self.backup_root = "${user.ingest.backup_root}"
+  self.staging_root = "${user.ingest.staging_root}"
+  self.profile = "FLAC (Source Equivalent)"
   self.queue = {}
   self.busy = false
 end
@@ -67,30 +67,32 @@ function Ingest:build_toolbar()
         workflow.source = ctrl.value or ""
       end,
     }),
-    field.ui.path_entry({
-      id = "backup",
-      label = "Backup",
-      value = self.backup_root or "",
-      browse = "directory",
+    -- field.ui.path_entry({
+    --   id = "backup",
+    --   label = "Backup",
+    --   value = self.backup_root or "",
+    --   browse = "directory",
+    --   action = function(ctrl, workflow)
+    --     workflow.backup_root = ctrl.value or ""
+    --   end,
+    -- }),
+    -- field.ui.path_entry({
+    --   id = "staging",
+    --   label = "Staging",
+    --   value = self.staging_root or "",
+    --   browse = "directory",
+    --   action = function(ctrl, workflow)
+    --     workflow.staging_root = ctrl.value or ""
+    --   end,
+    -- }),
+
+    field.ui.select({
+      id = "profile",
+      label = "Profile",
+      value = self.profile or "",
+      choices = field.exports.shared_registry():items(),
       action = function(ctrl, workflow)
-        workflow.backup_root = ctrl.value or ""
-      end,
-    }),
-    field.ui.path_entry({
-      id = "staging",
-      label = "Staging",
-      value = self.staging_root or "",
-      browse = "directory",
-      action = function(ctrl, workflow)
-        workflow.staging_root = ctrl.value or ""
-      end,
-    }),
-    field.ui.text_entry({
-      id = "format",
-      label = "Format",
-      value = self.format or "flac",
-      action = function(ctrl, workflow)
-        workflow.format = (ctrl.value or "flac"):lower()
+        workflow.profile = ctrl.value or ""
       end,
     }),
     field.ui.divider(),

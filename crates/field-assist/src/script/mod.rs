@@ -44,6 +44,7 @@ mod tests {
             ToolbarItem::Button { .. } => "button",
             ToolbarItem::PathEntry { .. } => "path_entry",
             ToolbarItem::Text { .. } => "text_entry",
+            ToolbarItem::Select { .. } => "select",
             ToolbarItem::Toggle { .. } => "toggle",
             ToolbarItem::Message { .. } => "message",
             ToolbarItem::Divider { .. } => "divider",

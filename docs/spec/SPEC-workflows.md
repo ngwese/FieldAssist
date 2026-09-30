@@ -185,15 +185,16 @@ control `action`. The bar sits between the dock and the status bar while a
 stateful workflow is bound and items are non-empty. It shows `display_name`,
 left-aligned items, a spacer, then right-aligned items.
 
-Items come from `app.ui` functions: `button`, `toggle`, `message`,
-`text_entry`, `path_entry`, and `divider`. Each interactive control may set
-`action = function(control, workflow)`. Buttons may set `icon` to show an
-icon-only control (`label` becomes the tooltip). Toggle may set `on_icon`.
+Items come from `field.ui` functions: `button`, `toggle`, `message`,
+`text_entry`, `path_entry`, `select`, and `divider`. Each interactive control
+may set `action = function(control, workflow)`. Buttons may set `icon` to show
+an icon-only control (`label` becomes the tooltip). Toggle may set `on_icon`.
 Icon names: `"check"`, `"circle-check"`, `"circle-x"`, `"circle-alert"`,
 `"arrow-left"`, `"arrow-right"` (underscores also accepted). Omitting
-`off_color` uses the same foreground as ghost toolbar buttons. Assigning
-`label`, `value`, `text`, `color`, `on_color`, `off_color`, `icon`,
-`on_icon`, or `align` on that control updates the bar.
+`off_color` uses the same foreground as ghost toolbar buttons. `select`
+`choices` are strings or `{ value, label? }` tables (workflow builds the
+list). Assigning `label`, `value`, `text`, `color`, `on_color`, `off_color`,
+`icon`, `on_icon`, `choices`, or `align` on that control updates the bar.
 There is no workflow `:on("command")`, and toolbar ids are not keymap ids.
 
 ## Built-in workflows

@@ -8,6 +8,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
     ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Sizable as _, Size,
     StyleSized as _, StyledExt as _,
@@ -289,6 +290,17 @@ impl WorkflowBar {
         let focused = input.read(cx).focus_handle(cx).is_focused(window);
         let full = input.read(cx).value().to_string();
         let theme = cx.theme().clone();
+        let make_browse = |browse: PathBrowse, cx: &mut Context<Self>| {
+            let app_id = id.clone();
+            Button::new(("workflow-browse", ix))
+                .ghost()
+                .xsmall()
+                .icon(IconName::FolderOpen)
+                .tooltip("Browse")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.prompt_browse(app_id.clone(), browse, window, cx);
+                }))
+        };
         let row = h_flex()
             .id(("workflow-path", ix))
             .gap_2()
@@ -360,17 +372,21 @@ impl WorkflowBar {
                         // does not resize the toolbar.
                         this.h_6().map(|this| {
                             if focused {
-                                this.child(Input::new(&input).small().w_full().h_full())
+                                let mut field = Input::new(&input).small().w_full().h_full();
+                                if let Some(browse) = browse {
+                                    field = field.prefix(make_browse(browse, cx));
+                                }
+                                this.child(field)
                             } else {
                                 let focus = input.read(cx).focus_handle(cx);
                                 let preview = middle_ellipsis(&full, PATH_DISPLAY_CHARS);
                                 this.child(
-                                    div()
+                                    h_flex()
                                         .id(("workflow-path-preview", ix))
                                         .w_full()
                                         .h_full()
-                                        .flex()
                                         .items_center()
+                                        .gap_1()
                                         .input_px(Size::Small)
                                         .rounded(cx.theme().radius)
                                         .border_1()
@@ -379,37 +395,102 @@ impl WorkflowBar {
                                         .input_text_size(Size::Small)
                                         .text_color(theme.foreground)
                                         .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .cursor_text()
-                                        .tooltip({
-                                            let full = full.clone();
-                                            move |window, cx| {
-                                                Tooltip::new(full.clone()).build(window, cx)
-                                            }
+                                        .when_some(browse, |row, browse| {
+                                            row.child(make_browse(browse, cx))
                                         })
-                                        .child(preview)
-                                        .on_click(move |_, window, cx| {
-                                            focus.focus(window, cx);
-                                        }),
+                                        .child(
+                                            div()
+                                                .id(("workflow-path-preview-text", ix))
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .flex()
+                                                .items_center()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .cursor_text()
+                                                .tooltip({
+                                                    let full = full.clone();
+                                                    move |window, cx| {
+                                                        Tooltip::new(full.clone()).build(window, cx)
+                                                    }
+                                                })
+                                                .child(preview)
+                                                .on_click(move |_, window, cx| {
+                                                    focus.focus(window, cx);
+                                                }),
+                                        ),
                                 )
                             }
                         })
                     }),
-            )
-            .when_some(browse, |this, browse| {
-                let app_id = id.clone();
-                this.child(
-                    Button::new(("workflow-browse", ix))
-                        .ghost()
-                        .small()
-                        .icon(IconName::FolderOpen)
-                        .tooltip("Browse")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.prompt_browse(app_id.clone(), browse, window, cx);
-                        })),
-                )
-            });
+            );
         row.into_any_element()
+    }
+
+    fn render_select(
+        &mut self,
+        ix: usize,
+        id: String,
+        label: Option<String>,
+        value: String,
+        choices: Vec<(String, String)>,
+        muted: Hsla,
+        _cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let display = choices
+            .iter()
+            .find(|(choice_value, _)| choice_value == &value)
+            .map(|(_, choice_label)| choice_label.clone())
+            .unwrap_or_else(|| {
+                if value.is_empty() {
+                    "Select…".into()
+                } else {
+                    value.clone()
+                }
+            });
+        let app = self.app.clone();
+        let menu_choices = choices.clone();
+        let selected = value.clone();
+        let menu = move |mut menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+            for (choice_value, choice_label) in &menu_choices {
+                let checked = choice_value == &selected;
+                let app = app.clone();
+                let id = id.clone();
+                let choice_value = choice_value.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(choice_label.clone())
+                        .checked(checked)
+                        .on_click(move |_, window, cx| {
+                            if let Some(app) = app.upgrade() {
+                                let id = id.clone();
+                                let choice_value = choice_value.clone();
+                                app.update(cx, |this, cx| {
+                                    this.set_toolbar_entry_value(&id, &choice_value, window, cx);
+                                    this.refresh_workflow_bar(cx);
+                                });
+                            }
+                        }),
+                );
+            }
+            menu
+        };
+        h_flex()
+            .id(("workflow-select", ix))
+            .gap_2()
+            .items_center()
+            .when_some(label, |this, label| {
+                this.child(div().flex_none().text_sm().text_color(muted).child(label))
+            })
+            .child(
+                Button::new(("workflow-select-btn", ix))
+                    .ghost()
+                    .small()
+                    .label(display)
+                    .dropdown_caret(true)
+                    .dropdown_menu(menu),
+            )
+            .into_any_element()
     }
 
     fn render_item(
@@ -476,6 +557,13 @@ impl WorkflowBar {
                 window,
                 cx,
             ),
+            ToolbarItem::Select {
+                id,
+                label,
+                value,
+                choices,
+                ..
+            } => self.render_select(ix, id, label, value, choices, muted, cx),
             ToolbarItem::Toggle {
                 id,
                 label,
@@ -559,6 +647,9 @@ fn entry_value_mut<'a>(item: &'a mut ToolbarItem, id: &str) -> Option<&'a mut St
             id: item_id, value, ..
         }
         | ToolbarItem::Text {
+            id: item_id, value, ..
+        }
+        | ToolbarItem::Select {
             id: item_id, value, ..
         } if item_id == id => Some(value),
         _ => None,
