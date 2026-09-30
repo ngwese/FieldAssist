@@ -269,7 +269,10 @@ pub struct AppView {
     pending_replace: Option<(DocumentId, PathBuf)>,
     workflow_bar: Option<(String, Vec<ToolbarItem>)>,
     workflow_bar_view: Entity<WorkflowBar>,
+    /// App-owned modal below the title bar (keeps the root window movable).
     workflow_sheet: Option<Entity<crate::components::workflow_sheet::WorkflowSheetView>>,
+    /// Focus target while the workflow sheet is open (Escape dismiss).
+    workflow_sheet_focus: FocusHandle,
     /// Coalesce `:defer` drains onto one next-frame timer spawn.
     deferred_drain_scheduled: bool,
     restoring_session: bool,
@@ -614,6 +617,7 @@ impl AppView {
             workflow_bar: None,
             workflow_bar_view,
             workflow_sheet: None,
+            workflow_sheet_focus: cx.focus_handle(),
             deferred_drain_scheduled: false,
             restoring_session: false,
             waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
@@ -2390,6 +2394,7 @@ impl AppView {
     pub(crate) fn refresh_workflow_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Snapshot from `self` — never `cx.entity().read()`; this runs inside
         // AppView::update (script enter / drop handlers).
+        let was_open = self.workflow_sheet.is_some();
         let snapshot = self.script.sheet_snapshot();
         let app = cx.entity();
         crate::components::workflow_sheet::refresh_workflow_sheet(
@@ -2399,6 +2404,72 @@ impl AppView {
             window,
             cx,
         );
+        if self.workflow_sheet.is_some() && !was_open {
+            self.workflow_sheet_focus.focus(window, cx);
+        } else if self.workflow_sheet.is_none() && was_open {
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
+    fn close_workflow_sheet_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow_sheet.is_none() {
+            return;
+        }
+        let _ = self.script.close_workflow_sheet();
+        self.flush_script_logs(cx);
+        // `sheet_changed` already refreshed via the backend; ensure UI clears
+        // if that path was skipped (e.g. Escape with no script host notify).
+        self.refresh_workflow_sheet(window, cx);
+    }
+
+    fn workflow_sheet_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let sheet = self
+            .workflow_sheet
+            .clone()
+            .expect("workflow_sheet_overlay requires an open sheet");
+        let title = sheet.read(cx).title().to_owned();
+        // Same chrome as ExportSheet: hang from the top of the content area
+        // (under the TitleBar) with side insets — keeps window drag working.
+        div()
+            .id("workflow-sheet-layer")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .track_focus(&self.workflow_sheet_focus)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                if event.keystroke.key.as_str() == "escape" {
+                    this.close_workflow_sheet_ui(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                div()
+                    .id("workflow-sheet-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(hsla(0., 0., 0., 0.25)),
+            )
+            .child(
+                v_flex()
+                    .id("workflow-sheet-panel")
+                    .absolute()
+                    .top_0()
+                    .left(relative(0.25))
+                    .right(relative(0.25))
+                    .bg(theme.background)
+                    .border_l_1()
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .shadow_xl()
+                    .occlude()
+                    .child(div().px_4().py_2().font_semibold().child(title))
+                    .child(div().px_4().py_3().w_full().child(sheet)),
+            )
     }
 
     pub(crate) fn drain_deferred_callbacks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3409,6 +3480,7 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+        self.refresh_workflow_sheet(window, cx);
         cx.notify();
     }
 
@@ -3436,6 +3508,7 @@ impl AppView {
             });
         }
         self.flush_script_logs(cx);
+        self.refresh_workflow_sheet(window, cx);
         cx.notify();
     }
 
@@ -3456,6 +3529,7 @@ impl AppView {
         // path InputEvent handler already updated local items, and refreshing
         // can nest a WorkflowBar update during text input flush_effects.
         self.workflow_bar = self.script.toolbar_snapshot();
+        self.refresh_workflow_sheet(window, cx);
         let logs = self.script.take_logs();
         if !logs.is_empty() {
             self.messages.update(cx, |panel, cx| {
@@ -6428,6 +6502,9 @@ impl Render for AppView {
                             )
                             .when(self.export_sheet_open, |this| {
                                 this.child(self.export_sheet_overlay(cx))
+                            })
+                            .when(self.workflow_sheet.is_some(), |this| {
+                                this.child(self.workflow_sheet_overlay(cx))
                             })
                             .when(self.load_problems.is_some(), |this| {
                                 this.child(self.load_problems_overlay(window, cx))

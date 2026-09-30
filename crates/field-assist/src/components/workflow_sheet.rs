@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! Modal workflow sheet: Dialog + Questionnaire shell, Stepper trail, Form body.
+//! Modal workflow sheet: Questionnaire shell, Stepper trail, Form body.
+//!
+//! Rendered as an app-owned overlay below the window title bar (same pattern as
+//! ExportSheet) so the root window stays movable while the sheet is open.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +26,7 @@ use gpui_kit::component::{
     separator::Separator,
     stepper::{Stepper, StepperItem},
     switch::Switch,
-    ActiveTheme as _, Disableable as _, IconName, WindowExt as _,
+    ActiveTheme as _, Disableable as _, IconName,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -42,7 +45,6 @@ pub struct WorkflowSheetView {
     questionnaire: Entity<QuestionnaireState>,
     inputs: HashMap<String, Entity<InputState>>,
     logs: HashMap<String, Entity<TextareaState>>,
-    dialog_open: bool,
 }
 
 impl WorkflowSheetView {
@@ -63,7 +65,6 @@ impl WorkflowSheetView {
             questionnaire,
             inputs: HashMap::new(),
             logs: HashMap::new(),
-            dialog_open: false,
         };
         this.apply_snapshot(snapshot, window, cx);
         this
@@ -77,18 +78,6 @@ impl WorkflowSheetView {
     ) {
         self.apply_snapshot(snapshot, window, cx);
         cx.notify();
-    }
-
-    pub fn mark_dialog_open(&mut self) {
-        self.dialog_open = true;
-    }
-
-    pub fn mark_dialog_closed(&mut self) {
-        self.dialog_open = false;
-    }
-
-    pub fn is_dialog_open(&self) -> bool {
-        self.dialog_open
     }
 
     pub fn title(&self) -> &str {
@@ -135,13 +124,17 @@ impl WorkflowSheetView {
                     if !self.inputs.contains_key(id) {
                         let control_id = id.clone();
                         let entity = cx.new(|cx| InputState::new(window, cx));
-                        cx.subscribe(&entity, move |this, state, event: &InputEvent, cx| {
-                            if !matches!(event, InputEvent::Change) {
-                                return;
-                            }
-                            let value = state.read(cx).value().to_string();
-                            this.dispatch_entry(&control_id, &value, cx);
-                        })
+                        cx.subscribe_in(
+                            &entity,
+                            window,
+                            move |this, state, event: &InputEvent, window, cx| {
+                                if !matches!(event, InputEvent::Change) {
+                                    return;
+                                }
+                                let value = state.read(cx).value().to_string();
+                                this.dispatch_entry(&control_id, &value, window, cx);
+                            },
+                        )
                         .detach();
                         self.inputs.insert(id.clone(), entity);
                     }
@@ -173,7 +166,7 @@ impl WorkflowSheetView {
         }
     }
 
-    fn dispatch_entry(&self, id: &str, value: &str, cx: &mut Context<Self>) {
+    fn dispatch_entry(&self, id: &str, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(app) = self.app.upgrade() else {
             return;
         };
@@ -181,10 +174,9 @@ impl WorkflowSheetView {
         let value = value.to_owned();
         // Input subscribe runs inside WorkflowSheetView::update; defer so a
         // Lua action that refreshes the sheet cannot re-enter this entity.
-        cx.defer(move |cx| {
+        window.defer(cx, move |window, cx| {
             app.update(cx, |this, cx| {
-                let _ = this.script.set_toolbar_entry_value(&id, &value);
-                this.flush_script_logs(cx);
+                this.set_toolbar_entry_value(&id, &value, window, cx);
             });
         });
     }
@@ -318,6 +310,7 @@ impl WorkflowSheetView {
                 let Some(input) = self.inputs.get(id) else {
                     return div().into_any_element();
                 };
+                let drop_highlight = cx.theme().secondary;
                 let mut field_el = Input::new(input).disabled(!*enabled);
                 if let Some(browse) = *browse {
                     let id = id.clone();
@@ -340,9 +333,22 @@ impl WorkflowSheetView {
                                 .downcast_ref::<CompositionDrag>()
                                 .is_some_and(|drag| drag.path.is_some())
                     })
-                    .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                        this.dispatch_path(&id, paths.paths(), window, cx);
-                    }))
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_highlight))
+                    .drag_over::<CompositionDrag>(move |style, _, _, _| style.bg(drop_highlight))
+                    .on_drop({
+                        let id = id.clone();
+                        cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                            this.dispatch_path(&id, paths.paths(), window, cx);
+                        })
+                    })
+                    .on_drop(
+                        cx.listener(move |this, drag: &CompositionDrag, window, cx| {
+                            let Some(path) = drag.path.clone() else {
+                                return;
+                            };
+                            this.dispatch_path(&id, &[path], window, cx);
+                        }),
+                    )
                     .child(field_el)
                     .into_any_element()
             }
@@ -393,12 +399,12 @@ impl WorkflowSheetView {
                                         window.defer(cx, move |window, cx| {
                                             if let Some(app) = app.upgrade() {
                                                 app.update(cx, |this, cx| {
-                                                    let _ = this.script.set_toolbar_entry_value(
+                                                    this.set_toolbar_entry_value(
                                                         &id,
                                                         &choice_value,
+                                                        window,
+                                                        cx,
                                                     );
-                                                    this.flush_script_logs(cx);
-                                                    let _ = window;
                                                 });
                                             }
                                         });
@@ -514,10 +520,14 @@ fn build_questionnaire(snapshot: &SheetSnapshot, cx: &mut App) -> Entity<Questio
     cx.new(|cx| QuestionnaireState::new(items, cx).expect("valid sheet panes"))
 }
 
-/// Open or refresh the workflow sheet dialog from AppView.
+/// Open or refresh the workflow sheet overlay from AppView.
 ///
 /// `snapshot` must come from the caller's `&mut AppView` — do not
 /// `Entity::read` AppView here; callers are already inside `update`.
+///
+/// The sheet is drawn by [`AppView`] below the title bar so window drag
+/// keeps working (Root `open_dialog` overlays cover the title bar and block
+/// macOS `start_window_move`).
 pub fn refresh_workflow_sheet(
     app: Entity<AppView>,
     snapshot: Option<SheetSnapshot>,
@@ -531,55 +541,18 @@ pub fn refresh_workflow_sheet(
                 view.update(cx, |view, cx| {
                     view.set_snapshot(snap, window, cx);
                 });
-                if !view.read(cx).is_dialog_open() {
-                    open_sheet_dialog(app, view.clone(), window, cx);
-                }
             } else {
                 let weak = app.downgrade();
-                let view = cx.new(|cx| WorkflowSheetView::new(snap, weak, window, cx));
-                *sheet = Some(view.clone());
-                open_sheet_dialog(app, view, window, cx);
+                *sheet = Some(cx.new(|cx| WorkflowSheetView::new(snap, weak, window, cx)));
             }
+            cx.notify();
         }
         None => {
-            if let Some(view) = sheet.take() {
-                view.update(cx, |view, _| view.mark_dialog_closed());
-                if window.has_active_dialog(cx) {
-                    window.close_dialog(cx);
-                }
+            if sheet.take().is_some() {
+                cx.notify();
             }
         }
     }
-}
-
-fn open_sheet_dialog(
-    app: Entity<AppView>,
-    view: Entity<WorkflowSheetView>,
-    window: &mut Window,
-    cx: &mut Context<AppView>,
-) {
-    view.update(cx, |view, _| view.mark_dialog_open());
-    let title = view.read(cx).title().to_owned();
-    let view_for_close = view.clone();
-    let app_for_close = app;
-    window.open_dialog(cx, move |dialog, _, _| {
-        let view = view.clone();
-        let view_for_close = view_for_close.clone();
-        let app_for_close = app_for_close.clone();
-        dialog
-            .overlay_closable(false)
-            .close_button(false)
-            .w(px(720.))
-            .title(title.clone())
-            .on_close(move |_, _window, cx| {
-                view_for_close.update(cx, |view, _| view.mark_dialog_closed());
-                app_for_close.update(cx, |this, cx| {
-                    let _ = this.script.close_workflow_sheet();
-                    this.flush_script_logs(cx);
-                });
-            })
-            .content(move |content, _, _| content.child(view.clone()))
-    });
 }
 
 impl Render for WorkflowSheetView {
