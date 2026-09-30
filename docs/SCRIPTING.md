@@ -941,6 +941,7 @@ Product contract: [spec/SPEC-metadata.md](spec/SPEC-metadata.md).
 | `declare_resolver`  | prototype                         | —         | Register by `:name()`; `"default"` replaces the built-in |
 | `set_resolver`      | `name: string`                    | —         | Select the active resolver (process lifetime; startup script) |
 | `flatten`           | `{ bindings, … }`                 | table     | Materialize a bindings list with the active resolver (row array + leaf map) |
+| `getenv`            | `name: string`                    | string or `nil` | Process environment value (`std::env::var`); used by the default resolver’s `env` scope |
 | `load_resolvers`    | —                                 | —         | Load `resolver_*.lua` from the scripting Search Path |
 
 ### Returned type: bindings
@@ -1014,9 +1015,10 @@ Sites pass different lists (same active prototype):
 
 Embedded `resolver_default.lua` (loaded before `init.lua`) declares `"default"`
 as last-wins across the `:init` list. It also resolves virtual scope `env` via
-`os.getenv`: `:resolve("env", "HOME")` → value, `"env"` (unset → `nil, nil`).
-Env names are not added to `:names()`. Template `${env.NAME}` is substituted by
-Rust interpolate against the process environment (templates use the materialized
+`field.variables.getenv` (Rust `std::env::var`, same view as `${env.NAME}`):
+`:resolve("env", "HOME")` → value, `"env"` (unset → `nil, nil`). Env names are
+not added to `:names()`. Template `${env.NAME}` is substituted by Rust
+interpolate against the process environment (templates use the materialized
 variable table; `env` is the virtual exception).
 
 ```lua
