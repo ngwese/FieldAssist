@@ -3,7 +3,9 @@
 --
 -- Modal sheet: Configure → Stage → Finish.
 -- Configure gathers parameters; Run starts staging on the Stage pane.
--- Finish will later offer optional source cleanup (TBD); Finish ends the run.
+-- Stage shows file-level and per-file transcode progress; the log is for
+-- errors/warnings only. Finish will later offer optional source cleanup
+-- (TBD); Finish ends the run.
 --
 -- Staging convert uses field.media.open + field.media.transcode. Still deferred:
 -- app:confirm, bit-exact backup + checksums, app.sqlite ledger, background jobs
@@ -51,16 +53,83 @@ function Ingest:persist(session)
   shared.set_prop(session, "staging_root", self.staging_root)
 end
 
-function Ingest:set_progress(text, fraction)
-  if self.progress then
-    self.progress.text = text
-    if fraction then
-      self.progress.value = fraction * 100
-      self.progress.loading = false
-    end
+function Ingest:format_bytes(n)
+  n = tonumber(n) or 0
+  if n < 1024 then
+    return string.format("%d B", n)
+  elseif n < 1024 * 1024 then
+    return string.format("%.1f KB", n / 1024)
+  elseif n < 1024 * 1024 * 1024 then
+    return string.format("%.1f MB", n / (1024 * 1024))
   end
+  return string.format("%.2f GB", n / (1024 * 1024 * 1024))
+end
+
+function Ingest:format_duration(seconds)
+  seconds = tonumber(seconds) or 0
+  if seconds < 0 then
+    seconds = 0
+  end
+  local total = math.floor(seconds + 0.5)
+  local h = math.floor(total / 3600)
+  local m = math.floor((total % 3600) / 60)
+  local s = total % 60
+  if h > 0 then
+    return string.format("%d:%02d:%02d", h, m, s)
+  end
+  return string.format("%d:%02d", m, s)
+end
+
+function Ingest:set_files_progress(done_files, total_files, caption)
+  if not self.files_progress then
+    return
+  end
+  total_files = math.max(tonumber(total_files) or 0, 0)
+  done_files = math.max(tonumber(done_files) or 0, 0)
+  if total_files <= 0 then
+    self.files_progress.loading = true
+    self.files_progress.text = caption or "Idle"
+    return
+  end
+  self.files_progress.loading = false
+  self.files_progress.value = math.min(100, (done_files / total_files) * 100)
+  self.files_progress.text = caption
+    or string.format("%d / %d file(s)", done_files, total_files)
+end
+
+function Ingest:set_file_progress(fraction, caption)
+  if not self.file_progress then
+    return
+  end
+  if fraction == nil then
+    self.file_progress.loading = true
+    self.file_progress.text = caption or "…"
+    return
+  end
+  self.file_progress.loading = false
+  self.file_progress.value = math.max(0, math.min(100, (tonumber(fraction) or 0) * 100))
+  self.file_progress.text = caption
+    or string.format("%d%%", math.floor(self.file_progress.value + 0.5))
+end
+
+function Ingest:set_current_file(media)
+  if not self.current_file then
+    return
+  end
+  if not media then
+    self.current_file.text = "—"
+    return
+  end
+  local name = media.basename or (media.url and media.url.basename) or "?"
+  local size = self:format_bytes(media.size_bytes)
+  local length = self:format_duration(media.duration)
+  self.current_file.text = string.format("%s  ·  %s  ·  %s", name, size, length)
+end
+
+function Ingest:log_issue(level, message)
+  field.log[level]("ingest", message)
   if self.log then
-    self.log:append(text)
+    self.log:append(string.format("%s: %s", level, message))
   end
 end
 
@@ -88,15 +157,25 @@ function Ingest:resolved_staging()
 end
 
 function Ingest:build_sheet()
-  self.progress = field.ui.progress({
-    id = "progress",
-    label = "Progress",
+  self.files_progress = field.ui.progress({
+    id = "files_progress",
+    label = "Files",
+    loading = true,
+    text = "Idle",
+  })
+  self.current_file = field.ui.message({
+    id = "current_file",
+    text = "—",
+  })
+  self.file_progress = field.ui.progress({
+    id = "file_progress",
+    label = "Transcode",
     loading = true,
     text = "Idle",
   })
   self.log = field.ui.log({
     id = "log",
-    label = "Log",
+    label = "Issues",
     text = "",
   })
   self.continue_btn = field.ui.button({
@@ -160,8 +239,13 @@ function Ingest:build_sheet()
       {
         id = "stage",
         name = "Stage",
-        text = "Staging media into backup and staging. Watch progress below.",
-        controls = { self.progress, self.log },
+        text = "Staging media into backup and staging. File queue above; current file and transcode below.",
+        controls = {
+          self.files_progress,
+          self.current_file,
+          self.file_progress,
+          self.log,
+        },
         buttons = {
           field.ui.button({
             id = "back_stage",
@@ -227,10 +311,16 @@ function Ingest:collect_sources(payload)
 end
 
 -- Process one file per deferred frame so the Stage pane can paint progress.
--- When background jobs land, enqueue work and return immediately; enable
--- Continue from a job_done handler.
-function Ingest:process_one(source_path, index, total, staging, profile)
-  self:set_progress(string.format("Stage %d / %d", index, total), (index - 1) / total)
+-- Transcode runs on a background job; `:defer` polls it so the File bar
+-- updates without blocking the UI.
+function Ingest:begin_file(source_path, index, total, staging, profile)
+  self:set_files_progress(
+    index - 1,
+    total,
+    string.format("%d / %d file(s)", index - 1, total)
+  )
+  self:set_file_progress(nil, "Opening…")
+  self:set_current_file(nil)
 
   local backup = self:resolve_path_or_var(self.backup_root, nil)
   if backup and backup ~= "" then
@@ -241,7 +331,15 @@ function Ingest:process_one(source_path, index, total, staging, profile)
     field.log.info("ingest", "backup (intended): " .. source_path .. " → " .. backup)
   end
 
-  local src = field.media.open(source_path)
+  local ok, src_or_err = pcall(field.media.open, source_path)
+  if not ok then
+    self:log_issue("error", tostring(src_or_err))
+    return false
+  end
+  local src = src_or_err
+  self:set_current_file(src)
+  self:set_file_progress(0, "0%")
+
   local dest = field.url
     .from_path(staging)
     :join(src.url.stem .. "." .. profile.extension)
@@ -252,19 +350,27 @@ function Ingest:process_one(source_path, index, total, staging, profile)
     string.format("transcode → %s (%s)", dest, profile.name or self.profile)
   )
 
-  field.media.transcode(src, dest, profile, function(done, frames)
-    if frames <= 0 then
-      return
-    end
-    local file_frac = done / frames
-    local overall = ((index - 1) + file_frac) / total
-    self:set_progress(string.format(
-      "Stage %d / %d  (%d%%)",
-      index,
-      total,
-      math.floor(file_frac * 100)
-    ), overall)
-  end)
+  local job_ok, job_or_err = pcall(field.media.begin_transcode, src, dest, profile)
+  if not job_ok then
+    self:log_issue("error", tostring(job_or_err))
+    return false
+  end
+
+  self._job = job_or_err
+  self._job_dest = dest
+  self._job_index = index
+  self._job_total = total
+  return true
+end
+
+function Ingest:finish_current_file()
+  local dest = self._job_dest
+  self._job = nil
+  self._job_dest = nil
+  local index = self._job_index or 0
+  local total = self._job_total or 0
+  self._job_index = nil
+  self._job_total = nil
 
   -- Future: tags / C2PA on the derivative only; ledger row with checksums.
 
@@ -274,8 +380,46 @@ function Ingest:process_one(source_path, index, total, staging, profile)
   if ok and doc then
     doc.group = "todo"
   else
-    error(ok and "session:open returned nil" or tostring(doc), 0)
+    self:log_issue(
+      "error",
+      ok and "session:open returned nil" or tostring(doc)
+    )
   end
+
+  self:set_file_progress(1, "100%")
+  self:set_files_progress(
+    index,
+    total,
+    string.format("%d / %d file(s)", index, total)
+  )
+end
+
+function Ingest:poll_job()
+  local job = self._job
+  if not job then
+    return true
+  end
+  local done, total = job:progress()
+  if total and total > 0 then
+    local frac = done / total
+    self:set_file_progress(frac, string.format("%d%%", math.floor(frac * 100)))
+  else
+    self:set_file_progress(nil, "Transcoding…")
+  end
+  if not job.finished then
+    return false
+  end
+  local err = job:error()
+  if err then
+    self:log_issue("error", tostring(err))
+    self._job = nil
+    self._job_dest = nil
+    self._job_index = nil
+    self._job_total = nil
+    return true
+  end
+  self:finish_current_file()
+  return true
 end
 
 function Ingest:run_ingest()
@@ -288,10 +432,9 @@ function Ingest:run_ingest()
   if self.continue_btn then
     self.continue_btn.enabled = false
   end
-  if self.progress then
-    self.progress.loading = true
-    self.progress.text = "Starting…"
-  end
+  self:set_files_progress(0, 0, "Starting…")
+  self:set_file_progress(nil, "Waiting…")
+  self:set_current_file(nil)
 
   local staging = self:resolved_staging()
   if not staging or staging == "" then
@@ -332,13 +475,29 @@ function Ingest:run_ingest()
   self._ingest_index = 1
   self._ingest_staging = staging
   self._ingest_profile = profile
-  self:set_progress(string.format("Stage 0 / %d", #paths), 0)
+  self._job = nil
+  self:set_files_progress(0, #paths)
   self:defer(function(wf)
     wf:process_next()
   end)
 end
 
 function Ingest:process_next()
+  -- Continue polling an in-flight background transcode.
+  if self._job then
+    if not self:poll_job() then
+      self:defer(function(wf)
+        wf:process_next()
+      end)
+    else
+      self._ingest_index = (self._ingest_index or 1) + 1
+      self:defer(function(wf)
+        wf:process_next()
+      end)
+    end
+    return
+  end
+
   local paths = self._ingest_paths or {}
   local i = self._ingest_index or 1
   local total = #paths
@@ -349,25 +508,25 @@ function Ingest:process_next()
     self._ingest_index = nil
     self._ingest_staging = nil
     self._ingest_profile = nil
-    self:set_progress(string.format("Done: %d file(s)", total), 1)
+    self:set_files_progress(total, total, string.format("Done: %d file(s)", total))
+    self:set_file_progress(1, "Complete")
+    self:set_current_file(nil)
     if self.continue_btn then
       self.continue_btn.enabled = true
     end
     return
   end
 
-  local path = paths[i]
-  local ok, err = pcall(function()
-    self:process_one(path, i, total, self._ingest_staging, self._ingest_profile)
-  end)
-  if not ok then
-    field.log.error("ingest", tostring(err))
-    if self.log then
-      self.log:append("error: " .. tostring(err))
-    end
+  local started = self:begin_file(
+    paths[i],
+    i,
+    total,
+    self._ingest_staging,
+    self._ingest_profile
+  )
+  if not started then
+    self._ingest_index = i + 1
   end
-  self._ingest_index = i + 1
-  self:set_progress(string.format("Stage %d / %d", i, total), i / total)
   self:defer(function(wf)
     wf:process_next()
   end)

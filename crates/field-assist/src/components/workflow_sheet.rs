@@ -569,6 +569,7 @@ fn open_sheet_dialog(
         dialog
             .overlay_closable(false)
             .close_button(false)
+            .w(px(720.))
             .title(title.clone())
             .on_close(move |_, _window, cx| {
                 view_for_close.update(cx, |view, _| view.mark_dialog_closed());

@@ -672,7 +672,8 @@ Shared media pool (interned media rows used by compositions).
 | ------------- | --------- | ------------------------- | ---------------------------- |
 | `shared_pool` | —         | [media pool](#returned-type-media-pool) | Process singleton media pool |
 | `open`        | `path` (string or url) | [media](#returned-type-media) | Probe a file without adding it to the pool (detached media) |
-| `transcode`   | `media`, `dest`, `profile` [, `on_progress`] | — | Stream-transcode `media` to `dest` using an export profile |
+| `transcode`   | `media`, `dest`, `profile` [, `on_progress`] | — | Stream-transcode `media` to `dest` (blocks the host) |
+| `begin_transcode` | `media`, `dest`, `profile` | [transcode job](#returned-type-transcode-job) | Same encode on a background thread for UI polling |
 
 `field.media.transcode(media, dest, profile [, on_progress])` writes `dest`
 without loading the whole source into memory. `profile` may be a registered
@@ -680,7 +681,28 @@ profile name, export-profile userdata, or an options table (`encoder`,
 `sample_rate`, `sample_format`, `channels`, …) resolved the same way as
 `composition:export`. Sample-rate and PCM format from the profile are applied
 (bandlimited SRC when rates differ). Optional `on_progress(done, total)`
-receives **source** frame counts.
+receives **source** frame counts. Prefer `begin_transcode` from a sheet so
+progress can update between `:defer` turns without freezing the UI.
+
+### Returned type: transcode job
+
+Returned by `field.media.begin_transcode`. Poll from a `:defer` loop.
+
+#### transcode job Properties
+
+| Property   | Access | Type      | Description                        |
+| ---------- | ------ | --------- | ---------------------------------- |
+| `done`     | **ro** | `integer` | Source frames completed            |
+| `total`    | **ro** | `integer` | Source frame count (0 until known) |
+| `finished` | **ro** | `boolean` | True when the worker has exited    |
+
+#### transcode job Methods
+
+| Method      | Arguments | Returns           | Description                                   |
+| ----------- | --------- | ----------------- | --------------------------------------------- |
+| `:progress` | —         | `done`, `total`   | Same counters as the fields                   |
+| `:error`    | —         | `string` or `nil` | Failure message after `finished`              |
+| `:join`     | —         | —                 | Block until done; errors if the worker failed |
 
 ### Returned type: media pool
 

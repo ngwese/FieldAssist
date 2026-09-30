@@ -5,6 +5,9 @@
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 
 use mlua::{FromLua, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
@@ -295,6 +298,127 @@ fn media_transcode(
     .map_err(|err| mlua::Error::runtime(format!("transcode failed: {err:#}")))
 }
 
+/// Background transcode job for UI `:defer` polling (does not block the host).
+pub struct LuaTranscodeJob {
+    done: Arc<AtomicU64>,
+    total: Arc<AtomicU64>,
+    finished: Arc<AtomicBool>,
+    error: Arc<Mutex<Option<String>>>,
+    join: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl LuaTranscodeJob {
+    fn start(
+        source: PathBuf,
+        dest: PathBuf,
+        encoder_id: String,
+        spec: EncodeSpec,
+        channel_indices: Vec<usize>,
+    ) -> Self {
+        let done = Arc::new(AtomicU64::new(0));
+        let total = Arc::new(AtomicU64::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        let error = Arc::new(Mutex::new(None));
+        let done_w = done.clone();
+        let total_w = total.clone();
+        let finished_w = finished.clone();
+        let error_w = error.clone();
+        let join = thread::Builder::new()
+            .name("fa-transcode".into())
+            .spawn(move || {
+                let tags = TagMap::new();
+                let mut cb = |d: u64, t: u64| {
+                    done_w.store(d, Ordering::Relaxed);
+                    total_w.store(t, Ordering::Relaxed);
+                };
+                let result = transcode(TranscodeRequest {
+                    source: &source,
+                    dest: &dest,
+                    encoder_id: &encoder_id,
+                    spec,
+                    channel_indices: &channel_indices,
+                    tags: &tags,
+                    block_frames: 0,
+                    on_progress: Some(&mut cb),
+                });
+                if let Err(err) = result {
+                    *error_w.lock().unwrap() = Some(format!("{err:#}"));
+                }
+                finished_w.store(true, Ordering::Release);
+            })
+            .expect("spawn fa-transcode");
+        Self {
+            done,
+            total,
+            finished,
+            error,
+            join: Mutex::new(Some(join)),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    fn take_error(&self) -> Option<String> {
+        self.error.lock().unwrap().clone()
+    }
+
+    fn join_thread(&self) {
+        if let Some(handle) = self.join.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl UserData for LuaTranscodeJob {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("done", |_, this| {
+            Ok(this.done.load(Ordering::Relaxed) as i64)
+        });
+        fields.add_field_method_get("total", |_, this| {
+            Ok(this.total.load(Ordering::Relaxed) as i64)
+        });
+        fields.add_field_method_get("finished", |_, this| Ok(this.is_finished()));
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("progress", |_, this, ()| {
+            Ok((
+                this.done.load(Ordering::Relaxed) as i64,
+                this.total.load(Ordering::Relaxed) as i64,
+            ))
+        });
+        methods.add_method("error", |_, this, ()| Ok(this.take_error()));
+        methods.add_method_mut("join", |_, this, ()| {
+            this.join_thread();
+            if let Some(err) = this.take_error() {
+                return Err(mlua::Error::runtime(format!("transcode failed: {err}")));
+            }
+            Ok(())
+        });
+    }
+}
+
+fn media_begin_transcode(
+    lua: &Lua,
+    media: LuaMedia,
+    dest: Value,
+    profile: Value,
+) -> mlua::Result<LuaTranscodeJob> {
+    let source_path = media.filesystem_path(lua)?;
+    let dest_path = crate::fs::path_from_lua(dest)?;
+    let media_ref = media.with_ref(lua, |m| Ok(m.clone()))?;
+    let (encoder_id, spec, channel_indices) = resolve_transcode_profile(lua, &media_ref, profile)?;
+    Ok(LuaTranscodeJob::start(
+        source_path,
+        dest_path,
+        encoder_id,
+        spec,
+        channel_indices,
+    ))
+}
+
 /// Install `field.media`.
 pub fn bind_media_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
     let media = lua.create_table()?;
@@ -327,6 +451,13 @@ pub fn bind_media_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
                 media_transcode(lua, media, dest, profile, progress)
             },
         )?,
+    )?;
+    media.set(
+        "begin_transcode",
+        lua.create_function(|lua, (media, dest, profile): (Value, Value, Value)| {
+            let media = LuaMedia::from_lua(media, lua)?;
+            media_begin_transcode(lua, media, dest, profile)
+        })?,
     )?;
     field.set("media", media)?;
     Ok(())
