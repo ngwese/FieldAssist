@@ -26,17 +26,20 @@ use gpui_kit::component::{
     separator::Separator,
     stepper::{Stepper, StepperItem},
     switch::Switch,
-    ActiveTheme as _, Disableable as _, IconName,
+    v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _,
+    div, px, rems, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
     SharedString, Styled as _, WeakEntity, Window,
 };
 
 use crate::app::AppView;
 use crate::components::explorer::CompositionDrag;
+
+/// Same width as ExportSheet Cancel / Export actions.
+const ACTION_BUTTON_WIDTH: gpui_kit::Rems = rems(5.);
 
 /// Live GPUI state for an open workflow sheet.
 pub struct WorkflowSheetView {
@@ -295,7 +298,7 @@ impl WorkflowSheetView {
         match item {
             ToolbarItem::Divider { .. } => Separator::horizontal().into_any_element(),
             ToolbarItem::Message { text, .. } => div()
-                .text_sm()
+                .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(text.clone())
                 .into_any_element(),
@@ -305,6 +308,7 @@ impl WorkflowSheetView {
                 let id = id.clone();
                 Button::new(("sheet-btn", ix))
                     .outline()
+                    .xsmall()
                     .label(label.clone())
                     .disabled(!*enabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -317,6 +321,7 @@ impl WorkflowSheetView {
             } => {
                 let id = id.clone();
                 Switch::new(("sheet-toggle", ix))
+                    .xsmall()
                     .checked(*value)
                     .disabled(!*enabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -334,12 +339,13 @@ impl WorkflowSheetView {
                     return div().into_any_element();
                 };
                 let drop_highlight = cx.theme().secondary;
-                let mut field_el = Input::new(input).disabled(!*enabled);
+                let mut field_el = Input::new(input).small().disabled(!*enabled);
                 if let Some(browse) = *browse {
                     let id = id.clone();
                     field_el = field_el.suffix(
                         Button::new(("sheet-browse", ix))
                             .ghost()
+                            .xsmall()
                             .icon(IconName::FolderOpen)
                             .disabled(!*enabled)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -379,7 +385,10 @@ impl WorkflowSheetView {
                 let Some(input) = self.inputs.get(id) else {
                     return div().into_any_element();
                 };
-                Input::new(input).disabled(!*enabled).into_any_element()
+                Input::new(input)
+                    .small()
+                    .disabled(!*enabled)
+                    .into_any_element()
             }
             ToolbarItem::Select {
                 id,
@@ -399,6 +408,7 @@ impl WorkflowSheetView {
                 let current = value.clone();
                 Button::new(("sheet-select", ix))
                     .outline()
+                    .xsmall()
                     .label(if selected.is_empty() {
                         "Select…".into()
                     } else {
@@ -448,11 +458,13 @@ impl WorkflowSheetView {
             } => {
                 let indicator = match variant {
                     ProgressVariant::Bar => Progress::new(format!("sheet-progress-{id}"))
+                        .xsmall()
                         .loading(*loading)
                         .when(!*loading, |p| p.value(value.unwrap_or(0.0)))
                         .into_any_element(),
                     ProgressVariant::Circle => {
                         ProgressCircle::new(format!("sheet-progress-c-{id}"))
+                            .xsmall()
                             .loading(*loading)
                             .when(!*loading, |p| p.value(value.unwrap_or(0.0)))
                             .into_any_element()
@@ -466,7 +478,7 @@ impl WorkflowSheetView {
                     .when_some(text.clone(), |this, text| {
                         this.child(
                             div()
-                                .text_sm()
+                                .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(text),
                         )
@@ -478,6 +490,7 @@ impl WorkflowSheetView {
                     return div().into_any_element();
                 };
                 Textarea::new(log)
+                    .small()
                     .readonly(true)
                     .h(px(160.))
                     .into_any_element()
@@ -500,6 +513,8 @@ impl WorkflowSheetView {
         };
         let id = id.clone();
         let mut btn = Button::new(("sheet-action", ix))
+            .xsmall()
+            .w_full()
             .label(label.clone())
             .disabled(!*enabled);
         btn = if primary {
@@ -507,14 +522,17 @@ impl WorkflowSheetView {
         } else {
             btn.outline()
         };
-        btn.on_click(cx.listener(move |this, _, window, cx| {
-            this.dispatch_button(&id, window, cx);
-        }))
-        .into_any_element()
+        div()
+            .w(ACTION_BUTTON_WIDTH)
+            .flex_none()
+            .child(btn.on_click(cx.listener(move |this, _, window, cx| {
+                this.dispatch_button(&id, window, cx);
+            })))
+            .into_any_element()
     }
 
     fn build_form(&self, pane: &SheetPane, cx: &mut Context<Self>) -> Form {
-        let mut form = Form::horizontal().label_width(px(120.));
+        let mut form = Form::horizontal().xsmall().label_width(px(120.));
         for (ix, item) in pane.controls.iter().enumerate() {
             let label = item.label().unwrap_or("").to_owned();
             let control = self.render_control(item, ix, cx);
@@ -636,7 +654,15 @@ impl Render for WorkflowSheetView {
                     row.child(btn)
                 };
             }
-            Some(row)
+            // Built-in rule above pane actions (Lua need not add a divider).
+            Some(
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(Separator::horizontal())
+                    .child(row)
+                    .into_any_element(),
+            )
         });
 
         let mut root = Questionnaire::new(&q);

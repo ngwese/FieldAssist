@@ -173,6 +173,16 @@ impl ExportSheet {
             }
         })
         .detach();
+        let sheet = cx.weak_entity();
+        directory.update(cx, |completion, _| {
+            completion.set_browse(move |window, cx| {
+                if let Some(sheet) = sheet.upgrade() {
+                    sheet.update(cx, |this, cx| {
+                        this.prompt_directory(window, cx);
+                    });
+                }
+            });
+        });
         Self {
             profiles: Vec::new(),
             profile_name: None,
@@ -1225,54 +1235,31 @@ impl Render for ExportSheet {
                         "Directory",
                         muted,
                         None,
-                        h_flex()
-                            .gap_2()
+                        div()
                             .w_full()
-                            .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .can_drop(|data, _, _| {
-                                        data.downcast_ref::<ExternalPaths>().is_some()
-                                            || data
-                                                .downcast_ref::<CompositionDrag>()
-                                                .is_some_and(|drag| drag.path.is_some())
-                                    })
-                                    .drag_over::<ExternalPaths>(move |style, _, _, _| {
-                                        style.bg(drop_highlight)
-                                    })
-                                    .drag_over::<CompositionDrag>(move |style, _, _, _| {
-                                        style.bg(drop_highlight)
-                                    })
-                                    .on_drop(cx.listener(
-                                        |this, paths: &ExternalPaths, window, cx| {
-                                            if let Some(path) = paths.paths().first() {
-                                                this.apply_dropped_path(path, window, cx);
-                                            }
-                                        },
-                                    ))
-                                    .on_drop(cx.listener(
-                                        |this, drag: &CompositionDrag, window, cx| {
-                                            if let Some(path) = drag.path.as_ref() {
-                                                this.apply_dropped_path(path, window, cx);
-                                            }
-                                        },
-                                    ))
-                                    .child(self.directory.clone()),
-                            )
-                            .child(
-                                div().w(ACTION_BUTTON_WIDTH).flex_none().child(
-                                    Button::new("browse-dir")
-                                        .outline()
-                                        .xsmall()
-                                        .w_full()
-                                        .label("Browse…")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.prompt_directory(window, cx);
-                                        })),
-                                ),
-                            ),
+                            .can_drop(|data, _, _| {
+                                data.downcast_ref::<ExternalPaths>().is_some()
+                                    || data
+                                        .downcast_ref::<CompositionDrag>()
+                                        .is_some_and(|drag| drag.path.is_some())
+                            })
+                            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                                style.bg(drop_highlight)
+                            })
+                            .drag_over::<CompositionDrag>(move |style, _, _, _| {
+                                style.bg(drop_highlight)
+                            })
+                            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                                if let Some(path) = paths.paths().first() {
+                                    this.apply_dropped_path(path, window, cx);
+                                }
+                            }))
+                            .on_drop(cx.listener(|this, drag: &CompositionDrag, window, cx| {
+                                if let Some(path) = drag.path.as_ref() {
+                                    this.apply_dropped_path(path, window, cx);
+                                }
+                            }))
+                            .child(self.directory.clone()),
                     ))
                     .child(form_row("Name", muted, None, self.filename.clone()))
                     .child(form_row(

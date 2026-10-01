@@ -3,11 +3,14 @@
 
 //! `${…}` variable-reference completion for single-line template inputs.
 
+use std::rc::Rc;
+
 use field_variables::{
     accept_edit, completion_context, completion_items, prefix_edit, tab_action, CompletionContext,
     CompletionItem, CompletionKind, TabAction, VariableTable,
 };
 use gpui_kit::component::{
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::{Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, OutdentInline},
     ActiveTheme as _, Icon, IconName, Sizable as _,
@@ -34,6 +37,8 @@ pub struct VariableCompletion {
     menu_visible: bool,
     /// Focus has moved from the input into the selection list.
     list_focused: bool,
+    /// Optional folder-browse action shown as an in-field FolderOpen suffix.
+    browse: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     focus_handle: FocusHandle,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -86,6 +91,7 @@ impl VariableCompletion {
             highlight: 0,
             menu_visible: false,
             list_focused: false,
+            browse: None,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -96,6 +102,16 @@ impl VariableCompletion {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx));
         Self::attach(input, window, cx)
+    }
+
+    /// Show a FolderOpen suffix that invokes `browse` (path picker).
+    pub fn set_browse(&mut self, browse: impl Fn(&mut Window, &mut App) + 'static) {
+        self.browse = Some(Rc::new(browse));
+    }
+
+    /// Remove the in-field browse suffix, if any.
+    pub fn clear_browse(&mut self) {
+        self.browse = None;
     }
 
     /// Underlying text field.
@@ -172,7 +188,21 @@ impl VariableCompletion {
                     }
                 }
             })
-            .child(Input::new(&self.input).xsmall().w_full())
+            .child({
+                let mut field = Input::new(&self.input).small().w_full();
+                if let Some(browse) = self.browse.clone() {
+                    field = field.suffix(
+                        Button::new("variable-completion-browse")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::FolderOpen)
+                            .on_click(move |_, window, cx| {
+                                browse(window, cx);
+                            }),
+                    );
+                }
+                field
+            })
             .when(menu_open, |el| {
                 el.child(deferred(
                     anchored()

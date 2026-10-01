@@ -11,7 +11,7 @@
 -- app:confirm, bit-exact backup + checksums, app.sqlite ledger, background jobs
 -- / :defer pump, field.workflow.finish({ next = "…" }), C2PA / media tags.
 --
--- Staging / Backup default to ${user.ingest.staging_dir} /
+-- Staging / Backup default to ${user.ingest.staging_root} /
 -- ${user.ingest.backup_root} (expanded); Configure shows path fields with
 -- muted resolved previews. Paths may use ${…} templates.
 --
@@ -32,8 +32,8 @@ function Ingest:init()
   self.source = ""
   self.backup_root = "${user.ingest.backup_root}"
   -- Session prop name stays staging_root; value may be a concrete path or a
-  -- ${user.…} expression. Empty → resolve user.ingest.staging_dir.
-  self.staging_root = "${user.ingest.staging_dir}"
+  -- ${user.…} expression. Empty → resolve user.ingest.staging_root.
+  self.staging_root = "${user.ingest.staging_root}"
   self.profile = "FLAC (Source Equivalent)"
   self.queue = {}
   self.busy = false
@@ -162,7 +162,7 @@ function Ingest:resolve_path_or_var(raw, fallback_name)
 end
 
 function Ingest:resolved_staging()
-  return self:resolve_path_or_var(self.staging_root, "user.ingest.staging_dir")
+  return self:resolve_path_or_var(self.staging_root, "user.ingest.staging_root")
 end
 
 --- Soft-resolved path for muted configure previews (`—` when empty).
@@ -185,7 +185,7 @@ function Ingest:refresh_path_previews()
     end
   end
   set_preview(self.source_resolved, self.source, nil)
-  set_preview(self.staging_resolved, self.staging_root, "user.ingest.staging_dir")
+  set_preview(self.staging_resolved, self.staging_root, "user.ingest.staging_root")
   set_preview(self.backup_resolved, self.backup_root, nil)
 end
 
@@ -520,7 +520,7 @@ function Ingest:run_ingest()
   if not staging or staging == "" then
     app:alert(
       "Ingest",
-      "Set user.ingest.staging_dir in variables.json (or a Staging path) before running."
+      "Set user.ingest.staging_root in variables.json (or a Staging path) before running."
     )
     self:go("configure")
     return
