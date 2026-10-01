@@ -37,6 +37,7 @@ pub fn app_version_detail() -> String {
     }
 }
 
+mod analysis_spawn;
 mod app;
 mod assets;
 mod audio;

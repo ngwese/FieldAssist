@@ -26,6 +26,7 @@ use gpui_kit::{
     TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId, WindowOptions,
 };
 
+use crate::analysis_spawn::{resolve_analysis_spawn, AnalysisSpawnDecision};
 use crate::assets::AppAssets;
 use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak,
@@ -1757,7 +1758,7 @@ impl AppView {
             self.close_tab(id, window, cx);
         }
         if let Some(views) = self.views.get(&id) {
-            views.document.read(cx).progress.cancel();
+            views.document.read(cx).cancel_progress();
         }
         self.session.close_document(id);
         self.views.remove(&id);
@@ -1935,7 +1936,7 @@ impl AppView {
         if nest_under_parent {
             self.ensure_lineage_placement(id, cx);
         }
-        views.document.read(cx).progress.cancel();
+        views.document.read(cx).cancel_progress();
         if self.session.active() == Some(id) {
             self.request_waveform_analysis(id, cx);
         }
@@ -3665,7 +3666,7 @@ impl AppView {
     ) {
         self.stop_playback_into_active(cx);
         if let Some(views) = self.views.get(&id) {
-            views.document.read(cx).progress.cancel();
+            views.document.read(cx).cancel_progress();
         }
         self.session.replace_document_path(id, path.clone());
         self.focus_document(id, window, cx);
@@ -3954,7 +3955,7 @@ impl AppView {
                 .snapshot()
                 .is_some_and(|state| state.label != "opening")
             {
-                progress.cancel();
+                views.document.read(cx).cancel_progress();
             }
         }
     }
@@ -4019,9 +4020,9 @@ impl AppView {
         let Some(views) = self.views.get(&id) else {
             return;
         };
-        // Queue first so concurrent ensure_* / menu requests coalesce into one
-        // shared pass. If a job is already running, kinds stay queued for the
-        // next timer drain.
+        // Queue first so concurrent ensure_* / menu requests coalesce, then
+        // take and spawn immediately. spawn_analysis_pass no-ops when an
+        // equivalent job already owns progress (Defer re-queues).
         for &kind in kinds {
             views.document.read(cx).request_analysis(kind);
         }
@@ -4065,18 +4066,27 @@ impl AppView {
         if kinds.is_empty() {
             return;
         }
-        if views.document.read(cx).progress.snapshot().is_some() {
-            // A single-kind job may already be running (e.g. MinMax from
-            // activate). Cancel it so we can start the shared pass now rather
-            // than finishing peaks first and spectrum later.
-            if kinds.len() > 1 {
-                views.document.read(cx).progress.cancel();
-            } else {
+        let progress_label = views
+            .document
+            .read(cx)
+            .progress
+            .snapshot()
+            .map(|state| state.label);
+        let running_kinds = views.document.read(cx).analysis_job_kinds();
+        match resolve_analysis_spawn(progress_label.as_deref(), running_kinds.as_deref(), &kinds) {
+            AnalysisSpawnDecision::NoOp => return,
+            AnalysisSpawnDecision::Defer => {
                 for kind in kinds {
                     views.document.read(cx).request_analysis(kind);
                 }
                 return;
             }
+            AnalysisSpawnDecision::Upgrade => {
+                // Cancel a smaller in-flight analysis job so the shared pass
+                // can start now rather than finishing peaks first.
+                views.document.read(cx).cancel_progress();
+            }
+            AnalysisSpawnDecision::Start => {}
         }
         if kinds
             .iter()
@@ -4098,11 +4108,16 @@ impl AppView {
         let progress = views.document.read(cx).progress.clone();
         let label = AnalysisKind::progress_label_for_kinds(&kinds);
         let epoch = progress.begin(label);
+        views
+            .document
+            .read(cx)
+            .set_analysis_job_kinds(kinds.clone());
         views.waveform.update(cx, |view, cx| {
             view.bump_paint_epoch(cx);
         });
         let pending = self.pending_analysis.clone();
         let pending_logs = self.pending_analysis_logs.clone();
+        let job_kinds = views.document.read(cx).analysis_job_kinds_slot();
         std::thread::spawn(move || {
             loop {
                 match Composition::build_next_analysis_kinds(
@@ -4137,6 +4152,11 @@ impl AppView {
                 }
             }
             progress.finish(epoch);
+            // Clear ownership only while this epoch is still current. A newer
+            // begin()/cancel() bumps the epoch so we must not wipe its kinds.
+            if progress.is_epoch(epoch) {
+                *job_kinds.lock().unwrap() = None;
+            }
             pending.lock().unwrap().push(id);
         });
     }
@@ -5476,7 +5496,7 @@ impl AppView {
                         }
                         if has_problems {
                             if let Some(views) = self.views.get(&id) {
-                                views.document.read(cx).progress.cancel();
+                                views.document.read(cx).cancel_progress();
                             }
                             self.close_document(id, window, cx);
                         } else {
@@ -5494,7 +5514,7 @@ impl AppView {
                         }
                     } else if has_problems {
                         if let Some(views) = self.views.get(&id) {
-                            views.document.read(cx).progress.cancel();
+                            views.document.read(cx).cancel_progress();
                         }
                         self.close_document(id, window, cx);
                         self.show_open_report(report, window, cx);
@@ -5511,7 +5531,7 @@ impl AppView {
                 }
                 Err(err) => {
                     if let Some(views) = self.views.get(&id) {
-                        views.document.read(cx).progress.cancel();
+                        views.document.read(cx).cancel_progress();
                     }
                     let problem = field_core::LoadProblem::new(
                         field_core::ProblemCategory::Other,
@@ -5883,7 +5903,7 @@ impl AppView {
                 });
             }
             if let Some(views) = self.views.get(&id) {
-                views.document.read(cx).progress.cancel();
+                views.document.read(cx).cancel_progress();
             }
             self.views.remove(&id);
         }

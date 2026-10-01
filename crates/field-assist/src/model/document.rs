@@ -40,6 +40,11 @@ pub struct BufferDocument {
     pub progress: ProgressHandle,
     /// Pull-based analysis requests drained by the app job loop.
     pub analysis_requests: Arc<Mutex<Vec<AnalysisKind>>>,
+    /// Kinds owned by the in-flight analysis worker (if any).
+    ///
+    /// Used by spawn policy so paint-driven re-queues do not cancel an
+    /// equivalent shared Peaks+Spectrum pass.
+    analysis_job_kinds: Arc<Mutex<Option<Vec<AnalysisKind>>>>,
     /// View → Show Envelope Peak overlay.
     pub show_envelope_peak: bool,
     /// Active waveform body; mirrored from the app-global View menu choice.
@@ -93,6 +98,7 @@ impl BufferDocument {
             pinned_monitor_params: HashMap::new(),
             progress: ProgressHandle::new(),
             analysis_requests: Arc::new(Mutex::new(Vec::new())),
+            analysis_job_kinds: Arc::new(Mutex::new(None)),
             show_envelope_peak: false,
             waveform_representation: WaveformRepresentation::Peaks,
             peak_rendering: field_ui_components::PeakRendering::Threaded,
@@ -127,6 +133,32 @@ impl BufferDocument {
     /// Take and clear pending analysis requests.
     pub fn take_analysis_requests(&self) -> Vec<AnalysisKind> {
         std::mem::take(&mut *self.analysis_requests.lock().unwrap())
+    }
+
+    /// Snapshot of kinds owned by the in-flight analysis worker.
+    pub fn analysis_job_kinds(&self) -> Option<Vec<AnalysisKind>> {
+        self.analysis_job_kinds.lock().unwrap().clone()
+    }
+
+    /// Record kinds for a newly started analysis worker.
+    pub fn set_analysis_job_kinds(&self, kinds: Vec<AnalysisKind>) {
+        *self.analysis_job_kinds.lock().unwrap() = Some(kinds);
+    }
+
+    /// Clear in-flight analysis kinds (job finished or abandoned).
+    pub fn clear_analysis_job_kinds(&self) {
+        *self.analysis_job_kinds.lock().unwrap() = None;
+    }
+
+    /// Shared slot for the worker thread to clear ownership when its epoch ends.
+    pub(crate) fn analysis_job_kinds_slot(&self) -> Arc<Mutex<Option<Vec<AnalysisKind>>>> {
+        self.analysis_job_kinds.clone()
+    }
+
+    /// Invalidate the active progress job and clear analysis ownership.
+    pub fn cancel_progress(&self) {
+        self.clear_analysis_job_kinds();
+        self.progress.cancel();
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -1569,6 +1601,34 @@ mod tests {
         doc.analyze_selection_only = false;
         assert!(doc.snapshot_analysis_target());
         assert_eq!(doc.take_pending_analysis_target(), Some(None));
+    }
+
+    #[test]
+    fn analysis_job_kinds_track_start_and_cancel() {
+        let doc = test_document(1000);
+        assert!(doc.analysis_job_kinds().is_none());
+        doc.set_analysis_job_kinds(vec![AnalysisKind::MinMax, AnalysisKind::Spectral]);
+        assert_eq!(
+            doc.analysis_job_kinds(),
+            Some(vec![AnalysisKind::MinMax, AnalysisKind::Spectral])
+        );
+        let epoch = doc.progress.begin("building peaks + spectrum");
+        doc.progress.set_fraction(epoch, 0.25);
+        doc.cancel_progress();
+        assert!(doc.analysis_job_kinds().is_none());
+        assert!(doc.progress.snapshot().is_none());
+        assert!(!doc.progress.is_epoch(epoch));
+    }
+
+    #[test]
+    fn analysis_job_kinds_clear_without_touching_progress() {
+        let doc = test_document(1000);
+        let epoch = doc.progress.begin("building peaks");
+        doc.set_analysis_job_kinds(vec![AnalysisKind::MinMax]);
+        doc.clear_analysis_job_kinds();
+        assert!(doc.analysis_job_kinds().is_none());
+        assert!(doc.progress.is_epoch(epoch));
+        assert_eq!(doc.progress.snapshot().unwrap().label, "building peaks");
     }
 
     #[test]
