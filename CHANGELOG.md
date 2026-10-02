@@ -2,6 +2,18 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.23.0] - 2026-10-02
+
+### Features
+
+- Add VariableResolver:bindings and field-probe example
+
+### Bug Fixes
+
+- Scroll the settings theme menu
+- Keep a dead output device from stalling the UI
+
+
 ## [0.22.0] - 2026-10-02
 
 ### Features
