@@ -2,6 +2,23 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.22.0] - 2026-10-02
+
+### Features
+
+- Expose ingest staging/backup paths with resolved previews
+- Rename ingest Stage pane to Run and auto-finish
+- Tighten workflow sheet chrome and match export path browse
+- Show ingest path capacity via field.fs.available_space
+
+### Bug Fixes
+
+- Read env variables via Rust for Windows
+- Keep window movable while workflow sheet is open
+- Stop analysis progress from restarting mid-pass
+- Replace flacenc with flac-codec for FLAC encode
+
+
 ## [0.21.0] - 2026-09-30
 
 ### Features
