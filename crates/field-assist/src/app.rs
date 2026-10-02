@@ -264,7 +264,10 @@ pub struct AppView {
     add_marker_at_hover: bool,
     preview_enabled: bool,
     output_device: Option<String>,
+    /// CPAL name of the output stream that is currently open.
+    live_output_name: Option<String>,
     /// Cached CPAL output names for the monitor dropdown (refreshed on demand).
+    /// Names only: filling default configs opens every ALSA PCM and stalls the UI.
     output_devices_cache: Vec<String>,
     drop_layout: Option<Arc<DropLayout>>,
     pending_replace: Option<(DocumentId, PathBuf)>,
@@ -291,6 +294,7 @@ impl AppView {
         initial_load_elapsed: Option<f64>,
         playback: PlaybackSession,
         output_device: Option<String>,
+        opened_output_name: Option<String>,
         pending_opens: Arc<Mutex<Vec<PathBuf>>>,
         session_path: Option<PathBuf>,
         window: &mut Window,
@@ -612,6 +616,7 @@ impl AppView {
             add_marker_at_hover: true,
             preview_enabled: false,
             output_device,
+            live_output_name: opened_output_name,
             output_devices_cache: Vec::new(),
             drop_layout: None,
             pending_replace: None,
@@ -2289,8 +2294,22 @@ impl AppView {
         }
 
         if !cli_locked {
-            if let Err(err) = self.set_output_device(audio.output_device.as_deref(), window, cx) {
-                eprintln!("FieldAssist: settings output device: {err}");
+            // Launch already opened the system default, or failed and left
+            // output inactive so the monitor icon is red. Only switch when
+            // settings names a different device; retrying a dead device on
+            // this thread stalls painting.
+            if let Some(spec) = audio
+                .output_device
+                .as_deref()
+                .filter(|spec| !spec.is_empty())
+            {
+                let same = self.output_device.as_deref() == Some(spec)
+                    || self.live_output_name.as_deref() == Some(spec);
+                if !same {
+                    if let Err(err) = self.set_output_device(Some(spec), window, cx) {
+                        eprintln!("FieldAssist: settings output device: {err}");
+                    }
+                }
             }
         }
 
@@ -2986,10 +3005,34 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let device = resolve_output_device(spec).map_err(|err| err.to_string())?;
-        self.playback
-            .set_output_device(&device)
-            .map_err(|err| err.to_string())?;
-        self.output_device = spec.map(|_| output_device_name(&device));
+        let resolved = output_device_name(&device);
+        let selected = spec
+            .filter(|spec| !spec.is_empty())
+            .map(|_| resolved.clone());
+        // Startup applies settings after the stream is already open. Reopening
+        // the same device makes ALSA try to open `dmix` while this process
+        // still holds the slave.
+        if self.playback.output_active()
+            && self.live_output_name.as_deref() == Some(resolved.as_str())
+        {
+            if self.output_device != selected {
+                self.output_device = selected;
+                self.monitor.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            }
+            return Ok(());
+        }
+        if let Err(err) = self.playback.set_output_device(&device) {
+            if !self.playback.output_active() {
+                self.live_output_name = None;
+                self.output_device = selected;
+            }
+            self.monitor.update(cx, |_, cx| cx.notify());
+            cx.notify();
+            return Err(err.to_string());
+        }
+        self.live_output_name = Some(resolved);
+        self.output_device = selected;
         self.refresh_output_devices_cache();
         self.monitor.update(cx, |_, cx| cx.notify());
         cx.notify();
@@ -6902,6 +6945,10 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
             return;
         }
     };
+    let opened_output_name = match (&device, playback.output_active()) {
+        (Some(device), true) => Some(output_device_name(device)),
+        _ => None,
+    };
 
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions {
@@ -6926,6 +6973,7 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
                 load_elapsed,
                 playback,
                 output_device,
+                opened_output_name,
                 pending_opens.clone(),
                 session_path.clone(),
                 window,

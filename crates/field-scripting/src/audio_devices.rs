@@ -11,7 +11,7 @@ pub fn bind_audio_devices(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
     devices.set(
         "list",
         lua.create_function(|lua, ()| {
-            let listed = field_audio_playback::list_output_devices()
+            let listed = field_audio_playback::list_output_devices_with_config()
                 .map_err(|err| mlua::Error::runtime(err.to_string()))?;
             let table = lua.create_table_with_capacity(listed.len(), 0)?;
             for (index, info) in listed.into_iter().enumerate() {

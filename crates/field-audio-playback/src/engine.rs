@@ -1061,13 +1061,48 @@ impl PlaybackEngine {
     }
 
     /// Reopen the stream on a new device, preserving shared state.
+    ///
+    /// Waits at most [`OUTPUT_OPEN_TIMEOUT`]. The current PCM is released
+    /// first so ALSA `dmix` can open its slave. If the new device does not
+    /// start, the stream stays down and the host can show output as unavailable.
     pub fn reopen(&mut self, device: &Device) -> Result<()> {
+        self.reopen_with_timeout(device, OUTPUT_OPEN_TIMEOUT)
+    }
+
+    /// Like [`Self::reopen`] with an explicit timeout.
+    ///
+    /// The open runs on a helper thread. If the timeout fires while CPAL is
+    /// still blocked, that thread is left to finish on its own and this call
+    /// returns an error with no stream attached.
+    pub fn reopen_with_timeout(&mut self, device: &Device, timeout: Duration) -> Result<()> {
         self.shared.bump_epoch();
-        let (stream, output_rate, output_channels) =
-            build_playing_stream(device, self.shared.clone())?;
-        self._stream = Some(stream);
-        self.shared.set_output_layout(output_rate, output_channels);
-        Ok(())
+        self._stream = None;
+        let device = device.clone();
+        let shared = self.shared.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::Builder::new()
+            .name("fa-open-output".into())
+            .spawn(move || {
+                let _ = tx.send(build_playing_stream(&device, shared));
+            })
+            .context("spawn output-open thread")?;
+        match rx.recv_timeout(timeout) {
+            Ok(Ok((stream, output_rate, output_channels))) => {
+                self._stream = Some(stream);
+                self.shared.set_output_layout(output_rate, output_channels);
+                Ok(())
+            }
+            Ok(Err(err)) => Err(err),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                anyhow::bail!(
+                    "opening output device timed out after {} ms",
+                    timeout.as_millis()
+                )
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("output-open thread exited without a result")
+            }
+        }
     }
 }
 

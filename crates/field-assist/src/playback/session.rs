@@ -115,7 +115,15 @@ impl PlaybackSession {
 
     pub fn set_output_device(&mut self, device: &Device) -> Result<()> {
         self.stop();
-        self.engine.reopen(device)?;
+        if let Err(err) = self.engine.reopen(device) {
+            if !self.engine.output_active() {
+                self.output_fault = Some(format!(
+                    "Audio output unavailable ({err}). Select a working device in Monitor \
+                     to enable playback."
+                ));
+            }
+            return Err(err);
+        }
         self.output_fault = None;
         self.apply_to_engine();
         Ok(())

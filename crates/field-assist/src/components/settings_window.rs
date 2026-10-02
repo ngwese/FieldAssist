@@ -38,17 +38,11 @@ impl IconNamed for AudioWaveformIcon {
     }
 }
 
-/// Build the Settings tree bound to the global [`settings::AppSettingsStore`].
-pub fn build_settings_ui(cx: &App) -> Settings {
-    let theme_options: Vec<(SharedString, SharedString)> = ThemeRegistry::global(cx)
-        .sorted_themes()
-        .into_iter()
-        .map(|theme| {
-            let name: SharedString = theme.name.clone();
-            (name.clone(), name)
-        })
-        .collect();
-
+/// Output-device choices for the Audio page.
+///
+/// Names only, and only when the Settings window is created. Rebuilding this
+/// on every paint used to open each ALSA PCM.
+fn output_device_options() -> Vec<(SharedString, SharedString)> {
     let mut device_options: Vec<(SharedString, SharedString)> =
         vec![("".into(), "System Default".into())];
     if let Ok(devices) = list_output_devices() {
@@ -57,6 +51,19 @@ pub fn build_settings_ui(cx: &App) -> Settings {
             device_options.push((name.clone(), name));
         }
     }
+    device_options
+}
+
+/// Build the Settings tree bound to the global [`settings::AppSettingsStore`].
+pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: &App) -> Settings {
+    let theme_options: Vec<(SharedString, SharedString)> = ThemeRegistry::global(cx)
+        .sorted_themes()
+        .into_iter()
+        .map(|theme| {
+            let name: SharedString = theme.name.clone();
+            (name.clone(), name)
+        })
+        .collect();
 
     Settings::new("field-assist-settings")
         .with_size(Size::Small)
@@ -782,6 +789,7 @@ struct DecimalFieldState {
 /// Root view for the Preferences window.
 pub struct SettingsView {
     focus_handle: FocusHandle,
+    device_options: Vec<(SharedString, SharedString)>,
 }
 
 impl SettingsView {
@@ -792,6 +800,7 @@ impl SettingsView {
         settings::reload_from_disk(cx);
         Self {
             focus_handle: cx.focus_handle(),
+            device_options: output_device_options(),
         }
     }
 }
@@ -823,7 +832,7 @@ impl Render for SettingsView {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(build_settings_ui(cx)),
+                    .child(build_settings_ui(self.device_options.clone(), cx)),
             )
     }
 }

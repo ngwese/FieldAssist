@@ -59,8 +59,8 @@ mod src_convert;
 mod transport;
 
 pub use device::{
-    list_output_devices, output_device_name, print_output_devices, resolve_output_device,
-    OutputDeviceInfo,
+    list_output_devices, list_output_devices_with_config, output_device_name, print_output_devices,
+    resolve_output_device, OutputDeviceInfo,
 };
 pub use engine::{
     PlaybackEngine, PlaybackShared, PlaybackStats, OUTPUT_OPEN_TIMEOUT, PLAYBACK_READ_FRAMES,
