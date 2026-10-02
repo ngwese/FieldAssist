@@ -6,18 +6,9 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::thread::{self, JoinHandle};
 
 use anyhow::{bail, Context, Result};
-use flacenc::bitsink::ByteSink;
-use flacenc::component::BitRepr;
-use flacenc::config;
-use flacenc::constant::{MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
-use flacenc::encode_with_fixed_block_size;
-use flacenc::error::Verify;
-use flacenc::source::Fill;
-use flacenc::source::Source;
+use flac_codec::encode::{FlacSampleWriter, Options};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use rusty_vorbis::VorbisEncoder;
@@ -165,11 +156,14 @@ impl EncodeStream for WavEncodeStream {
     }
 }
 
-// ── FLAC (pull Source + bounded block queue) ─────────────────────────────────
+// ── FLAC (`flac-codec` sample writer) ────────────────────────────────────────
+
+fn flac_options() -> Options {
+    Options::default().no_padding().overwrite()
+}
 
 struct FlacEncodeStream {
-    tx: Option<SyncSender<Option<Vec<i32>>>>,
-    join: Option<JoinHandle<Result<()>>>,
+    writer: Option<FlacSampleWriter<BufWriter<File>>>,
     bits: u32,
     channels: usize,
     frames_written: u64,
@@ -183,33 +177,33 @@ impl FlacEncodeStream {
             .context("FLAC requires a sample format")?;
         let bits = bits_for_integer(format).context("FLAC requires signed integer PCM")?;
         let channels = usize::from(spec.channel_count);
-        let sample_rate = spec.sample_rate as usize;
-        let total_frames = total_output_frames as usize;
-        if total_frames > 0 && total_frames < MIN_BLOCK_SIZE {
-            bail!("FLAC cannot encode fewer than {MIN_BLOCK_SIZE} frames (got {total_frames})");
+        if channels == 0 || channels > 8 {
+            bail!("FLAC channel count must be 1..=8 (got {channels})");
         }
-        let dest_buf = dest.to_path_buf();
-        let (tx, rx) = sync_channel::<Option<Vec<i32>>>(2);
-        let join = thread::Builder::new()
-            .name("fa-flac-encode".into())
-            .spawn(move || {
-                encode_flac_from_channel(
-                    rx,
-                    channels,
-                    bits as usize,
-                    sample_rate,
-                    total_frames,
-                    &dest_buf,
-                )
-            })
-            .context("spawn FLAC encode thread")?;
+        let total_interleaved = if total_output_frames > 0 {
+            Some(
+                total_output_frames
+                    .checked_mul(channels as u64)
+                    .context("FLAC total sample count overflow")?,
+            )
+        } else {
+            None
+        };
+        let writer = FlacSampleWriter::create(
+            dest,
+            flac_options(),
+            spec.sample_rate,
+            bits,
+            channels as u8,
+            total_interleaved,
+        )
+        .map_err(|err| anyhow::anyhow!("FLAC create {}: {err}", dest.display()))?;
         Ok(Self {
-            tx: Some(tx),
-            join: Some(join),
+            writer: Some(writer),
             bits,
             channels,
             frames_written: 0,
-            total_output_frames: total_output_frames,
+            total_output_frames,
         })
     }
 }
@@ -228,162 +222,35 @@ impl EncodeStream for FlacEncodeStream {
             );
         }
         let samples = interleave_i32(planar, self.bits);
-        let tx = self.tx.as_ref().context("FLAC stream already finished")?;
-        tx.send(Some(samples))
-            .map_err(|_| anyhow::anyhow!("FLAC encode thread closed"))?;
+        let writer = self
+            .writer
+            .as_mut()
+            .context("FLAC stream already finished")?;
+        writer
+            .write(&samples)
+            .map_err(|err| anyhow::anyhow!("FLAC write: {err}"))?;
         self.frames_written += frames as u64;
         Ok(())
     }
 
     fn finish(&mut self) -> Result<()> {
-        // Pad to whole flacenc blocks with silence so Symphonia can decode.
-        if let Some(tx) = self.tx.as_ref() {
-            let block = MAX_BLOCK_SIZE.min(4096).max(MIN_BLOCK_SIZE);
-            let target = if self.total_output_frames > 0 {
-                self.total_output_frames
-                    .div_ceil(block as u64)
-                    .saturating_mul(block as u64)
-            } else {
-                self.frames_written
-                    .div_ceil(block as u64)
-                    .saturating_mul(block as u64)
-            };
-            while self.frames_written < target {
-                let n = ((target - self.frames_written) as usize).min(block);
-                let silence = vec![0i32; n * self.channels];
-                tx.send(Some(silence))
-                    .map_err(|_| anyhow::anyhow!("FLAC encode thread closed"))?;
-                self.frames_written += n as u64;
-            }
+        let Some(mut writer) = self.writer.take() else {
+            return Ok(());
+        };
+        // Match declared STREAMINFO length when the caller committed to a total.
+        if self.total_output_frames > 0 && self.frames_written < self.total_output_frames {
+            let missing = (self.total_output_frames - self.frames_written) as usize;
+            let silence = vec![0i32; missing * self.channels];
+            writer
+                .write(&silence)
+                .map_err(|err| anyhow::anyhow!("FLAC pad silence: {err}"))?;
+            self.frames_written += missing as u64;
         }
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(None);
-            drop(tx);
-        }
-        if let Some(join) = self.join.take() {
-            join.join()
-                .map_err(|_| anyhow::anyhow!("FLAC encode thread panicked"))??;
-        }
+        writer
+            .finalize()
+            .map_err(|err| anyhow::anyhow!("FLAC finalize: {err}"))?;
         Ok(())
     }
-}
-
-struct ChannelFlacSource {
-    rx: Receiver<Option<Vec<i32>>>,
-    leftover: Vec<i32>,
-    channels: usize,
-    bits: usize,
-    sample_rate: usize,
-    total_frames: usize,
-    frames_delivered: usize,
-    eof: bool,
-}
-
-impl Source for ChannelFlacSource {
-    fn channels(&self) -> usize {
-        self.channels
-    }
-    fn bits_per_sample(&self) -> usize {
-        self.bits
-    }
-    fn sample_rate(&self) -> usize {
-        self.sample_rate
-    }
-    fn len_hint(&self) -> Option<usize> {
-        if self.total_frames > 0 {
-            Some(self.total_frames)
-        } else {
-            None
-        }
-    }
-    fn read_samples<F: Fill>(
-        &mut self,
-        block_size: usize,
-        dest: &mut F,
-    ) -> Result<usize, flacenc::error::SourceError> {
-        let want = block_size.saturating_mul(self.channels);
-        while self.leftover.len() < want && !self.eof {
-            match self.rx.recv() {
-                Ok(Some(chunk)) => self.leftover.extend_from_slice(&chunk),
-                Ok(None) => self.eof = true,
-                Err(_) => self.eof = true,
-            }
-        }
-        if self.leftover.is_empty() {
-            return Ok(0);
-        }
-        let take_samples = want.min(self.leftover.len());
-        // Align to whole frames.
-        let take_samples = take_samples - (take_samples % self.channels.max(1));
-        if take_samples == 0 {
-            return Ok(0);
-        }
-        let chunk: Vec<i32> = self.leftover.drain(..take_samples).collect();
-        let frames = take_samples / self.channels;
-        dest.fill_interleaved(&chunk)?;
-        self.frames_delivered += frames;
-        Ok(frames)
-    }
-}
-
-fn encode_flac_from_channel(
-    rx: Receiver<Option<Vec<i32>>>,
-    channels: usize,
-    bits: usize,
-    sample_rate: usize,
-    total_frames: usize,
-    dest: &Path,
-) -> Result<()> {
-    let mut source = ChannelFlacSource {
-        rx,
-        leftover: Vec::new(),
-        channels,
-        bits,
-        sample_rate,
-        total_frames,
-        frames_delivered: 0,
-        eof: false,
-    };
-    let mut encoder_cfg = config::Encoder::default();
-    encoder_cfg.multithread = false;
-    if total_frames > 0 && total_frames <= MAX_BLOCK_SIZE {
-        encoder_cfg.block_size = total_frames.max(MIN_BLOCK_SIZE);
-    }
-    let block_size = encoder_cfg.block_size;
-    let config = encoder_cfg
-        .into_verified()
-        .map_err(|(_, err)| anyhow::anyhow!("invalid FLAC encoder config: {err}"))?;
-
-    // Pad declared length to whole blocks so Symphonia can read the stream;
-    // adjust STREAMINFO after encode (same approach as full-buffer path).
-    let padded_hint = if total_frames > 0 {
-        total_frames.div_ceil(block_size) * block_size
-    } else {
-        0
-    };
-    if padded_hint > total_frames && total_frames > 0 {
-        source.total_frames = padded_hint;
-    }
-
-    let mut stream = encode_with_fixed_block_size(&config, source, config.block_size)
-        .map_err(|err| anyhow::anyhow!("FLAC encode failed: {err}"))?;
-    if padded_hint != total_frames && total_frames > 0 {
-        stream.stream_info_mut().set_total_samples(total_frames);
-        stream.stream_info_mut().set_md5_digest(&[0u8; 16]);
-        stream
-            .stream_info_mut()
-            .set_block_sizes(block_size, block_size)
-            .map_err(|err| anyhow::anyhow!("FLAC block size update failed: {err}"))?;
-    }
-    let mut sink = ByteSink::new();
-    stream
-        .write(&mut sink)
-        .map_err(|err| anyhow::anyhow!("FLAC write failed: {err}"))?;
-    if sink.as_slice().is_empty() {
-        bail!("FLAC encoder produced no bytes");
-    }
-    std::fs::write(dest, sink.as_slice()).with_context(|| format!("write {}", dest.display()))?;
-    Ok(())
 }
 
 // ── Ogg Vorbis ───────────────────────────────────────────────────────────────

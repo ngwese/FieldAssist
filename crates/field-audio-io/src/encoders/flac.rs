@@ -1,26 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use std::io::Write;
+use std::io::{Cursor, Write};
 
 use anyhow::{bail, Context, Result};
-use flacenc::bitsink::ByteSink;
-use flacenc::component::BitRepr;
-use flacenc::config;
-use flacenc::constant::{MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
-use flacenc::encode_with_fixed_block_size;
-use flacenc::error::Verify;
-use flacenc::source::MemSource;
+use flac_codec::encode::{FlacSampleWriter, Options};
 
 use crate::metadata::TagMap;
 use crate::pcm::{bits_for_integer, interleave_i32, planar_frames};
 use crate::spec::{EncodeSpec, EncoderCaps, PcmFormat};
 use crate::FormatEncoder;
 
-/// FLAC encoder using `flacenc`.
+/// FLAC encoder using `flac-codec`.
 pub struct FlacEncoder;
 
 const FORMATS: &[PcmFormat] = &[PcmFormat::S8, PcmFormat::S16, PcmFormat::S24];
+
+fn flac_options() -> Options {
+    // Default compression; no padding block (ingest/staging files are final).
+    Options::default().no_padding()
+}
 
 impl FormatEncoder for FlacEncoder {
     fn id(&self) -> &'static str {
@@ -73,76 +72,33 @@ impl FormatEncoder for FlacEncoder {
         if frames == 0 {
             bail!("FLAC cannot encode an empty buffer");
         }
-        // flacenc/Symphonia need at least MIN_BLOCK_SIZE samples in a frame;
-        // shorter buffers encode to bytes that common decoders reject.
-        if frames < MIN_BLOCK_SIZE {
-            bail!("FLAC cannot encode fewer than {MIN_BLOCK_SIZE} frames (got {frames})");
-        }
         let bits = bits_for_integer(format).context("FLAC requires signed integer PCM")?;
+        let channels = planar.len() as u8;
+        let samples = interleave_i32(planar, bits);
 
-        let mut encoder_cfg = config::Encoder::default();
-        encoder_cfg.multithread = false;
-        // Prefer one frame when the whole buffer fits — avoids short final
-        // frames that Symphonia cannot read from flacenc output.
-        if frames <= MAX_BLOCK_SIZE {
-            encoder_cfg.block_size = frames;
-        }
-        let block_size = encoder_cfg.block_size;
-
-        // flacenc's short final frame is playable in ffmpeg/reference flac but
-        // Symphonia (our decoder) fails with "unexpected end of file". Pad to a
-        // whole number of blocks, then declare the true length in STREAMINFO.
-        let padded_frames = frames.div_ceil(block_size) * block_size;
-        let padded_planar: Option<Vec<Vec<f32>>> = if padded_frames == frames {
-            None
-        } else {
-            Some(
-                planar
-                    .iter()
-                    .map(|ch| {
-                        let mut padded = ch.clone();
-                        padded.resize(padded_frames, 0.0);
-                        padded
-                    })
-                    .collect(),
-            )
-        };
-        let planar_for_encode: &[Vec<f32>] = padded_planar.as_deref().unwrap_or(planar);
-
-        let samples = interleave_i32(planar_for_encode, bits);
-        let source = MemSource::from_samples(
-            &samples,
-            planar.len(),
-            bits as usize,
-            spec.sample_rate as usize,
-        );
-        let config = encoder_cfg
-            .into_verified()
-            .map_err(|(_, err)| anyhow::anyhow!("invalid FLAC encoder config: {err}"))?;
-        let mut stream = encode_with_fixed_block_size(&config, source, config.block_size)
-            .map_err(|err| anyhow::anyhow!("FLAC encode failed: {err}"))?;
-        if padded_frames != frames {
-            stream.stream_info_mut().set_total_samples(frames);
-            // Padded MD5 would not match the audible samples; clear it.
-            stream.stream_info_mut().set_md5_digest(&[0u8; 16]);
-            // All encoded frames are full-size after padding.
-            stream
-                .stream_info_mut()
-                .set_block_sizes(block_size, block_size)
-                .map_err(|err| anyhow::anyhow!("FLAC block size update failed: {err}"))?;
-        }
-        let mut sink = ByteSink::new();
-        stream
-            .write(&mut sink)
-            .map_err(|err| anyhow::anyhow!("FLAC write failed: {err}"))?;
-        if sink.as_slice().is_empty() {
+        let mut cursor = Cursor::new(Vec::new());
+        let mut flac = FlacSampleWriter::new(
+            &mut cursor,
+            flac_options(),
+            spec.sample_rate,
+            bits,
+            channels,
+            Some(samples.len() as u64),
+        )
+        .map_err(|err| anyhow::anyhow!("FLAC create writer: {err}"))?;
+        flac.write(&samples)
+            .map_err(|err| anyhow::anyhow!("FLAC write: {err}"))?;
+        flac.finalize()
+            .map_err(|err| anyhow::anyhow!("FLAC finalize: {err}"))?;
+        let bytes = cursor.into_inner();
+        if bytes.is_empty() {
             bail!("FLAC encoder produced no bytes");
         }
         super::tag_write::encode_with_optional_tags(
             "flac",
             tags,
             |out| {
-                out.extend_from_slice(sink.as_slice());
+                out.extend_from_slice(&bytes);
                 Ok(())
             },
             writer,

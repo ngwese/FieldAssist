@@ -238,7 +238,9 @@ fn flac_rejects_unsupported_format_and_empty_buffer() {
 }
 
 #[test]
-fn flac_short_buffer_below_min_block_fails() {
+fn flac_short_buffer_decodes() {
+    // flac-codec accepts short streams (final frame may be shorter than block).
+    let dir = TempDir::new().expect("tempdir");
     let flac = encoder("flac").expect("flac");
     let frames = 20usize;
     let planar = planar_sine(frames, 1, RATE);
@@ -247,19 +249,15 @@ fn flac_short_buffer_below_min_block_fails() {
         sample_format: Some(PcmFormat::S16),
         channel_count: 1,
     };
-    let err = flac
-        .encode(&spec, &planar, &mut Vec::new())
-        .expect_err("short FLAC must fail");
-    assert!(
-        err.to_string().contains("fewer than"),
-        "unexpected error: {err}"
-    );
+    let path = temp_path(&dir, "short.flac");
+    encode_to_path(flac, &spec, &planar, &path).expect("encode short flac");
+    let decoded = decode(&path).expect("decode short flac");
+    assert_eq!(decoded.frames(), frames);
 }
 
 #[test]
 fn flac_non_block_multiple_length_decodes() {
-    // Regression: lengths that leave a short final flacenc frame used to
-    // produce files Symphonia rejected (silent open in the app).
+    // Regression: odd lengths must still decode in Symphonia after encode.
     let dir = TempDir::new().expect("tempdir");
     let flac = encoder("flac").expect("flac");
     for frames in [4097usize, 4200, 8193, 66_150] {
@@ -295,7 +293,7 @@ fn flac_non_block_multiple_length_decodes() {
 fn flac_min_block_buffer_decodes() {
     let dir = TempDir::new().expect("tempdir");
     let flac = encoder("flac").expect("flac");
-    let frames = 32usize; // flacenc::constant::MIN_BLOCK_SIZE
+    let frames = 32usize;
     let planar = planar_sine(frames, 1, RATE);
     let spec = EncodeSpec {
         sample_rate: RATE,
@@ -314,6 +312,41 @@ fn flac_min_block_buffer_decodes() {
         quant_tol(PcmFormat::S16),
         "min-block flac",
     );
+}
+
+#[test]
+fn flac_s24_quad_stays_near_pcm_size() {
+    // Regression: flacenc Fixed+Rice bloated 4ch/24-bit Ambix ~39×; flac-codec
+    // must stay near PCM size on noise-like multi-channel content.
+    let dir = TempDir::new().expect("tempdir");
+    let flac = encoder("flac").expect("flac");
+    let frames = 8_192usize;
+    let channels = 4usize;
+    let mut planar = vec![vec![0.0f32; frames]; channels];
+    for (ch, plane) in planar.iter_mut().enumerate() {
+        for (i, sample) in plane.iter_mut().enumerate() {
+            // Decorrelated noise-ish content (Ambix-like).
+            let t = (i + ch * 17) as f32 * 0.017;
+            *sample =
+                (t.sin() * 0.37 + ((i * (ch + 3)) as f32 * 0.001).sin() * 0.21).clamp(-1.0, 1.0);
+        }
+    }
+    let spec = EncodeSpec {
+        sample_rate: 44_100,
+        sample_format: Some(PcmFormat::S24),
+        channel_count: channels as u16,
+    };
+    let path = temp_path(&dir, "quad-s24.flac");
+    encode_to_path(flac, &spec, &planar, &path).expect("encode quad s24");
+    let flac_size = std::fs::metadata(&path).expect("meta").len();
+    let pcm_bytes = (frames * channels * 3) as u64;
+    assert!(
+        flac_size < pcm_bytes.saturating_mul(2),
+        "flac {flac_size} bloated vs pcm {pcm_bytes}"
+    );
+    let decoded = decode(&path).expect("decode quad s24");
+    assert_eq!(decoded.frames(), frames);
+    assert_eq!(decoded.channel_count(), channels);
 }
 
 fn wav_flac_wav_chain(format: PcmFormat, channels: usize) {

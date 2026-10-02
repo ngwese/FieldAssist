@@ -22,7 +22,6 @@ mlua = { workspace = true }
 hound = { workspace = true }
 rusty_vorbis = { workspace = true }
 ogg = { workspace = true }
-flacenc = { workspace = true }
 rubato = { workspace = true }
 field-core = { path = "../field-core" }
 field-variables = { path = "../field-variables" }

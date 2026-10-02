@@ -10,7 +10,7 @@ anyhow = { workspace = true }
 field-audio-model = { path = "../field-audio-model" }
 field-audio-process = { path = "../field-audio-process" }
 field-variables = { path = "../field-variables" }
-flacenc = { workspace = true }
+flac-codec = { workspace = true }
 hound = { workspace = true }
 lofty = { workspace = true }
 ogg = { workspace = true }
