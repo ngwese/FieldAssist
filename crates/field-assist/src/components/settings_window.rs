@@ -72,7 +72,7 @@ pub fn build_settings_ui(cx: &App) -> Settings {
                         .item(
                             SettingItem::new(
                                 "Theme",
-                                SettingField::dropdown(
+                                SettingField::scrollable_dropdown(
                                     theme_options,
                                     |cx| {
                                         settings::store(cx)
