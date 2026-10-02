@@ -221,9 +221,10 @@ on a no-arg `new_instance` init.
   Variables pane view.
 - `session:variable_resolver()` / `composition:variable_resolver()` /
   `user:variable_resolver()` — site VariableResolver userdata with
-  `:resolve(expr)` → `value, scope` (or `nil, nil`) and
-  `:expand(template [, strict])` (soft by default). Composition site matches
-  the Variables pane (`source.*` + user + session + composition).
+  `:bindings()` → site Bindings array, `:resolve(expr)` → `value, scope`
+  (or `nil, nil`), and `:expand(template [, strict])` (soft by default).
+  Composition site matches the Variables pane (`source.*` + user + session +
+  composition).
 - `field.variables.flatten({ bindings, … })` — materialize a custom bindings
   list with the active resolver (row array + leaf map).
 - Probe / source Bindings — **r/o** (`values[k] = …` errors).

@@ -484,7 +484,7 @@ pub fn resolve_composition_variable(
     resolve_one_with_active(lua, &bindings, scope, name)
 }
 
-/// Site-scoped variable resolver userdata (`:resolve` / `:expand`).
+/// Site-scoped variable resolver userdata (`:resolve` / `:expand` / `:bindings`).
 #[derive(Clone)]
 pub struct LuaVariableResolver {
     bindings: Vec<LuaBindings>,
@@ -499,6 +499,13 @@ impl LuaVariableResolver {
 
 impl UserData for LuaVariableResolver {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("bindings", |lua, this, ()| {
+            let table = lua.create_table_with_capacity(this.bindings.len(), 0)?;
+            for (index, binding) in this.bindings.iter().enumerate() {
+                table.set(index + 1, binding.clone())?;
+            }
+            Ok(table)
+        });
         methods.add_method("resolve", |lua, this, (expr, expand): (String, Value)| {
             let expand = match expand {
                 Value::Nil => false,
@@ -937,6 +944,32 @@ mod tests {
             out.result.as_deref(),
             Some("nil\tresolve_comp.wav\tsource\tmine\tcomposition\tresolve_comp.wav\tsource")
         );
+    }
+
+    #[test]
+    fn variable_resolver_bindings_lists_site_scopes() {
+        let mut host = host_with_resolver();
+        let out = host.eval(
+            r#"
+            local user = field.variables.user()
+            user.values.artist = "Ada"
+            local bindings = user:variable_resolver():bindings()
+            local scopes = {}
+            for _, b in ipairs(bindings) do
+              scopes[#scopes + 1] = b:scope()
+            end
+            table.sort(scopes)
+            local has_artist = false
+            for _, b in ipairs(bindings) do
+              if b:scope() == "user" and b.values.artist == "Ada" then
+                has_artist = true
+              end
+            end
+            return table.concat(scopes, ","), tostring(has_artist)
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("user\ttrue"));
     }
 
     #[test]

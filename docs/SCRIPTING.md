@@ -976,6 +976,7 @@ Obtain via:
 
 | Method | Arguments | Returns | Description |
 | ------ | --------- | ------- | ----------- |
+| `:bindings` | — | `{ bindings, … }` | Site Bindings array (same order as resolve / the Variables pane). Pass to `field.variables.flatten` or iterate `:scope()` / `:names()` / `values` |
 | `:resolve` | `expr: string` [, `expand: boolean`] | `value, scope` or `nil, nil` | Bare leaf (`"title"`) or qualified (`"user.ingest.root_dir"`, `"env.HOME"`, `"source.basename"`). When `expand == true`, soft-expand `${…}` in the resolved value against this site before returning (same soft rules as `:expand`) |
 | `:expand` | `template` [, `strict`] | `string` | Soft by default (unresolved `${…}` left as-is); `strict == true` errors like export |
 
@@ -986,6 +987,13 @@ local value, scope = r:resolve("TIMECODE_FLAG")
 local value, scope = r:resolve("source.ixml.TIMECODE_FLAG")
 local staging, scope = r:resolve("user.ingest.staging_dir", true)  -- expand value
 local path = r:expand("${source.parent}/${title}.wav")
+for _, b in ipairs(r:bindings()) do
+  if b:scope() == "source" or b:scope():match("^source%.") then
+    for _, name in ipairs(b:names()) do
+      print(b:scope(), name, b.values[name])
+    end
+  end
+end
 ```
 
 `flatten` is the low-level bindings-list materializer (rename of the former
