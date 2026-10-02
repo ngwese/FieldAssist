@@ -121,6 +121,32 @@ pub(crate) fn path_from_lua(value: Value) -> mlua::Result<PathBuf> {
     }
 }
 
+/// Walk `path` and its parents until an existing path is found.
+///
+/// Needed because Unix `statvfs` fails for missing paths, while staging /
+/// backup roots may not exist yet when callers probe free space.
+fn existing_volume_path(path: &Path) -> Result<PathBuf, String> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Ok(current);
+        }
+        if !current.pop() {
+            return Err(format!("no existing path on volume for {}", path.display()));
+        }
+    }
+}
+
+fn available_space_bytes(path: &Path) -> Result<u64, String> {
+    let existing = existing_volume_path(path)?;
+    fs4::available_space(&existing).map_err(|e| e.to_string())
+}
+
+fn total_space_bytes(path: &Path) -> Result<u64, String> {
+    let existing = existing_volume_path(path)?;
+    fs4::total_space(&existing).map_err(|e| e.to_string())
+}
+
 /// Bind `field.fs`.
 pub fn bind_fs(lua: &Lua, field: &Table) -> mlua::Result<()> {
     let fs = lua.create_table()?;
@@ -249,6 +275,22 @@ pub fn bind_fs(lua: &Lua, field: &Table) -> mlua::Result<()> {
         })?,
     )?;
     fs.set(
+        "available_space",
+        lua.create_function(|_, path: Value| {
+            let path = path_from_lua(path)?;
+            let bytes = available_space_bytes(&path).map_err(mlua::Error::runtime)?;
+            Ok(bytes as i64)
+        })?,
+    )?;
+    fs.set(
+        "total_space",
+        lua.create_function(|_, path: Value| {
+            let path = path_from_lua(path)?;
+            let bytes = total_space_bytes(&path).map_err(mlua::Error::runtime)?;
+            Ok(bytes as i64)
+        })?,
+    )?;
+    fs.set(
         "checksum",
         lua.create_function(|_, (path, algo): (Value, Value)| {
             let path = path_from_lua(path)?;
@@ -360,5 +402,46 @@ mod tests {
         let out = host.eval(&code);
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.result.as_deref(), Some("true\t2"));
+    }
+
+    #[test]
+    fn available_and_total_space_on_existing_and_missing_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let available = available_space_bytes(dir.path()).unwrap();
+        let total = total_space_bytes(dir.path()).unwrap();
+        assert!(available > 0, "available={available}");
+        assert!(total >= available, "total={total} available={available}");
+
+        let missing = dir.path().join("not-created-yet");
+        assert!(!missing.exists());
+        let available_missing = available_space_bytes(&missing).unwrap();
+        assert!(
+            available_missing > 0,
+            "available_missing={available_missing}"
+        );
+        // Same volume; allow a small delta for concurrent disk activity.
+        let delta = available.abs_diff(available_missing);
+        assert!(
+            delta < 64 * 1024 * 1024,
+            "available={available} available_missing={available_missing} delta={delta}"
+        );
+
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let root = dir.path().display().to_string().replace('\\', "\\\\");
+        let code = format!(
+            r#"
+            local avail = field.fs.available_space("{root}")
+            local total = field.fs.total_space("{root}/missing/child")
+            return avail > 0 and total >= avail
+            "#,
+            root = root
+        );
+        let out = host.eval(&code);
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
     }
 }

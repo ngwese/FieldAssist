@@ -17,6 +17,7 @@ field-core = { path = "../field-core" }
 field-session = { path = "../field-session" }
 field-variables = { path = "../field-variables" }
 field-settings = { path = "../field-settings" }
+fs4 = "0.13"
 mlua = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

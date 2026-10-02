@@ -13,7 +13,8 @@
 --
 -- Staging / Backup default to ${user.ingest.staging_root} /
 -- ${user.ingest.backup_root} (expanded); Configure shows path fields with
--- muted resolved previews. Paths may use ${…} templates.
+-- muted resolved previews (input file count/size under Source; free space
+-- under Staging / Backup). Paths may use ${…} templates.
 --
 -- Copy into the FieldAssist config directory next to init.lua.
 -- Requires shared.lua in the same directory (via field.include).
@@ -174,19 +175,89 @@ function Ingest:preview_path(raw, fallback_name)
   return resolved
 end
 
+--- Sum media file sizes under a resolved source path (`0, 0` when empty).
+function Ingest:source_input_totals(resolved)
+  if not resolved or resolved == "" or resolved == "—" then
+    return 0, 0
+  end
+  local paths = shared.expand_media(resolved)
+  local total_bytes = 0
+  local count = 0
+  for _, path in ipairs(paths) do
+    local ok, stat = pcall(function()
+      return field.fs.stat(path)
+    end)
+    if ok and stat and not stat.is_dir then
+      total_bytes = total_bytes + (tonumber(stat.size) or 0)
+      count = count + 1
+    end
+  end
+  return count, total_bytes
+end
+
+--- Free space suffix for a resolved staging/backup path (`nil` on failure).
+function Ingest:free_space_label(resolved)
+  if not resolved or resolved == "" or resolved == "—" then
+    return nil
+  end
+  local ok, bytes = pcall(function()
+    return field.fs.available_space(resolved)
+  end)
+  if not ok or bytes == nil then
+    return nil
+  end
+  return self:format_bytes(bytes) .. " free"
+end
+
 function Ingest:refresh_path_previews()
-  local function set_preview(control, raw, fallback)
+  local function set_text(control, text)
     if not control then
       return
     end
-    local text = self:preview_path(raw, fallback)
     if control.text ~= text then
       control.text = text
     end
   end
-  set_preview(self.source_resolved, self.source, nil)
-  set_preview(self.staging_resolved, self.staging_root, "user.ingest.staging_root")
-  set_preview(self.backup_resolved, self.backup_root, nil)
+
+  local source_path = self:preview_path(self.source, nil)
+  if source_path == "—" then
+    set_text(self.source_resolved, "—")
+  else
+    local count, bytes = self:source_input_totals(source_path)
+    if count > 0 then
+      set_text(
+        self.source_resolved,
+        string.format(
+          "%s  ·  %d file(s)  ·  %s",
+          source_path,
+          count,
+          self:format_bytes(bytes)
+        )
+      )
+    else
+      set_text(self.source_resolved, source_path)
+    end
+  end
+
+  local staging_path = self:preview_path(self.staging_root, "user.ingest.staging_root")
+  local staging_free = self:free_space_label(staging_path)
+  if staging_path == "—" then
+    set_text(self.staging_resolved, "—")
+  elseif staging_free then
+    set_text(self.staging_resolved, staging_path .. "  ·  " .. staging_free)
+  else
+    set_text(self.staging_resolved, staging_path)
+  end
+
+  local backup_path = self:preview_path(self.backup_root, nil)
+  local backup_free = self:free_space_label(backup_path)
+  if backup_path == "—" then
+    set_text(self.backup_resolved, "—")
+  elseif backup_free then
+    set_text(self.backup_resolved, backup_path .. "  ·  " .. backup_free)
+  else
+    set_text(self.backup_resolved, backup_path)
+  end
 end
 
 function Ingest:build_sheet()
