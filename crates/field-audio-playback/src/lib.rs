@@ -52,6 +52,7 @@ mod device;
 mod engine;
 mod faults;
 mod monitor;
+mod period;
 mod playhead;
 mod prefetch;
 mod provider;
@@ -70,6 +71,7 @@ pub use faults::{
     PLAYBACK_FAULT_LOG_INTERVAL,
 };
 pub use monitor::{map_direct, MonitorProcess};
+pub use period::{period_frame_catalog, snap_period_frames, OpenedPeriod, OutputPeriod};
 pub use playhead::{Playhead, PlayheadEvent};
 pub use prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 pub use provider::PlaybackDataProvider;

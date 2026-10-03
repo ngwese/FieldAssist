@@ -114,4 +114,12 @@ mod tests {
         assert_eq!(s.view.detail, crate::groups::DETAIL_DOCK_TRUE_TAB);
         assert_eq!(s.view.script, DOCK_HIDDEN);
     }
+
+    #[test]
+    fn missing_period_frames_deserializes_as_none() {
+        let json = r#"{ "audio": { "output_device": "Speakers" } }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.audio.output_device.as_deref(), Some("Speakers"));
+        assert_eq!(s.audio.period_frames, None);
+    }
 }

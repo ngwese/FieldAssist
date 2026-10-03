@@ -23,7 +23,7 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window,
 };
 
-use crate::playback::list_output_devices;
+use crate::playback::{list_output_devices, period_frame_catalog};
 use crate::settings::{self, AppSettings};
 
 const DECIMAL_STEP: f64 = 0.1;
@@ -52,6 +52,16 @@ fn output_device_options() -> Vec<(SharedString, SharedString)> {
         }
     }
     device_options
+}
+
+fn period_frame_options() -> Vec<(SharedString, SharedString)> {
+    period_frame_catalog()
+        .into_iter()
+        .map(|frames| {
+            let label: SharedString = frames.to_string().into();
+            (label.clone(), label)
+        })
+        .collect()
 }
 
 /// Build the Settings tree bound to the global [`settings::AppSettingsStore`].
@@ -349,39 +359,81 @@ pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: 
                 .icon(IconName::HardDrive)
                 .description("Playback output")
                 .group(
-                    SettingGroup::new().title("Device").item(
-                        SettingItem::new(
-                            "Output",
-                            SettingField::scrollable_dropdown(
-                                device_options,
-                                |cx| {
-                                    settings::store(cx)
-                                        .settings
-                                        .audio
-                                        .output_device
-                                        .clone()
-                                        .unwrap_or_default()
-                                        .into()
-                                },
-                                |value, cx| {
-                                    let device = {
-                                        let text = value.to_string();
-                                        if text.is_empty() {
-                                            None
-                                        } else {
-                                            Some(text)
-                                        }
-                                    };
-                                    let _ = settings::update_and_save(cx, |s| {
-                                        s.audio.output_device = device.clone();
-                                    });
-                                    crate::app::apply_audio_device_from_settings(cx);
-                                },
+                    SettingGroup::new()
+                        .title("Device")
+                        .item(
+                            SettingItem::new(
+                                "Output",
+                                SettingField::scrollable_dropdown(
+                                    device_options,
+                                    |cx| {
+                                        settings::store(cx)
+                                            .settings
+                                            .audio
+                                            .output_device
+                                            .clone()
+                                            .unwrap_or_default()
+                                            .into()
+                                    },
+                                    |value, cx| {
+                                        let device = {
+                                            let text = value.to_string();
+                                            if text.is_empty() {
+                                                None
+                                            } else {
+                                                Some(text)
+                                            }
+                                        };
+                                        let _ = settings::update_and_save(cx, |s| {
+                                            s.audio.output_device = device.clone();
+                                        });
+                                        crate::app::apply_audio_device_from_settings(cx);
+                                    },
+                                )
+                                .default_value(SharedString::from("")),
                             )
-                            .default_value(SharedString::from("")),
+                            .description("Preferred output device (substring match)"),
                         )
-                        .description("Preferred output device (substring match)"),
-                    ),
+                        .item(
+                            SettingItem::new(
+                                "Period",
+                                SettingField::scrollable_dropdown(
+                                    period_frame_options(),
+                                    |cx| {
+                                        settings::store(cx)
+                                            .settings
+                                            .audio
+                                            .period_frames
+                                            .map(|frames| frames.to_string())
+                                            .unwrap_or_default()
+                                            .into()
+                                    },
+                                    |value, cx| {
+                                        let frames = value.to_string().parse::<u32>().ok();
+                                        let _ = settings::update_and_save(cx, |s| {
+                                            s.audio.period_frames = frames;
+                                        });
+                                        crate::app::apply_audio_period_from_settings(cx);
+                                    },
+                                )
+                                .on_reset(
+                                    |cx| {
+                                        settings::store(cx)
+                                            .settings
+                                            .audio
+                                            .period_frames
+                                            .is_some()
+                                    },
+                                    |_window, cx| {
+                                        let _ = settings::update_and_save(cx, |s| {
+                                            s.audio.period_frames = None;
+                                        });
+                                        crate::app::apply_audio_period_from_settings(cx);
+                                    },
+                                ),
+                            )
+                            .description("Output period in frames"),
+                        ),
                 ),
         )
         .page(

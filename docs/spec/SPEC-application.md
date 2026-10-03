@@ -438,6 +438,12 @@ The playhead is the document caret. Output device is the host default unless
 `--output` or `app.output_device` selects another. Device choice is not stored
 on `.facomp`; pin it from `init.lua` if it must survive relaunch.
 
+Settings → Audio → Device also sets `audio.period_frames` (output period in
+frames). When unset, the host probes the platform default period and stores the
+smallest listed size that is at least twice that large (16, 32, 48, 64, 128,
+192, 288, 480, and powers of two through 8192). Changing the period reopens
+the stream.
+
 ### Monitor chains
 
 Monitor DSP is **playback only**: it answers “how do I listen to this

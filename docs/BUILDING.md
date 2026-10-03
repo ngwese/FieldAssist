@@ -11,7 +11,7 @@
 Install these packages before building:
 
 ```bash
-sudo apt install libasound2-dev libfontconfig-dev libxcb1-dev \
+sudo apt install libasound2-dev libdbus-1-dev libfontconfig-dev libxcb1-dev \
   libxkbcommon-dev libxkbcommon-x11-dev
 ```
 

@@ -73,7 +73,8 @@ use crate::monitor::MonitorChain;
 use crate::monitor_schema::{collect_param_addresses, param_ui_layout_from_json};
 use crate::playback::{
     list_output_devices, output_device_name, resolve_output_device, should_refresh_monitor_ui,
-    PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackSession, TransportState,
+    OpenedPeriod, OutputPeriod, PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackSession,
+    TransportState,
 };
 use crate::progress::{ProgressHandle, ProgressState};
 use crate::script::{
@@ -266,6 +267,8 @@ pub struct AppView {
     output_device: Option<String>,
     /// CPAL name of the output stream that is currently open.
     live_output_name: Option<String>,
+    /// Period frames last successfully opened (`None` = platform default fallback).
+    live_period_frames: Option<u32>,
     /// Cached CPAL output names for the monitor dropdown (refreshed on demand).
     /// Names only: filling default configs opens every ALSA PCM and stalls the UI.
     output_devices_cache: Vec<String>,
@@ -295,6 +298,7 @@ impl AppView {
         playback: PlaybackSession,
         output_device: Option<String>,
         opened_output_name: Option<String>,
+        opened_period_frames: Option<u32>,
         pending_opens: Arc<Mutex<Vec<PathBuf>>>,
         session_path: Option<PathBuf>,
         window: &mut Window,
@@ -617,6 +621,7 @@ impl AppView {
             preview_enabled: false,
             output_device,
             live_output_name: opened_output_name,
+            live_period_frames: opened_period_frames,
             output_devices_cache: Vec::new(),
             drop_layout: None,
             pending_replace: None,
@@ -3004,6 +3009,8 @@ impl AppView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let period_setting = crate::settings::store(cx).settings.audio.period_frames;
+        let period = output_period_from_setting(period_setting);
         let device = resolve_output_device(spec).map_err(|err| err.to_string())?;
         let resolved = output_device_name(&device);
         let selected = spec
@@ -3011,9 +3018,11 @@ impl AppView {
             .map(|_| resolved.clone());
         // Startup applies settings after the stream is already open. Reopening
         // the same device makes ALSA try to open `dmix` while this process
-        // still holds the slave.
+        // still holds the slave. Skip when device and period request match.
         if self.playback.output_active()
             && self.live_output_name.as_deref() == Some(resolved.as_str())
+            && self.live_period_frames == period_setting
+            && period_setting.is_some()
         {
             if self.output_device != selected {
                 self.output_device = selected;
@@ -3022,21 +3031,28 @@ impl AppView {
             }
             return Ok(());
         }
-        if let Err(err) = self.playback.set_output_device(&device) {
-            if !self.playback.output_active() {
-                self.live_output_name = None;
+        match self.playback.set_output_device(&device, period) {
+            Ok(opened) => {
+                self.live_output_name = Some(resolved);
                 self.output_device = selected;
+                self.live_period_frames = opened.requested_frames;
+                persist_opened_period_frames(cx, period_setting, opened);
+                self.refresh_output_devices_cache();
+                self.monitor.update(cx, |_, cx| cx.notify());
+                cx.notify();
+                Ok(())
             }
-            self.monitor.update(cx, |_, cx| cx.notify());
-            cx.notify();
-            return Err(err.to_string());
+            Err(err) => {
+                if !self.playback.output_active() {
+                    self.live_output_name = None;
+                    self.live_period_frames = None;
+                    self.output_device = selected;
+                }
+                self.monitor.update(cx, |_, cx| cx.notify());
+                cx.notify();
+                Err(err.to_string())
+            }
         }
-        self.live_output_name = Some(resolved);
-        self.output_device = selected;
-        self.refresh_output_devices_cache();
-        self.monitor.update(cx, |_, cx| cx.notify());
-        cx.notify();
-        Ok(())
     }
 
     pub(crate) fn select_output_device(
@@ -6934,21 +6950,33 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
     let title = AppView::composition_title(&composition);
     let shared_composition = Arc::new(RwLock::new(composition));
     let shared_buffer = Arc::new(RwLock::new(Buffer::empty()));
+    let period_setting = crate::settings::store(cx).settings.audio.period_frames;
+    let period = output_period_from_setting(period_setting);
     let playback = match &device {
-        Some(device) => PlaybackSession::open(device, shared_composition.clone()),
-        None => PlaybackSession::disabled(shared_composition.clone()),
+        Some(device) => PlaybackSession::open(device, shared_composition.clone(), period)
+            .map(|(session, opened)| (session, opened)),
+        None => PlaybackSession::disabled(shared_composition.clone()).map(|session| {
+            (
+                session,
+                OpenedPeriod {
+                    requested_frames: None,
+                },
+            )
+        }),
     };
-    let playback = match playback {
+    let (playback, opened_period) = match playback {
         Ok(playback) => playback,
         Err(err) => {
             eprintln!("FieldAssist: failed to create playback session: {err}");
             return;
         }
     };
+    persist_opened_period_frames(cx, period_setting, opened_period);
     let opened_output_name = match (&device, playback.output_active()) {
         (Some(device), true) => Some(output_device_name(device)),
         _ => None,
     };
+    let opened_period_frames = opened_period.requested_frames;
 
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions {
@@ -6974,6 +7002,7 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
                 playback,
                 output_device,
                 opened_output_name,
+                opened_period_frames,
                 pending_opens.clone(),
                 session_path.clone(),
                 window,
@@ -7145,6 +7174,57 @@ pub(crate) fn apply_audio_device_from_settings(cx: &mut App) {
             eprintln!("FieldAssist: settings output device: {err}");
         }
     });
+}
+
+/// Reopen the current output with the period from settings (or snap when unset).
+pub(crate) fn apply_audio_period_from_settings(cx: &mut App) {
+    let settings_device = crate::settings::store(cx)
+        .settings
+        .audio
+        .output_device
+        .clone();
+    let cli_locked = crate::settings::store(cx).cli_output_locked;
+    update_open_view(cx, move |this, window, cx| {
+        let owned = if cli_locked {
+            this.live_output_name
+                .clone()
+                .or_else(|| this.output_device.clone())
+        } else {
+            settings_device
+                .clone()
+                .or_else(|| this.live_output_name.clone())
+                .or_else(|| this.output_device.clone())
+        };
+        if let Err(err) = this.set_output_device(owned.as_deref(), window, cx) {
+            eprintln!("FieldAssist: settings output period: {err}");
+        }
+    });
+}
+
+fn output_period_from_setting(period_frames: Option<u32>) -> OutputPeriod {
+    match period_frames {
+        Some(frames) => OutputPeriod::Frames(frames),
+        None => OutputPeriod::SnapTwicePlatformDefault,
+    }
+}
+
+/// Persist a snapped period when settings had none and open chose a listed size.
+fn persist_opened_period_frames(cx: &mut App, prior: Option<u32>, opened: OpenedPeriod) {
+    let Some(frames) = opened.requested_frames else {
+        return;
+    };
+    if prior == Some(frames) {
+        return;
+    }
+    if prior.is_some() {
+        // User picked an explicit size that fell back during open; keep their choice.
+        return;
+    }
+    if let Err(err) = crate::settings::update_and_save(cx, |s| {
+        s.audio.period_frames = Some(frames);
+    }) {
+        eprintln!("FieldAssist: could not save output period: {err}");
+    }
 }
 
 /// Live-apply scripting package-policy toggles to the open editor host.

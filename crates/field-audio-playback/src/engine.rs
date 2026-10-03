@@ -31,6 +31,9 @@ use cpal::{Device, SampleFormat, Stream, StreamConfig};
 
 use super::faults::PlaybackFaults;
 use super::monitor::{map_direct, MonitorProcess};
+use super::period::{
+    larger_period_frames, period_frame_catalog, snap_period_frames, OpenedPeriod, OutputPeriod,
+};
 use super::prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 use super::provider::PlaybackDataProvider;
 use super::src_convert::StreamingSrc;
@@ -38,7 +41,7 @@ use super::transport::TransportState;
 
 /// Faust `Meter/Input*` bargraphs floor at −90 dB; treat near-floor as quiet.
 const INPUT_METER_QUIET_DB: f32 = -89.0;
-/// Max frames covered by the callback gather scratch (matches typical Default).
+/// Max frames covered by the callback gather scratch (largest catalog period).
 const CALLBACK_MAX_FRAMES: usize = 8192;
 
 const IN_OUT_NONE: usize = usize::MAX;
@@ -996,16 +999,23 @@ impl PlaybackEngine {
     /// Blocks until CPAL finishes building and starting the stream. Prefer
     /// [`Self::open_with_timeout`] from UI startup so a stuck device cannot
     /// hang the application.
-    pub fn open(device: &Device, provider: Arc<dyn PlaybackDataProvider>) -> Result<Self> {
-        let (stream, shared) = open_output_stream(device, provider)?;
+    pub fn open(
+        device: &Device,
+        provider: Arc<dyn PlaybackDataProvider>,
+        period: OutputPeriod,
+    ) -> Result<(Self, OpenedPeriod)> {
+        let (stream, shared, opened) = open_output_stream(device, provider, period)?;
         let prefetch_stop = Arc::new(AtomicBool::new(false));
         let prefetch_join = Some(spawn_prefetch(shared.clone(), prefetch_stop.clone())?);
-        Ok(Self {
-            _stream: Some(stream),
-            shared,
-            prefetch_stop,
-            prefetch_join,
-        })
+        Ok((
+            Self {
+                _stream: Some(stream),
+                shared,
+                prefetch_stop,
+                prefetch_join,
+            },
+            opened,
+        ))
     }
 
     /// Like [`Self::open`], but abandons the attempt after [`OUTPUT_OPEN_TIMEOUT`]
@@ -1016,15 +1026,16 @@ impl PlaybackEngine {
     pub fn open_with_timeout(
         device: &Device,
         provider: Arc<dyn PlaybackDataProvider>,
+        period: OutputPeriod,
         timeout: Duration,
-    ) -> Result<Self> {
+    ) -> Result<(Self, OpenedPeriod)> {
         let device = device.clone();
         let provider_thread = provider.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         thread::Builder::new()
             .name("fa-open-output".into())
             .spawn(move || {
-                let _ = tx.send(Self::open(&device, provider_thread));
+                let _ = tx.send(Self::open(&device, provider_thread, period));
             })
             .context("spawn output-open thread")?;
         match rx.recv_timeout(timeout) {
@@ -1065,8 +1076,8 @@ impl PlaybackEngine {
     /// Waits at most [`OUTPUT_OPEN_TIMEOUT`]. The current PCM is released
     /// first so ALSA `dmix` can open its slave. If the new device does not
     /// start, the stream stays down and the host can show output as unavailable.
-    pub fn reopen(&mut self, device: &Device) -> Result<()> {
-        self.reopen_with_timeout(device, OUTPUT_OPEN_TIMEOUT)
+    pub fn reopen(&mut self, device: &Device, period: OutputPeriod) -> Result<OpenedPeriod> {
+        self.reopen_with_timeout(device, period, OUTPUT_OPEN_TIMEOUT)
     }
 
     /// Like [`Self::reopen`] with an explicit timeout.
@@ -1074,7 +1085,12 @@ impl PlaybackEngine {
     /// The open runs on a helper thread. If the timeout fires while CPAL is
     /// still blocked, that thread is left to finish on its own and this call
     /// returns an error with no stream attached.
-    pub fn reopen_with_timeout(&mut self, device: &Device, timeout: Duration) -> Result<()> {
+    pub fn reopen_with_timeout(
+        &mut self,
+        device: &Device,
+        period: OutputPeriod,
+        timeout: Duration,
+    ) -> Result<OpenedPeriod> {
         self.shared.bump_epoch();
         self._stream = None;
         let device = device.clone();
@@ -1083,14 +1099,14 @@ impl PlaybackEngine {
         thread::Builder::new()
             .name("fa-open-output".into())
             .spawn(move || {
-                let _ = tx.send(build_playing_stream(&device, shared));
+                let _ = tx.send(build_playing_stream(&device, shared, period));
             })
             .context("spawn output-open thread")?;
         match rx.recv_timeout(timeout) {
-            Ok(Ok((stream, output_rate, output_channels))) => {
+            Ok(Ok((stream, output_rate, output_channels, opened))) => {
                 self._stream = Some(stream);
                 self.shared.set_output_layout(output_rate, output_channels);
-                Ok(())
+                Ok(opened)
             }
             Ok(Err(err)) => Err(err),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -1125,75 +1141,188 @@ fn spawn_prefetch(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) -> Result<
 fn open_output_stream(
     device: &Device,
     provider: Arc<dyn PlaybackDataProvider>,
-) -> Result<(Stream, Arc<PlaybackShared>)> {
+    period: OutputPeriod,
+) -> Result<(Stream, Arc<PlaybackShared>, OpenedPeriod)> {
     let default_config = device
         .default_output_config()
         .context("failed to get default output config")?;
-    let sample_format = default_config.sample_format();
-    let stream_config = StreamConfig {
-        channels: default_config.channels(),
-        sample_rate: default_config.sample_rate(),
-        buffer_size: cpal::BufferSize::Default,
-    };
-    let output_rate = stream_config.sample_rate;
-    let output_channels = stream_config.channels as usize;
+    let output_rate = default_config.sample_rate();
+    let output_channels = default_config.channels() as usize;
     let shared = Arc::new(PlaybackShared::with_output_layout(
         provider,
         output_rate,
         output_channels,
     ));
-    let stream = build_playing_stream_from_config(
-        device,
-        &default_config,
-        sample_format,
-        stream_config,
-        shared.clone(),
-    )?;
-    Ok((stream, shared))
+    let (stream, _rate, _channels, opened) = build_playing_stream(device, shared.clone(), period)?;
+    Ok((stream, shared, opened))
 }
 
 fn build_playing_stream(
     device: &Device,
     shared: Arc<PlaybackShared>,
-) -> Result<(Stream, u32, usize)> {
+    period: OutputPeriod,
+) -> Result<(Stream, u32, usize, OpenedPeriod)> {
     let default_config = device
         .default_output_config()
         .context("failed to get default output config")?;
     let sample_format = default_config.sample_format();
-    let stream_config = StreamConfig {
-        channels: default_config.channels(),
-        sample_rate: default_config.sample_rate(),
-        buffer_size: cpal::BufferSize::Default,
-    };
-    let output_rate = stream_config.sample_rate;
-    let output_channels = stream_config.channels as usize;
-    let stream = build_playing_stream_from_config(
-        device,
-        &default_config,
-        sample_format,
-        stream_config,
-        shared,
-    )?;
-    Ok((stream, output_rate, output_channels))
+    let output_rate = default_config.sample_rate();
+    let output_channels = default_config.channels() as usize;
+    let (stream, opened) =
+        open_stream_for_period(device, &default_config, sample_format, shared, period)?;
+    Ok((stream, output_rate, output_channels, opened))
 }
 
-fn build_playing_stream_from_config(
+fn open_stream_for_period(
     device: &Device,
     default_config: &cpal::SupportedStreamConfig,
     sample_format: SampleFormat,
-    stream_config: StreamConfig,
+    shared: Arc<PlaybackShared>,
+    period: OutputPeriod,
+) -> Result<(Stream, OpenedPeriod)> {
+    match period {
+        OutputPeriod::Frames(frames) => {
+            match try_playing_stream(
+                device,
+                default_config,
+                sample_format,
+                cpal::BufferSize::Fixed(frames),
+                shared.clone(),
+            ) {
+                Ok(stream) => Ok((
+                    stream,
+                    OpenedPeriod {
+                        requested_frames: Some(frames),
+                    },
+                )),
+                Err(err) => {
+                    eprintln!(
+                        "playback: period {frames} frames rejected ({err}); \
+                         snapping from platform default"
+                    );
+                    open_snapped_period(device, default_config, sample_format, shared)
+                }
+            }
+        }
+        OutputPeriod::SnapTwicePlatformDefault => {
+            open_snapped_period(device, default_config, sample_format, shared)
+        }
+    }
+}
+
+fn open_snapped_period(
+    device: &Device,
+    default_config: &cpal::SupportedStreamConfig,
+    sample_format: SampleFormat,
+    shared: Arc<PlaybackShared>,
+) -> Result<(Stream, OpenedPeriod)> {
+    let catalog = period_frame_catalog();
+    let negotiated =
+        match probe_default_period(device, default_config, sample_format, shared.clone()) {
+            Ok(frames) => frames,
+            Err(err) => {
+                eprintln!(
+                    "playback: could not probe default period ({err}); using platform default"
+                );
+                let stream = try_playing_stream(
+                    device,
+                    default_config,
+                    sample_format,
+                    cpal::BufferSize::Default,
+                    shared,
+                )
+                .context("failed to build output stream")?;
+                return Ok((
+                    stream,
+                    OpenedPeriod {
+                        requested_frames: None,
+                    },
+                ));
+            }
+        };
+
+    let snapped = snap_period_frames(negotiated, &catalog);
+    let mut candidates: Vec<u32> = std::iter::once(snapped)
+        .chain(larger_period_frames(snapped, &catalog))
+        .collect();
+    candidates.dedup();
+
+    for frames in candidates {
+        match try_playing_stream(
+            device,
+            default_config,
+            sample_format,
+            cpal::BufferSize::Fixed(frames),
+            shared.clone(),
+        ) {
+            Ok(stream) => {
+                return Ok((
+                    stream,
+                    OpenedPeriod {
+                        requested_frames: Some(frames),
+                    },
+                ));
+            }
+            Err(err) => {
+                eprintln!("playback: period {frames} frames rejected ({err}); trying larger");
+            }
+        }
+    }
+
+    eprintln!("playback: no catalog period opened; falling back to platform default");
+    let stream = try_playing_stream(
+        device,
+        default_config,
+        sample_format,
+        cpal::BufferSize::Default,
+        shared,
+    )
+    .context("failed to build output stream")?;
+    Ok((
+        stream,
+        OpenedPeriod {
+            requested_frames: None,
+        },
+    ))
+}
+
+/// Open with `BufferSize::Default`, read the negotiated period, then drop the stream.
+fn probe_default_period(
+    device: &Device,
+    default_config: &cpal::SupportedStreamConfig,
+    sample_format: SampleFormat,
+    shared: Arc<PlaybackShared>,
+) -> Result<u32> {
+    let stream = try_playing_stream(
+        device,
+        default_config,
+        sample_format,
+        cpal::BufferSize::Default,
+        shared,
+    )?;
+    let frames = stream
+        .buffer_size()
+        .context("failed to query negotiated buffer size")?;
+    drop(stream);
+    if frames == 0 {
+        anyhow::bail!("negotiated buffer size is zero");
+    }
+    Ok(frames)
+}
+
+fn try_playing_stream(
+    device: &Device,
+    default_config: &cpal::SupportedStreamConfig,
+    sample_format: SampleFormat,
+    buffer_size: cpal::BufferSize,
     shared: Arc<PlaybackShared>,
 ) -> Result<Stream> {
-    let shared_cb = shared.clone();
-    let stream = build_output_stream(device, stream_config, sample_format, shared_cb.clone())
-        .or_else(|_| {
-            let fallback = StreamConfig {
-                channels: default_config.channels(),
-                sample_rate: default_config.sample_rate(),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            build_output_stream(device, fallback, sample_format, shared_cb)
-        })
+    let stream_config = StreamConfig {
+        channels: default_config.channels(),
+        sample_rate: default_config.sample_rate(),
+        buffer_size,
+    };
+    let stream = build_output_stream(device, stream_config, sample_format, shared)
         .context("failed to build output stream")?;
     stream.play().context("failed to start output stream")?;
     Ok(stream)
@@ -1207,7 +1336,7 @@ fn build_output_stream(
 ) -> Result<Stream> {
     let max_frames = match stream_config.buffer_size {
         cpal::BufferSize::Fixed(frames) => frames as usize,
-        cpal::BufferSize::Default => 8192,
+        cpal::BufferSize::Default => CALLBACK_MAX_FRAMES,
     };
     let channels = stream_config.channels as usize;
     match sample_format {

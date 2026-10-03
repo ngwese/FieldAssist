@@ -338,12 +338,17 @@ pub struct AudioSettings {
     /// Preferred device name substring, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_device: Option<String>,
+    /// Output period in frames. When unset, the host probes the device default
+    /// and snaps up to the nearest listed period of at least twice that size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_frames: Option<u32>,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
             output_device: None,
+            period_frames: None,
         }
     }
 }

@@ -28,8 +28,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use field_audio_monitor::{MonitorChain, MonitorHost};
 use field_audio_playback::{
-    output_device_name, resolve_output_device, MonitorProcess, PlaybackEngine, PlaybackShared,
-    PlaybackStats, TransportState,
+    output_device_name, resolve_output_device, MonitorProcess, OutputPeriod, PlaybackEngine,
+    PlaybackShared, PlaybackStats, TransportState,
 };
 use field_composition::{Composition, PagerStats, MARKER_TYPE_BLUE};
 use field_scripting::{BackendHandle, HeadlessBackend, HeadlessWorld, HostProfile, ScriptHost};
@@ -82,7 +82,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut session = PlaySession::new(args.path.clone());
-    let (composition, preferred_output) =
+    let (composition, preferred_output, period_frames) =
         open_with_detect(session.opened(), args.config_dir.clone())?;
 
     let chain = composition
@@ -135,8 +135,16 @@ fn main() -> Result<()> {
     let device =
         resolve_output_device(preferred_output.as_deref()).context("resolve output device")?;
     eprintln!("Output device: {}", output_device_name(&device));
+    let period = match period_frames {
+        Some(frames) => OutputPeriod::Frames(frames),
+        None => OutputPeriod::SnapTwicePlatformDefault,
+    };
 
-    let engine = PlaybackEngine::open(&device, provider).context("open playback engine")?;
+    let (engine, opened) =
+        PlaybackEngine::open(&device, provider, period).context("open playback engine")?;
+    if let Some(frames) = opened.requested_frames {
+        eprintln!("Output period: {frames} frames");
+    }
     let host = Arc::new(MonitorHost::new(engine.shared.output_rate()));
     engine.shared.set_monitor_process(Some(
         Arc::new(MonitorHostProcess::new(host.clone())) as Arc<dyn MonitorProcess>
@@ -547,7 +555,7 @@ fn add_marker_at_playhead(
 fn open_with_detect(
     path: &std::path::Path,
     config_dir: Option<PathBuf>,
-) -> Result<(Arc<RwLock<Composition>>, Option<String>)> {
+) -> Result<(Arc<RwLock<Composition>>, Option<String>, Option<u32>)> {
     let config_dir = config_dir.or_else(field_scripting::user_config_dir);
     let settings = field_settings::load_from_dir(config_dir.as_deref());
     let world = Rc::new(RefCell::new(HeadlessWorld::new()));
@@ -584,7 +592,11 @@ fn open_with_detect(
         .get(&id)
         .map(|doc| doc.composition.clone())
         .context("document missing after open")?;
-    Ok((composition, settings.audio.output_device))
+    Ok((
+        composition,
+        settings.audio.output_device,
+        settings.audio.period_frames,
+    ))
 }
 
 fn flush_script_output(host: &ScriptHost) {

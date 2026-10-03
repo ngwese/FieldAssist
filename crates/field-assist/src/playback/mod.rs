@@ -12,9 +12,10 @@ mod monitor_tests;
 
 #[allow(unused_imports)] // compatibility re-exports for app call sites
 pub use field_audio_playback::{
-    list_output_devices, output_device_name, print_output_devices, resolve_output_device,
-    MonitorProcess, PlaybackDataProvider, PlaybackEngine, PlaybackFaultFlusher, PlaybackFaultLevel,
-    PlaybackFaultMessage, Playhead, Transport, TransportState,
+    list_output_devices, output_device_name, period_frame_catalog, print_output_devices,
+    resolve_output_device, MonitorProcess, OpenedPeriod, OutputPeriod, PlaybackDataProvider,
+    PlaybackEngine, PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackFaultMessage, Playhead,
+    Transport, TransportState,
 };
 pub(crate) use session::should_refresh_monitor_ui;
 pub use session::PlaybackSession;

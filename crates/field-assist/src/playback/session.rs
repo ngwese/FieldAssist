@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cpal::Device;
-use field_audio_playback::OUTPUT_OPEN_TIMEOUT;
+use field_audio_playback::{OpenedPeriod, OutputPeriod, OUTPUT_OPEN_TIMEOUT};
 
 use crate::model::buffer::ChannelScope;
 use crate::model::composition::Composition;
@@ -37,31 +37,42 @@ pub struct PlaybackSession {
 impl PlaybackSession {
     /// Open playback on `device`, or start with output disabled if the device
     /// cannot be started within [`OUTPUT_OPEN_TIMEOUT`].
-    pub fn open(device: &Device, composition: Arc<RwLock<Composition>>) -> Result<Self> {
-        Self::open_with_timeout(device, composition, OUTPUT_OPEN_TIMEOUT)
+    pub fn open(
+        device: &Device,
+        composition: Arc<RwLock<Composition>>,
+        period: OutputPeriod,
+    ) -> Result<(Self, OpenedPeriod)> {
+        Self::open_with_timeout(device, composition, period, OUTPUT_OPEN_TIMEOUT)
     }
 
     /// Like [`Self::open`] with an explicit timeout.
     pub fn open_with_timeout(
         device: &Device,
         composition: Arc<RwLock<Composition>>,
+        period: OutputPeriod,
         timeout: Duration,
-    ) -> Result<Self> {
+    ) -> Result<(Self, OpenedPeriod)> {
         let provider = Arc::new(SharedCompositionProvider::new(composition));
         let playhead = Playhead::new(provider.clone());
-        let (engine, fault) =
-            match PlaybackEngine::open_with_timeout(device, provider.clone(), timeout) {
-                Ok(engine) => (engine, None),
+        let (engine, opened, fault) =
+            match PlaybackEngine::open_with_timeout(device, provider.clone(), period, timeout) {
+                Ok((engine, opened)) => (engine, opened, None),
                 Err(err) => {
                     let fault = format!(
                         "Audio output unavailable ({err}). Select a working device in Monitor \
                          to enable playback."
                     );
                     eprintln!("FieldAssist: {fault}");
-                    (PlaybackEngine::disabled(provider.clone())?, Some(fault))
+                    (
+                        PlaybackEngine::disabled(provider.clone())?,
+                        OpenedPeriod {
+                            requested_frames: None,
+                        },
+                        Some(fault),
+                    )
                 }
             };
-        Ok(Self::from_parts(provider, playhead, engine, fault))
+        Ok((Self::from_parts(provider, playhead, engine, fault), opened))
     }
 
     /// Session with no CPAL stream (silent until [`Self::set_output_device`]).
@@ -113,20 +124,28 @@ impl PlaybackSession {
         self.output_fault.as_deref()
     }
 
-    pub fn set_output_device(&mut self, device: &Device) -> Result<()> {
+    pub fn set_output_device(
+        &mut self,
+        device: &Device,
+        period: OutputPeriod,
+    ) -> Result<OpenedPeriod> {
         self.stop();
-        if let Err(err) = self.engine.reopen(device) {
-            if !self.engine.output_active() {
-                self.output_fault = Some(format!(
-                    "Audio output unavailable ({err}). Select a working device in Monitor \
-                     to enable playback."
-                ));
+        match self.engine.reopen(device, period) {
+            Ok(opened) => {
+                self.output_fault = None;
+                self.apply_to_engine();
+                Ok(opened)
             }
-            return Err(err);
+            Err(err) => {
+                if !self.engine.output_active() {
+                    self.output_fault = Some(format!(
+                        "Audio output unavailable ({err}). Select a working device in Monitor \
+                         to enable playback."
+                    ));
+                }
+                Err(err)
+            }
         }
-        self.output_fault = None;
-        self.apply_to_engine();
-        Ok(())
     }
 
     pub fn bind_composition(&self, composition: Arc<RwLock<Composition>>) {
