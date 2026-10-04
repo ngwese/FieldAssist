@@ -2,6 +2,22 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.24.0] - 2026-10-04
+
+### Features
+
+- Make output period selectable and raise CPAL thread priority
+- Add enrich_media and event-based ingest paths
+
+### Refactor
+
+- Rename threaded peak styling to ribbon
+
+### Testing
+
+- Retain search_path across launch period persist
+
+
 ## [0.23.0] - 2026-10-02
 
 ### Features
