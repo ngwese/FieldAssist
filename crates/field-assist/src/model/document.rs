@@ -51,10 +51,10 @@ pub struct BufferDocument {
     pub waveform_representation: WaveformRepresentation,
     /// Overview peak paint style from settings.
     pub peak_rendering: field_ui_components::PeakRendering,
-    /// HSV value reduction for Threaded shell bars (`0.0..=1.0`).
-    pub threaded_shell_value_reduce: f32,
-    /// Ribbon amplitude scale in dBFS for Threaded peak paint.
-    pub threaded_ribbon_db: f32,
+    /// HSV value reduction for Ribbon shell bars (`0.0..=1.0`).
+    pub ribbon_shell_value_reduce: f32,
+    /// Inner ribbon amplitude scale in dBFS for Ribbon peak paint.
+    pub ribbon_db: f32,
     /// Shared peaks-pane height fraction for Peaks + Spectrum (0.15..=0.85).
     pub peaks_spectrum_split: f32,
     /// Analyze → Selection Only: limit envelope/transient jobs to the selection.
@@ -101,9 +101,9 @@ impl BufferDocument {
             analysis_job_kinds: Arc::new(Mutex::new(None)),
             show_envelope_peak: false,
             waveform_representation: WaveformRepresentation::Peaks,
-            peak_rendering: field_ui_components::PeakRendering::Threaded,
-            threaded_shell_value_reduce: field_ui_components::DEFAULT_THREADED_SHELL_VALUE_REDUCE,
-            threaded_ribbon_db: field_ui_components::DEFAULT_THREADED_RIBBON_DB,
+            peak_rendering: field_ui_components::PeakRendering::Ribbon,
+            ribbon_shell_value_reduce: field_ui_components::DEFAULT_RIBBON_SHELL_VALUE_REDUCE,
+            ribbon_db: field_ui_components::DEFAULT_RIBBON_DB,
             peaks_spectrum_split: field_ui_components::DEFAULT_PEAKS_SPECTRUM_SPLIT,
             analyze_selection_only: false,
             pending_analysis_target: Mutex::new(None),
@@ -1100,12 +1100,12 @@ impl WaveformDataProvider for BufferDocument {
         self.peak_rendering
     }
 
-    fn threaded_shell_value_reduce(&self) -> f32 {
-        self.threaded_shell_value_reduce
+    fn ribbon_shell_value_reduce(&self) -> f32 {
+        self.ribbon_shell_value_reduce
     }
 
-    fn threaded_ribbon_db(&self) -> f32 {
-        self.threaded_ribbon_db
+    fn ribbon_db(&self) -> f32 {
+        self.ribbon_db
     }
 
     fn peaks_spectrum_split(&self) -> f32 {

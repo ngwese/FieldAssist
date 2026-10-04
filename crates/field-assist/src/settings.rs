@@ -160,14 +160,14 @@ impl WaveformSettingsExt for WaveformSettings {
     fn peak_rendering_enum(&self) -> PeakRendering {
         match self.peak_rendering.as_str() {
             "simple" => PeakRendering::Simple,
-            _ => PeakRendering::Threaded,
+            _ => PeakRendering::Ribbon,
         }
     }
 
     fn set_peak_rendering_enum(&mut self, mode: PeakRendering) {
         self.peak_rendering = match mode {
             PeakRendering::Simple => "simple".into(),
-            PeakRendering::Threaded => "threaded".into(),
+            PeakRendering::Ribbon => "ribbon".into(),
         };
     }
 
@@ -210,7 +210,7 @@ impl WaveformSettingsExt for WaveformSettings {
 mod tests {
     use super::*;
     use field_settings::{
-        DEFAULT_THREADED_RIBBON_DB, DEFAULT_THREADED_SHELL_VALUE_REDUCE, SETTINGS_FORMAT_VERSION,
+        DEFAULT_RIBBON_DB, DEFAULT_RIBBON_SHELL_VALUE_REDUCE, SETTINGS_FORMAT_VERSION,
         SETTINGS_KIND,
     };
 
@@ -224,10 +224,10 @@ mod tests {
         assert_eq!(s.view.detail, DOCK_HIDDEN);
         assert_eq!(s.waveform.representation, "peaks");
         assert_eq!(
-            s.waveform.threaded_shell_value_reduce,
-            DEFAULT_THREADED_SHELL_VALUE_REDUCE
+            s.waveform.ribbon_shell_value_reduce,
+            DEFAULT_RIBBON_SHELL_VALUE_REDUCE
         );
-        assert_eq!(s.waveform.threaded_ribbon_db, DEFAULT_THREADED_RIBBON_DB);
+        assert_eq!(s.waveform.ribbon_db, DEFAULT_RIBBON_DB);
         assert_eq!(
             s.waveform.spectrum_gradient_enum(),
             SpectrumGradient::classic()

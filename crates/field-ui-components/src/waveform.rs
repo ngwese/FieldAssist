@@ -1802,22 +1802,22 @@ fn paint_peaks_body(
             samples_per_pixel,
             &mut columns,
         );
-        // Overview zoom: optional Threaded style paints a dimmer full-peak
+        // Overview zoom: optional Ribbon style paints a dimmer full-peak
         // shell, then an inner ribbon at the base color scaled by −dB.
-        let threaded = samples_per_pixel > peak_block as f64
+        let ribbon = samples_per_pixel > peak_block as f64
             && matches!(
                 WaveformDataProvider::peak_rendering(provider),
-                PeakRendering::Threaded
+                PeakRendering::Ribbon
             );
-        let shell_color = if threaded {
+        let shell_color = if ribbon {
             reduce_hsv_value(
                 color,
-                WaveformDataProvider::threaded_shell_value_reduce(provider),
+                WaveformDataProvider::ribbon_shell_value_reduce(provider),
             )
         } else {
             color
         };
-        let ribbon_scale = db_to_amplitude(WaveformDataProvider::threaded_ribbon_db(provider));
+        let ribbon_scale = db_to_amplitude(WaveformDataProvider::ribbon_db(provider));
         for (col, &(min, max)) in columns.iter().enumerate() {
             let bin_start = start_sample + col as f64 * samples_per_pixel;
             if bin_start >= frames as f64 {
@@ -1834,7 +1834,7 @@ fn paint_peaks_body(
                 shell_color,
                 window,
             );
-            if threaded {
+            if ribbon {
                 paint_column(
                     origin_x,
                     col,
@@ -3045,7 +3045,7 @@ mod tests {
 
     #[test]
     fn overview_ribbon_scale_is_minus_three_db() {
-        let scale = db_to_amplitude(crate::DEFAULT_THREADED_RIBBON_DB);
+        let scale = db_to_amplitude(crate::DEFAULT_RIBBON_DB);
         assert!((scale - 10f32.powf(-3.0 / 20.0)).abs() < 1e-6);
     }
 

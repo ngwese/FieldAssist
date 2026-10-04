@@ -22,10 +22,10 @@ pub const DETAIL_DOCK_TRUE_TAB: &str = "Marker";
 /// Legacy `script: true` maps to this FieldAssist bottom-dock tab title.
 pub const SCRIPT_DOCK_TRUE_TAB: &str = "Script";
 
-/// Default HSV value reduction for threaded peak shells (`0.0..=1.0`).
-pub const DEFAULT_THREADED_SHELL_VALUE_REDUCE: f32 = 0.25;
-/// Default ribbon amplitude scale (dBFS) for threaded peaks.
-pub const DEFAULT_THREADED_RIBBON_DB: f32 = -3.0;
+/// Default HSV value reduction for ribbon peak shells (`0.0..=1.0`).
+pub const DEFAULT_RIBBON_SHELL_VALUE_REDUCE: f32 = 0.25;
+/// Default ribbon amplitude scale (dBFS) for ribbon peaks.
+pub const DEFAULT_RIBBON_DB: f32 = -3.0;
 /// Spectrum heatmap floor (dBFS).
 pub const SPECTRUM_GRADIENT_DB_FLOOR: f32 = -80.0;
 
@@ -73,6 +73,7 @@ impl AppSettings {
     /// Normalize scripting paths using `config_dir` when provided.
     pub fn normalize(&mut self, config_dir: Option<&Path>) {
         self.scripting.normalize(config_dir);
+        self.waveform.canonicalize_peak_rendering();
     }
 }
 
@@ -176,12 +177,14 @@ pub struct WaveformSettings {
     pub representation: String,
     /// Keep the playhead in view while playing / after seeks.
     pub follow_playhead: bool,
-    /// `"simple"` or `"threaded"` overview peak paint.
+    /// `"simple"` or `"ribbon"` overview peak paint.
     pub peak_rendering: String,
-    /// HSV value reduction for Threaded shell bars (`0.0..=1.0`).
-    pub threaded_shell_value_reduce: f32,
-    /// Ribbon amplitude scale in dBFS for Threaded peak paint.
-    pub threaded_ribbon_db: f32,
+    /// HSV value reduction for Ribbon shell bars (`0.0..=1.0`).
+    #[serde(alias = "threaded_shell_value_reduce")]
+    pub ribbon_shell_value_reduce: f32,
+    /// Inner ribbon amplitude scale in dBFS for Ribbon peak paint.
+    #[serde(alias = "threaded_ribbon_db")]
+    pub ribbon_db: f32,
     /// Five spectrum heatmap stops (quiet → loud).
     pub spectrum_gradient: [SpectrumGradientStopSettings; 5],
 }
@@ -212,9 +215,9 @@ impl Default for WaveformSettings {
         Self {
             representation: "peaks".into(),
             follow_playhead: true,
-            peak_rendering: "threaded".into(),
-            threaded_shell_value_reduce: DEFAULT_THREADED_SHELL_VALUE_REDUCE,
-            threaded_ribbon_db: DEFAULT_THREADED_RIBBON_DB,
+            peak_rendering: "ribbon".into(),
+            ribbon_shell_value_reduce: DEFAULT_RIBBON_SHELL_VALUE_REDUCE,
+            ribbon_db: DEFAULT_RIBBON_DB,
             spectrum_gradient: [
                 SpectrumGradientStopSettings {
                     rgb: [0.02, 0.02, 0.08],
@@ -252,21 +255,30 @@ impl WaveformSettings {
     }
 
     /// Canonicalize a peak-rendering string.
+    ///
+    /// The legacy token `"threaded"` is stored as `"ribbon"`.
     pub fn set_peak_rendering_str(&mut self, value: &str) {
         self.peak_rendering = match value {
             "simple" => "simple".into(),
-            _ => "threaded".into(),
+            _ => "ribbon".into(),
         };
     }
 
-    /// Clamp and store threaded shell value reduction.
-    pub fn set_threaded_shell_value_reduce(&mut self, value: f32) {
-        self.threaded_shell_value_reduce = value.clamp(0.0, 1.0);
+    /// Map a persisted `"threaded"` peak-rendering token to `"ribbon"`.
+    pub fn canonicalize_peak_rendering(&mut self) {
+        if self.peak_rendering == "threaded" {
+            self.peak_rendering = "ribbon".into();
+        }
     }
 
-    /// Clamp and store threaded ribbon dB.
-    pub fn set_threaded_ribbon_db(&mut self, value: f32) {
-        self.threaded_ribbon_db = value.clamp(-48.0, 0.0);
+    /// Clamp and store ribbon shell value reduction.
+    pub fn set_ribbon_shell_value_reduce(&mut self, value: f32) {
+        self.ribbon_shell_value_reduce = value.clamp(0.0, 1.0);
+    }
+
+    /// Clamp and store ribbon dB.
+    pub fn set_ribbon_db(&mut self, value: f32) {
+        self.ribbon_db = value.clamp(-48.0, 0.0);
     }
 
     /// Update one stop's RGB (no neighbor normalization; hosts may re-normalize for paint).

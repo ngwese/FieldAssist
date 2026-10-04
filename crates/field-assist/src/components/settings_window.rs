@@ -284,7 +284,7 @@ pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: 
                                 SettingField::dropdown(
                                     vec![
                                         ("simple".into(), "Simple".into()),
-                                        ("threaded".into(), "Threaded".into()),
+                                        ("ribbon".into(), "Ribbon".into()),
                                     ],
                                     |cx| {
                                         settings::store(cx)
@@ -302,29 +302,29 @@ pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: 
                                         crate::app::apply_waveform_default_from_settings(cx);
                                     },
                                 )
-                                .default_value(SharedString::from("threaded")),
+                                .default_value(SharedString::from("ribbon")),
                             )
                             .description("Overview peaks: single color, or shell plus −dB ribbon"),
                         )
                         .item(waveform_decimal_field(
-                            "Threaded Shell Value",
-                            "HSV value reduction for the Threaded outer peak (0–1)",
-                            "waveform-threaded-shell",
+                            "Ribbon Shell Value",
+                            "HSV value reduction for the Ribbon outer peak (0–1)",
+                            "waveform-ribbon-shell",
                             0.0,
                             1.0,
-                            field_ui_components::DEFAULT_THREADED_SHELL_VALUE_REDUCE as f64,
-                            |s| s.waveform.threaded_shell_value_reduce as f64,
-                            |s, v| s.waveform.set_threaded_shell_value_reduce(v as f32),
+                            field_ui_components::DEFAULT_RIBBON_SHELL_VALUE_REDUCE as f64,
+                            |s| s.waveform.ribbon_shell_value_reduce as f64,
+                            |s, v| s.waveform.set_ribbon_shell_value_reduce(v as f32),
                         ))
                         .item(waveform_decimal_field(
-                            "Threaded Ribbon dB",
-                            "Inner ribbon amplitude vs full peak when Threaded (dBFS)",
-                            "waveform-threaded-ribbon",
+                            "Ribbon dB",
+                            "Inner ribbon amplitude vs full peak when Ribbon (dBFS)",
+                            "waveform-ribbon-db",
                             -48.0,
                             0.0,
-                            field_ui_components::DEFAULT_THREADED_RIBBON_DB as f64,
-                            |s| s.waveform.threaded_ribbon_db as f64,
-                            |s, v| s.waveform.set_threaded_ribbon_db(v as f32),
+                            field_ui_components::DEFAULT_RIBBON_DB as f64,
+                            |s| s.waveform.ribbon_db as f64,
+                            |s, v| s.waveform.set_ribbon_db(v as f32),
                         )),
                 )
                 .group(

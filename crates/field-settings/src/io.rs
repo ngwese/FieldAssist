@@ -116,6 +116,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_threaded_peak_settings_load_as_ribbon() {
+        let json = r#"{
+            "waveform": {
+                "peak_rendering": "threaded",
+                "threaded_shell_value_reduce": 0.4,
+                "threaded_ribbon_db": -6.0
+            }
+        }"#;
+        let mut s: AppSettings = serde_json::from_str(json).unwrap();
+        s.normalize(None);
+        assert_eq!(s.waveform.peak_rendering, "ribbon");
+        assert!((s.waveform.ribbon_shell_value_reduce - 0.4).abs() < 1e-6);
+        assert!((s.waveform.ribbon_db - (-6.0)).abs() < 1e-6);
+    }
+
+    #[test]
     fn missing_period_frames_deserializes_as_none() {
         let json = r#"{ "audio": { "output_device": "Speakers" } }"#;
         let s: AppSettings = serde_json::from_str(json).unwrap();

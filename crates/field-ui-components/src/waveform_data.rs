@@ -22,21 +22,21 @@ pub enum PeakRendering {
     Simple,
     /// Darker full-peak shell with a −dB inner ribbon in the base color.
     #[default]
-    Threaded,
+    Ribbon,
 }
 
-/// Default HSV value reduction for [`PeakRendering::Threaded`] shell bars.
-pub const DEFAULT_THREADED_SHELL_VALUE_REDUCE: f32 = 0.25;
-/// Default ribbon amplitude scale (dBFS) for [`PeakRendering::Threaded`].
-pub const DEFAULT_THREADED_RIBBON_DB: f32 = -3.0;
+/// Default HSV value reduction for [`PeakRendering::Ribbon`] shell bars.
+pub const DEFAULT_RIBBON_SHELL_VALUE_REDUCE: f32 = 0.25;
+/// Default ribbon amplitude scale (dBFS) for [`PeakRendering::Ribbon`].
+pub const DEFAULT_RIBBON_DB: f32 = -3.0;
 
-/// Clamp threaded shell value-reduce into `0.0..=1.0`.
-pub fn clamp_threaded_shell_value_reduce(fraction: f32) -> f32 {
+/// Clamp ribbon shell value-reduce into `0.0..=1.0`.
+pub fn clamp_ribbon_shell_value_reduce(fraction: f32) -> f32 {
     fraction.clamp(0.0, 1.0)
 }
 
-/// Clamp threaded ribbon dB into a practical overview range.
-pub fn clamp_threaded_ribbon_db(db: f32) -> f32 {
+/// Clamp ribbon dB into a practical overview range.
+pub fn clamp_ribbon_db(db: f32) -> f32 {
     db.clamp(-48.0, 0.0)
 }
 
@@ -89,17 +89,17 @@ pub trait WaveformDataProvider: Send + Sync {
     fn waveform_representation(&self) -> WaveformRepresentation {
         WaveformRepresentation::Peaks
     }
-    /// Overview peak paint style (Simple vs Threaded).
+    /// Overview peak paint style (Simple vs Ribbon).
     fn peak_rendering(&self) -> PeakRendering {
-        PeakRendering::Threaded
+        PeakRendering::Ribbon
     }
-    /// HSV value reduction for Threaded shell bars (`0.0..=1.0`).
-    fn threaded_shell_value_reduce(&self) -> f32 {
-        DEFAULT_THREADED_SHELL_VALUE_REDUCE
+    /// HSV value reduction for Ribbon shell bars (`0.0..=1.0`).
+    fn ribbon_shell_value_reduce(&self) -> f32 {
+        DEFAULT_RIBBON_SHELL_VALUE_REDUCE
     }
-    /// Ribbon amplitude scale in dBFS for Threaded peak paint.
-    fn threaded_ribbon_db(&self) -> f32 {
-        DEFAULT_THREADED_RIBBON_DB
+    /// Inner ribbon amplitude scale in dBFS for Ribbon peak paint.
+    fn ribbon_db(&self) -> f32 {
+        DEFAULT_RIBBON_DB
     }
     /// Shared peaks-pane height fraction for [`WaveformRepresentation::PeaksSpectrum`].
     fn peaks_spectrum_split(&self) -> f32 {

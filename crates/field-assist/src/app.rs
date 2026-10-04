@@ -690,8 +690,8 @@ impl AppView {
             let mut doc = BufferDocument::with_shared(composition.clone(), buffer.clone());
             doc.waveform_representation = waveform_representation;
             doc.peak_rendering = waveform.peak_rendering_enum();
-            doc.threaded_shell_value_reduce = waveform.threaded_shell_value_reduce;
-            doc.threaded_ribbon_db = waveform.threaded_ribbon_db;
+            doc.ribbon_shell_value_reduce = waveform.ribbon_shell_value_reduce;
+            doc.ribbon_db = waveform.ribbon_db;
             doc.snap_zero_crossings = selection.zero_crossing;
             doc.snap_to_marker = selection.snap_to_marker;
             doc
@@ -4399,8 +4399,8 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let mode = waveform.peak_rendering_enum();
-        let shell = waveform.threaded_shell_value_reduce;
-        let ribbon = waveform.threaded_ribbon_db;
+        let shell = waveform.ribbon_shell_value_reduce;
+        let ribbon_db = waveform.ribbon_db;
         let ids: Vec<_> = self.views.keys().copied().collect();
         for id in ids {
             let Some(views) = self.views.get(&id).cloned() else {
@@ -4409,12 +4409,12 @@ impl AppView {
             let mut changed = false;
             views.document.update(cx, |doc, cx| {
                 if doc.peak_rendering != mode
-                    || doc.threaded_shell_value_reduce != shell
-                    || doc.threaded_ribbon_db != ribbon
+                    || doc.ribbon_shell_value_reduce != shell
+                    || doc.ribbon_db != ribbon_db
                 {
                     doc.peak_rendering = mode;
-                    doc.threaded_shell_value_reduce = shell;
-                    doc.threaded_ribbon_db = ribbon;
+                    doc.ribbon_shell_value_reduce = shell;
+                    doc.ribbon_db = ribbon_db;
                     changed = true;
                     cx.notify();
                 }
