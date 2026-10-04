@@ -1,0 +1,63 @@
+schema: spec-driven
+
+# Project context — injected into all OpenSpec artifacts.
+context: |
+  FieldAssist is a Rust 2021 Cargo workspace for reviewing, editing, and
+  processing field-recorded audio. Hosts: GPUI desktop app (FieldAssist),
+  field-batch (headless Lua CLI), and field-play (composition playback CLI).
+
+  Crate DAG and composition patterns: docs/ARCHITECTURE.md. Prefer depending
+  on leaf crates and implementing their traits in the application; do not
+  introduce sibling-crate edges without justification. Traits live in the
+  crate that consumes data; higher layers supply adapters.
+
+  Existing product behavior docs live in docs/spec/ (application, workflows,
+  analysis, processing, metadata, field-recording) and docs/SCRIPTING.md.
+  Treat those as exploration background — do not bulk-import them into
+  openspec/specs/. Grow openspec/specs/<domain>/spec.md only when changes
+  are archived. Create domain folders on demand (e.g. playback/, scripting/,
+  session/) when a change first needs them.
+
+  Commits use Conventional Commits (imperative mood; hard-wrap to 80 chars).
+  Before committing code: cargo fmt, then cargo build and cargo test with no
+  errors and no warnings (including unused imports and dead code).
+
+  Realtime audio: code on the CPAL output callback must not allocate or take
+  blocking locks. Prefetch owns provider reads and bandlimited SRC (matched
+  rates copy bit-exactly); the callback owns monitor DSP so live parameters
+  track the audible playhead. Do not use dasp::ring_buffer across that
+  boundary. See crates/field-audio-playback/AGENTS.md.
+
+# Per-artifact rules — applied only when writing that artifact.
+rules:
+  proposal:
+    - Include a Non-goals section.
+    - Name affected crates and hosts (FieldAssist, field-batch, field-play).
+    - Call out realtime-callback risk when playback or monitor work is in scope.
+  specs:
+    - Write behavior-first deltas using ADDED, MODIFIED, and REMOVED sections.
+    - Prefer Given/When/Then scenarios for observable behavior.
+    - Reference relevant docs/spec/ or SCRIPTING.md sections when they inform
+      the change; do not paste those docs wholesale.
+  design:
+    - Prefer leaf crates plus app-layer adapters over new sibling-crate edges.
+    - Justify any new cross-crate dependency against docs/ARCHITECTURE.md.
+    - For playback/monitor changes, state which work runs on prefetch vs the
+      CPAL callback and how realtime quality gates are preserved.
+  tasks:
+    - Break work into small checkbox tasks suitable for focused commits.
+    - Include cargo fmt / build / test gates for any code-touching work.
+    - Call out focused crate tests before a full workspace run when useful.
+
+# Per-operation guidance — advisory for apply and archive workflows.
+operations:
+  apply:
+    guidance:
+      - Run focused crate tests for touched packages before the full workspace
+        suite when the change is localized.
+      - Never put allocations, blocking locks, I/O, or decode on the CPAL
+        output callback path.
+  archive:
+    guidance:
+      - Keep the completion summary concise.
+      - Confirm which main specs under openspec/specs/ were created or updated.
