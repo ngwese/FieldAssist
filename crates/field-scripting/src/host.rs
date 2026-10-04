@@ -1885,30 +1885,4 @@ mod tests {
 
         host.load_init_from(Some(config.path())).unwrap();
     }
-
-    fn write_minimal_wav(path: &std::path::Path) {
-        let sample_rate: u32 = 8_000;
-        let channels: u16 = 1;
-        let bits_per_sample: u16 = 16;
-        let frames: u32 = 8;
-        let block_align = channels * bits_per_sample / 8;
-        let byte_rate = sample_rate * u32::from(block_align);
-        let data_len = frames * u32::from(block_align);
-        let mut out = std::fs::File::create(path).unwrap();
-        use std::io::Write;
-        out.write_all(b"RIFF").unwrap();
-        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
-        out.write_all(b"WAVE").unwrap();
-        out.write_all(b"fmt ").unwrap();
-        out.write_all(&16u32.to_le_bytes()).unwrap();
-        out.write_all(&1u16.to_le_bytes()).unwrap();
-        out.write_all(&channels.to_le_bytes()).unwrap();
-        out.write_all(&sample_rate.to_le_bytes()).unwrap();
-        out.write_all(&byte_rate.to_le_bytes()).unwrap();
-        out.write_all(&block_align.to_le_bytes()).unwrap();
-        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
-        out.write_all(b"data").unwrap();
-        out.write_all(&data_len.to_le_bytes()).unwrap();
-        out.write_all(&vec![0u8; data_len as usize]).unwrap();
-    }
 }
