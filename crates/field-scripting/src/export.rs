@@ -493,7 +493,10 @@ fn channel_index(value: Value) -> mlua::Result<usize> {
 }
 
 /// Merge override fields from `table` onto `base`.
-fn apply_overrides(mut base: ExportProfileDef, table: &Table) -> mlua::Result<ExportProfileDef> {
+pub(crate) fn apply_overrides(
+    mut base: ExportProfileDef,
+    table: &Table,
+) -> mlua::Result<ExportProfileDef> {
     if let Ok(value) = table.get::<Value>("encoder") {
         if !matches!(value, Value::Nil) {
             base.encoder = optional_string(value)?;
@@ -557,7 +560,10 @@ fn lookup_profile(host: &HostHandle, name: &str) -> mlua::Result<ExportProfileDe
         .ok_or_else(|| mlua::Error::runtime(format!("unknown export profile `{name}`")))
 }
 
-fn profile_ref_from_value(host: &HostHandle, value: Value) -> mlua::Result<ExportProfileDef> {
+pub(crate) fn profile_ref_from_value(
+    host: &HostHandle,
+    value: Value,
+) -> mlua::Result<ExportProfileDef> {
     match value {
         Value::String(name) => lookup_profile(host, name.to_str()?.as_ref()),
         Value::UserData(ud) => {
@@ -612,7 +618,7 @@ pub fn resolve_export_job(
     build_job(lua, host, composition, composition_id, profile)
 }
 
-fn build_job(
+pub(crate) fn build_job(
     lua: &mlua::Lua,
     host: &HostHandle,
     composition: &Composition,

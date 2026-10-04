@@ -759,7 +759,7 @@ impl ScriptBackend for DesktopBackend {
     fn composition_id_string(&self, id: DocumentId) -> mlua::Result<String> {
         self.with_buffer(id, |_| Ok(id.to_string()))
     }
-    fn close_composition(&mut self, id: DocumentId) -> mlua::Result<()> {
+    fn close_composition(&mut self, id: DocumentId, discard: bool) -> mlua::Result<()> {
         if let Some(test) = self.test() {
             let mut w = test.borrow_mut();
             if !w.docs.contains_key(&id) {
@@ -768,8 +768,14 @@ impl ScriptBackend for DesktopBackend {
             w.close(id);
             return Ok(());
         }
-        access::with_view(|v, w, cx| v.script_close_document(id, w, cx))
-            .map_err(mlua::Error::runtime)?;
+        access::with_view(|v, w, cx| {
+            if discard {
+                v.script_force_close_document(id, w, cx);
+            } else {
+                v.script_close_document(id, w, cx);
+            }
+        })
+        .map_err(mlua::Error::runtime)?;
         Ok(())
     }
     fn replace_composition(&mut self, id: DocumentId, path: &Path) -> mlua::Result<DocumentId> {
@@ -984,6 +990,26 @@ impl ScriptBackend for DesktopBackend {
                 .set_playback_channels(channels);
             Ok(())
         })
+    }
+
+    fn create_offline_dsp(
+        &self,
+        chain: &str,
+        sample_rate: u32,
+        params: &std::collections::HashMap<String, f32>,
+    ) -> Option<Box<dyn field_composition::OfflineDsp>> {
+        use field_audio_monitor::MonitorChain;
+        let mc = match chain {
+            "foa" => MonitorChain::Foa,
+            "foa_fuma" => MonitorChain::FoaFuma,
+            "ms" => MonitorChain::Ms,
+            _ => return None,
+        };
+        Some(Box::new(crate::monitor::FaustOfflineDsp::new(
+            mc,
+            sample_rate,
+            params,
+        )))
     }
 }
 

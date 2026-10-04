@@ -141,6 +141,10 @@ pub(crate) struct HostInner {
     pub(crate) include_cache: HashMap<String, Value>,
     pub(crate) args: Vec<String>,
     pub(crate) package_policy: PackagePolicy,
+    /// Queued responses for `app:confirm` (FIFO).  Used in tests to drive
+    /// confirm dialogs without UI interaction.  When empty, `confirm` returns
+    /// `true` (permissive default for batch / headless contexts).
+    pub(crate) confirm_responses: VecDeque<bool>,
 }
 
 /// Shared handle stored in Lua app data.
@@ -216,6 +220,7 @@ impl ScriptHost {
                 include_cache: HashMap::new(),
                 args: Vec::new(),
                 package_policy,
+                confirm_responses: VecDeque::new(),
             })),
         };
         lua.set_app_data(handle.clone());
@@ -430,6 +435,18 @@ impl ScriptHost {
     /// Drain captured alerts.
     pub fn take_alerts(&self) -> Vec<(String, String)> {
         std::mem::take(&mut self.handle.inner.borrow_mut().alerts)
+    }
+
+    /// Queue a confirm response for the next `app:confirm` call.
+    ///
+    /// Useful in tests that need to control whether a confirm dialog returns
+    /// `true` or `false` without any UI.
+    pub fn push_confirm_response(&self, response: bool) {
+        self.handle
+            .inner
+            .borrow_mut()
+            .confirm_responses
+            .push_back(response);
     }
 
     /// Log a structured line (also available from Lua as `field.log`).
@@ -931,6 +948,23 @@ impl HostHandle {
     pub fn alert(&self, subject: String, body: String) -> mlua::Result<()> {
         self.inner.borrow_mut().alerts.push((subject, body));
         Ok(())
+    }
+
+    /// Pop the next queued confirm response, if any.
+    ///
+    /// Desktop hosts use this to honor test queues before opening a GUI
+    /// dialog. Returns `None` when the queue is empty.
+    pub fn take_confirm_response(&self) -> Option<bool> {
+        self.inner.borrow_mut().confirm_responses.pop_front()
+    }
+
+    /// Return a confirm boolean for the host.
+    ///
+    /// Pops from the test queue when non-empty; otherwise returns `true`
+    /// (permissive default for headless / batch contexts).  Desktop hosts
+    /// show a native dialog when the queue is empty.
+    pub fn confirm(&self, _subject: &str, _body: &str) -> bool {
+        self.take_confirm_response().unwrap_or(true)
     }
 
     pub(crate) fn log(&self, level: LogLevel, topic: String, message: String) {

@@ -7,9 +7,8 @@ use std::io::Write;
 
 use anyhow::{Context, Result};
 use lofty::config::WriteOptions;
+use lofty::ogg::tag::VorbisComments;
 use lofty::prelude::*;
-use lofty::probe::Probe;
-use lofty::tag::{ItemKey, Tag, TagType};
 
 use crate::metadata::TagMap;
 
@@ -40,49 +39,62 @@ pub fn apply_tags_to_path(path: &std::path::Path, _extension: &str, tags: &TagMa
     if tags.is_empty() {
         return Ok(());
     }
-    apply_vorbis_tags(path, tags)
+    let mut comments = VorbisComments::default();
+    insert_vorbis_comments(&mut comments, tags);
+    comments
+        .save_to_path(path, WriteOptions::default())
+        .context("save vorbis tags")?;
+    Ok(())
 }
 
-fn apply_vorbis_tags(path: &std::path::Path, tags: &TagMap) -> Result<()> {
-    let mut tagged = Probe::open(path)
-        .context("open for tag write")?
-        .read()
-        .context("read for tag write")?;
-    let tag_type = tagged
-        .primary_tag()
-        .map(|t| t.tag_type())
-        .unwrap_or(TagType::VorbisComments);
-    let mut tag = Tag::new(tag_type);
-    let mapping = [
-        ("title", ItemKey::TrackTitle),
-        ("artist", ItemKey::TrackArtist),
-        ("album", ItemKey::AlbumTitle),
-        ("comment", ItemKey::Comment),
-        ("description", ItemKey::Comment),
-        ("date", ItemKey::RecordingDate),
-        ("genre", ItemKey::Genre),
-        ("track", ItemKey::TrackNumber),
+fn insert_vorbis_comments(comments: &mut VorbisComments, tags: &TagMap) {
+    // Prefer uppercase Vorbis keys when both case variants exist.
+    let mut written = std::collections::BTreeSet::new();
+    let preferred = [
+        ("ARTIST", "artist"),
+        ("COPYRIGHT", "copyright"),
+        ("DESCRIPTION", "description"),
+        ("TITLE", "title"),
+        ("ALBUM", "album"),
+        ("COMMENT", "comment"),
+        ("DATE", "date"),
+        ("GENRE", "genre"),
+        ("TRACKNUMBER", "track"),
+        ("ORIGINATOR", "originator"),
+        ("ORIGINATOR_REFERENCE", "originator_reference"),
+        ("ORIGINATION_DATE", "origination_date"),
+        ("ORIGINATION_TIME", "origination_time"),
+        ("TIME_REFERENCE", "time_reference"),
+        ("CODING_HISTORY", "coding_history"),
+        ("PROJECT", "project"),
+        ("SCENE", "scene"),
+        ("TAKE", "take"),
+        ("TAPE", "tape"),
+        ("NOTE", "note"),
     ];
-    for (key, item) in mapping {
-        if let Some(value) = tags.get(key).filter(|s| !s.is_empty()) {
-            tag.insert_text(item, value.clone());
+    for (upper, lower) in preferred {
+        let value = tags
+            .get(upper)
+            .or_else(|| tags.get(lower))
+            .filter(|s| !s.is_empty());
+        if let Some(value) = value {
+            comments.insert(upper.to_string(), value.clone());
+            written.insert(upper.to_ascii_lowercase());
+            written.insert(lower.to_ascii_lowercase());
         }
     }
-    // Extra keys as unknown vorbis comments when supported.
     for (key, value) in tags {
-        if mapping.iter().any(|(k, _)| *k == key.as_str()) {
-            continue;
-        }
         if value.is_empty() {
             continue;
         }
-        if let Some(item_key) = ItemKey::from_key(tag_type, key) {
-            tag.insert_text(item_key, value.clone());
+        let lower = key.to_ascii_lowercase();
+        if written.contains(&lower) {
+            continue;
         }
+        if preferred.iter().any(|(_, l)| *l == key.as_str()) {
+            continue;
+        }
+        comments.insert(key.clone(), value.clone());
+        written.insert(lower);
     }
-    tagged.insert_tag(tag);
-    tagged
-        .save_to_path(path, WriteOptions::default())
-        .context("save tags")?;
-    Ok(())
 }

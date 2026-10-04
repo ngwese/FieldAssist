@@ -9,6 +9,9 @@ pub use field_audio_monitor::{
     MonitorHost,
 };
 
+mod offline;
 mod process;
 
+#[allow(unused_imports)] // used by scripting surface (task 3.x)
+pub use offline::FaustOfflineDsp;
 pub use process::MonitorHostProcess;

@@ -54,6 +54,7 @@ examples are under
   - [field.composition Properties](#fieldcomposition-properties)
   - [field.composition Functions](#fieldcomposition-functions)
   - [Returned type: composition](#returned-type-composition)
+  - [Returned type: render job](#returned-type-render-job)
 - [field.media](#fieldmedia)
   - [field.media Properties](#fieldmedia-properties)
   - [field.media Functions](#fieldmedia-functions)
@@ -265,11 +266,12 @@ APIs live under `field.*`, not here.
 
 ### app Functions / methods
 
-| Function            | Arguments         | Returns | Hosts       | Description                                                                                                             |
-| ------------------- | ----------------- | ------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `app:alert`         | `subject`, `body` | —       | all         | Host alert (dialog / stderr). Args are stringified.                                                                     |
-| `app:command`       | `id: string`      | —       | FieldAssist | Invoke a UI command (e.g. `"view.show-explorer"`)                                                                       |
-| `app:load_settings` | —                 | —       | FieldAssist | Manual reload: read `settings.json` (or defaults), update the Global store, re-apply theme / docks / waveform / selection / output device / scripting policy |
+| Function            | Arguments                        | Returns   | Hosts       | Description                                                                                                             |
+| ------------------- | -------------------------------- | --------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `app:alert`         | `subject`, `body`                | —         | all         | Host alert (dialog / stderr). Args are stringified.                                                                     |
+| `app:confirm`       | `subject`, `body` [, `options`]  | `boolean` | all         | Confirm gate. Headless / batch / tests: pops `ScriptHost::push_confirm_response` or returns `true`. **FieldAssist** opens a native alert dialog when no queued response is set; the sync return is then `false`, and workflows should put destructive work in `options.on_confirm`. Options (FieldAssist): `ok` / `cancel` labels, `danger` (danger OK button), `on_confirm` / `on_cancel` callbacks. |
+| `app:command`       | `id: string`                     | —         | FieldAssist | Invoke a UI command (e.g. `"view.show-explorer"`)                                                                       |
+| `app:load_settings` | —                                | —         | FieldAssist | Manual reload: read `settings.json` (or defaults), update the Global store, re-apply theme / docks / waveform / selection / output device / scripting policy |
 
 field-scripting also keeps temporary migration shims
 `app:info` / `app:warn` / `app:error` and
@@ -665,15 +667,90 @@ still uses `session:open`.
 | `:add_marker_type`                                                          | `name`, `color`                                                    | `boolean`                  | Register a type color                                                                |
 | `:remove_marker_type`                                                       | `name`                                                             | `boolean`                  | Unregister a type                                                                    |
 | `:save`                                                                     | —                                                                  | —                          | Persist `.facomp` (FieldAssist; headless stub)                                       |
-| `:close`                                                                    | —                                                                  | —                          | Close the document                                                                   |
+| `:close`                                                                    | `[ { discard = bool } ]`                                           | —                          | Close the document; `discard = true` skips unsaved-change prompts (FieldAssist)      |
 | `:replace`                                                                  | `path` (string or url)                                             | composition                | Replace media/project from path                                                      |
 | `:undo` / `:redo`                                                           | —                                                                  | `boolean`                  | Edit history                                                                         |
 | `:cut` / `:copy` / `:paste` / `:clear` / `:remove` / `:duplicate` / `:trim` | —                                                                  | `true`                     | Edit ops on the selection                                                            |
 | `:export`                                                                   | profile name, profile userdata, or options table                   | `true`                     | Encode to disk (same pipeline as File → Export); see [field.exports](#fieldexports) |
+| `:render`                                                                   | render-plan table (see below)                                      | `true`                     | Multi-output render: amortized source read, per-output optional offline DSP; blocks the host |
+| `:begin_render`                                                             | render-plan table                                                  | [render job](#returned-type-render-job) | Same render on a background thread; poll `job.finished` from a `:defer` loop |
 | `:variable_resolver`                                                        | —                                                                  | VariableResolver           | Composition site lookup (Variables pane); see [field.variables](#fieldvariables) |
 
 **FieldAssist-only methods:** `:break_out_regions()` → composition or array;
 `:break_out_channels(channels?)` → composition.
+
+#### composition:render / begin_render — render plan
+
+Both `:render` and `:begin_render` accept a table `{ outputs = { … } }` where
+each output entry is:
+
+| Key       | Required | Type                                          | Description                                                                         |
+| --------- | -------- | --------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `path`    | yes      | string or url                                 | Destination file path                                                               |
+| `profile` | yes      | profile name, profile userdata, or options table | Encode profile (same resolution as `:export`)                                       |
+| `chain`   | no       | `"foa"` \| `"foa_fuma"` \| `"ms"`            | Offline Faust mixdown chain; omit for identity encode                               |
+| `params`  | no       | `{ [address] = number, … }`                   | Per-output DSP parameter overrides (Faust addresses); omit to use chain defaults    |
+
+Parent directories are created automatically.  Destination existence is
+re-checked immediately before each write; if a file appears between plan
+construction and write, that output is skipped and reported in the results.
+The source composition is read once; per-output DSP/encode then runs in
+parallel.  Async jobs report progress in **source frames** (`job.done` /
+`job.total`).
+
+```lua
+-- Identity + stereo AmbiX sidecar
+doc:render({
+  outputs = {
+    { path = "/lib/event/take-ambix.flac", profile = "FLAC (Source Equivalent)" },
+    { path = "/lib/event/take-st.flac",    profile = "FLAC (Source Equivalent)", chain = "foa" },
+  },
+})
+
+-- Async variant (catalog use case)
+local job = doc:begin_render({
+  outputs = {
+    { path = dest, profile = "FLAC (Source Equivalent)" },
+  },
+})
+workflow:defer(function(wf)
+  if job.finished then
+    local results = job:results()  -- { { path, status, detail? }, … }
+    -- …
+  end
+end)
+```
+
+#### Catalog variables
+
+| Variable                    | Scope   | Description                                                         |
+| --------------------------- | ------- | ------------------------------------------------------------------- |
+| `catalog.library_root`      | session | Library root for this session (overrides `user.catalog.library_root`) |
+| `user.catalog.library_root` | user    | Default library root across all sessions                            |
+| `catalog.export_profile`    | session | Default export profile name for this session                        |
+
+---
+
+### Returned type: render job
+
+Returned by `composition:begin_render`.  Poll from a `:defer` loop.
+
+#### render job Properties
+
+| Property   | Access | Type      | Description                                                                 |
+| ---------- | ------ | --------- | --------------------------------------------------------------------------- |
+| `done`     | **ro** | `integer` | Source frames completed (`0…total`; advances during parallel per-output work) |
+| `total`    | **ro** | `integer` | Composition source frame count                                              |
+| `finished` | **ro** | `boolean` | `true` when the worker has exited                                           |
+
+#### render job Methods
+
+| Method      | Arguments | Returns                          | Description                                             |
+| ----------- | --------- | -------------------------------- | ------------------------------------------------------- |
+| `:progress` | —         | `done`, `total`                  | Same counters as the fields                             |
+| `:error`    | —         | `string` or `nil`                | Hard error message after `finished`; `nil` on success   |
+| `:join`     | —         | —                                | Block until done; raises if a hard error occurred       |
+| `:results`  | —         | `{ { path, status, detail? }, … }` | Per-output results; `status` = `"ok"` \| `"skipped"` \| `"failed"` |
 
 ---
 
@@ -1212,7 +1289,7 @@ refreshes the host toolbar or sheet. `progress` and `log` are rejected by
 
 | Kind           | Properties                                                                                                                                                                   |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **button**     | `id?`, `label?` (one of id/label required), `icon?` (`check`, `circle-check` / `circle_check`, `circle-x`, `circle-alert`, `arrow-left`, `arrow-right`), `align?`, `enabled?`, `action?` |
+| **button**     | `id?`, `label?` (one of id/label required), `icon?` (`check`, `circle-check` / `circle_check`, `circle-x`, `circle-alert`, `arrow-left`, `arrow-right`), `color?` (sheet footer accent, e.g. `app.theme.semantic.danger`), `align?`, `enabled?`, `action?` |
 | **toggle**     | `id` (required), `label?` (defaults to id), `value?` bool (default `false`), `on_color?`, `off_color?`, `on_icon?` (default `"check"`), `align?`, `enabled?`, `action?`                  |
 | **message**    | `id` (required), `text` (required string; may be `""`), `color?`, `align?`                                                                                                   |
 | **text_entry** | `id` (required), `label?`, `value` (string, default `""`), `align?`, `enabled?`, `action?`                                                                                               |

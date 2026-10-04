@@ -3,10 +3,11 @@
 
 //! Host-only `app` facade for FieldAssist (`app.name == "field-assist"`).
 
-use mlua::{FromLua, UserData, UserDataFields, UserDataMethods, Value};
+use mlua::{FromLua, Function, Lua, UserData, UserDataFields, UserDataMethods, Value};
 
 use field_scripting::{host_from_lua, LuaComposition, LuaSession};
 
+use super::access;
 use super::backend::backend_from_lua;
 use super::theme::LuaTheme;
 
@@ -14,6 +15,113 @@ use super::theme::LuaTheme;
 pub const HOST_NAME: &str = "field-assist";
 
 pub struct LuaApp;
+
+struct ConfirmOptions {
+    ok_label: String,
+    cancel_label: String,
+    danger: bool,
+    on_confirm: Option<Function>,
+    on_cancel: Option<Function>,
+}
+
+impl Default for ConfirmOptions {
+    fn default() -> Self {
+        Self {
+            ok_label: "OK".into(),
+            cancel_label: "Cancel".into(),
+            danger: false,
+            on_confirm: None,
+            on_cancel: None,
+        }
+    }
+}
+
+fn stringify_arg(value: Value) -> String {
+    match value {
+        Value::Nil => String::new(),
+        Value::String(v) => v.to_string_lossy(),
+        other => other.to_string().unwrap_or_else(|_| "<unprintable>".into()),
+    }
+}
+
+fn parse_confirm_options(opts: Value) -> mlua::Result<ConfirmOptions> {
+    let mut out = ConfirmOptions::default();
+    let Value::Table(table) = opts else {
+        return Ok(out);
+    };
+
+    if let Ok(v) = table.get::<Value>("ok") {
+        let s = stringify_arg(v);
+        if !s.is_empty() {
+            out.ok_label = s;
+        }
+    } else if let Ok(v) = table.get::<Value>("ok_text") {
+        let s = stringify_arg(v);
+        if !s.is_empty() {
+            out.ok_label = s;
+        }
+    }
+
+    if let Ok(v) = table.get::<Value>("cancel") {
+        let s = stringify_arg(v);
+        if !s.is_empty() {
+            out.cancel_label = s;
+        }
+    } else if let Ok(v) = table.get::<Value>("cancel_text") {
+        let s = stringify_arg(v);
+        if !s.is_empty() {
+            out.cancel_label = s;
+        }
+    }
+
+    if let Ok(v) = table.get::<bool>("danger") {
+        out.danger = v;
+    }
+
+    if let Ok(f) = table.get::<Function>("on_confirm") {
+        out.on_confirm = Some(f);
+    }
+    if let Ok(f) = table.get::<Function>("on_cancel") {
+        out.on_cancel = Some(f);
+    }
+
+    Ok(out)
+}
+
+fn script_confirm(lua: &Lua, subject: Value, body: Value, opts: Value) -> mlua::Result<bool> {
+    let subject = stringify_arg(subject);
+    let body = stringify_arg(body);
+    let options = parse_confirm_options(opts)?;
+    let host = host_from_lua(lua)?;
+
+    // Tests / scripted automation: honor the FIFO queue before any GUI.
+    if let Some(queued) = host.take_confirm_response() {
+        return Ok(queued);
+    }
+
+    match access::with_view(|view, window, cx| {
+        view.script_confirm(
+            subject.clone(),
+            body.clone(),
+            options.ok_label.clone(),
+            options.cancel_label.clone(),
+            options.danger,
+            options.on_confirm.clone(),
+            options.on_cancel.clone(),
+            window,
+            cx,
+        );
+    }) {
+        Ok(()) => {
+            // Dialog is async; destructive work belongs in on_confirm.
+            Ok(false)
+        }
+        Err(_) => {
+            // Headless / no entered AppView: permissive default.
+            Ok(host.confirm(&subject, &body))
+        }
+    }
+}
 
 impl UserData for LuaApp {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -66,12 +174,14 @@ impl UserData for LuaApp {
             backend_from_lua(lua)?.load_settings()
         });
         methods.add_method("alert", |lua, _, (subject, body): (Value, Value)| {
-            let stringify = |value| match value {
-                Value::String(v) => v.to_string_lossy(),
-                other => other.to_string().unwrap_or_else(|_| "<unprintable>".into()),
-            };
-            host_from_lua(lua)?.alert(stringify(subject), stringify(body))
+            host_from_lua(lua)?.alert(stringify_arg(subject), stringify_arg(body))
         });
+        methods.add_method(
+            "confirm",
+            |lua, _, (subject, body, opts): (Value, Value, Value)| {
+                script_confirm(lua, subject, body, opts)
+            },
+        );
     }
 }
 

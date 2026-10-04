@@ -13,7 +13,7 @@ use field_scripting::{
     PathBrowse, ProgressVariant, SheetPane, SheetSnapshot, ToolbarAlign, ToolbarItem,
 };
 use gpui_kit::component::{
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     form::{field, Form},
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
@@ -26,12 +26,12 @@ use gpui_kit::component::{
     separator::Separator,
     stepper::{Stepper, StepperItem},
     switch::Switch,
-    v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Colorize as _, Disableable as _, IconName, Sizable as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, rems, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    div, px, rems, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Rgba,
     SharedString, Styled as _, WeakEntity, Window,
 };
 
@@ -506,7 +506,11 @@ impl WorkflowSheetView {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let ToolbarItem::Button {
-            id, label, enabled, ..
+            id,
+            label,
+            enabled,
+            color,
+            ..
         } = item
         else {
             return div().into_any_element();
@@ -517,7 +521,30 @@ impl WorkflowSheetView {
             .w_full()
             .label(label.clone())
             .disabled(!*enabled);
-        btn = if primary {
+        btn = if let Some(color) = color {
+            let theme = cx.theme();
+            let fg = rgba_color(*color);
+            let (hover_bg, active_bg) = if theme.mode.is_dark() {
+                (
+                    theme.secondary.lighten(0.1).opacity(0.8),
+                    theme.secondary.lighten(0.2).opacity(0.8),
+                )
+            } else {
+                (
+                    theme.secondary.darken(0.1).opacity(0.8),
+                    theme.secondary.darken(0.2).opacity(0.8),
+                )
+            };
+            // Outline + accent `color` so destructive actions keep a visible
+            // border (Custom defaults to transparent fill/border otherwise).
+            btn.outline().custom(
+                ButtonCustomVariant::new(cx)
+                    .color(fg)
+                    .foreground(fg)
+                    .hover(hover_bg)
+                    .active(active_bg),
+            )
+        } else if primary {
             btn.primary()
         } else {
             btn.outline()
@@ -693,4 +720,14 @@ impl Render for WorkflowSheetView {
             QuestionnaireActions::new(&q).when_some(actions, |this, actions| this.child(actions)),
         )
     }
+}
+
+fn rgba_color(color: [f32; 4]) -> Hsla {
+    Rgba {
+        r: color[0],
+        g: color[1],
+        b: color[2],
+        a: color[3],
+    }
+    .into()
 }

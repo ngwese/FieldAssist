@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use cpal::Device;
 use gpui_kit::component::{
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogFooter,
     dock::{
         panel_handle, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
@@ -3218,6 +3218,19 @@ impl AppView {
         self.request_close_document(id, window, cx);
     }
 
+    /// Close without an unsaved-changes prompt (scripting teardown / cleanup).
+    pub(crate) fn script_force_close_document(
+        &mut self,
+        id: DocumentId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session.get(id).is_none() {
+            return;
+        }
+        self.close_document(id, window, cx);
+    }
+
     pub(crate) fn script_display_name(&self, id: DocumentId, cx: &App) -> Option<String> {
         Some(self.display_title(id, cx).to_string())
     }
@@ -3352,6 +3365,75 @@ impl AppView {
         let body = body.to_string();
         window.open_alert_dialog(cx, move |alert, _, _| {
             alert.title(subject.clone()).description(body.clone())
+        });
+    }
+
+    /// Native confirm dialog for `app:confirm`.
+    ///
+    /// GPUI dialogs are asynchronous, so callers that need to act on the
+    /// choice should pass Lua `on_confirm` / `on_cancel` callbacks. The sync
+    /// return value from `app:confirm` is `false` once this dialog is shown.
+    pub(crate) fn script_confirm(
+        &self,
+        subject: String,
+        body: String,
+        ok_label: String,
+        cancel_label: String,
+        danger: bool,
+        on_confirm: Option<mlua::Function>,
+        on_cancel: Option<mlua::Function>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let view_ok = view.clone();
+            let view_cancel = view.clone();
+            let on_ok = on_confirm.clone();
+            let on_cancel_cb = on_cancel.clone();
+            let mut dialog = alert
+                .title(subject.clone())
+                .description(body.clone())
+                .confirm()
+                .ok_text(ok_label.clone())
+                .cancel_text(cancel_label.clone())
+                .on_ok(move |_, window, cx| {
+                    if let Some(func) = on_ok.clone() {
+                        view_ok.update(cx, |this, cx| {
+                            let _guard = crate::script::enter(this, window, cx);
+                            if let Err(err) = func.call::<()>(()) {
+                                this.repl.update(cx, |repl, cx| {
+                                    repl.append_error(
+                                        &format!("app:confirm on_confirm: {err}"),
+                                        cx,
+                                    );
+                                });
+                            }
+                            this.flush_script_logs(cx);
+                            this.refresh_workflow_sheet(window, cx);
+                        });
+                    }
+                    true
+                })
+                .on_cancel(move |_, window, cx| {
+                    if let Some(func) = on_cancel_cb.clone() {
+                        view_cancel.update(cx, |this, cx| {
+                            let _guard = crate::script::enter(this, window, cx);
+                            if let Err(err) = func.call::<()>(()) {
+                                this.repl.update(cx, |repl, cx| {
+                                    repl.append_error(&format!("app:confirm on_cancel: {err}"), cx);
+                                });
+                            }
+                            this.flush_script_logs(cx);
+                            this.refresh_workflow_sheet(window, cx);
+                        });
+                    }
+                    true
+                });
+            if danger {
+                dialog = dialog.ok_variant(ButtonVariant::Danger);
+            }
+            dialog
         });
     }
 

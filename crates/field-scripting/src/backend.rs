@@ -373,7 +373,10 @@ pub trait ScriptBackend {
     fn composition_id_string(&self, id: DocumentId) -> mlua::Result<String>;
 
     /// Close and remove a document.
-    fn close_composition(&mut self, id: DocumentId) -> mlua::Result<()>;
+    ///
+    /// When `discard` is true, hosts MUST close without prompting to save
+    /// unsaved changes (used by staging cleanup and similar teardown).
+    fn close_composition(&mut self, id: DocumentId, discard: bool) -> mlua::Result<()>;
 
     /// Replace document from a path and return the new document id.
     fn replace_composition(&mut self, id: DocumentId, path: &Path) -> mlua::Result<DocumentId>;
@@ -516,6 +519,22 @@ pub trait ScriptBackend {
         Err(mlua::Error::runtime(
             "playback_channels is not available in the headless backend",
         ))
+    }
+
+    /// Create an offline DSP chain by identifier, returning `None` when the
+    /// chain is unknown or the backend has no Faust runtime.
+    ///
+    /// Chain ids: `"foa"`, `"foa_fuma"`, `"ms"`.  `params` overrides Faust
+    /// defaults; any address absent from `params` keeps its compiled default.
+    /// The headless backend always returns `None`; `DesktopBackend` delegates
+    /// to [`field_assist::monitor::offline::FaustOfflineDsp`].
+    fn create_offline_dsp(
+        &self,
+        _chain: &str,
+        _sample_rate: u32,
+        _params: &std::collections::HashMap<String, f32>,
+    ) -> Option<Box<dyn field_composition::OfflineDsp>> {
+        None
     }
 }
 
@@ -1087,7 +1106,7 @@ impl ScriptBackend for HeadlessBackend {
         Ok(composition_id)
     }
 
-    fn close_composition(&mut self, id: DocumentId) -> mlua::Result<()> {
+    fn close_composition(&mut self, id: DocumentId, _discard: bool) -> mlua::Result<()> {
         self.world.borrow_mut().close(id);
         Ok(())
     }

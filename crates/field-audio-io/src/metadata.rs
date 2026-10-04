@@ -20,6 +20,7 @@ pub const CANONICAL_KEYS: &[&str] = &[
     "date",
     "genre",
     "track",
+    "copyright",
     "originator",
     "originator_reference",
     "description",
@@ -32,6 +33,31 @@ pub const CANONICAL_KEYS: &[&str] = &[
     "take",
     "tape",
     "note",
+];
+
+/// Stable Vorbis comment keys for BWF `bext` leaves written to FLAC/Ogg.
+///
+/// Mapping: `source.bwf.<Leaf>` → Vorbis key (uppercase).
+pub const BWF_VORBIS_KEYS: &[(&str, &str)] = &[
+    ("Description", "DESCRIPTION"),
+    ("Originator", "ORIGINATOR"),
+    ("OriginatorReference", "ORIGINATOR_REFERENCE"),
+    ("OriginationDate", "ORIGINATION_DATE"),
+    ("OriginationTime", "ORIGINATION_TIME"),
+    ("TimeReference", "TIME_REFERENCE"),
+    ("CodingHistory", "CODING_HISTORY"),
+];
+
+/// Stable Vorbis comment keys for common iXML leaves written to FLAC/Ogg.
+///
+/// Other `source.ixml.*` leaves use `IXML_<LEAF>` (uppercase leaf name).
+pub const IXML_VORBIS_KEYS: &[(&str, &str)] = &[
+    ("PROJECT", "PROJECT"),
+    ("SCENE", "SCENE"),
+    ("TAKE", "TAKE"),
+    ("TAPE", "TAPE"),
+    ("NOTE", "NOTE"),
+    ("PROJECTNAME", "PROJECT"),
 ];
 
 /// Tag map passed to encoders (canonical keys → values).
@@ -368,14 +394,17 @@ fn cstr_lossy(buf: &[u8]) -> String {
 }
 
 /// Build a [`TagMap`] from composed variables + optional metadata templates.
+///
+/// Includes canonical keys, BWF/iXML → stable Vorbis keys ([`BWF_VORBIS_KEYS`],
+/// [`IXML_VORBIS_KEYS`]), and prefers `user.artist` / `user.copyright` when set.
 pub fn build_tag_map(
     composed: &VariableTable,
     metadata_templates: &BTreeMap<String, String>,
 ) -> Result<TagMap, field_variables::InterpolateError> {
     let mut tags = TagMap::new();
     for key in CANONICAL_KEYS {
-        if let Some(entry) = composed.get_by_name(key) {
-            tags.insert((*key).to_string(), entry.value.clone());
+        if let Some(value) = first_nonempty_by_name(composed, key) {
+            tags.insert((*key).to_string(), value.to_string());
         }
     }
     // Also copy common container leaf names into canonical keys when missing.
@@ -383,14 +412,19 @@ pub fn build_tag_map(
     map_alias(&mut tags, composed, "ARTIST", "artist");
     map_alias(&mut tags, composed, "ALBUM", "album");
     map_alias(&mut tags, composed, "COMMENT", "comment");
+    map_alias(&mut tags, composed, "COPYRIGHT", "copyright");
     map_alias(&mut tags, composed, "Originator", "originator");
     map_alias(&mut tags, composed, "Description", "description");
     map_alias(&mut tags, composed, "INAM", "title");
     map_alias(&mut tags, composed, "IART", "artist");
     map_alias(&mut tags, composed, "ICMT", "comment");
+    map_alias(&mut tags, composed, "ICOP", "copyright");
     map_alias(&mut tags, composed, "PROJECT", "project");
     map_alias(&mut tags, composed, "SCENE", "scene");
     map_alias(&mut tags, composed, "TAKE", "take");
+
+    map_bwf_and_ixml_vorbis(&mut tags, composed);
+    prefer_user_artist_copyright(&mut tags, composed);
 
     for (key, template) in metadata_templates {
         let value = field_variables::interpolate_strict(template, composed)?;
@@ -405,8 +439,90 @@ fn map_alias(tags: &mut TagMap, composed: &VariableTable, from: &str, to: &str) 
     if tags.contains_key(to) {
         return;
     }
-    if let Some(entry) = composed.get_by_name(from) {
-        tags.insert(to.to_string(), entry.value.clone());
+    if let Some(value) = first_nonempty_by_name(composed, from) {
+        tags.insert(to.to_string(), value.to_string());
+    }
+}
+
+fn first_nonempty_by_name<'a>(composed: &'a VariableTable, name: &str) -> Option<&'a str> {
+    composed
+        .entries()
+        .iter()
+        .find(|e| e.name == name && !e.value.is_empty())
+        .map(|e| e.value.as_str())
+}
+
+fn insert_nonempty(tags: &mut TagMap, key: impl Into<String>, value: &str) {
+    if !value.is_empty() {
+        tags.insert(key.into(), value.to_string());
+    }
+}
+
+/// Map `source.bwf.*` and `source.ixml.*` into stable Vorbis comment keys.
+fn map_bwf_and_ixml_vorbis(tags: &mut TagMap, composed: &VariableTable) {
+    for (leaf, vorbis_key) in BWF_VORBIS_KEYS {
+        if let Some(entry) = composed.get_qualified(&format!("source.bwf.{leaf}")) {
+            insert_nonempty(tags, *vorbis_key, &entry.value);
+            // Keep lowercase canonical aliases for ItemKey mapping.
+            let canonical = match *leaf {
+                "Description" => Some("description"),
+                "Originator" => Some("originator"),
+                "OriginatorReference" => Some("originator_reference"),
+                "OriginationDate" => Some("origination_date"),
+                "OriginationTime" => Some("origination_time"),
+                "TimeReference" => Some("time_reference"),
+                "CodingHistory" => Some("coding_history"),
+                _ => None,
+            };
+            if let Some(canon) = canonical {
+                if !tags.contains_key(canon) {
+                    insert_nonempty(tags, canon, &entry.value);
+                }
+            }
+        }
+    }
+
+    let mut known_ixml = std::collections::BTreeSet::new();
+    for (leaf, vorbis_key) in IXML_VORBIS_KEYS {
+        known_ixml.insert(*leaf);
+        if let Some(entry) = composed.get_qualified(&format!("source.ixml.{leaf}")) {
+            insert_nonempty(tags, *vorbis_key, &entry.value);
+            let canonical = leaf.to_ascii_lowercase();
+            if matches!(
+                canonical.as_str(),
+                "project" | "scene" | "take" | "tape" | "note"
+            ) && !tags.contains_key(&canonical)
+            {
+                insert_nonempty(tags, canonical, &entry.value);
+            }
+        }
+    }
+
+    for entry in composed.entries() {
+        if entry.scope != "source.ixml" || entry.value.is_empty() {
+            continue;
+        }
+        if known_ixml.contains(entry.name.as_str()) {
+            continue;
+        }
+        let key = format!("IXML_{}", entry.name.to_ascii_uppercase());
+        tags.entry(key).or_insert_with(|| entry.value.clone());
+    }
+}
+
+/// Prefer `user.artist` / `user.copyright` over other artist/copyright sources.
+fn prefer_user_artist_copyright(tags: &mut TagMap, composed: &VariableTable) {
+    if let Some(entry) = composed.get_qualified("user.artist") {
+        if !entry.value.is_empty() {
+            tags.insert("artist".to_string(), entry.value.clone());
+            tags.insert("ARTIST".to_string(), entry.value.clone());
+        }
+    }
+    if let Some(entry) = composed.get_qualified("user.copyright") {
+        if !entry.value.is_empty() {
+            tags.insert("copyright".to_string(), entry.value.clone());
+            tags.insert("COPYRIGHT".to_string(), entry.value.clone());
+        }
     }
 }
 
@@ -525,5 +641,93 @@ mod tests {
             table.get_qualified("source.bwf.Originator").unwrap().value,
             "BBC"
         );
+    }
+
+    #[test]
+    fn build_tag_map_maps_bwf_and_ixml_to_stable_vorbis_keys() {
+        let mut table = VariableTable::new();
+        table.upsert(VariableEntry::new(
+            "source.bwf",
+            "Description",
+            "Field take",
+        ));
+        table.upsert(VariableEntry::new("source.bwf", "Originator", "Greg"));
+        table.upsert(VariableEntry::new("source.ixml", "PROJECT", "Show"));
+        table.upsert(VariableEntry::new("source.ixml", "MASTER_SPEED", "30/1"));
+        let tags = build_tag_map(&table, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            tags.get("DESCRIPTION").map(String::as_str),
+            Some("Field take")
+        );
+        assert_eq!(tags.get("ORIGINATOR").map(String::as_str), Some("Greg"));
+        assert_eq!(tags.get("PROJECT").map(String::as_str), Some("Show"));
+        assert_eq!(
+            tags.get("IXML_MASTER_SPEED").map(String::as_str),
+            Some("30/1")
+        );
+        assert!(!tags.contains_key("IXML_PROJECT"));
+    }
+
+    #[test]
+    fn build_tag_map_prefers_user_artist_and_copyright() {
+        let mut table = VariableTable::new();
+        table.upsert(VariableEntry::new("source", "artist", "FromSource"));
+        table.upsert(VariableEntry::new("user", "artist", "FromUser"));
+        table.upsert(VariableEntry::new("user", "copyright", "© 2026"));
+        let tags = build_tag_map(&table, &BTreeMap::new()).unwrap();
+        assert_eq!(tags.get("artist").map(String::as_str), Some("FromUser"));
+        assert_eq!(tags.get("ARTIST").map(String::as_str), Some("FromUser"));
+        assert_eq!(tags.get("copyright").map(String::as_str), Some("© 2026"));
+        assert_eq!(tags.get("COPYRIGHT").map(String::as_str), Some("© 2026"));
+    }
+
+    #[test]
+    fn build_tag_map_omits_empty_user_artist() {
+        let mut table = VariableTable::new();
+        table.upsert(VariableEntry::new("user", "artist", ""));
+        table.upsert(VariableEntry::new("source", "artist", "KeepMe"));
+        let tags = build_tag_map(&table, &BTreeMap::new()).unwrap();
+        assert_eq!(tags.get("artist").map(String::as_str), Some("KeepMe"));
+    }
+
+    #[test]
+    fn flac_encode_writes_mapped_vorbis_comments() {
+        use crate::{encoder, EncodeSpec, PcmFormat};
+
+        let mut table = VariableTable::new();
+        table.upsert(VariableEntry::new(
+            "source.bwf",
+            "Description",
+            "Catalog note",
+        ));
+        table.upsert(VariableEntry::new("source.bwf", "Originator", "FA"));
+        table.upsert(VariableEntry::new("user", "artist", "Tester"));
+        table.upsert(VariableEntry::new("user", "copyright", "MIT"));
+        let tags = build_tag_map(&table, &BTreeMap::new()).unwrap();
+
+        let enc = encoder("flac").expect("flac");
+        let spec = EncodeSpec {
+            sample_rate: 48_000,
+            sample_format: Some(PcmFormat::S16),
+            channel_count: 1,
+        };
+        let planar = [vec![0.0f32; 256]];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tagged.flac");
+        let mut file = File::create(&path).unwrap();
+        enc.encode_with_tags(&spec, &planar, &mut file, &tags)
+            .unwrap();
+        drop(file);
+
+        use lofty::file::AudioFile;
+        use lofty::flac::FlacFile;
+
+        let mut reader = File::open(&path).unwrap();
+        let flac = FlacFile::read_from(&mut reader, lofty::config::ParseOptions::new()).unwrap();
+        let comments = flac.vorbis_comments().expect("vorbis comments");
+        assert_eq!(comments.get("DESCRIPTION"), Some("Catalog note"));
+        assert_eq!(comments.get("ARTIST"), Some("Tester"));
+        assert_eq!(comments.get("COPYRIGHT"), Some("MIT"));
+        assert_eq!(comments.get("ORIGINATOR"), Some("FA"));
     }
 }

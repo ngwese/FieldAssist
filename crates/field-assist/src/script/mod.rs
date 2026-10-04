@@ -84,6 +84,14 @@ mod tests {
     }
 
     #[test]
+    fn app_confirm_defaults_to_true() {
+        let (mut host, _) = test_host();
+        let out = host.eval(r#"return app:confirm("Delete?", "Cannot undo.")"#);
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+    }
+
+    #[test]
     fn app_session_and_composition_sugar() {
         let (mut host, _) = test_host();
         let out = host.eval(

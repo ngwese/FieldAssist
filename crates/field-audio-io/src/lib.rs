@@ -39,7 +39,8 @@ pub use decode::{
     SymphoniaBlockSource,
 };
 pub use metadata::{
-    build_tag_map, probe_source_variables, TagMap, TechnicalSourceFields, CANONICAL_KEYS,
+    build_tag_map, probe_source_variables, TagMap, TechnicalSourceFields, BWF_VORBIS_KEYS,
+    CANONICAL_KEYS, IXML_VORBIS_KEYS,
 };
 pub use pcm::{
     bits_for_integer, clamp_unit, interleave_f32, interleave_i32, planar_frames, select_channels,

@@ -3,11 +3,19 @@
 
 //! Composition userdata and document helpers.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
 use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use field_audio_model::{ChannelScope, RegionId, SELECTION_COLLECTION};
+use field_composition::{render_outputs, Composition, OutputResult, RenderOutput, RenderPlan};
 use field_session::DocumentId;
 
+use crate::export::{apply_overrides, build_job, profile_fields_from_lua, profile_ref_from_value};
 use crate::host::host_from_lua;
 use crate::marker::{
     color_from_value, color_to_lua, list_markers, marker_id_from_lua, parse_add_marker, LuaMarker,
@@ -397,8 +405,18 @@ impl UserData for LuaComposition {
                 "composition save is not implemented in the headless host",
             ))
         });
-        methods.add_method("close", |lua, this, ()| {
-            host_from_lua(lua)?.close_composition(this.id)
+        methods.add_method("close", |lua, this, opts: Value| {
+            let discard = match opts {
+                Value::Nil => false,
+                Value::Table(table) => table.get::<Option<bool>>("discard")?.unwrap_or(false),
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "close options must be a table or nil, got {}",
+                        other.type_name()
+                    )));
+                }
+            };
+            host_from_lua(lua)?.close_composition(this.id, discard)
         });
         methods.add_method("replace", |lua, this, path: Value| {
             let path = crate::fs::path_from_lua(path)?;
@@ -457,7 +475,416 @@ impl UserData for LuaComposition {
         methods.add_method("export", |lua, this, arg: Value| {
             crate::export::export_composition(lua, this.id, arg)
         });
+        methods.add_method("render", |lua, this, arg: Value| {
+            render_composition(lua, this.id, arg, false).map(|_| true)
+        });
+        methods.add_method("begin_render", |lua, this, arg: Value| {
+            render_composition_async(lua, this.id, arg)
+        });
     }
+}
+
+// ── Render helpers ────────────────────────────────────────────────────────────
+
+/// Completed render output entry: `(path_string, status_tag, detail)`.
+///
+/// `status_tag` is `"ok"`, `"skipped"`, or `"failed"`.
+pub struct RenderOutputEntry {
+    /// Destination path as a UTF-8 string.
+    pub path: String,
+    /// One of `"ok"`, `"skipped"`, `"failed"`.
+    pub status: &'static str,
+    /// Additional detail for skipped/failed entries.
+    pub detail: String,
+}
+
+impl From<(PathBuf, OutputResult)> for RenderOutputEntry {
+    fn from((path, result): (PathBuf, OutputResult)) -> Self {
+        let path = path.to_string_lossy().into_owned();
+        match result {
+            OutputResult::Written => Self {
+                path,
+                status: "ok",
+                detail: String::new(),
+            },
+            OutputResult::Skipped(msg) => Self {
+                path,
+                status: "skipped",
+                detail: msg,
+            },
+            OutputResult::Failed(msg) => Self {
+                path,
+                status: "failed",
+                detail: msg,
+            },
+        }
+    }
+}
+
+/// Background render job for UI `:defer` polling.
+pub struct LuaRenderJob {
+    done: Arc<AtomicU64>,
+    total: u64,
+    finished: Arc<AtomicBool>,
+    error: Arc<Mutex<Option<String>>>,
+    outputs: Arc<Mutex<Vec<RenderOutputEntry>>>,
+    join: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl LuaRenderJob {
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    fn take_error(&self) -> Option<String> {
+        self.error.lock().unwrap().clone()
+    }
+
+    fn join_thread(&self) {
+        if let Some(handle) = self.join.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl UserData for LuaRenderJob {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("done", |_, this| {
+            Ok(this.done.load(Ordering::Relaxed) as i64)
+        });
+        fields.add_field_method_get("total", |_, this| Ok(this.total as i64));
+        fields.add_field_method_get("finished", |_, this| Ok(this.is_finished()));
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("progress", |_, this, ()| {
+            Ok((this.done.load(Ordering::Relaxed) as i64, this.total as i64))
+        });
+        methods.add_method("error", |_, this, ()| Ok(this.take_error()));
+        methods.add_method_mut("join", |_, this, ()| {
+            this.join_thread();
+            if let Some(err) = this.take_error() {
+                return Err(mlua::Error::runtime(format!("render failed: {err}")));
+            }
+            Ok(())
+        });
+        // Returns `{ { path, status, detail }, … }` once finished.
+        methods.add_method("results", |lua, this, ()| {
+            let entries = this.outputs.lock().unwrap();
+            let table = lua.create_table_with_capacity(entries.len(), 0)?;
+            for (i, entry) in entries.iter().enumerate() {
+                let row = lua.create_table()?;
+                row.set("path", entry.path.clone())?;
+                row.set("status", entry.status)?;
+                if !entry.detail.is_empty() {
+                    row.set("detail", entry.detail.clone())?;
+                }
+                table.set(i + 1, row)?;
+            }
+            Ok(table)
+        });
+    }
+}
+
+/// Parse a Lua render-output spec table into a [`RenderOutput`] + collect DSP.
+///
+/// Each output spec may have:
+/// - `path` (string, required)
+/// - `profile` (name string, profile userdata, or options table, required)
+/// - `chain` (string, optional): `"foa"` | `"foa_fuma"` | `"ms"`
+/// - `params` (table `string → number`, optional): DSP param overrides
+fn parse_render_output(
+    lua: &Lua,
+    spec: Table,
+    composition: &Composition,
+    composition_id: Option<DocumentId>,
+) -> mlua::Result<RenderOutput> {
+    let host = host_from_lua(lua)?;
+
+    // path ─────────────────────────────────────────────────────────────────
+    let path_val: Value = spec.get("path")?;
+    let path = crate::fs::path_from_lua(path_val)?;
+
+    // profile ──────────────────────────────────────────────────────────────
+    let profile_val: Value = spec.get("profile")?;
+    let mut profile = match profile_val {
+        Value::Nil => {
+            return Err(mlua::Error::runtime(
+                "render output requires a `profile` (name or options table)",
+            ))
+        }
+        Value::String(name) => profile_ref_from_value(&host, Value::String(name))?,
+        Value::UserData(ud) => profile_ref_from_value(&host, Value::UserData(ud))?,
+        Value::Table(table) => {
+            let profile_field: Value = table.get("profile")?;
+            if !matches!(profile_field, Value::Nil) {
+                apply_overrides(profile_ref_from_value(&host, profile_field)?, &table)?
+            } else {
+                profile_fields_from_lua(table, String::new())?
+            }
+        }
+        other => {
+            return Err(mlua::Error::runtime(format!(
+            "render output `profile` must be a name, profile userdata, or options table, got {}",
+            other.type_name()
+        )))
+        }
+    };
+
+    // Force the destination path from the output spec (overrides profile path).
+    profile.path = Some(path);
+
+    // Build ExportJob (resolves variables, tags, spec, dest).
+    let job = build_job(lua, &host, composition, composition_id, profile)?;
+
+    // chain + params ───────────────────────────────────────────────────────
+    let chain: Option<String> = match spec.get::<Value>("chain")? {
+        Value::Nil => None,
+        Value::String(s) => Some(s.to_str()?.to_owned()),
+        other => {
+            return Err(mlua::Error::runtime(format!(
+                "render output `chain` must be a string or nil, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    let params: HashMap<String, f32> = match spec.get::<Value>("params")? {
+        Value::Nil => HashMap::new(),
+        Value::Table(table) => {
+            let mut map = HashMap::new();
+            for pair in table.pairs::<String, Value>() {
+                let (key, value) = pair?;
+                let v = match value {
+                    Value::Number(n) => n as f32,
+                    Value::Integer(n) => n as f32,
+                    other => {
+                        return Err(mlua::Error::runtime(format!(
+                            "render params values must be numbers, got {} for key `{key}`",
+                            other.type_name()
+                        )))
+                    }
+                };
+                map.insert(key, v);
+            }
+            map
+        }
+        other => {
+            return Err(mlua::Error::runtime(format!(
+                "render output `params` must be a table or nil, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    // Offline DSP (via backend) ────────────────────────────────────────────
+    let dsp = chain.as_deref().and_then(|chain| {
+        host.with_backend(|backend| {
+            backend.create_offline_dsp(chain, job.spec.sample_rate, &params)
+        })
+    });
+
+    // Profile/export job channel_count reflects the composition (pre-DSP).
+    // After FOA/M/S mixdown the encoder must use the DSP output channel count.
+    let mut spec = job.spec;
+    if let Some(ref dsp) = dsp {
+        spec.channel_count = dsp.num_outputs() as u16;
+    }
+
+    Ok(RenderOutput {
+        path: job.dest,
+        encoder_id: job.encoder_id,
+        spec,
+        channel_indices: job.channel_indices,
+        tags: job.tags,
+        dsp,
+    })
+}
+
+/// Parse a render plan from a Lua options table.
+fn parse_render_plan(
+    lua: &Lua,
+    arg: Value,
+    composition: &Composition,
+    composition_id: Option<DocumentId>,
+) -> mlua::Result<RenderPlan> {
+    let options = match arg {
+        Value::Table(t) => t,
+        other => {
+            return Err(mlua::Error::runtime(format!(
+                "render expects an options table, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    let outputs_val: Value = options.get("outputs")?;
+    let outputs_table = match outputs_val {
+        Value::Table(t) => t,
+        other => {
+            return Err(mlua::Error::runtime(format!(
+                "render `outputs` must be a table, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    let mut outputs: Vec<RenderOutput> = Vec::new();
+    for pair in outputs_table.sequence_values::<Value>() {
+        let entry = pair?;
+        match entry {
+            Value::Table(spec) => {
+                outputs.push(parse_render_output(lua, spec, composition, composition_id)?);
+            }
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "render outputs entries must be tables, got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    }
+
+    if outputs.is_empty() {
+        return Err(mlua::Error::runtime("render requires at least one output"));
+    }
+
+    Ok(RenderPlan::new(outputs))
+}
+
+/// Synchronous render: build the plan and run on the calling thread.
+fn render_composition(
+    lua: &Lua,
+    id: DocumentId,
+    arg: Value,
+    _return_results: bool,
+) -> mlua::Result<()> {
+    let host = host_from_lua(lua)?;
+    host.with_backend(|backend| {
+        backend.with_open_document(id, &mut |doc| {
+            let composition = doc.composition.read().unwrap();
+            let mut plan = parse_render_plan(lua, arg.clone(), &composition, Some(id))?;
+            // Ensure parent directories exist.
+            for output in &plan.outputs {
+                if let Some(parent) = output.path.parent() {
+                    if !parent.as_os_str().is_empty() && !parent.exists() {
+                        std::fs::create_dir_all(parent).map_err(|err| {
+                            mlua::Error::runtime(format!(
+                                "create directory {}: {err}",
+                                parent.display()
+                            ))
+                        })?;
+                    }
+                }
+            }
+            render_outputs(&composition, &mut plan, None, 0)
+                .map_err(|err| mlua::Error::runtime(format!("render failed: {err:#}")))?;
+            Ok(())
+        })
+    })?;
+    Ok(())
+}
+
+/// Async render: read audio synchronously then process on a background thread.
+fn render_composition_async(lua: &Lua, id: DocumentId, arg: Value) -> mlua::Result<LuaRenderJob> {
+    let host = host_from_lua(lua)?;
+
+    // Collect data from the composition on the calling thread.
+    let mut planes_out: Option<Vec<Vec<f32>>> = None;
+    let mut source_rate_out: u32 = 0;
+    let mut frames_out: u64 = 0;
+    let mut plan_out: Option<RenderPlan> = None;
+
+    host.with_backend(|backend| {
+        backend.with_open_document(id, &mut |doc| {
+            let composition = doc.composition.read().unwrap();
+            let plan = parse_render_plan(lua, arg.clone(), &composition, Some(id))?;
+
+            // Ensure parent directories exist.
+            for output in &plan.outputs {
+                if let Some(parent) = output.path.parent() {
+                    if !parent.as_os_str().is_empty() && !parent.exists() {
+                        std::fs::create_dir_all(parent).map_err(|err| {
+                            mlua::Error::runtime(format!(
+                                "create directory {}: {err}",
+                                parent.display()
+                            ))
+                        })?;
+                    }
+                }
+            }
+
+            // Read audio amortized before handing off to background thread.
+            let frames = composition.frames();
+            let ch = composition.channel_count();
+            frames_out = frames;
+            source_rate_out = composition.sample_rate();
+            let mut planes = vec![vec![0.0f32; frames as usize]; ch];
+            {
+                let mut refs: Vec<&mut [f32]> =
+                    planes.iter_mut().map(|p| p.as_mut_slice()).collect();
+                composition
+                    .read_planar(0, frames, &mut refs)
+                    .map_err(|err| {
+                        mlua::Error::runtime(format!("read composition for render: {err:#}"))
+                    })?;
+            }
+
+            planes_out = Some(planes);
+            plan_out = Some(plan);
+            Ok(())
+        })
+    })?;
+
+    let planes = planes_out.ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
+    let plan = plan_out.ok_or_else(|| mlua::Error::runtime("composition is not open"))?;
+    let source_rate = source_rate_out;
+    let n_outputs = plan.outputs.len();
+    let frame_progress = field_composition::FrameProgress::new(frames_out, n_outputs);
+    let done = frame_progress.done.clone();
+    let total = frame_progress.total;
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let outputs: Arc<Mutex<Vec<RenderOutputEntry>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let finished_w = finished.clone();
+    let error_w = error.clone();
+    let outputs_w = outputs.clone();
+
+    let join = thread::Builder::new()
+        .name("fa-render".into())
+        .spawn(move || {
+            let mut plan = plan;
+            match field_composition::render_outputs_from_planes_with_progress(
+                planes,
+                source_rate,
+                &mut plan,
+                None,
+                0,
+                Some(&frame_progress),
+            ) {
+                Ok(results) => {
+                    let mut entries: Vec<RenderOutputEntry> =
+                        results.outputs.into_iter().map(Into::into).collect();
+                    outputs_w.lock().unwrap().append(&mut entries);
+                }
+                Err(err) => {
+                    *error_w.lock().unwrap() = Some(format!("{err:#}"));
+                }
+            }
+            finished_w.store(true, Ordering::Release);
+        })
+        .map_err(|err| mlua::Error::runtime(format!("spawn render thread: {err}")))?;
+
+    Ok(LuaRenderJob {
+        done,
+        total,
+        finished,
+        error,
+        outputs,
+        join: Mutex::new(Some(join)),
+    })
 }
 
 /// Install `field.composition`.
@@ -562,5 +989,162 @@ fn apply_selection(lua: &Lua, doc: &mut OpenDocument, value: Value) -> mlua::Res
             "selection must be a table, collection, or nil, got {}",
             other.type_name()
         ))),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::io::Write;
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use crate::backend::{BackendHandle, HeadlessBackend};
+    use crate::host::{HostProfile, ScriptHost};
+    use crate::world::HeadlessWorld;
+
+    fn write_sine_wav(path: &Path, frames: u32, channels: u16, sample_rate: u32) {
+        let bits_per_sample: u16 = 16;
+        let block_align = channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut out = std::fs::File::create(path).unwrap();
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&channels.to_le_bytes()).unwrap();
+        out.write_all(&sample_rate.to_le_bytes()).unwrap();
+        out.write_all(&byte_rate.to_le_bytes()).unwrap();
+        out.write_all(&block_align.to_le_bytes()).unwrap();
+        out.write_all(&bits_per_sample.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        for i in 0..frames {
+            for _ in 0..channels {
+                let t = i as f32 / sample_rate as f32;
+                let s = (0.5 * (t * 440.0 * std::f32::consts::TAU).sin() * i16::MAX as f32) as i16;
+                out.write_all(&s.to_le_bytes()).unwrap();
+            }
+        }
+    }
+
+    fn host_with_world() -> (ScriptHost, tempfile::TempDir, Rc<RefCell<HeadlessWorld>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let world = Rc::new(RefCell::new(HeadlessWorld::new()));
+        let backend: BackendHandle =
+            Rc::new(RefCell::new(HeadlessBackend::from_world_rc(world.clone())));
+        let mut host = ScriptHost::with_backend(
+            HostProfile {
+                name: "field-batch",
+                config_dir: None,
+            },
+            backend,
+        )
+        .expect("host");
+        host.load_init().expect("init");
+        (host, dir, world)
+    }
+
+    // ── 3.1: render builds a one-output plan and writes FLAC ─────────────────
+
+    #[test]
+    fn render_identity_output_writes_flac() {
+        let (mut host, dir, _) = host_with_world();
+        let src = dir.path().join("take.wav");
+        let dest = dir.path().join("render-out.flac");
+        write_sine_wav(&src, 4096, 2, 48_000);
+
+        let src_lua = src.display().to_string().replace('\\', "\\\\");
+        let dest_lua = dest.display().to_string().replace('\\', "\\\\");
+        let out = host.eval(&format!(
+            r#"
+            field.exports.define({{ name = "test-flac", encoder = "flac" }})
+            local c = field.composition.open("{src_lua}")
+            c:render({{
+              outputs = {{
+                {{ path = "{dest_lua}", profile = "test-flac" }},
+              }},
+            }})
+            return "ok"
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(dest.exists(), "render output not written");
+    }
+
+    // ── 3.1: begin_render returns a pollable job ──────────────────────────────
+
+    #[test]
+    fn begin_render_returns_job_and_writes_output() {
+        let (mut host, dir, _) = host_with_world();
+        let src = dir.path().join("take2.wav");
+        let dest = dir.path().join("render-async-out.flac");
+        write_sine_wav(&src, 2048, 1, 44_100);
+
+        let src_lua = src.display().to_string().replace('\\', "\\\\");
+        let dest_lua = dest.display().to_string().replace('\\', "\\\\");
+        let out = host.eval(&format!(
+            r#"
+            field.exports.define({{ name = "test-flac44", encoder = "flac" }})
+            local c = field.composition.open("{src_lua}")
+            local job = c:begin_render({{
+              outputs = {{
+                {{ path = "{dest_lua}", profile = "test-flac44" }},
+              }},
+            }})
+            assert(type(job) == "userdata", "expected job userdata")
+            job:join()
+            assert(job.finished, "job not finished after join")
+            assert(job.total == 2048, "expected frame total, got " .. tostring(job.total))
+            assert(job.done >= 1, "frame progress not updated")
+            local results = job:results()
+            assert(#results >= 1, "no results")
+            assert(results[1].status == "ok", results[1].status)
+            return "ok"
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert!(dest.exists(), "async render output not written");
+    }
+
+    // ── 3.3: app:confirm returns true by default ──────────────────────────────
+
+    #[test]
+    fn confirm_returns_true_by_default() {
+        let (mut host, _dir, _) = host_with_world();
+        let out = host.eval(
+            r#"
+            local ok = app:confirm("Delete?", "This removes files.")
+            assert(ok == true, "default confirm should be true")
+            return "ok"
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+    }
+
+    // ── 3.3: push_confirm_response controls the result ────────────────────────
+
+    #[test]
+    fn confirm_uses_queued_responses() {
+        let (mut host, _dir, _) = host_with_world();
+        host.push_confirm_response(false);
+        host.push_confirm_response(true);
+        let out = host.eval(
+            r#"
+            local a = app:confirm("First?", "")
+            local b = app:confirm("Second?", "")
+            local c = app:confirm("Third?", "")  -- queue empty → true
+            assert(a == false, "first should be false")
+            assert(b == true,  "second should be true")
+            assert(c == true,  "third (empty queue) should be true")
+            return "ok"
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
     }
 }

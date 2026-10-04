@@ -484,8 +484,8 @@ impl HostHandle {
         self.with_backend(|b| b.composition_id_string(id))
     }
 
-    pub(crate) fn close_composition(&self, id: DocumentId) -> mlua::Result<()> {
-        self.with_backend_mut(|b| b.close_composition(id))
+    pub(crate) fn close_composition(&self, id: DocumentId, discard: bool) -> mlua::Result<()> {
+        self.with_backend_mut(|b| b.close_composition(id, discard))
     }
 
     pub(crate) fn replace_composition(

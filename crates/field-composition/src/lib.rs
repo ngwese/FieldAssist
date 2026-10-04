@@ -27,6 +27,7 @@ mod composition;
 mod edit_ranges;
 mod edl;
 mod export;
+mod render;
 mod tree;
 
 pub use analysis_store::{
@@ -55,4 +56,8 @@ pub use field_audio_model::{
     MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
 };
 pub use field_audio_process::AnalysisKind;
+pub use render::{
+    render_outputs, render_outputs_from_planes, render_outputs_from_planes_with_progress,
+    FrameProgress, OfflineDsp, OutputResult, RenderOutput, RenderPlan, RenderResults,
+};
 pub use tree::ClipTree;

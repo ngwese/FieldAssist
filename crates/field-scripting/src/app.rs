@@ -43,6 +43,12 @@ impl UserData for LuaApp {
         methods.add_method("alert", |lua, _, (subject, body): (String, String)| {
             host_from_lua(lua)?.alert(subject, body)
         });
+        methods.add_method(
+            "confirm",
+            |lua, _, (subject, body, _opts): (String, String, mlua::Value)| {
+                Ok(host_from_lua(lua)?.confirm(&subject, &body))
+            },
+        );
         methods.add_method("info", |lua, _, (topic, message): (String, String)| {
             host_from_lua(lua)?.log(LogLevel::Info, topic, message);
             Ok(())

@@ -43,6 +43,8 @@ pub enum ToolbarItem {
         /// When set, the bar shows this icon (no label text). `label` is used
         /// for tooltip and accessibility.
         icon: Option<String>,
+        /// Optional accent color (e.g. danger for destructive sheet actions).
+        color: Option<[f32; 4]>,
         align: ToolbarAlign,
         enabled: bool,
     },
@@ -541,6 +543,7 @@ fn parse_button_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
         None => None,
     };
     let enabled = lua_bool(row.get("enabled")?, true)?;
+    let color = color_from_value(row.get("color")?)?;
     let (id, label) = match (id, label, icon.is_some()) {
         (Some(id), Some(label), _) => (id, label),
         (Some(id), None, _) => {
@@ -564,6 +567,7 @@ fn parse_button_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
         id,
         label,
         icon,
+        color,
         align,
         enabled,
     })
