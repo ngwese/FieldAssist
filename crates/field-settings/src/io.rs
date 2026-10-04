@@ -138,4 +138,104 @@ mod tests {
         assert_eq!(s.audio.output_device.as_deref(), Some("Speakers"));
         assert_eq!(s.audio.period_frames, None);
     }
+
+    #[test]
+    fn opened_period_persist_decision() {
+        use crate::groups::AudioSettings;
+        assert_eq!(
+            AudioSettings::opened_period_frames_to_persist(None, Some(1024)),
+            Some(1024)
+        );
+        assert_eq!(
+            AudioSettings::opened_period_frames_to_persist(Some(1024), Some(1024)),
+            None
+        );
+        assert_eq!(
+            AudioSettings::opened_period_frames_to_persist(Some(512), Some(1024)),
+            None
+        );
+        assert_eq!(
+            AudioSettings::opened_period_frames_to_persist(None, None),
+            None
+        );
+    }
+
+    /// FieldAssist launch must reload before any period persist write. Saving an
+    /// in-memory default store first would wipe `scripting.search_path`.
+    #[test]
+    fn relaunch_period_persist_retains_search_path() {
+        use crate::groups::AudioSettings;
+
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().join("extra-scripts");
+        std::fs::create_dir(&extra).unwrap();
+        let extra_text = extra.display().to_string();
+
+        let mut saved = AppSettings::default();
+        saved.scripting.search_path = vec![extra_text.clone()];
+        save_to_dir(&saved, Some(dir.path())).unwrap();
+
+        // Next launch (correct order): load disk, then persist opened period.
+        let mut loaded = load_from_dir(Some(dir.path()));
+        assert_eq!(loaded.scripting.search_path, vec![extra_text.clone()]);
+        let prior = loaded.audio.period_frames;
+        if let Some(frames) = AudioSettings::opened_period_frames_to_persist(prior, Some(1024)) {
+            loaded.audio.period_frames = Some(frames);
+        }
+        save_to_dir(&loaded, Some(dir.path())).unwrap();
+
+        let back = load_from_dir(Some(dir.path()));
+        assert_eq!(back.scripting.search_path, vec![extra_text]);
+        assert_eq!(back.audio.period_frames, Some(1024));
+    }
+
+    #[test]
+    fn saving_defaults_without_reload_wipes_search_path() {
+        use crate::groups::AudioSettings;
+
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().join("extra-scripts");
+        std::fs::create_dir(&extra).unwrap();
+        let extra_text = extra.display().to_string();
+
+        let mut saved = AppSettings::default();
+        saved.scripting.search_path = vec![extra_text];
+        save_to_dir(&saved, Some(dir.path())).unwrap();
+
+        // Bug shape: start from defaults (no reload), persist opened period, save.
+        let mut defaults = AppSettings::default();
+        let prior = defaults.audio.period_frames;
+        if let Some(frames) = AudioSettings::opened_period_frames_to_persist(prior, Some(1024)) {
+            defaults.audio.period_frames = Some(frames);
+        }
+        save_to_dir(&defaults, Some(dir.path())).unwrap();
+
+        let back = load_from_dir(Some(dir.path()));
+        assert!(
+            back.scripting.search_path.is_empty(),
+            "documents why launch must reload before period persist"
+        );
+        assert_eq!(back.audio.period_frames, Some(1024));
+    }
+
+    #[test]
+    fn second_relaunch_with_stored_period_leaves_search_path() {
+        use crate::groups::AudioSettings;
+
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().join("extra-scripts");
+        std::fs::create_dir(&extra).unwrap();
+        let extra_text = extra.display().to_string();
+
+        let mut saved = AppSettings::default();
+        saved.scripting.search_path = vec![extra_text.clone()];
+        saved.audio.period_frames = Some(1024);
+        save_to_dir(&saved, Some(dir.path())).unwrap();
+
+        let loaded = load_from_dir(Some(dir.path()));
+        let prior = loaded.audio.period_frames;
+        assert!(AudioSettings::opened_period_frames_to_persist(prior, Some(1024)).is_none());
+        // No save needed; reload alone must still expose the path.
+        assert_eq!(loaded.scripting.search_path, vec![extra_text]);
+    }
 }

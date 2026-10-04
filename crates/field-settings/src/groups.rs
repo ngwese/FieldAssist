@@ -365,6 +365,27 @@ impl Default for AudioSettings {
     }
 }
 
+impl AudioSettings {
+    /// Frames to persist when open chose a listed size and no preference was stored.
+    ///
+    /// Returns `None` when the stored value should be left alone (already matches,
+    /// or the user had an explicit size that the host fell back from).
+    pub fn opened_period_frames_to_persist(
+        prior: Option<u32>,
+        opened_frames: Option<u32>,
+    ) -> Option<u32> {
+        let frames = opened_frames?;
+        if prior == Some(frames) {
+            return None;
+        }
+        if prior.is_some() {
+            // User picked an explicit size that fell back during open; keep it.
+            return None;
+        }
+        Some(frames)
+    }
+}
+
 /// Lua module / workflow / resolver discovery preferences.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
