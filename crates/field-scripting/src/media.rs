@@ -130,6 +130,34 @@ impl UserData for LuaMedia {
                 Ok(media.frame_count as f64 / media.sample_rate.max(1) as f64)
             })
         });
+        fields.add_field_method_get("variables", |lua, this| {
+            this.with_ref(lua, |media| {
+                Ok(crate::bindings::LuaBindings::media(
+                    "source",
+                    media.variables.clone(),
+                    media.variables.is_scope_writable("source"),
+                ))
+            })
+        });
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("bindings", |lua, this, scope: Option<String>| {
+            this.with_ref(lua, |media| {
+                let scope = scope.unwrap_or_else(|| "source".to_string());
+                if scope != "source" && !scope.starts_with("source.") {
+                    return Err(mlua::Error::runtime(format!(
+                        "media bindings scope must be `source` or `source.*`, got `{scope}`"
+                    )));
+                }
+                let writable = media.variables.is_scope_writable(&scope);
+                Ok(crate::bindings::LuaBindings::media(
+                    scope,
+                    media.variables.clone(),
+                    writable,
+                ))
+            })
+        });
     }
 }
 
@@ -147,6 +175,7 @@ impl UserData for LuaMediaPool {
                     match media {
                         LuaMedia::Pool(id) => Ok(LuaMedia::Pool(id)),
                         LuaMedia::Detached(media_ref) => {
+                            // Already enriched on open; intern shares the variable store.
                             let id = host.with_backend_mut(|b| b.intern_media(media_ref))?;
                             Ok(LuaMedia::Pool(id))
                         }
@@ -155,7 +184,9 @@ impl UserData for LuaMediaPool {
                 other => {
                     let path = crate::fs::path_from_lua(other)?;
                     let id = host.with_backend_mut(|b| b.add_media(&path))?;
-                    Ok(LuaMedia::Pool(id))
+                    let pooled = LuaMedia::Pool(id);
+                    host.fire_enrich_media(pooled.clone());
+                    Ok(pooled)
                 }
             }
         });
@@ -190,10 +221,12 @@ fn format_modified(time: std::time::SystemTime) -> String {
     format!("{}", dur.as_secs())
 }
 
-fn open_media(path: &Path) -> mlua::Result<LuaMedia> {
+fn open_media(lua: &Lua, path: &Path) -> mlua::Result<LuaMedia> {
     let probed = field_audio_io::probe_file(path)
         .map_err(|err| mlua::Error::runtime(format!("open media {}: {err:#}", path.display())))?;
-    Ok(LuaMedia::Detached(media_ref_from_probed(probed)))
+    let media = LuaMedia::Detached(media_ref_from_probed(probed));
+    host_from_lua(lua)?.fire_enrich_media(media.clone());
+    Ok(media)
 }
 
 fn resolve_transcode_profile(
@@ -428,9 +461,9 @@ pub fn bind_media_module(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
     )?;
     media.set(
         "open",
-        lua.create_function(|_, path: Value| {
+        lua.create_function(|lua, path: Value| {
             let path = crate::fs::path_from_lua(path)?;
-            open_media(&path)
+            open_media(lua, &path)
         })?,
     )?;
     media.set(

@@ -19,8 +19,8 @@ use mlua::{MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
 use std::path::Path;
 
 use crate::bindings::{
-    bindings_from_lua, live_user_bindings, split_readonly_by_scope, split_user_detached,
-    LuaBindings,
+    bindings_from_lua, live_user_bindings, split_readonly_by_scope, split_source_by_scope,
+    split_user_detached, LuaBindings,
 };
 use crate::host::host_from_lua;
 use crate::prototype::{base_properties, create_prototype_table};
@@ -322,13 +322,15 @@ pub fn user_site_detached(lua: &mlua::Lua) -> mlua::Result<Vec<LuaBindings>> {
     Ok(split_user_detached(&user, true))
 }
 
-/// Composition site: source.* (r/o), user (including user.*), session, composition.
+/// Composition site: source.* (writable rules via media store), user, session,
+/// composition.
 pub fn composition_site_bindings(
     lua: &mlua::Lua,
     source: &VariableTable,
     composition_id: Option<field_session::DocumentId>,
     session_id: Option<field_session::SessionId>,
 ) -> mlua::Result<Vec<LuaBindings>> {
+    // Snapshot path (no live media store): treat all source scopes as read-only.
     let mut list = split_readonly_by_scope(source);
     list.extend(live_user_bindings(lua)?);
     list.push(LuaBindings::session(session_id));
@@ -358,11 +360,18 @@ pub fn export_site_bindings(
     Ok(list)
 }
 
-/// Probe primary media into `source` / `source.*` variables (Variables pane / export).
+/// Primary media `source` / `source.*` variables (Variables pane / export).
+///
+/// Prefers the media-attached store (probe + `enrich_media`). Falls back to a
+/// fresh probe when the store is empty (legacy / memory media).
 pub fn composition_source_variables(composition: &Composition) -> VariableTable {
     let Some(media) = composition.primary_media() else {
         return VariableTable::new();
     };
+    let stored = media.variables.table();
+    if !stored.is_empty() {
+        return stored;
+    }
     let tech = TechnicalSourceFields {
         basename: &media.basename,
         sample_rate: media.sample_rate,
@@ -447,10 +456,15 @@ pub fn composition_site_detached(
     id: DocumentId,
 ) -> mlua::Result<Vec<LuaBindings>> {
     let host = host_from_lua(lua)?;
-    let (source, layout_name, composition_store) =
+    let (source_store, source_fallback, layout_name, composition_store) =
         crate::composition::with_document(lua, id, |doc| {
             let composition = doc.composition.read().unwrap();
+            let source_store = composition
+                .primary_media()
+                .map(|m| m.variables.clone())
+                .filter(|s| !s.table().is_empty());
             Ok((
+                source_store,
                 composition_source_variables(&composition),
                 composition.channel_layout().map(str::to_string),
                 composition.variables().clone(),
@@ -464,7 +478,10 @@ pub fn composition_site_detached(
     composition_vars.upsert(VariableEntry::new("composition", "channel_layout", token));
     let user = host.user_variables();
     let session = host.session_variables(None);
-    let mut list = split_readonly_by_scope(&source);
+    let mut list = match source_store {
+        Some(store) => split_source_by_scope(&store),
+        None => split_readonly_by_scope(&source_fallback),
+    };
     list.extend(split_user_detached(&user, true));
     list.push(LuaBindings::detached("session", session, true));
     list.push(LuaBindings::detached("composition", composition_vars, true));

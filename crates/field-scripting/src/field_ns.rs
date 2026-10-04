@@ -101,6 +101,7 @@ fn bind_on(lua: &mlua::Lua, field: &Table) -> mlua::Result<()> {
                 "detect_layout" => inner.detect_layout.push(callback),
                 "enrich_composition" => inner.enrich_composition.push(callback),
                 "enrich_session" => inner.enrich_session.push(callback),
+                "enrich_media" => inner.enrich_media.push(callback),
                 other => return Err(mlua::Error::runtime(format!("unknown event `{other}`"))),
             }
             Ok(())

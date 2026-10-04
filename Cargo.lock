@@ -2207,6 +2207,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "field-core",
+ "field-variables",
  "serde",
  "serde_json",
 ]

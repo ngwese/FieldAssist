@@ -35,7 +35,7 @@ pub use markers::{
 };
 pub use media::{
     compute_media_id, descriptor_mismatch, DescriptorMismatch, MediaAvailability, MediaDescriptor,
-    MediaId, MediaIdentityFields, MediaPool, MediaRef, MediaStore,
+    MediaId, MediaIdentityFields, MediaPool, MediaRef, MediaStore, MediaVariableStore,
 };
 pub use pager::{
     BlockPager, BlockSource, NullBlockSource, PagerStats, BLOCK_FRAMES, RAM_CACHE_BYTES,

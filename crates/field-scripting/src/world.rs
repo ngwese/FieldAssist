@@ -686,6 +686,40 @@ mod tests {
     }
 
     #[test]
+    fn enrich_media_sets_event_name_from_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let event_dir = dir.path().join("2026-10-04");
+        std::fs::create_dir(&event_dir).unwrap();
+        let path = event_dir.join("take.wav");
+        write_stereo_sine(&path, 256, 44_100);
+        let path_lit = path.display().to_string().replace('\\', "\\\\");
+
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .expect("host");
+        host.load_init().expect("load embedded init");
+        let out = host.eval(&format!(
+            r#"
+            local m = field.media.open("{path_lit}")
+            local name = m:bindings("source.event").values.name
+            assert(name == "2026-10-04", tostring(name))
+            -- top-level source is writable; probe tag scopes are not
+            m.variables.values.note = "ok"
+            assert(m.variables.values.note == "ok")
+            local ok, err = pcall(function()
+              m:bindings("source.bwf").values.Description = "nope"
+            end)
+            assert(not ok, "expected source.bwf write to fail")
+            return name
+            "#
+        ));
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("2026-10-04"));
+    }
+
+    #[test]
     fn enrich_composition_skips_facomp_open() {
         let dir = tempfile::tempdir().unwrap();
         let wav = dir.path().join("take.wav");

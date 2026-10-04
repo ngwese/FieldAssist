@@ -69,7 +69,7 @@ env var `a.b`). Unset variables are unresolved.
 
 | Scope | Store |
 | --- | --- |
-| `source` | Derived at media probe (primary media); not user-edited |
+| `source` | Attached to media at probe; top-level `source` and script-created `source.*` are writable in memory via `enrich_media` (not persisted to `variables.json`). Probe tag sub-scopes (`source.bwf`, `source.ixml`, …) stay derived and read-only. Embedded `init.lua` sets `source.event.name` to the parent folder name |
 | `user` | `variables.json` beside `settings.json` / `init.lua` / `keymap.json` |
 | `session` | `.fasession` v3 (`variables` array) |
 | `composition` | `.facomp` v10 (`variables` on the project file), plus derived `channel_layout` (layout export `code`, defaulting to layout name) |
@@ -137,8 +137,9 @@ Templates may use `${export.sample_rate}` or a bare name that wins from export.
 
 Bottom-dock tab shows the **Composition** site resolution for the active
 composition. Columns: `#` (fixed), name, value, scope, description (optional).
-Editable rows are those whose winning top-level scope is `user`, `session`, or
-`composition`. Source-derived rows are read-only.
+Editable rows are those whose winning bindings are writable: `user`,
+`session`, `composition`, top-level `source`, and script-created `source.*`.
+Probe tag scopes (`source.bwf`, …) stay read-only.
 
 ## Resolvers
 
@@ -159,13 +160,13 @@ flowchart TB
     sessionS[session]
   end
   subgraph compositionSite [CompositionSite]
-    sourceC[source_scopes_ro]
+    sourceC[source_scopes]
     userC[user]
     sessionC[session]
     compositionC[composition]
   end
   subgraph exportSite [ExportSite]
-    sourceE[source_scopes_ro]
+    sourceE[source_scopes]
     userE[user]
     sessionE[session]
     compositionE[composition]
@@ -179,11 +180,13 @@ flowchart TB
 | Site | Bindings passed to `:init` (order) | Used for |
 | --- | --- | --- |
 | Session | `user`, then `session` | Session-level resolution |
-| Composition | each `source.*` scope from primary media (r/o), then `user`, `session`, `composition` | Variables pane |
+| Composition | each `source.*` scope from primary media (`source` + script scopes writable; probe tags r/o), then `user`, `session`, `composition` | Variables pane |
 | Export | composition list, then profile `export` bindings | Path templates and tag map |
 
-Source is split into one r/o Bindings object per scope path (`source`,
-`source.bwf`, `source.ixml`, …) in ingest order, before `user`.
+Source is split into one Bindings object per scope path (`source`,
+`source.bwf`, `source.ixml`, …) in ingest order, before `user`. Top-level
+`source` and script-created `source.*` scopes are writable; probe tag
+sub-scopes stay read-only.
 
 ### Lua API (`field.variables`)
 

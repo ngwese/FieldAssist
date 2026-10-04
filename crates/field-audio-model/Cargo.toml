@@ -13,5 +13,6 @@ serde = ["dep:serde", "dep:serde_json"]
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 field-core = { path = "../field-core" }
+field-variables = { path = "../field-variables" }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

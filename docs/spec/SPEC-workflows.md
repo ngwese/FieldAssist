@@ -314,14 +314,20 @@ chains.
 | `composition_selected` | `(composition)` |
 | `enrich_composition` | `(composition)` |
 | `enrich_session` | `(session)` |
+| `enrich_media` | `(media)` |
 | `detect_layout` | `(composition, chosen) → name or nil` |
+
+`enrich_media` fires after probe on `field.media.open` / pool `:add(path)`,
+and for the primary media when a composition is built from media. Hooks
+mutate media `source` / script-created `source.*` variables in place.
+Embedded `init.lua` sets `source.event.name` from the parent folder name.
 
 `enrich_composition` fires when a composition is built from media (media
 open, break-out). Hooks mutate `composition.variables` in place; they do not
-return a merge table. Order when both apply: `enrich_composition`, then
-`detect_layout`, then `loaded`. Not fired for `.facomp` open or session
-restore. field-batch fires it on new media `open`; field-play fires it before
-`detect_layout` after CLI open.
+return a merge table. Order when both apply: `enrich_media`, then
+`enrich_composition`, then `detect_layout`, then `loaded`. Not fired for
+`.facomp` open or session restore. field-batch fires them on new media
+`open`; field-play fires them before `detect_layout` after CLI open.
 
 `enrich_session` fires when an empty session is **created** (cold start without
 a `.fasession`, Close Session / new empty, `field.session.new`, CLI after

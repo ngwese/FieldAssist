@@ -16,7 +16,8 @@ surface is documented in [SCRIPTING.md](SCRIPTING.md).
 field-core              (file URLs, ProgressHandle, CompositionId `comp:`)
     ├── field-variables (scoped string vars, compose, `${…}` interpolate)
     ├── field-audio-model
-    │       (MediaId `media:`, MediaDescriptor, MediaPool, MediaStore, pager)
+    │       (MediaId `media:`, MediaDescriptor, MediaPool, MediaStore, pager;
+    │        MediaVariableStore for probe + enrich_media — depends on field-variables)
     │       ├── field-audio-process
     │       └── field-composition ← also field-audio-io, field-core, field-variables
     ├── field-audio-io  (also field-variables for source.* probe / TagMap)

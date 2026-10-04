@@ -115,6 +115,17 @@ field.exports.define({
 -- Event Handlers
 --
 
+-- Event name from the parent folder (e.g. …/2026-10-04/take.wav → "2026-10-04").
+-- Ingest joins staging/backup under ${source.event.name}. Override in a
+-- config-directory init.lua or a later enrich_media hook.
+field.on("enrich_media", function(m)
+  local parent = m.url and m.url.parent
+  local name = parent and parent.basename
+  if name and name ~= "" then
+    m:bindings("source.event").values.name = name
+  end
+end)
+
 field.on("detect_layout", function(c, chosen)
   if chosen == "1OA" then
     chosen = "B-Format (AmbiX)"

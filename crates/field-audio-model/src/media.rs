@@ -3,7 +3,7 @@
 
 //! Media identity, descriptors, and pool.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -11,8 +11,102 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use field_core::Location;
+use field_variables::VariableTable;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// Runtime `source` / `source.*` variables for a media ref (probe + script).
+///
+/// Shared across [`MediaRef`] clones so pool and composition copies see the
+/// same enrichments. Not persisted on disk.
+#[derive(Clone, Debug, Default)]
+pub struct MediaVariableStore {
+    inner: Arc<MediaVariableInner>,
+}
+
+#[derive(Debug, Default)]
+struct MediaVariableInner {
+    table: Mutex<VariableTable>,
+    /// Scopes present after the last probe (tag sub-scopes stay read-only).
+    probe_scopes: Mutex<BTreeSet<String>>,
+}
+
+impl MediaVariableStore {
+    /// Empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the table and record which scopes the probe produced.
+    pub fn replace_from_probe(&self, table: VariableTable) {
+        let mut scopes = BTreeSet::new();
+        for entry in table.entries() {
+            let scope = if entry.scope.is_empty() {
+                "source".to_string()
+            } else {
+                entry.scope.clone()
+            };
+            scopes.insert(scope);
+        }
+        *self.inner.table.lock().unwrap() = table;
+        *self.inner.probe_scopes.lock().unwrap() = scopes;
+    }
+
+    /// Copy table and probe scopes from `other` into this store (in place).
+    ///
+    /// Used when re-interning so clones that share this store see the update.
+    pub fn adopt_from(&self, other: &MediaVariableStore) {
+        *self.inner.table.lock().unwrap() = other.table();
+        *self.inner.probe_scopes.lock().unwrap() = other.probe_scopes();
+    }
+
+    /// Snapshot of the variable table.
+    pub fn table(&self) -> VariableTable {
+        self.inner.table.lock().unwrap().clone()
+    }
+
+    /// Mutate the table in place.
+    pub fn with_table_mut<R>(&self, f: impl FnOnce(&mut VariableTable) -> R) -> R {
+        f(&mut self.inner.table.lock().unwrap())
+    }
+
+    /// Scopes produced by the last probe.
+    pub fn probe_scopes(&self) -> BTreeSet<String> {
+        self.inner.probe_scopes.lock().unwrap().clone()
+    }
+
+    /// Whether `scope` may be written by scripts.
+    ///
+    /// Top-level `source` is always writable. Known probe tag sub-scopes
+    /// (`source.bwf`, `source.ixml`, …) and any scope present after the last
+    /// probe are read-only. Other `source.*` scopes (script-created) are
+    /// writable.
+    pub fn is_scope_writable(&self, scope: &str) -> bool {
+        if scope == "source" {
+            return true;
+        }
+        if !scope.starts_with("source.") {
+            return false;
+        }
+        if is_reserved_probe_tag_scope(scope) {
+            return false;
+        }
+        !self.inner.probe_scopes.lock().unwrap().contains(scope)
+    }
+}
+
+/// Container-tag scopes produced by [`field_audio_io::probe_source_variables`].
+fn is_reserved_probe_tag_scope(scope: &str) -> bool {
+    matches!(
+        scope,
+        "source.riff"
+            | "source.bwf"
+            | "source.id3v1"
+            | "source.id3v2"
+            | "source.vorbis"
+            | "source.ixml"
+    )
+}
 
 /// Stable media identity derived from basename + audio/file stats (not mtime).
 ///
@@ -284,6 +378,9 @@ pub struct MediaRef {
     /// Whether the referenced file is present and matches expectations.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub availability: MediaAvailability,
+    /// Probe + `enrich_media` variables (`source` / `source.*`). Not persisted.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub variables: MediaVariableStore,
 }
 
 impl MediaRef {
@@ -311,6 +408,7 @@ impl MediaRef {
             codec: "pcm".into(),
             samples: Some(Arc::new(samples)),
             availability: MediaAvailability::Available,
+            variables: MediaVariableStore::new(),
         };
         media.id = media.compute_id();
         media.path = PathBuf::from(format!("memory://{}", media.id));
@@ -379,6 +477,7 @@ impl MediaRef {
             codec: descriptor.codec,
             samples: None,
             availability: MediaAvailability::Available,
+            variables: MediaVariableStore::new(),
         }
     }
 
@@ -449,7 +548,10 @@ impl MediaPool {
             media.id = media.compute_id();
         }
         let id = media.id;
-        if self.media.contains_key(&id) {
+        if let Some(existing) = self.media.get_mut(&id) {
+            // Copy probe + enrich_media into the existing shared store so
+            // composition clones keep seeing updates.
+            existing.variables.adopt_from(&media.variables);
             return (id, false);
         }
         self.media.insert(id, media);

@@ -494,11 +494,14 @@ impl AppView {
                         crate::user_variables::store_mut(cx).file = file;
                         this.session.set_variables(state.session.clone());
                         if let Some(views) = this.active_views() {
-                            views
-                                .composition
-                                .write()
-                                .unwrap()
-                                .set_variables(state.composition.clone());
+                            let mut composition = views.composition.write().unwrap();
+                            composition.set_variables(state.composition.clone());
+                            if let Some(media) = composition.primary_media() {
+                                // Shared store: update table in place; keep probe_scopes.
+                                media.variables.with_table_mut(|t| {
+                                    *t = state.source.clone();
+                                });
+                            }
                         }
                         this.refresh_variables_panel(cx);
                     });
@@ -980,6 +983,7 @@ impl AppView {
         self.adopt_shared_media_from_lineage(cx);
         for &id in &created_ids {
             let _guard = crate::script::enter(self, window, cx);
+            self.script.fire_enrich_media_for_document(id);
             self.script.fire_enrich_composition(id);
             self.script.fire_detect_layout(id);
             self.flush_script_logs(cx);
@@ -1043,6 +1047,7 @@ impl AppView {
         self.adopt_shared_media_from_lineage(cx);
         {
             let _guard = crate::script::enter(self, window, cx);
+            self.script.fire_enrich_media_for_document(id);
             self.script.fire_enrich_composition(id);
             self.script.fire_detect_layout(id);
             self.flush_script_logs(cx);
@@ -2358,6 +2363,7 @@ impl AppView {
     ) {
         let _guard = crate::script::enter(self, window, cx);
         if run_enrich {
+            self.script.fire_enrich_media_for_document(id);
             self.script.fire_enrich_composition(id);
         }
         self.script.fire_detect_layout(id);
@@ -2788,39 +2794,7 @@ impl AppView {
         let (source, composition) = if let Some(id) = self.session.active() {
             if let Some(views) = self.views.get(&id) {
                 let composition = views.composition.read().unwrap();
-                let source = {
-                    if let Some(media) = composition.primary_media() {
-                        let tech = field_audio_io::TechnicalSourceFields {
-                            basename: &media.basename,
-                            sample_rate: media.sample_rate,
-                            channel_count: media.channel_count,
-                            frame_count: media.frame_count,
-                            bits_per_sample: media.bits_per_sample,
-                            container_format: &media.container_format,
-                            codec: &media.codec,
-                        };
-                        if !media.path.as_os_str().is_empty() {
-                            field_audio_io::probe_source_variables(&media.path, Some(&tech))
-                        } else {
-                            let mut table = field_variables::VariableTable::new();
-                            table.upsert(field_variables::VariableEntry::new(
-                                "source",
-                                "basename",
-                                media.basename.clone(),
-                            ));
-                            let stem = std::path::Path::new(&media.basename)
-                                .file_stem()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default();
-                            table.upsert(field_variables::VariableEntry::new(
-                                "source", "stem", stem,
-                            ));
-                            table
-                        }
-                    } else {
-                        field_variables::VariableTable::new()
-                    }
-                };
+                let source = field_scripting::composition_source_variables(&composition);
                 (source, {
                     let token = composition
                         .channel_layout()
@@ -2858,6 +2832,7 @@ impl AppView {
             };
         let state = VariablesPanelState {
             rows: rows_from_composed(&composed),
+            source,
             user,
             session,
             composition,
@@ -5271,37 +5246,7 @@ impl AppView {
         let session = self.session.variables().clone();
         let (source, composition) = if let Some(views) = self.views.get(&id) {
             let composition = views.composition.read().unwrap();
-            let source = {
-                if let Some(media) = composition.primary_media() {
-                    let tech = field_audio_io::TechnicalSourceFields {
-                        basename: &media.basename,
-                        sample_rate: media.sample_rate,
-                        channel_count: media.channel_count,
-                        frame_count: media.frame_count,
-                        bits_per_sample: media.bits_per_sample,
-                        container_format: &media.container_format,
-                        codec: &media.codec,
-                    };
-                    if !media.path.as_os_str().is_empty() {
-                        field_audio_io::probe_source_variables(&media.path, Some(&tech))
-                    } else {
-                        let mut table = field_variables::VariableTable::new();
-                        table.upsert(field_variables::VariableEntry::new(
-                            "source",
-                            "basename",
-                            media.basename.clone(),
-                        ));
-                        let stem = std::path::Path::new(&media.basename)
-                            .file_stem()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        table.upsert(field_variables::VariableEntry::new("source", "stem", stem));
-                        table
-                    }
-                } else {
-                    field_variables::VariableTable::new()
-                }
-            };
+            let source = field_scripting::composition_source_variables(&composition);
             (source, {
                 let token = composition
                     .channel_layout()
@@ -6950,6 +6895,11 @@ fn open_main_window_seeded(cx: &mut App, paths: Vec<PathBuf>, seed: MainWindowSe
     let title = AppView::composition_title(&composition);
     let shared_composition = Arc::new(RwLock::new(composition));
     let shared_buffer = Arc::new(RwLock::new(Buffer::empty()));
+    // open_main_window runs before AppView::new's reload. Load disk settings
+    // first so persist_opened_period_frames cannot write ensure_store defaults
+    // over fields like scripting.search_path.
+    crate::settings::ensure_store(cx);
+    crate::settings::reload_from_disk(cx);
     let period_setting = crate::settings::store(cx).settings.audio.period_frames;
     let period = output_period_from_setting(period_setting);
     let playback = match &device {
@@ -7210,16 +7160,12 @@ fn output_period_from_setting(period_frames: Option<u32>) -> OutputPeriod {
 
 /// Persist a snapped period when settings had none and open chose a listed size.
 fn persist_opened_period_frames(cx: &mut App, prior: Option<u32>, opened: OpenedPeriod) {
-    let Some(frames) = opened.requested_frames else {
+    let Some(frames) = field_settings::AudioSettings::opened_period_frames_to_persist(
+        prior,
+        opened.requested_frames,
+    ) else {
         return;
     };
-    if prior == Some(frames) {
-        return;
-    }
-    if prior.is_some() {
-        // User picked an explicit size that fell back during open; keep their choice.
-        return;
-    }
     if let Err(err) = crate::settings::update_and_save(cx, |s| {
         s.audio.period_frames = Some(frames);
     }) {
@@ -8170,7 +8116,11 @@ pub fn run(
             output_device_spec: output_spec.clone(),
             launch_ui_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
+        // Load settings.json before any startup code may persist (e.g.
+        // persist_opened_period_frames). ensure_store alone leaves defaults in
+        // memory; saving those would wipe fields like scripting.search_path.
         crate::settings::ensure_store(cx);
+        crate::settings::reload_from_disk(cx);
         if output_spec.is_some() {
             crate::settings::lock_cli_output_device(cx);
         }

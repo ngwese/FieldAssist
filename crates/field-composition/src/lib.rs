@@ -35,8 +35,8 @@ pub use analysis_store::{
 };
 pub use clip::{Clip, ClipCache, ClipId, ClipMarker, ClipMarkerId, ClipSource, ClipSpan};
 pub use composition::{
-    is_facomp_path, media_ref_from_probed, normalize_facomp_file_name, AnalysisBlockOutcome,
-    AnalysisPassStats, Clipboard, Composition, FramesIter, PeakBlockOutcome,
+    attach_source_variables, is_facomp_path, media_ref_from_probed, normalize_facomp_file_name,
+    AnalysisBlockOutcome, AnalysisPassStats, Clipboard, Composition, FramesIter, PeakBlockOutcome,
 };
 pub use edit_ranges::{
     analysis_inverse_op, map_inclusive_through_inverse, map_inclusive_through_op,
@@ -50,9 +50,9 @@ pub use export::{export_to_path, ExportJob};
 pub use field_audio_model::{
     default_marker_type, descriptor_mismatch, marker_type_color, BlockPager, BlockSource,
     DescriptorMismatch, Marker, MarkerId, MarkerList, MarkerType, MediaDescriptor, MediaId,
-    MediaPool, MediaRef, MediaStore, NullBlockSource, PagerStats, StoredMarker, BLOCK_FRAMES,
-    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT,
-    MARKER_TYPE_YELLOW,
+    MediaPool, MediaRef, MediaStore, MediaVariableStore, NullBlockSource, PagerStats, StoredMarker,
+    BLOCK_FRAMES, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
+    MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
 };
 pub use field_audio_process::AnalysisKind;
 pub use tree::ClipTree;

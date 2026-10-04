@@ -382,6 +382,7 @@ impl HostHandle {
             && !field_composition::is_facomp_path(&path)
             && !field_session::is_fasession_path(&path)
         {
+            self.fire_enrich_media_for_document(id);
             self.fire_enrich_composition(id);
         }
         Ok(id)

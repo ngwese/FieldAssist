@@ -41,6 +41,8 @@ const MIN_H_THUMB: f32 = 24.;
 pub struct VariablesPanelState {
     /// Composed rows for display.
     pub rows: Vec<VariableRow>,
+    /// Media `source` / `source.*` table (probe + enrich_media).
+    pub source: VariableTable,
     /// User-scoped table.
     pub user: VariableTable,
     /// Session-scoped table.
@@ -185,7 +187,25 @@ struct CellEdit {
 }
 
 fn scope_is_editable(scope: &str) -> bool {
-    matches!(top_level_scope(scope), "user" | "session" | "composition")
+    match top_level_scope(scope) {
+        "user" | "session" | "composition" => true,
+        // Top-level `source` and script-created `source.*` (e.g. `source.event`).
+        // Probe tag scopes stay read-only.
+        "source" => {
+            scope == "source"
+                || (scope.starts_with("source.")
+                    && !matches!(
+                        scope,
+                        "source.riff"
+                            | "source.bwf"
+                            | "source.id3v1"
+                            | "source.id3v2"
+                            | "source.vorbis"
+                            | "source.ixml"
+                    ))
+        }
+        _ => false,
+    }
 }
 
 /// Bottom-dock Variables panel.
@@ -283,7 +303,7 @@ impl VariablesPanel {
 
     fn upsert_editable(&mut self, name: &str, value: &str, scope: &str) {
         let entry = VariableEntry::new(scope, name, value);
-        match scope {
+        match top_level_scope(scope) {
             "user" => {
                 self.state.session.remove_in_scope("session", name);
                 self.state.composition.remove_in_scope("composition", name);
@@ -293,6 +313,9 @@ impl VariablesPanel {
                 self.state.user.remove_in_scope("user", name);
                 self.state.composition.remove_in_scope("composition", name);
                 self.state.session.upsert(entry);
+            }
+            "source" if scope_is_editable(scope) => {
+                self.state.source.upsert(entry);
             }
             _ => {
                 self.state.user.remove_in_scope("user", name);
@@ -603,6 +626,9 @@ impl VariablesPanel {
             "session" => {
                 let _ = self.state.session.remove_in_scope(scope, name);
             }
+            "source" if scope_is_editable(scope) => {
+                let _ = self.state.source.remove_in_scope(scope, name);
+            }
             _ => {
                 let _ = self.state.composition.remove_in_scope(scope, name);
             }
@@ -632,6 +658,10 @@ impl VariablesPanel {
                 self.state.composition.remove_in_scope("composition", name);
                 entry.scope = scope.to_string();
                 self.state.session.upsert(entry);
+            }
+            "source" if scope_is_editable(scope) => {
+                entry.scope = scope.to_string();
+                self.state.source.upsert(entry);
             }
             _ => {
                 self.state.user.remove_in_scope("user", name);

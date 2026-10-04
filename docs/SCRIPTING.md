@@ -341,11 +341,29 @@ Registers process-wide model/host hooks. Unknown event names error.
 | `saved`                | `composition`, `elapsed`                    |                                                                               |
 | `enrich_composition`   | `composition`                               | Fired when a composition is **built from media**; mutate `c.variables` in place |
 | `enrich_session`       | `session`                                   | Fired when an **empty session is created**; mutate `s.variables` / `s.properties` |
+| `enrich_media`         | `media`                                     | Fired after probe on `field.media.open` / pool `:add(path)` and before composition enrich on media open; mutate `m.variables` / `m:bindings("source…")` |
 | `detect_layout`        | `composition`, `chosen` → `string` or `nil` | `chosen` is the current layout name or `nil`; return a registered layout name |
 | `session_loaded`       | `session`                                   |                                                                               |
 | `session_saved`        | `session`                                   |                                                                               |
 | `session_selected`     | `session`                                   |                                                                               |
 | `composition_selected` | `composition` or `nil`                      |                                                                               |
+
+`enrich_media` runs after probe fills `source` / `source.*` and before the
+caller builds paths. Top-level `source` and script-created `source.*` scopes
+are writable; probe tag scopes (`source.bwf`, `source.ixml`, …) stay
+read-only. Embedded `init.lua` sets `source.event.name` to the parent folder
+name. Order when opening media into a composition: `enrich_media`, then
+`enrich_composition`, then `detect_layout`, then `loaded`.
+
+```lua
+field.on("enrich_media", function(m)
+  local parent = m.url and m.url.parent
+  local name = parent and parent.basename
+  if name and name ~= "" then
+    m:bindings("source.event").values.name = name
+  end
+end)
+```
 
 `enrich_composition` runs before `detect_layout` (and before `loaded` when
 that event also fires). Use it to set composition variables from paths,
@@ -737,10 +755,13 @@ Returned by `field.media.begin_transcode`. Poll from a `:defer` loop.
 | `container_format` | **ro** | `string`           | Container                                        |
 | `codec`            | **ro** | `string`           | Codec                                            |
 | `duration`         | **ro** | `number`           | Seconds                                          |
+| `variables`         | **rw** | bindings           | Top-level `source` Bindings (probe + `enrich_media`) |
 
 #### media Methods
 
-(none)
+| Method       | Arguments              | Returns  | Description                                                                 |
+| ------------ | ---------------------- | -------- | --------------------------------------------------------------------------- |
+| `:bindings`  | `scope?` (`"source"` / `"source.*"`) | bindings | Bindings for that scope; omit `scope` for top-level `source`. Probe tag scopes are read-only; `source` and script-created `source.*` are writable |
 
 ---
 

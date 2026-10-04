@@ -129,11 +129,15 @@ with a toolbar prompt to start the next stage from the Workflow menu.
 
 1. Expand directories with the same media rules as Review (`find_files` for
    readable audio; skip `.fasession`)
-2. Optionally **bit-exact copy** each source file into `backup_root` (no
-   re-encode). Create intermediate directories as needed
-3. **Convert** each source into `staging_root` in the preferred container
-   (decode → encode → copy mapped container tags). Preserve relative path
-   structure under the staging root when the source was a tree
+2. Optionally **bit-exact copy** each source file into
+   `{backup_root}/{event}/{basename}` (no re-encode), where `event` is
+   `source.event.name` from `enrich_media` (embedded default: parent folder
+   name). Omit the event segment when unset or unsafe. Create intermediate
+   directories as needed
+3. **Convert** each source into
+   `{staging_root}/{event}/{stem}.{extension}` in the preferred container
+   (decode → encode → copy mapped container tags). Same `event` rules as
+   backup
 4. **Verify** backup and staging (size and checksum). Record rows in the
    ledger
 5. Optionally **remove source media** from the recorder only after

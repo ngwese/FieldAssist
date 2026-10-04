@@ -3811,6 +3811,8 @@ fn media_stats_match(media: &MediaRef, meta: &std::fs::Metadata) -> bool {
 }
 
 /// Build a [`MediaRef`] from a probed audio file (identity finalized).
+///
+/// Fills [`MediaRef::variables`] from technical fields and container tags.
 pub fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
     let path = probed.path;
     let url = Location::from_path(&path);
@@ -3829,9 +3831,65 @@ pub fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
         codec: probed.codec,
         samples: probed.samples,
         availability: field_audio_model::MediaAvailability::Available,
+        variables: field_audio_model::MediaVariableStore::new(),
     };
     media.finalize_identity();
+    attach_source_variables(&mut media);
     media
+}
+
+/// Probe (or rebuild technical-only) `source` / `source.*` into `media.variables`.
+pub fn attach_source_variables(media: &mut MediaRef) {
+    use field_audio_io::{probe_source_variables, TechnicalSourceFields};
+    use field_variables::{VariableEntry, VariableTable};
+
+    let tech = TechnicalSourceFields {
+        basename: &media.basename,
+        sample_rate: media.sample_rate,
+        channel_count: media.channel_count,
+        frame_count: media.frame_count,
+        bits_per_sample: media.bits_per_sample,
+        container_format: &media.container_format,
+        codec: &media.codec,
+    };
+    let table = if media.path.as_os_str().is_empty() || media.url.is_memory() {
+        let mut table = VariableTable::new();
+        table.upsert(VariableEntry::new(
+            "source",
+            "basename",
+            media.basename.clone(),
+        ));
+        let stem = std::path::Path::new(&media.basename)
+            .file_stem()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        table.upsert(VariableEntry::new("source", "stem", stem));
+        table.upsert(VariableEntry::new(
+            "source",
+            "sample_rate",
+            media.sample_rate.to_string(),
+        ));
+        table.upsert(VariableEntry::new(
+            "source",
+            "channel_count",
+            media.channel_count.to_string(),
+        ));
+        table.upsert(VariableEntry::new(
+            "source",
+            "frame_count",
+            media.frame_count.to_string(),
+        ));
+        table.upsert(VariableEntry::new(
+            "source",
+            "container_format",
+            media.container_format.clone(),
+        ));
+        table.upsert(VariableEntry::new("source", "codec", media.codec.clone()));
+        table
+    } else {
+        probe_source_variables(&media.path, Some(&tech))
+    };
+    media.variables.replace_from_probe(table);
 }
 
 /// `is_facomp_path`.
@@ -4572,6 +4630,7 @@ mod tests {
             codec: "pcm".into(),
             samples: None,
             availability: field_audio_model::MediaAvailability::Available,
+            variables: field_audio_model::MediaVariableStore::new(),
         };
         media.finalize_identity();
         let media_id = media.id;

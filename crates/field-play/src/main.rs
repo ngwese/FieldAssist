@@ -582,6 +582,7 @@ fn open_with_detect(
         .open_path(path)
         .with_context(|| format!("open {}", path.display()))?;
     // Bypass HostHandle::open_path so we control hook order explicitly.
+    host.fire_enrich_media_for_document(id);
     host.fire_enrich_composition(id);
     host.fire_detect_layout(id);
     flush_script_output(&host);

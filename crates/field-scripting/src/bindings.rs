@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use field_audio_model::MediaVariableStore;
 use field_session::DocumentId;
 use field_session::SessionId;
 use field_variables::{top_level_scope, VariableEntry, VariableTable};
@@ -20,6 +21,11 @@ pub enum BindingsStore {
     /// Detached table (r/w or r/o).
     Detached {
         table: Rc<RefCell<VariableTable>>,
+        writable: bool,
+    },
+    /// Live media `source` / `source.*` variables (shared across MediaRef clones).
+    Media {
+        variables: MediaVariableStore,
         writable: bool,
     },
     /// Live session-scoped variables.
@@ -52,6 +58,17 @@ impl LuaBindings {
     /// Empty detached r/w Bindings.
     pub fn create(scope: impl Into<String>) -> Self {
         Self::detached(scope, VariableTable::new(), true)
+    }
+
+    /// Live media Bindings for one scope under a shared [`MediaVariableStore`].
+    pub fn media(scope: impl Into<String>, variables: MediaVariableStore, writable: bool) -> Self {
+        Self {
+            scope: scope.into(),
+            store: BindingsStore::Media {
+                variables,
+                writable,
+            },
+        }
     }
 
     /// Live session Bindings.
@@ -92,7 +109,9 @@ impl LuaBindings {
     /// Whether writes are allowed.
     pub fn writable(&self) -> bool {
         match &self.store {
-            BindingsStore::Detached { writable, .. } => *writable,
+            BindingsStore::Detached { writable, .. } | BindingsStore::Media { writable, .. } => {
+                *writable
+            }
             BindingsStore::Session { .. }
             | BindingsStore::Composition { .. }
             | BindingsStore::User => true,
@@ -103,6 +122,21 @@ impl LuaBindings {
     pub fn to_table(&self, lua: &mlua::Lua) -> mlua::Result<VariableTable> {
         match &self.store {
             BindingsStore::Detached { table, .. } => Ok(table.borrow().clone()),
+            BindingsStore::Media { variables, .. } => {
+                let full = variables.table();
+                let mut out = VariableTable::new();
+                for entry in full.entries() {
+                    let scope = if entry.scope.is_empty() {
+                        "source"
+                    } else {
+                        entry.scope.as_str()
+                    };
+                    if scope == self.scope {
+                        out.upsert(entry.clone());
+                    }
+                }
+                Ok(out)
+            }
             BindingsStore::Session { detached_id } => {
                 Ok(host_from_lua(lua)?.session_variables(*detached_id))
             }
@@ -151,6 +185,16 @@ impl LuaBindings {
                 } else {
                     t.remove_in_scope(&self.scope, name);
                 }
+                Ok(())
+            }
+            BindingsStore::Media { variables, .. } => {
+                variables.with_table_mut(|t| {
+                    if let Some(value) = value {
+                        t.upsert(VariableEntry::new(&self.scope, name, value));
+                    } else {
+                        t.remove_in_scope(&self.scope, name);
+                    }
+                });
                 Ok(())
             }
             BindingsStore::Session { detached_id } => {
@@ -358,6 +402,36 @@ pub fn split_readonly_by_scope(table: &VariableTable) -> Vec<LuaBindings> {
         .filter_map(|scope| {
             let t = by_scope.remove(&scope)?;
             Some(LuaBindings::detached(scope, t, false))
+        })
+        .collect()
+}
+
+/// Split a media variable store into one Bindings per scope (ingest order).
+///
+/// Top-level `source` and script-created `source.*` scopes are writable;
+/// probe tag sub-scopes stay read-only.
+pub fn split_source_by_scope(variables: &MediaVariableStore) -> Vec<LuaBindings> {
+    let table = variables.table();
+    let mut order: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    // Always include top-level source so scripts can write even when empty.
+    order.push("source".to_string());
+    seen.insert("source".to_string());
+    for entry in table.entries() {
+        let scope = if entry.scope.is_empty() {
+            "source".to_string()
+        } else {
+            entry.scope.clone()
+        };
+        if seen.insert(scope.clone()) {
+            order.push(scope);
+        }
+    }
+    order
+        .into_iter()
+        .map(|scope| {
+            let writable = variables.is_scope_writable(&scope);
+            LuaBindings::media(scope, variables.clone(), writable)
         })
         .collect()
 }

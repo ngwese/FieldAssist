@@ -125,13 +125,16 @@ function M.ledger_path(staging_root)
   return M.join_path(staging_root, "ingest.sqlite")
 end
 
--- Intended filesystem sketch (app.fs):
+-- Intended filesystem sketch (field.fs / field.url):
 --
---   local src = app.url(source_path)
---   local dest = app.url(backup_root):join(src:relative_to(source_root))
---   app.fs.mkdir(dest.parent, { recursive = true })
---   app.fs.copy(src, dest)
---   local sum = app.fs.checksum(dest)
+--   -- After field.media.open (enrich_media sets source.event.name):
+--   local event = src:bindings("source.event").values.name  -- sanitized
+--   local dest = field.url.from_path(backup_root)
+--   if event then dest = dest:join(event) end
+--   dest = dest:join(src.basename)
+--   field.fs.mkdir(dest.parent:as_path())
+--   field.fs.copy(source_path, dest:as_path())
+--   local sum = field.fs.checksum(dest:as_path())  -- when available
 --
 -- Intended convert sketch (metadata + encode):
 --

@@ -121,6 +121,7 @@ pub(crate) struct HostInner {
     pub(crate) detect_layout: Vec<Function>,
     pub(crate) enrich_composition: Vec<Function>,
     pub(crate) enrich_session: Vec<Function>,
+    pub(crate) enrich_media: Vec<Function>,
     pub(crate) layouts: Vec<ChannelLayoutDef>,
     pub(crate) export_profiles: Vec<crate::export::ExportProfileDef>,
     pub(crate) workflows: BTreeMap<String, WorkflowDef>,
@@ -200,6 +201,7 @@ impl ScriptHost {
                 detect_layout: Vec::new(),
                 enrich_composition: Vec::new(),
                 enrich_session: Vec::new(),
+                enrich_media: Vec::new(),
                 layouts: Vec::new(),
                 export_profiles: Vec::new(),
                 workflows: BTreeMap::new(),
@@ -627,6 +629,16 @@ impl ScriptHost {
     /// Fire `enrich_composition` hooks for a composition built from media.
     pub fn fire_enrich_composition(&self, id: DocumentId) {
         self.handle.fire_enrich_composition(id);
+    }
+
+    /// Fire `enrich_media` hooks after probe (media open / pool add).
+    pub fn fire_enrich_media(&self, media: crate::media::LuaMedia) {
+        self.handle.fire_enrich_media(media);
+    }
+
+    /// Fire `enrich_media` for the composition's primary media.
+    pub fn fire_enrich_media_for_document(&self, id: DocumentId) {
+        self.handle.fire_enrich_media_for_document(id);
     }
 
     /// Fire `enrich_session` hooks for a newly created empty session.
@@ -1214,6 +1226,43 @@ impl HostHandle {
         }
     }
 
+    /// Fire `enrich_media` hooks for probed media.
+    pub fn fire_enrich_media(&self, media: crate::media::LuaMedia) {
+        let hooks = self.inner.borrow().enrich_media.clone();
+        for hook in &hooks {
+            if let Err(err) = hook.call::<()>(media.clone()) {
+                self.note_hook_error("enrich_media", &err);
+            }
+        }
+        for (instance, hook) in self.workflow_handlers("enrich_media") {
+            if let Err(err) = hook.call::<()>((instance, media.clone())) {
+                self.note_hook_error("enrich_media", &err);
+            }
+        }
+    }
+
+    /// Enrich primary media for a composition document.
+    pub(crate) fn fire_enrich_media_for_document(&self, id: DocumentId) {
+        let media_id = {
+            let mut result = None;
+            let _ = self.with_backend(|backend| {
+                backend.with_open_document(id, &mut |doc| {
+                    result = doc
+                        .composition
+                        .read()
+                        .unwrap()
+                        .primary_media()
+                        .map(|m| m.id);
+                    Ok(())
+                })
+            });
+            result
+        };
+        if let Some(media_id) = media_id {
+            self.fire_enrich_media(crate::media::LuaMedia::pooled(media_id));
+        }
+    }
+
     pub(crate) fn fire_enrich_session(&self, which: Option<SessionId>) {
         let session = crate::session::LuaSession { detached_id: which };
         let hooks = self.inner.borrow().enrich_session.clone();
@@ -1651,20 +1700,19 @@ mod tests {
 
     #[test]
     fn eval_unknown_userdata_field_surfaces_runtime_error() {
-        // LuaMedia is fields-only; mlua errors on unknown fields for that shape.
+        // Fields-only userdata (WorkflowBaseProperties) errors on unknown fields.
         // (Types that also register methods fall back to nil for missing keys.)
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.wav");
-        write_minimal_wav(&path);
         let mut host = ScriptHost::new(HostProfile {
             name: "field-batch",
             config_dir: None,
         })
         .unwrap();
-        let path_lua = path.to_string_lossy().replace('\\', "/");
-        let out = host.eval(&format!(
-            r#"field.media.shared_pool():add("{path_lua}").layout"#
-        ));
+        let out = host.eval(
+            r#"
+            local w = field.workflow.create({ name = "t", scopes = { "menu" } })
+            return w.__base_properties.layout
+            "#,
+        );
         let err = out.error.expect("expected an error");
         assert!(
             err.contains("unknown field") && err.contains("layout"),

@@ -12,9 +12,11 @@
 -- / :defer pump, field.workflow.finish({ next = "…" }), C2PA / media tags.
 --
 -- Staging / Backup default to ${user.ingest.staging_root} /
--- ${user.ingest.backup_root} (expanded); Configure shows path fields with
--- muted resolved previews (input file count/size under Source; free space
--- under Staging / Backup). Paths may use ${…} templates.
+-- ${user.ingest.backup_root} (expanded); each file is written under
+-- {root}/{source.event.name}/ (from enrich_media; parent folder by default).
+-- Configure shows path fields with muted resolved previews (input file
+-- count/size under Source; free space under Staging / Backup). Paths may use
+-- ${…} templates.
 --
 -- Copy into the FieldAssist config directory next to init.lua.
 -- Requires shared.lua in the same directory (via field.include).
@@ -51,7 +53,12 @@ function Ingest:restore(session)
 end
 
 function Ingest:persist(session)
-  shared.set_prop(session, "ingest_source", self.source)
+  -- "multiple" is a drop-only UI sentinel; do not restore it next run.
+  local source = self.source
+  if source == "multiple" then
+    source = ""
+  end
+  shared.set_prop(session, "ingest_source", source)
   shared.set_prop(session, "backup_root", self.backup_root)
   shared.set_prop(session, "staging_root", self.staging_root)
 end
@@ -175,15 +182,11 @@ function Ingest:preview_path(raw, fallback_name)
   return resolved
 end
 
---- Sum media file sizes under a resolved source path (`0, 0` when empty).
-function Ingest:source_input_totals(resolved)
-  if not resolved or resolved == "" or resolved == "—" then
-    return 0, 0
-  end
-  local paths = shared.expand_media(resolved)
+--- Sum media file sizes for an explicit path list (`0, 0` when empty).
+function Ingest:source_input_totals_from_paths(paths)
   local total_bytes = 0
   local count = 0
-  for _, path in ipairs(paths) do
+  for _, path in ipairs(paths or {}) do
     local ok, stat = pcall(function()
       return field.fs.stat(path)
     end)
@@ -193,6 +196,14 @@ function Ingest:source_input_totals(resolved)
     end
   end
   return count, total_bytes
+end
+
+--- Sum media file sizes under a resolved source path (`0, 0` when empty).
+function Ingest:source_input_totals(resolved)
+  if not resolved or resolved == "" or resolved == "—" then
+    return 0, 0
+  end
+  return self:source_input_totals_from_paths(shared.expand_media(resolved))
 end
 
 --- Free space suffix for a resolved staging/backup path (`nil` on failure).
@@ -219,23 +230,35 @@ function Ingest:refresh_path_previews()
     end
   end
 
-  local source_path = self:preview_path(self.source, nil)
-  if source_path == "—" then
-    set_text(self.source_resolved, "—")
-  else
-    local count, bytes = self:source_input_totals(source_path)
+  if self.source == "multiple" then
+    local count, bytes = self:source_input_totals_from_paths(self.queue)
     if count > 0 then
       set_text(
         self.source_resolved,
-        string.format(
-          "%s  ·  %d file(s)  ·  %s",
-          source_path,
-          count,
-          self:format_bytes(bytes)
-        )
+        string.format("%d file(s)  ·  %s", count, self:format_bytes(bytes))
       )
     else
-      set_text(self.source_resolved, source_path)
+      set_text(self.source_resolved, "—")
+    end
+  else
+    local source_path = self:preview_path(self.source, nil)
+    if source_path == "—" then
+      set_text(self.source_resolved, "—")
+    else
+      local count, bytes = self:source_input_totals(source_path)
+      if count > 0 then
+        set_text(
+          self.source_resolved,
+          string.format(
+            "%s  ·  %d file(s)  ·  %s",
+            source_path,
+            count,
+            self:format_bytes(bytes)
+          )
+        )
+      else
+        set_text(self.source_resolved, source_path)
+      end
     end
   end
 
@@ -298,6 +321,10 @@ function Ingest:build_sheet()
     browse = "directory",
     action = function(ctrl, workflow)
       workflow.source = ctrl.value or ""
+      -- Leaving the multi-drop sentinel: Run should re-expand from the field.
+      if workflow.source ~= "multiple" then
+        workflow.queue = {}
+      end
       workflow:refresh_path_previews()
     end,
   })
@@ -441,15 +468,23 @@ function Ingest:collect_sources(payload)
   local incoming = payload.paths or {}
   if #incoming > 0 then
     -- A drop always defines this run's source (override any restored path).
-    self.source = incoming[1]
+    local roots = {}
     for _, item in ipairs(incoming) do
       if not shared.is_session_path(item) then
+        roots[#roots + 1] = item
         for _, path in ipairs(shared.expand_media(item)) do
           paths[#paths + 1] = path
         end
       end
     end
-  elseif self.source ~= "" then
+    if #roots > 1 then
+      self.source = "multiple"
+    elseif #roots == 1 then
+      self.source = roots[1]
+    else
+      self.source = ""
+    end
+  elseif self.source ~= "" and self.source ~= "multiple" then
     local resolved = self:resolve_path_or_var(self.source, nil)
     if resolved and resolved ~= "" then
       for _, path in ipairs(shared.expand_media(resolved)) do
@@ -458,6 +493,40 @@ function Ingest:collect_sources(payload)
     end
   end
   return paths
+end
+
+--- Path-safe event segment from enrich_media (`source.event.name`).
+--- Returns nil when unset or unsafe (empty, `.`, `..`, separators).
+function Ingest:event_segment(media)
+  local event = media:bindings("source.event")
+  local name = event and event.values.name
+  if not name or name == "" then
+    return nil
+  end
+  if name == "." or name == ".." then
+    return nil
+  end
+  if name:find("[/\\]") or name:find("^%s") or name:find("%s$") then
+    return nil
+  end
+  return name
+end
+
+--- Join root / optional event / filename; mkdir the parent directory.
+function Ingest:dest_under_root(root, event, filename)
+  local base = field.url.from_path(root)
+  if event then
+    base = base:join(event)
+  end
+  local dest = base:join(filename):as_path()
+  local parent = field.url.from_path(dest).parent
+  if parent then
+    local parent_path = parent:as_path()
+    if parent_path and parent_path ~= "" and not field.fs.exists(parent_path) then
+      field.fs.mkdir(parent_path)
+    end
+  end
+  return dest
 end
 
 -- Process one file per deferred frame so the Run pane can paint progress.
@@ -472,15 +541,6 @@ function Ingest:begin_file(source_path, index, total, staging, profile)
   self:set_file_progress(nil, "Opening…")
   self:set_current_file(nil)
 
-  local backup = self:resolve_path_or_var(self.backup_root, nil)
-  if backup and backup ~= "" then
-    -- Intended bit-exact backup (still deferred):
-    -- local dest = field.url.from_path(backup):join(rel)
-    -- field.fs.mkdir(dest.parent, { recursive = true })
-    -- field.fs.copy(source_path, dest:as_path())
-    field.log.info("ingest", "backup (intended): " .. source_path .. " → " .. backup)
-  end
-
   local ok, src_or_err = pcall(field.media.open, source_path)
   if not ok then
     self:log_issue("error", tostring(src_or_err))
@@ -490,10 +550,21 @@ function Ingest:begin_file(source_path, index, total, staging, profile)
   self:set_current_file(src)
   self:set_file_progress(0, "0%")
 
-  local dest = field.url
-    .from_path(staging)
-    :join(src.url.stem .. "." .. profile.extension)
-    :as_path()
+  local event = self:event_segment(src)
+
+  local backup = self:resolve_path_or_var(self.backup_root, nil)
+  if backup and backup ~= "" then
+    local backup_dest = self:dest_under_root(backup, event, src.basename or src.url.basename)
+    -- Intended bit-exact backup (still deferred):
+    -- field.fs.copy(source_path, backup_dest)
+    field.log.info("ingest", "backup (intended): " .. source_path .. " → " .. backup_dest)
+  end
+
+  local dest = self:dest_under_root(
+    staging,
+    event,
+    (src.url.stem or "take") .. "." .. profile.extension
+  )
 
   field.log.info(
     "ingest",
