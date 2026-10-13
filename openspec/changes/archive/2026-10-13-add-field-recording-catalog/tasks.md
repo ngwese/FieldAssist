@@ -79,6 +79,6 @@
 - [x] 5.1 Run `cargo fmt` and `cargo build` for the workspace; verify no
       errors or warnings
 - [x] 5.2 Run `cargo test` for the workspace; verify all tests pass
-- [ ] 5.3 Manual smoke: Review keep FOA + stereo takes → Catalog into a
+- [x] 5.3 Manual smoke: Review keep FOA + stereo takes → Catalog into a
       temp library → confirm files, tags, sidecar names, then cleanup;
       verify staging refs removed and Sononym-ready FLAC layout on disk
