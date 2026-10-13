@@ -12,6 +12,12 @@ Write commit messages in the imperative mood, for example:
 Hard-wrap every line of the commit message — subject and body — to 80
 characters or fewer. Do not leave the body as a single unwrapped paragraph.
 
+A commit message describes only what the commit contains: the change in the
+diff. Never mention OpenSpec task numbers (e.g. `5.3`), task or spec
+completion status or counts (e.g. `21/22 tasks`, "completes the change"),
+progress narration, or blockers. That is workflow state from the working
+session, not commit content.
+
 Before committing any code:
 
 1. Run `cargo fmt` so formatting stays consistent.

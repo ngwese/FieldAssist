@@ -22,6 +22,12 @@ context: |
   Before committing code: cargo fmt, then cargo build and cargo test with no
   errors and no warnings (including unused imports and dead code).
 
+  A commit message, and any completion summary a workflow produces,
+  describes only the change it accompanies — what the diff contains and
+  does. Never include specification task numbers, task or spec completion
+  status or counts, progress narration, or blockers; that is workflow
+  state, not content.
+
   Realtime audio: code on the CPAL output callback must not allocate or take
   blocking locks. Prefetch owns provider reads and bandlimited SRC (matched
   rates copy bit-exactly); the callback owns monitor DSP so live parameters
@@ -57,7 +63,11 @@ operations:
         suite when the change is localized.
       - Never put allocations, blocking locks, I/O, or decode on the CPAL
         output callback path.
+      - Write commit messages that describe only the change in the commit —
+        never task numbers, completion status or counts, progress, or
+        blockers.
   archive:
     guidance:
-      - Keep the completion summary concise.
+      - Keep the completion summary concise and free of task numbers,
+        completion status or counts, progress, and blockers.
       - Confirm which main specs under openspec/specs/ were created or updated.
