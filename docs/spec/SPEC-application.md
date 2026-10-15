@@ -25,7 +25,7 @@ Related:
 - [SPEC-field-recording.md](SPEC-field-recording.md) — Ingest → Review →
   Catalog reference pipeline and intended host APIs (staging, SQLite sidecar,
   confirm, metadata)
-- [SCRIPTING.md](../SCRIPTING.md) — Lua API reference
+- [scripting/](../scripting/README.md) — Lua API reference
 - [BUILDING.md](../BUILDING.md) — build and packaging
 
 ## Purpose
@@ -322,7 +322,7 @@ The Script panel is a Lua REPL. `print` goes to the transcript. `app:info`,
 The Messages tab has no badge; totals appear on the status bar. The Media tab
 lists every entry in the window-shared media pool (descriptor fields plus
 resolved path). Pool-only entries added via Lua are shown there but are not
-persisted in `.fasession`. See [SCRIPTING.md](../SCRIPTING.md).
+persisted in `.fasession`. See [scripting/](../scripting/README.md).
 
 ## Review editor
 
@@ -503,7 +503,7 @@ Export is a one-shot encode of the edited composition. It does not walk
 session groups or named regions, and it does not run a processing chain.
 Those belong to the future processing layer. Lua can perform the same encode
 via `composition:export` and named profiles from `field.exports.define`
-(see [SCRIPTING.md](../SCRIPTING.md)).
+(see [scripting/](../scripting/README.md)).
 
 The Export sheet includes a **Profile** menu populated from
 `field.exports`. Selecting a profile resolves settings as **composition/media

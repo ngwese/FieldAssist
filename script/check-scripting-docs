@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# check-scripting-docs -- verify the structure of docs/scripting/.
+#
+# The scripting documentation is hand-authored; there is no generator that
+# would catch a broken split. This check owns the properties that a split
+# can break:
+#
+#   1. No leftover intra-document anchors (](#field...) or ](#app...).
+#   2. Every relative link under docs/scripting/ resolves to a file or
+#      directory.
+#   3. Every reference page has exactly one H1.
+#   4. The set of documented modules matches the set of reference pages.
+#
+# Run from the repository root. Exits non-zero on any violation.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dir="$root/docs/scripting"
+status=0
+
+fail() {
+  printf 'check-scripting-docs: %s\n' "$1" >&2
+  status=1
+}
+
+if [[ ! -d "$dir" ]]; then
+  fail "missing directory: docs/scripting/"
+  exit 1
+fi
+
+# 1. No leftover anchors that used to point within the single document.
+while IFS= read -r line; do
+  fail "leftover intra-document anchor: $line"
+done < <(grep -rnoE '\]\(#(field|app)[a-z0-9_.-]*\)' "$dir" || true)
+
+# 2. Relative links resolve.
+#    grep emits file:line:](target); split on the first two colons.
+while IFS= read -r hit; do
+  file="${hit%%:*}"
+  rest="${hit#*:}"
+  lineno="${rest%%:*}"
+  raw="${rest#*:}"          # ](target)
+  target="${raw#](}"        # target)
+  target="${target%)}"      # target
+  case "$target" in
+    http://*|https://*|mailto:*|/*) continue ;;
+  esac
+  path="${target%%#*}"      # drop any fragment
+  [[ -z "$path" ]] && continue
+  base="$(dirname "$file")"
+  if [[ ! -e "$base/$path" ]]; then
+    fail "broken link: ${file#"$root/"}:$lineno -> $target"
+  fi
+done < <(grep -rnoE '\]\([^)]+\)' "$dir" || true)
+
+# 3. Exactly one H1 per reference page; the guide has exactly one H1.
+for f in "$dir"/reference/*.md "$dir"/guide.md; do
+  [[ -e "$f" ]] || continue
+  n="$(grep -c '^# ' "$f" || true)"
+  if [[ "$n" -ne 1 ]]; then
+    fail "expected exactly one H1 in ${f#"$root/"}, found $n"
+  fi
+done
+
+# 4. Documented modules match reference pages.
+#    The reference file for `field.x` is field-x.md; `app` is app.md; the
+#    nested-types page is not a module. This list is the canonical set and
+#    is compared on the slug form.
+expected="app
+field-log
+field-on
+field-include
+field-scripting
+field-url
+field-fs
+field-session
+field-composition
+field-media
+field-layouts
+field-exports
+field-variables
+field-workflow
+field-ui
+field-audio_devices
+nested-types"
+
+actual="$(cd "$dir/reference" && ls *.md 2>/dev/null | sed 's/\.md$//' | sort)"
+
+if [[ "$(printf '%s\n' "$expected" | sort)" != "$actual" ]]; then
+  fail "reference pages do not match the documented module set"
+  echo "--- expected ---" >&2
+  printf '%s\n' "$expected" | sort >&2
+  echo "--- actual ---" >&2
+  printf '%s\n' "$actual" >&2
+fi
+
+if [[ "$status" -eq 0 ]]; then
+  echo "check-scripting-docs: OK"
+fi
+
+exit "$status"

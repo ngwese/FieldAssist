@@ -8,7 +8,7 @@ supply adapters.
 Product behavior is described in [docs/spec/](spec/) (application, workflows,
 [analysis](spec/SPEC-analysis.md), [processing](spec/SPEC-processing.md)). This
 file covers only crate boundaries and composition patterns. The shared Lua
-surface is documented in [SCRIPTING.md](SCRIPTING.md).
+surface is documented in [scripting/](scripting/README.md).
 
 ## Crate DAG
 

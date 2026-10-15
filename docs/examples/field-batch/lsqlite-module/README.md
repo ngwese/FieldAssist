@@ -68,5 +68,5 @@ against the host — not covered by this Makefile.
 
 ## See also
 
-- [SCRIPTING.md](../../../SCRIPTING.md) — `field.scripting.enable_native_modules`
+- [scripting/](../../../scripting/README.md) — `field.scripting.enable_native_modules`
 - Upstream docs: <http://lua.sqlite.org/>
