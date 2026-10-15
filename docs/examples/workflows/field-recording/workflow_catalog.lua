@@ -1,5 +1,5 @@
 -- Catalog workflow for the field-recording pipeline.
--- See docs/spec/SPEC-field-recording.md and docs/SCRIPTING.md.
+-- See docs/spec/SPEC-field-recording.md and docs/scripting/.
 --
 -- Modal sheet: Configure → Run → Summary → Cleanup.
 -- Run also copies kept `.facomp` files and the focused `.fasession` into

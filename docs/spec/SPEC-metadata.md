@@ -10,7 +10,7 @@
 
 This document is the product contract for scoped string variables, source-tag
 ingest, export path/tag resolution, and user-extensible Lua resolvers. The Lua
-surface is defined in [SCRIPTING.md](../SCRIPTING.md); this file is the design
+surface is defined in [scripting/](../scripting/README.md); this file is the design
 contract.
 
 Related:
@@ -19,7 +19,7 @@ Related:
 - [SPEC-workflows.md](SPEC-workflows.md) — prototype/instance pattern (resolvers
   follow the same shape)
 - [SPEC-field-recording.md](SPEC-field-recording.md) — export / catalog intent
-- [SCRIPTING.md](../SCRIPTING.md) — API reference
+- [scripting/](../scripting/README.md) — API reference
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — crate DAG (`field-variables` leaf)
 
 ## Purpose

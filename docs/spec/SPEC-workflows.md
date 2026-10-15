@@ -14,7 +14,7 @@
 | 6 | 2026-09-30 | Modal workflow sheets (wizard panes for batch jobs) |
 
 This document specifies the Lua host, workflow system, and how they support
-incremental review. The Lua surface is defined in [SCRIPTING.md](../SCRIPTING.md);
+incremental review. The Lua surface is defined in [scripting/](../scripting/README.md);
 this file is the product contract.
 
 Related:
@@ -26,7 +26,7 @@ Related:
   driven by these workflows today)
 - [SPEC-field-recording.md](SPEC-field-recording.md) — Ingest → Review →
   Catalog reference pipeline (composing workflows; intended host APIs)
-- [SCRIPTING.md](../SCRIPTING.md) — API reference
+- [scripting/](../scripting/README.md) — API reference
 
 ## Purpose
 

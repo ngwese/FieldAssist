@@ -12,7 +12,7 @@ context: |
   crate that consumes data; higher layers supply adapters.
 
   Existing product behavior docs live in docs/spec/ (application, workflows,
-  analysis, processing, metadata, field-recording) and docs/SCRIPTING.md.
+  analysis, processing, metadata, field-recording) and docs/scripting/.
   Treat those as exploration background — do not bulk-import them into
   openspec/specs/. Grow openspec/specs/<domain>/spec.md only when changes
   are archived. Create domain folders on demand (e.g. playback/, scripting/,
@@ -43,7 +43,7 @@ rules:
   specs:
     - Write behavior-first deltas using ADDED, MODIFIED, and REMOVED sections.
     - Prefer Given/When/Then scenarios for observable behavior.
-    - Reference relevant docs/spec/ or SCRIPTING.md sections when they inform
+    - Reference relevant docs/spec/ or docs/scripting/ sections when they inform
       the change; do not paste those docs wholesale.
   design:
     - Prefer leaf crates plus app-layer adapters over new sibling-crate edges.

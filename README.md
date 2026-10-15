@@ -14,7 +14,7 @@ Review, edit, and process audio coming in from the field.
   release-branch workflow.
 - See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the Cargo workspace crate
 map and composition patterns.
-- See [docs/SCRIPTING.md](docs/SCRIPTING.md) for details on the evolving Lua scripting layer.
+- See [docs/scripting/](docs/scripting/README.md) for details on the evolving Lua scripting layer.
 
 Supported formats: WAV, AIFF, CAF, FLAC, OGG, MP3, M4A/MP4, MKV.
 Codecs: AAC, ADPCM, ALAC, FLAC, MP1, MP2, MP3, PCM, Vorbis.
@@ -60,7 +60,7 @@ cargo run -p field-batch -- path/to/script.lua
 cargo run -p field-batch --  # interactive REPL
 ```
 
-See [docs/SCRIPTING.md](docs/SCRIPTING.md) and
+See [docs/scripting/](docs/scripting/README.md) and
 [docs/examples/field-batch/](docs/examples/field-batch/) for scripting details
 and samples (including native modules such as lsqlite3).
 
