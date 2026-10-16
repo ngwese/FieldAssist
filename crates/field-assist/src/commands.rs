@@ -20,6 +20,7 @@ actions!(
         Close,
         Export,
         About,
+        HelpOnlineDocs,
         Settings,
         UserVariables,
         InstallCliTools,
@@ -133,6 +134,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "app.settings",
     "app.variables",
     "app.install_cli_tools",
+    "help.online_docs",
     "help.about",
     "view.fit_all",
     "view.frame",
@@ -381,6 +383,7 @@ fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBi
         "app.settings" => KeyBinding::new(keystrokes, Settings, Some(context)),
         "app.variables" => KeyBinding::new(keystrokes, UserVariables, Some(context)),
         "app.install_cli_tools" => KeyBinding::new(keystrokes, InstallCliTools, Some(context)),
+        "help.online_docs" => KeyBinding::new(keystrokes, HelpOnlineDocs, Some(context)),
         "help.about" => KeyBinding::new(keystrokes, About, Some(context)),
         "view.fit_all" => KeyBinding::new(keystrokes, ViewFitAll, Some(context)),
         "view.frame" => KeyBinding::new(keystrokes, ViewFrame, Some(context)),
@@ -576,6 +579,13 @@ mod tests {
     fn unknown_command_ids_are_skipped() {
         assert!(!is_known_command("not.a.command"));
         assert!(binding_for("not.a.command", "a").is_none());
+    }
+
+    #[test]
+    fn help_online_docs_is_a_known_command() {
+        assert!(is_known_command("help.online_docs"));
+        assert!(binding_for("help.online_docs", "f12").is_some());
+        assert!(!is_known_command("not.a.command"));
     }
 
     #[test]

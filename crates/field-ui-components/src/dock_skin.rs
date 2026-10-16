@@ -17,7 +17,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     div, prelude::FluentBuilder as _, px, rems, Anchor, AnyElement, AnyView, App, AppContext as _,
-    AvailableSpace, Axis, ClickEvent, Div, Entity, Global, InteractiveElement as _, IntoElement,
+    Axis, ClickEvent, Div, Entity, Global, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, SharedString, Stateful, StatefulInteractiveElement as _,
     Styled as _, Window,
 };
@@ -42,32 +42,37 @@ impl Global for CenterTabBarHandler {}
 /// gaps, and the tool-dock frame inset.
 ///
 /// The host supplies the tab titles so dock chrome stays application-agnostic.
+///
+/// Label widths come from the text system. gpui 0.7 only allows
+/// `layout_as_root` during request_layout, prepaint, or paint, and this is
+/// called while the window is still being constructed.
 pub fn tool_dock_min_size(titles: &[&str], window: &mut Window, cx: &mut App) -> Pixels {
-    let muted = cx.theme().muted_foreground;
-    let radius = cx.theme().radius;
-    let tabs = titles.iter().map(|title| {
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .px_1p5()
-            .py_0p5()
-            .rounded(radius)
-            .text_sm()
-            .text_color(muted)
-            .child(SharedString::from((*title).to_owned()))
-    });
-    // Mirror `CompactTabGroup::render_side_tab_bar` plus the tool-dock
-    // frame's `.px(rems(0.5))` so the floor fits every tab label.
-    let mut bar = h_flex()
-        .flex_none()
-        .items_center()
-        .gap_1()
-        .px(rems(0.5))
-        .children(tabs)
-        .into_any_element();
-    let size = bar.layout_as_root(AvailableSpace::min_size(), window, cx);
-    size.width.max(px(1.))
+    let rem = window.rem_size();
+    let mut style = window.text_style();
+    // Match `CompactTabGroup::render_side_tab_bar`: theme UI font, `text_sm`.
+    style.font_family = cx.theme().font_family.clone();
+    style.font_size = rems(0.875).into();
+    let font_size = style.font_size.to_pixels(rem);
+    // `px_1p5` on each side of a tab.
+    let tab_pad_x = rems(0.375).to_pixels(rem) * 2.;
+    // `gap_1` between tabs.
+    let gap = rems(0.25).to_pixels(rem);
+    // Tool-dock frame `.px(rems(0.5))`.
+    let frame_pad_x = rems(0.5).to_pixels(rem) * 2.;
+
+    let mut width = frame_pad_x;
+    for (index, title) in titles.iter().enumerate() {
+        if index > 0 {
+            width += gap;
+        }
+        let run = style.to_run(title.len());
+        let layout =
+            window
+                .text_system()
+                .layout_line(title, font_size, std::slice::from_ref(&run), None);
+        width += layout.width + tab_pad_x;
+    }
+    width.max(px(1.))
 }
 
 /// Dock appearance with small tabs, built on [`DockSkin`].

@@ -90,7 +90,12 @@ Symphonia.
 Default window is 1280×760; launch theme is dark (override from `settings.json`
 applied by FieldAssist from Rust before `init.lua`, or from `init.lua` via
 `app.theme.mode` / `app.theme.name`). macOS uses the system application menu;
-Windows and Linux put menus in the title bar and Quit on File.
+Windows and Linux put menus in the title bar and Quit on File. The `Help`
+menu appears on macOS after `Workflow`, and in the same place on Windows and
+Linux. `FieldAssist Help...` opens
+<https://ngwese.github.io/field-docs/> in the system browser. On Windows and
+Linux it is the first Help item, followed by a separator and `About...`. On
+macOS, `About...` stays in the application menu and is not repeated in Help.
 
 **Settings** is a standalone utility window (same pattern as About):
 
@@ -528,7 +533,7 @@ Menus, keymap, and Lua `app:command` share these ids:
 `file.save_session_as`, `file.close_session`, `file.close`, `file.export`,
 `file.quit`
 
-**Help:** `help.about`
+**Help:** `help.online_docs`, `help.about`
 
 **View:** `view.fit_all`, `view.frame`, `view.zoom_in`, `view.zoom_out`, and
 show / hide / toggle for `explorer`, `detail`, and `script`. Show and hide are

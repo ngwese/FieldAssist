@@ -32,16 +32,16 @@ use crate::commands::{
     install_keybindings, About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak,
     AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
     EditBreakOutChannels, EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate,
-    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Export, Hide, HideOthers, InstallCliTools,
-    InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Save, SaveAs,
-    SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll,
-    SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop,
-    TransportNext, TransportPlayPause, TransportPreview, TransportPrevious, TransportStart,
-    TransportStop, UserVariables, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead,
-    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
-    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
-    ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages,
-    ViewZoomIn, ViewZoomOut, ZeroCrossing,
+    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Export, HelpOnlineDocs, Hide, HideOthers,
+    InstallCliTools, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open,
+    Quit, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType,
+    Settings, ShowAll, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
+    TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
+    TransportPrevious, TransportStart, TransportStop, UserVariables, ViewDetail, ViewExplorer,
+    ViewFitAll, ViewFollowPlayhead, ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript,
+    ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia,
+    ViewShowScript, ViewToggleMedia, ViewWaveformPeaks, ViewWaveformPeaksSpectrum,
+    ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut, ZeroCrossing,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -3849,6 +3849,7 @@ impl AppView {
             "file.export" => self.open_export_sheet(window, cx),
             "file.quit" => self.request_quit(window, cx),
             "help.about" => self.show_about(window, cx),
+            "help.online_docs" => open_online_docs(cx),
             "transport.home" => {
                 self.playback.home();
                 self.sync_playback_to_document(cx);
@@ -6653,9 +6654,28 @@ impl AppView {
     }
 }
 
+/// Documentation site opened by `help.online_docs`.
+const ONLINE_DOCS_URL: &str = "https://ngwese.github.io/field-docs/";
+
+fn online_docs_url_for(command_id: &str) -> Option<&'static str> {
+    if command_id == "help.online_docs" {
+        Some(ONLINE_DOCS_URL)
+    } else {
+        None
+    }
+}
+
+fn open_online_docs(cx: &App) {
+    cx.open_url(ONLINE_DOCS_URL);
+}
+
 pub(crate) fn dispatch_command(command_id: &str, cx: &mut App) -> Result<(), String> {
     if command_id == "help.about" {
         open_about_window(cx);
+        return Ok(());
+    }
+    if let Some(url) = online_docs_url_for(command_id) {
+        cx.open_url(url);
         return Ok(());
     }
     if command_id == "app.settings" {
@@ -7307,6 +7327,10 @@ fn about(_: &About, cx: &mut App) {
     let _ = crate::commands::dispatch("help.about", cx);
 }
 
+fn help_online_docs(_: &HelpOnlineDocs, cx: &mut App) {
+    let _ = crate::commands::dispatch("help.online_docs", cx);
+}
+
 fn transport_home(_: &TransportHome, cx: &mut App) {
     let _ = crate::commands::dispatch("transport.home", cx);
 }
@@ -7651,6 +7675,20 @@ fn needs_editor(item: MenuItem, editor_open: bool) -> MenuItem {
     item.disabled(!editor_open)
 }
 
+fn help_menu_items() -> Vec<MenuItem> {
+    let mut items = vec![MenuItem::action("FieldAssist Help...", HelpOnlineDocs)];
+    // macOS already has About... in the application menu.
+    if !cfg!(target_os = "macos") {
+        items.push(MenuItem::separator());
+        items.push(MenuItem::action("About...", About));
+    }
+    items
+}
+
+fn help_menu() -> Menu {
+    Menu::new("Help").items(help_menu_items())
+}
+
 fn app_menus(state: &AppMenuState) -> Vec<Menu> {
     let open = state.editor_open;
     let create_type_items: Vec<MenuItem> = state
@@ -7849,9 +7887,7 @@ fn app_menus(state: &AppMenuState) -> Vec<Menu> {
         );
     }
     menus.push(workflow_menu(state));
-    if !cfg!(target_os = "macos") {
-        menus.push(Menu::new("Help").items([MenuItem::action("About...", About)]));
-    }
+    menus.push(help_menu());
     menus
 }
 
@@ -7927,6 +7963,7 @@ fn install_app_menu(cx: &mut App) {
     cx.on_action(user_variables);
     cx.on_action(install_cli_tools);
     cx.on_action(about);
+    cx.on_action(help_online_docs);
     cx.on_action(transport_home);
     cx.on_action(transport_previous);
     cx.on_action(transport_start);
@@ -8073,6 +8110,114 @@ mod open_url_tests {
             path_from_open_url("/tmp/a.wav"),
             Some(PathBuf::from("/tmp/a.wav"))
         );
+    }
+}
+
+#[cfg(test)]
+mod help_menu_tests {
+    use super::{
+        app_menus, default_marker_type, help_menu_items, online_docs_url_for, AppMenuState,
+        ONLINE_DOCS_URL,
+    };
+    use crate::model::composition::DEFAULT_MARKER_TYPES;
+    use gpui_kit::MenuItem;
+    use std::collections::HashSet;
+
+    fn sample_menu_state() -> AppMenuState {
+        AppMenuState {
+            editor_open: false,
+            explorer: false,
+            detail: false,
+            script: false,
+            follow_playhead: true,
+            envelope_overlay: false,
+            waveform_representation: field_ui_components::WaveformRepresentation::Peaks,
+            analyze_selection_only: false,
+            analysis_ops: false,
+            marker_type: default_marker_type().to_string(),
+            add_at_hover: true,
+            snap_zero_crossings: true,
+            snap_to_marker: false,
+            marker_types: DEFAULT_MARKER_TYPES
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect(),
+            snap_disabled: HashSet::new(),
+            workflow_running: false,
+            menu_workflows: Vec::new(),
+        }
+    }
+
+    fn action_label(item: &MenuItem) -> Option<&str> {
+        match item {
+            MenuItem::Action { name, .. } => Some(name.as_ref()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn help_items_keep_about_off_the_macos_menu() {
+        let items = help_menu_items();
+        assert_eq!(action_label(&items[0]), Some("FieldAssist Help..."));
+        assert!(!items[0].is_disabled());
+        if cfg!(target_os = "macos") {
+            assert_eq!(items.len(), 1);
+        } else {
+            assert!(matches!(items[1], MenuItem::Separator));
+            assert_eq!(action_label(&items[2]), Some("About..."));
+            assert!(!items[2].is_disabled());
+        }
+    }
+
+    #[test]
+    fn help_menu_follows_workflow_on_the_menu_bar() {
+        let menus = app_menus(&sample_menu_state());
+        let names: Vec<&str> = menus.iter().map(|menu| menu.name.as_ref()).collect();
+        let workflow = names
+            .iter()
+            .position(|name| *name == "Workflow")
+            .expect("Workflow menu");
+        let help = names
+            .iter()
+            .position(|name| *name == "Help")
+            .expect("Help menu");
+        assert_eq!(help, workflow + 1);
+
+        if cfg!(target_os = "macos") {
+            let app_menu = menus
+                .iter()
+                .find(|menu| menu.name.as_ref() == crate::APP_NAME)
+                .expect("application menu");
+            assert!(app_menu
+                .items
+                .iter()
+                .any(|item| action_label(item) == Some("About...")));
+        }
+        let help_menu = menus
+            .into_iter()
+            .find(|menu| menu.name.as_ref() == "Help")
+            .expect("Help menu");
+        assert_eq!(
+            action_label(&help_menu.items[0]),
+            Some("FieldAssist Help...")
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(help_menu.items.len(), 1);
+        } else {
+            assert!(matches!(help_menu.items[1], MenuItem::Separator));
+            assert_eq!(action_label(&help_menu.items[2]), Some("About..."));
+        }
+    }
+
+    #[test]
+    fn help_online_docs_routes_to_the_documentation_site() {
+        assert_eq!(
+            online_docs_url_for("help.online_docs"),
+            Some("https://ngwese.github.io/field-docs/")
+        );
+        assert_eq!(ONLINE_DOCS_URL, "https://ngwese.github.io/field-docs/");
+        assert_eq!(online_docs_url_for("help.about"), None);
+        assert_eq!(online_docs_url_for("not.a.command"), None);
     }
 }
 
