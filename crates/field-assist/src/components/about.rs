@@ -6,8 +6,8 @@ use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme as _, StyledExt as _,
 };
 use gpui_kit::{
-    div, img, px, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Styled as _, Window,
+    div, img, px, rems, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, Styled as _, Window,
 };
 
 pub struct AboutView {
@@ -29,7 +29,7 @@ impl Focusable for AboutView {
 }
 
 impl Render for AboutView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         v_flex()
             .size_full()
@@ -51,7 +51,7 @@ impl Render for AboutView {
                             .w_full()
                             .items_start()
                             .gap_3()
-                            .child(img("icons/app-mark.svg").size(px(128.)).flex_none())
+                            .child(img("icons/app-icon.png").size(px(128.)).flex_none())
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -80,13 +80,33 @@ impl Render for AboutView {
                     )
                     .child(
                         h_flex().w_full().justify_end().child(
-                            Button::new("about-ok").primary().label("OK").on_click(
-                                |_, window, _| {
+                            Button::new("about-ok")
+                                .primary()
+                                .label("OK")
+                                .min_w(about_ok_min_width(window, cx))
+                                .on_click(|_, window, _| {
                                     window.remove_window();
-                                },
-                            ),
+                                }),
                         ),
                     ),
             )
     }
+}
+
+/// Medium primary buttons size to the label plus `px_2p5` on each side.
+/// The About OK control is at least three times that width.
+fn about_ok_min_width(window: &mut Window, cx: &mut App) -> Pixels {
+    let rem = window.rem_size();
+    let mut style = window.text_style();
+    style.font_family = cx.theme().font_family.clone();
+    style.font_size = rems(0.875).into();
+    let font_size = style.font_size.to_pixels(rem);
+    let label = "OK";
+    let run = style.to_run(label.len());
+    let layout =
+        window
+            .text_system()
+            .layout_line(label, font_size, std::slice::from_ref(&run), None);
+    let pad_x = rems(0.625).to_pixels(rem) * 2.;
+    (layout.width + pad_x) * 3.
 }

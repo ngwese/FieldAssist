@@ -41,7 +41,7 @@ pub fn window_title_bar(title: impl Into<SharedString>) -> impl IntoElement {
             .items_center()
             .gap_2()
             .when(!cfg!(target_os = "macos"), |this| {
-                this.child(img("icons/app-mark.svg").size(px(16.)).flex_none())
+                this.child(img("icons/app-icon.png").size(px(16.)).flex_none())
             })
             .child(div().text_sm().child(title)),
     )
