@@ -2,6 +2,35 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.25.0] - 2026-10-18
+
+### Features
+
+- Add Catalog workflow with offline multi-output render
+- Add a Help menu that opens the online docs
+- Use the bar-mark PNG as the app icon
+- Use stroke bands for the app icon
+
+### Bug Fixes
+
+- Drop unused write_minimal_wav test helper
+
+### Documentation
+
+- Archive add-field-recording-catalog change
+- Keep commit messages free of workflow status
+- Split scripting reference into guide and module pages
+
+### Miscellaneous Tasks
+
+- Add OpenSpec brownfield project setup
+- Track OpenSpec agent skills and commands for omp
+
+### Other
+
+- Upgrade gpui-kit to 0.7.3
+
+
 ## [0.24.0] - 2026-10-04
 
 ### Features
