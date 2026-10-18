@@ -3,3 +3,6 @@
 *.p12
 
 .DS_Store
+
+# Affinity temporary lock files
+*.af~lock~

@@ -6512,7 +6512,7 @@ impl Render for AppView {
                                         .gap_2()
                                         .when(!cfg!(target_os = "macos"), |this| {
                                             this.child(
-                                                img("icons/app-icon.png").size(px(16.)).flex_none(),
+                                                img("icons/app-mark.svg").size(px(16.)).flex_none(),
                                             )
                                         })
                                         .when_some(self.app_menu_bar.clone(), |this, menu_bar| {

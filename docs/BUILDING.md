@@ -72,28 +72,27 @@ cargo run --release -- --dump-init
 ## App icon
 
 The in-app mark, Windows `.exe` icon, and macOS `.app` icon all come from
-[crates/field-assist/assets/app-icon/field-assist-icon2.png](../crates/field-assist/assets/app-icon/field-assist-icon2.png).
-Raster assets live in
+[crates/field-assist/assets/logo/04-bands-stroke.svg](../crates/field-assist/assets/logo/04-bands-stroke.svg)
+(logo study 4, stroke bands). Raster assets live in
 [crates/field-assist/assets/app-icon/](../crates/field-assist/assets/app-icon/):
 
 | File | Used by |
 | --- | --- |
-| `field-assist-icon2.png` | Source artwork (1024px) |
 | `app-icon.ico` | Embedded into the Windows executable at compile time |
 | `AppIcon.icns` | Copied into `FieldAssist.app/Contents/Resources/` |
-| `app-icon.png` | 512px PNG of the same artwork; title bar and About |
+| `app-icon.png` | 512px PNG of the same artwork |
 
-After changing the source PNG, regenerate the derived files (requires
-[Pillow](https://pypi.org/project/pillow/)):
+After changing the SVG, regenerate those files (requires
+[resvg_py](https://pypi.org/project/resvg_py/)):
 
 ```bash
-pip install pillow
+pip install resvg_py
 python script/generate-app-icon.py
 ```
 
 On Windows, `build.rs` embeds `app-icon.ico` into the binary. On macOS,
 `script/bundle-macos` copies `AppIcon.icns` into the bundle. The title-bar
-glyph (Windows and Linux only) and the About dialog load `app-icon.png`.
+glyph (Windows and Linux only) and the About dialog load the SVG directly.
 
 ## macOS app bundle and DMG
 

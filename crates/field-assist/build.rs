@@ -8,7 +8,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/app-icon/app-icon.ico");
-    println!("cargo:rerun-if-changed=assets/app-icon/field-assist-icon2.png");
+    println!("cargo:rerun-if-changed=assets/logo/04-bands-stroke.svg");
 
     emit_git_revision();
     embed_windows_icon();

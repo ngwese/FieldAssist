@@ -51,7 +51,7 @@ impl Render for AboutView {
                             .w_full()
                             .items_start()
                             .gap_3()
-                            .child(img("icons/app-icon.png").size(px(128.)).flex_none())
+                            .child(img("icons/app-mark.svg").size(px(128.)).flex_none())
                             .child(
                                 v_flex()
                                     .flex_1()

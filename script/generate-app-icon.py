@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Greg Wuller
 # SPDX-License-Identifier: MIT
-"""Resize field-assist-icon2.png into Windows .ico, macOS .icns, and a 512px PNG.
+"""Rasterize assets/logo/04-bands-stroke.svg into Windows .ico and macOS .icns.
 
-Requires: pip install pillow
+Requires: pip install resvg_py
 """
 
 from __future__ import annotations
 
-import io
 import struct
 import sys
 from pathlib import Path
 
 try:
-    from PIL import Image
+    import resvg_py
 except ImportError:
-    sys.stderr.write("error: pillow is required (pip install pillow)\n")
+    sys.stderr.write("error: resvg_py is required (pip install resvg_py)\n")
     sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = ROOT / "crates" / "field-assist" / "assets" / "app-icon"
-SOURCE = OUT_DIR / "field-assist-icon2.png"
+ASSETS = ROOT / "crates" / "field-assist" / "assets"
+SVG_PATH = ASSETS / "logo" / "04-bands-stroke.svg"
+OUT_DIR = ASSETS / "app-icon"
 
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 # ostype -> pixel size. PNG payloads, modern macOS.
@@ -37,14 +37,11 @@ ICNS_TYPES = (
 )
 
 
-def render_png(image: Image.Image, size: int) -> bytes:
-    if image.size == (size, size):
-        resized = image
-    else:
-        resized = image.resize((size, size), Image.Resampling.LANCZOS)
-    buffer = io.BytesIO()
-    resized.save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue()
+def render_png(svg: str, size: int) -> bytes:
+    png = resvg_py.svg_to_bytes(svg_string=svg, width=size, height=size)
+    if not png:
+        raise RuntimeError(f"resvg_py returned no PNG for {size}px")
+    return png
 
 
 def write_ico(path: Path, images: dict[int, bytes]) -> None:
@@ -81,20 +78,13 @@ def write_icns(path: Path, images: dict[int, bytes]) -> None:
 
 
 def main() -> None:
-    if not SOURCE.is_file():
-        sys.stderr.write(f"error: missing {SOURCE.relative_to(ROOT)}\n")
+    if not SVG_PATH.is_file():
+        sys.stderr.write(f"error: missing {SVG_PATH.relative_to(ROOT)}\n")
         sys.exit(1)
 
-    with Image.open(SOURCE) as opened:
-        image = opened.convert("RGBA")
-    if image.width != image.height:
-        sys.stderr.write(
-            f"error: {SOURCE.name} must be square, got {image.width}x{image.height}\n"
-        )
-        sys.exit(1)
-
+    svg = SVG_PATH.read_text(encoding="utf-8")
     sizes = sorted(set(ICO_SIZES) | {size for _, size in ICNS_TYPES} | {512})
-    images = {size: render_png(image, size) for size in sizes}
+    images = {size: render_png(svg, size) for size in sizes}
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ico = OUT_DIR / "app-icon.ico"

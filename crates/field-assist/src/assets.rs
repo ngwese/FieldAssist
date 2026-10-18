@@ -7,8 +7,8 @@ use gpui_kit::{AssetSource, Result, SharedString};
 
 const EXTRA_ICONS: &[(&str, &[u8])] = &[
     (
-        "icons/app-icon.png",
-        include_bytes!("../assets/app-icon/app-icon.png"),
+        "icons/app-mark.svg",
+        include_bytes!("../assets/logo/04-bands-stroke.svg"),
     ),
     (
         "icons/arrow-right-from-line.svg",
