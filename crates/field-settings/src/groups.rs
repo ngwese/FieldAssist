@@ -350,39 +350,24 @@ pub struct AudioSettings {
     /// Preferred device name substring, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_device: Option<String>,
-    /// Output period in frames. When unset, the host probes the device default
-    /// and snaps up to the nearest listed period of at least twice that size.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period_frames: Option<u32>,
+    /// Preferred output buffer size in frames. When unset, the host negotiates
+    /// on every open. Not a guarantee — the device may open a different size.
+    ///
+    /// Legacy settings used `period_frames`; that key is accepted on read.
+    #[serde(
+        default,
+        alias = "period_frames",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub buffer_size_frames: Option<u32>,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
             output_device: None,
-            period_frames: None,
+            buffer_size_frames: None,
         }
-    }
-}
-
-impl AudioSettings {
-    /// Frames to persist when open chose a listed size and no preference was stored.
-    ///
-    /// Returns `None` when the stored value should be left alone (already matches,
-    /// or the user had an explicit size that the host fell back from).
-    pub fn opened_period_frames_to_persist(
-        prior: Option<u32>,
-        opened_frames: Option<u32>,
-    ) -> Option<u32> {
-        let frames = opened_frames?;
-        if prior == Some(frames) {
-            return None;
-        }
-        if prior.is_some() {
-            // User picked an explicit size that fell back during open; keep it.
-            return None;
-        }
-        Some(frames)
     }
 }
 

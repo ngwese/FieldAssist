@@ -132,40 +132,39 @@ mod tests {
     }
 
     #[test]
-    fn missing_period_frames_deserializes_as_none() {
+    fn missing_buffer_size_frames_deserializes_as_none() {
         let json = r#"{ "audio": { "output_device": "Speakers" } }"#;
         let s: AppSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.audio.output_device.as_deref(), Some("Speakers"));
-        assert_eq!(s.audio.period_frames, None);
+        assert_eq!(s.audio.buffer_size_frames, None);
     }
 
     #[test]
-    fn opened_period_persist_decision() {
-        use crate::groups::AudioSettings;
-        assert_eq!(
-            AudioSettings::opened_period_frames_to_persist(None, Some(1024)),
-            Some(1024)
-        );
-        assert_eq!(
-            AudioSettings::opened_period_frames_to_persist(Some(1024), Some(1024)),
-            None
-        );
-        assert_eq!(
-            AudioSettings::opened_period_frames_to_persist(Some(512), Some(1024)),
-            None
-        );
-        assert_eq!(
-            AudioSettings::opened_period_frames_to_persist(None, None),
-            None
-        );
+    fn legacy_period_frames_alias_loads_as_buffer_size_frames() {
+        let json = r#"{ "audio": { "period_frames": 1024 } }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.audio.buffer_size_frames, Some(1024));
     }
 
-    /// FieldAssist launch must reload before any period persist write. Saving an
-    /// in-memory default store first would wipe `scripting.search_path`.
     #[test]
-    fn relaunch_period_persist_retains_search_path() {
-        use crate::groups::AudioSettings;
+    fn save_emits_buffer_size_frames_not_period_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut saved = AppSettings::default();
+        saved.audio.buffer_size_frames = Some(1024);
+        save_to_dir(&saved, Some(dir.path())).unwrap();
 
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(text.contains("buffer_size_frames"));
+        assert!(!text.contains("period_frames"));
+
+        let back = load_from_dir(Some(dir.path()));
+        assert_eq!(back.audio.buffer_size_frames, Some(1024));
+    }
+
+    /// FieldAssist launch must reload settings from disk before saving.
+    /// Saving an in-memory default store first would wipe `scripting.search_path`.
+    #[test]
+    fn reload_before_save_retains_search_path() {
         let dir = tempfile::tempdir().unwrap();
         let extra = dir.path().join("extra-scripts");
         std::fs::create_dir(&extra).unwrap();
@@ -175,24 +174,19 @@ mod tests {
         saved.scripting.search_path = vec![extra_text.clone()];
         save_to_dir(&saved, Some(dir.path())).unwrap();
 
-        // Next launch (correct order): load disk, then persist opened period.
-        let mut loaded = load_from_dir(Some(dir.path()));
+        let loaded = load_from_dir(Some(dir.path()));
         assert_eq!(loaded.scripting.search_path, vec![extra_text.clone()]);
-        let prior = loaded.audio.period_frames;
-        if let Some(frames) = AudioSettings::opened_period_frames_to_persist(prior, Some(1024)) {
-            loaded.audio.period_frames = Some(frames);
-        }
+        // Open must not write a negotiated buffer size into settings.
+        assert_eq!(loaded.audio.buffer_size_frames, None);
         save_to_dir(&loaded, Some(dir.path())).unwrap();
 
         let back = load_from_dir(Some(dir.path()));
         assert_eq!(back.scripting.search_path, vec![extra_text]);
-        assert_eq!(back.audio.period_frames, Some(1024));
+        assert_eq!(back.audio.buffer_size_frames, None);
     }
 
     #[test]
     fn saving_defaults_without_reload_wipes_search_path() {
-        use crate::groups::AudioSettings;
-
         let dir = tempfile::tempdir().unwrap();
         let extra = dir.path().join("extra-scripts");
         std::fs::create_dir(&extra).unwrap();
@@ -202,26 +196,19 @@ mod tests {
         saved.scripting.search_path = vec![extra_text];
         save_to_dir(&saved, Some(dir.path())).unwrap();
 
-        // Bug shape: start from defaults (no reload), persist opened period, save.
-        let mut defaults = AppSettings::default();
-        let prior = defaults.audio.period_frames;
-        if let Some(frames) = AudioSettings::opened_period_frames_to_persist(prior, Some(1024)) {
-            defaults.audio.period_frames = Some(frames);
-        }
+        // Bug shape: start from defaults (no reload) and save.
+        let defaults = AppSettings::default();
         save_to_dir(&defaults, Some(dir.path())).unwrap();
 
         let back = load_from_dir(Some(dir.path()));
         assert!(
             back.scripting.search_path.is_empty(),
-            "documents why launch must reload before period persist"
+            "documents why launch must reload before any settings save"
         );
-        assert_eq!(back.audio.period_frames, Some(1024));
     }
 
     #[test]
-    fn second_relaunch_with_stored_period_leaves_search_path() {
-        use crate::groups::AudioSettings;
-
+    fn stored_buffer_size_preference_leaves_search_path() {
         let dir = tempfile::tempdir().unwrap();
         let extra = dir.path().join("extra-scripts");
         std::fs::create_dir(&extra).unwrap();
@@ -229,13 +216,11 @@ mod tests {
 
         let mut saved = AppSettings::default();
         saved.scripting.search_path = vec![extra_text.clone()];
-        saved.audio.period_frames = Some(1024);
+        saved.audio.buffer_size_frames = Some(1024);
         save_to_dir(&saved, Some(dir.path())).unwrap();
 
         let loaded = load_from_dir(Some(dir.path()));
-        let prior = loaded.audio.period_frames;
-        assert!(AudioSettings::opened_period_frames_to_persist(prior, Some(1024)).is_none());
-        // No save needed; reload alone must still expose the path.
+        assert_eq!(loaded.audio.buffer_size_frames, Some(1024));
         assert_eq!(loaded.scripting.search_path, vec![extra_text]);
     }
 }

@@ -132,12 +132,14 @@ live parameters track the audible playhead (not ring depth). Composition
 prefetch thread. Direct bypasses Faust only — rate conversion still applies
 whenever source and device rates differ.
 
-Linux uses CPAL’s ALSA host. Output period is chosen at stream open from
-`settings.json` `audio.period_frames` (listed frame sizes), or by probing the
-device default and snapping up to at least twice that period when unset.
-Thread priority is CPAL’s `realtime-dbus` feature on eligible workers (direct
-ALSA hardware, WASAPI); CoreAudio already runs its callback as real-time.
-Period negotiation and scheduling stay off the callback.
+Linux uses CPAL’s ALSA host. Output buffer size is chosen at stream open from
+`settings.json` `audio.buffer_size_frames` (preferred listed frame sizes; not
+guaranteed), or by negotiating from the device default when unset — prefer
+about twice that default within CPAL’s supported range, then other in-range
+catalog sizes, then platform Default. Negotiated results are not written back
+to settings. Thread priority is CPAL’s `realtime-dbus` feature on eligible
+workers (direct ALSA hardware, WASAPI); CoreAudio already runs its callback as
+real-time. Buffer negotiation and scheduling stay off the callback.
 
 ## Binaries
 

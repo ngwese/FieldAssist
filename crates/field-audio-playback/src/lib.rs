@@ -48,17 +48,21 @@
 //! let _ = Silence;
 //! ```
 
+mod buffer_size;
 mod device;
 mod engine;
 mod faults;
 mod monitor;
-mod period;
 mod playhead;
 mod prefetch;
 mod provider;
 mod src_convert;
 mod transport;
 
+pub use buffer_size::{
+    buffer_size_frame_catalog, catalog_in_range, negotiate_fixed_candidates, period_frame_catalog,
+    preferred_target_frames, BufferSizeRange, OpenedPeriod, OutputBufferSize,
+};
 pub use device::{
     list_output_devices, list_output_devices_with_config, output_device_name, print_output_devices,
     resolve_output_device, OutputDeviceInfo,
@@ -71,7 +75,6 @@ pub use faults::{
     PLAYBACK_FAULT_LOG_INTERVAL,
 };
 pub use monitor::{map_direct, MonitorProcess};
-pub use period::{period_frame_catalog, snap_period_frames, OpenedPeriod, OutputPeriod};
 pub use playhead::{Playhead, PlayheadEvent};
 pub use prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 pub use provider::PlaybackDataProvider;

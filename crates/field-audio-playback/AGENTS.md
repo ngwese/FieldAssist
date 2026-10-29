@@ -40,18 +40,22 @@ Use [`PrefetchRing`](src/prefetch.rs) (atomic SPSC) instead.
 Live monitor parameters apply on the callback so audible response tracks the
 device buffer (~1 period), not prefetch ring depth (issue #11).
 
-## Host, period, and thread priority
+## Host, buffer size, and thread priority
 
 Linux stays on CPAL’s default **ALSA** host (including PipeWire/Pulse via their
 ALSA plugins). The native PipeWire host is not enabled.
 
-Output period selection (`OutputPeriod`) happens while the stream is built —
-never inside `fill_output`. When the host requests
-`SnapTwicePlatformDefault`, the engine probes `BufferSize::Default`, doubles
-the negotiated period, and opens the smallest catalog size at least that large
-(16, 32, 48, 64, 128, 192, 288, 480, and powers of two through 8192). An
-explicit `Frames(n)` requests that
-size and falls back to the snap path if the device rejects it.
+Output buffer-size selection (`OutputBufferSize`) happens while the stream is
+built — never inside `fill_output`. When the host requests
+`PreferPlatformDefault`, the engine probes `BufferSize::Default`, reads CPAL’s
+`SupportedBufferSize` range when available, prefers a catalog Fixed size of at
+least twice the probed default when that fits the range, then tries other
+in-range catalog sizes (larger, then smaller) before accepting platform
+Default. Catalog sizes are 16, 32, 48, 64, 128, 192, 288, 480, and powers of
+two through 8192. An explicit `Frames(n)` is a **preferred** Fixed request and
+falls back to the same negotiation if rejected. After open, log the actual
+`stream.buffer_size()` (Fixed or Default). Prefetch ring capacity is not tied
+to the opened size.
 
 CPAL’s `realtime-dbus` feature promotes the worker thread where safe (direct
 ALSA hardware / simple converters, Windows WASAPI). Plug, PipeWire, and Pulse

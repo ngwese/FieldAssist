@@ -121,7 +121,7 @@ fires `enrich_session`; `field.session.open` (load `.fasession`) does not.
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 `settings.json`, applies scripting, uses `audio.output_device` and
-`audio.period_frames` when resolving
+`audio.buffer_size_frames` when resolving
 playback, then loads `{config}/variables.json` into host user variables
 (missing/invalid → empty), then loads user `init.lua` if present, else the
 shared embedded default (layouts + `detect_layout`). Does **not** load workflow

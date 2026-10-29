@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cpal::Device;
-use field_audio_playback::{OpenedPeriod, OutputPeriod, OUTPUT_OPEN_TIMEOUT};
+use field_audio_playback::{OpenedPeriod, OutputBufferSize, OUTPUT_OPEN_TIMEOUT};
 
 use crate::model::buffer::ChannelScope;
 use crate::model::composition::Composition;
@@ -40,7 +40,7 @@ impl PlaybackSession {
     pub fn open(
         device: &Device,
         composition: Arc<RwLock<Composition>>,
-        period: OutputPeriod,
+        period: OutputBufferSize,
     ) -> Result<(Self, OpenedPeriod)> {
         Self::open_with_timeout(device, composition, period, OUTPUT_OPEN_TIMEOUT)
     }
@@ -49,7 +49,7 @@ impl PlaybackSession {
     pub fn open_with_timeout(
         device: &Device,
         composition: Arc<RwLock<Composition>>,
-        period: OutputPeriod,
+        period: OutputBufferSize,
         timeout: Duration,
     ) -> Result<(Self, OpenedPeriod)> {
         let provider = Arc::new(SharedCompositionProvider::new(composition));
@@ -67,6 +67,7 @@ impl PlaybackSession {
                         PlaybackEngine::disabled(provider.clone())?,
                         OpenedPeriod {
                             requested_frames: None,
+                            actual_frames: 0,
                         },
                         Some(fault),
                     )
@@ -127,7 +128,7 @@ impl PlaybackSession {
     pub fn set_output_device(
         &mut self,
         device: &Device,
-        period: OutputPeriod,
+        period: OutputBufferSize,
     ) -> Result<OpenedPeriod> {
         self.stop();
         match self.engine.reopen(device, period) {

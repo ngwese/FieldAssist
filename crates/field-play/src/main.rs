@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use field_audio_monitor::{MonitorChain, MonitorHost};
 use field_audio_playback::{
-    output_device_name, resolve_output_device, MonitorProcess, OutputPeriod, PlaybackEngine,
+    output_device_name, resolve_output_device, MonitorProcess, OutputBufferSize, PlaybackEngine,
     PlaybackShared, PlaybackStats, TransportState,
 };
 use field_composition::{Composition, PagerStats, MARKER_TYPE_BLUE};
@@ -82,7 +82,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut session = PlaySession::new(args.path.clone());
-    let (composition, preferred_output, period_frames) =
+    let (composition, preferred_output, buffer_size_frames) =
         open_with_detect(session.opened(), args.config_dir.clone())?;
 
     let chain = composition
@@ -135,16 +135,21 @@ fn main() -> Result<()> {
     let device =
         resolve_output_device(preferred_output.as_deref()).context("resolve output device")?;
     eprintln!("Output device: {}", output_device_name(&device));
-    let period = match period_frames {
-        Some(frames) => OutputPeriod::Frames(frames),
-        None => OutputPeriod::SnapTwicePlatformDefault,
+    let period = match buffer_size_frames {
+        Some(frames) => OutputBufferSize::Frames(frames),
+        None => OutputBufferSize::PreferPlatformDefault,
     };
 
     let (engine, opened) =
         PlaybackEngine::open(&device, provider, period).context("open playback engine")?;
-    if let Some(frames) = opened.requested_frames {
-        eprintln!("Output period: {frames} frames");
-    }
+    eprintln!(
+        "Output buffer size: {} frames{}",
+        opened.actual_frames,
+        match opened.requested_frames {
+            Some(requested) => format!(" (requested Fixed {requested})"),
+            None => " (platform Default)".to_string(),
+        }
+    );
     let host = Arc::new(MonitorHost::new(engine.shared.output_rate()));
     engine.shared.set_monitor_process(Some(
         Arc::new(MonitorHostProcess::new(host.clone())) as Arc<dyn MonitorProcess>
@@ -596,7 +601,7 @@ fn open_with_detect(
     Ok((
         composition,
         settings.audio.output_device,
-        settings.audio.period_frames,
+        settings.audio.buffer_size_frames,
     ))
 }
 

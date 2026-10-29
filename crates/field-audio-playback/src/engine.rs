@@ -29,11 +29,12 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
 
+use super::buffer_size::{
+    buffer_size_frame_catalog, catalog_in_range, negotiate_fixed_candidates, BufferSizeRange,
+    OpenedPeriod, OutputBufferSize,
+};
 use super::faults::PlaybackFaults;
 use super::monitor::{map_direct, MonitorProcess};
-use super::period::{
-    larger_period_frames, period_frame_catalog, snap_period_frames, OpenedPeriod, OutputPeriod,
-};
 use super::prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
 use super::provider::PlaybackDataProvider;
 use super::src_convert::StreamingSrc;
@@ -1002,7 +1003,7 @@ impl PlaybackEngine {
     pub fn open(
         device: &Device,
         provider: Arc<dyn PlaybackDataProvider>,
-        period: OutputPeriod,
+        period: OutputBufferSize,
     ) -> Result<(Self, OpenedPeriod)> {
         let (stream, shared, opened) = open_output_stream(device, provider, period)?;
         let prefetch_stop = Arc::new(AtomicBool::new(false));
@@ -1026,7 +1027,7 @@ impl PlaybackEngine {
     pub fn open_with_timeout(
         device: &Device,
         provider: Arc<dyn PlaybackDataProvider>,
-        period: OutputPeriod,
+        period: OutputBufferSize,
         timeout: Duration,
     ) -> Result<(Self, OpenedPeriod)> {
         let device = device.clone();
@@ -1076,7 +1077,7 @@ impl PlaybackEngine {
     /// Waits at most [`OUTPUT_OPEN_TIMEOUT`]. The current PCM is released
     /// first so ALSA `dmix` can open its slave. If the new device does not
     /// start, the stream stays down and the host can show output as unavailable.
-    pub fn reopen(&mut self, device: &Device, period: OutputPeriod) -> Result<OpenedPeriod> {
+    pub fn reopen(&mut self, device: &Device, period: OutputBufferSize) -> Result<OpenedPeriod> {
         self.reopen_with_timeout(device, period, OUTPUT_OPEN_TIMEOUT)
     }
 
@@ -1088,7 +1089,7 @@ impl PlaybackEngine {
     pub fn reopen_with_timeout(
         &mut self,
         device: &Device,
-        period: OutputPeriod,
+        period: OutputBufferSize,
         timeout: Duration,
     ) -> Result<OpenedPeriod> {
         self.shared.bump_epoch();
@@ -1141,7 +1142,7 @@ fn spawn_prefetch(shared: Arc<PlaybackShared>, stop: Arc<AtomicBool>) -> Result<
 fn open_output_stream(
     device: &Device,
     provider: Arc<dyn PlaybackDataProvider>,
-    period: OutputPeriod,
+    period: OutputBufferSize,
 ) -> Result<(Stream, Arc<PlaybackShared>, OpenedPeriod)> {
     let default_config = device
         .default_output_config()
@@ -1160,7 +1161,7 @@ fn open_output_stream(
 fn build_playing_stream(
     device: &Device,
     shared: Arc<PlaybackShared>,
-    period: OutputPeriod,
+    period: OutputBufferSize,
 ) -> Result<(Stream, u32, usize, OpenedPeriod)> {
     let default_config = device
         .default_output_config()
@@ -1178,10 +1179,10 @@ fn open_stream_for_period(
     default_config: &cpal::SupportedStreamConfig,
     sample_format: SampleFormat,
     shared: Arc<PlaybackShared>,
-    period: OutputPeriod,
+    period: OutputBufferSize,
 ) -> Result<(Stream, OpenedPeriod)> {
     match period {
-        OutputPeriod::Frames(frames) => {
+        OutputBufferSize::Frames(frames) => {
             match try_playing_stream(
                 device,
                 default_config,
@@ -1189,40 +1190,48 @@ fn open_stream_for_period(
                 cpal::BufferSize::Fixed(frames),
                 shared.clone(),
             ) {
-                Ok(stream) => Ok((
-                    stream,
-                    OpenedPeriod {
-                        requested_frames: Some(frames),
-                    },
-                )),
+                Ok(stream) => finish_opened(stream, Some(frames)),
                 Err(err) => {
                     eprintln!(
-                        "playback: period {frames} frames rejected ({err}); \
-                         snapping from platform default"
+                        "playback: preferred buffer size {frames} frames rejected ({err}); \
+                         negotiating from platform default"
                     );
-                    open_snapped_period(device, default_config, sample_format, shared)
+                    open_negotiated_buffer(device, default_config, sample_format, shared)
                 }
             }
         }
-        OutputPeriod::SnapTwicePlatformDefault => {
-            open_snapped_period(device, default_config, sample_format, shared)
+        OutputBufferSize::PreferPlatformDefault => {
+            open_negotiated_buffer(device, default_config, sample_format, shared)
         }
     }
 }
 
-fn open_snapped_period(
+fn supported_buffer_range(default_config: &cpal::SupportedStreamConfig) -> Option<BufferSizeRange> {
+    match default_config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => Some(BufferSizeRange {
+            min: *min,
+            max: *max,
+        }),
+        cpal::SupportedBufferSize::Unknown => None,
+    }
+}
+
+fn open_negotiated_buffer(
     device: &Device,
     default_config: &cpal::SupportedStreamConfig,
     sample_format: SampleFormat,
     shared: Arc<PlaybackShared>,
 ) -> Result<(Stream, OpenedPeriod)> {
-    let catalog = period_frame_catalog();
+    let catalog = buffer_size_frame_catalog();
+    let range = supported_buffer_range(default_config);
+    let in_range = catalog_in_range(&catalog, range);
     let negotiated =
-        match probe_default_period(device, default_config, sample_format, shared.clone()) {
+        match probe_default_buffer(device, default_config, sample_format, shared.clone()) {
             Ok(frames) => frames,
             Err(err) => {
                 eprintln!(
-                    "playback: could not probe default period ({err}); using platform default"
+                    "playback: could not probe default buffer size ({err}); \
+                     using platform default"
                 );
                 let stream = try_playing_stream(
                     device,
@@ -1232,21 +1241,11 @@ fn open_snapped_period(
                     shared,
                 )
                 .context("failed to build output stream")?;
-                return Ok((
-                    stream,
-                    OpenedPeriod {
-                        requested_frames: None,
-                    },
-                ));
+                return finish_opened(stream, None);
             }
         };
 
-    let snapped = snap_period_frames(negotiated, &catalog);
-    let mut candidates: Vec<u32> = std::iter::once(snapped)
-        .chain(larger_period_frames(snapped, &catalog))
-        .collect();
-    candidates.dedup();
-
+    let candidates = negotiate_fixed_candidates(negotiated, &in_range);
     for frames in candidates {
         match try_playing_stream(
             device,
@@ -1256,20 +1255,15 @@ fn open_snapped_period(
             shared.clone(),
         ) {
             Ok(stream) => {
-                return Ok((
-                    stream,
-                    OpenedPeriod {
-                        requested_frames: Some(frames),
-                    },
-                ));
+                return finish_opened(stream, Some(frames));
             }
             Err(err) => {
-                eprintln!("playback: period {frames} frames rejected ({err}); trying larger");
+                eprintln!("playback: buffer size {frames} frames rejected ({err}); trying next");
             }
         }
     }
 
-    eprintln!("playback: no catalog period opened; falling back to platform default");
+    eprintln!("playback: no catalog buffer size opened; falling back to platform default");
     let stream = try_playing_stream(
         device,
         default_config,
@@ -1278,16 +1272,11 @@ fn open_snapped_period(
         shared,
     )
     .context("failed to build output stream")?;
-    Ok((
-        stream,
-        OpenedPeriod {
-            requested_frames: None,
-        },
-    ))
+    finish_opened(stream, None)
 }
 
-/// Open with `BufferSize::Default`, read the negotiated period, then drop the stream.
-fn probe_default_period(
+/// Open with `BufferSize::Default`, read the negotiated size, then drop the stream.
+fn probe_default_buffer(
     device: &Device,
     default_config: &cpal::SupportedStreamConfig,
     sample_format: SampleFormat,
@@ -1308,6 +1297,26 @@ fn probe_default_period(
         anyhow::bail!("negotiated buffer size is zero");
     }
     Ok(frames)
+}
+
+fn finish_opened(stream: Stream, requested_frames: Option<u32>) -> Result<(Stream, OpenedPeriod)> {
+    let actual_frames = stream
+        .buffer_size()
+        .context("failed to query opened buffer size")?;
+    match requested_frames {
+        Some(requested) => eprintln!(
+            "playback: opened buffer size {actual_frames} frames \
+             (requested Fixed {requested})"
+        ),
+        None => eprintln!("playback: opened buffer size {actual_frames} frames (platform Default)"),
+    }
+    Ok((
+        stream,
+        OpenedPeriod {
+            requested_frames,
+            actual_frames,
+        },
+    ))
 }
 
 fn try_playing_stream(

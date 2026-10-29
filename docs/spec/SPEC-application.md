@@ -443,11 +443,14 @@ The playhead is the document caret. Output device is the host default unless
 `--output` or `app.output_device` selects another. Device choice is not stored
 on `.facomp`; pin it from `init.lua` if it must survive relaunch.
 
-Settings → Audio → Device also sets `audio.period_frames` (output period in
-frames). When unset, the host probes the platform default period and stores the
-smallest listed size that is at least twice that large (16, 32, 48, 64, 128,
-192, 288, 480, and powers of two through 8192). Changing the period reopens
-the stream.
+Settings → Audio → Device also sets `audio.buffer_size_frames` (preferred
+output buffer size in frames; not guaranteed). When unset, the host negotiates
+on every open: probe the platform default, prefer a listed size of at least
+twice that default when CPAL’s supported range allows it, otherwise try other
+in-range catalog sizes (16, 32, 48, 64, 128, 192, 288, 480, and powers of two
+through 8192) or platform Default. Negotiated sizes are not persisted.
+Changing the preference reopens the stream. Legacy `audio.period_frames` is
+accepted on read.
 
 ### Monitor chains
 

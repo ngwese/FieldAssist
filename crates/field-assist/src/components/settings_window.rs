@@ -396,14 +396,14 @@ pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: 
                         )
                         .item(
                             SettingItem::new(
-                                "Period",
+                                "Buffer Size",
                                 SettingField::scrollable_dropdown(
                                     period_frame_options(),
                                     |cx| {
                                         settings::store(cx)
                                             .settings
                                             .audio
-                                            .period_frames
+                                            .buffer_size_frames
                                             .map(|frames| frames.to_string())
                                             .unwrap_or_default()
                                             .into()
@@ -411,7 +411,7 @@ pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: 
                                     |value, cx| {
                                         let frames = value.to_string().parse::<u32>().ok();
                                         let _ = settings::update_and_save(cx, |s| {
-                                            s.audio.period_frames = frames;
+                                            s.audio.buffer_size_frames = frames;
                                         });
                                         crate::app::apply_audio_period_from_settings(cx);
                                     },
@@ -421,18 +421,20 @@ pub fn build_settings_ui(device_options: Vec<(SharedString, SharedString)>, cx: 
                                         settings::store(cx)
                                             .settings
                                             .audio
-                                            .period_frames
+                                            .buffer_size_frames
                                             .is_some()
                                     },
                                     |_window, cx| {
                                         let _ = settings::update_and_save(cx, |s| {
-                                            s.audio.period_frames = None;
+                                            s.audio.buffer_size_frames = None;
                                         });
                                         crate::app::apply_audio_period_from_settings(cx);
                                     },
                                 ),
                             )
-                            .description("Output period in frames"),
+                            .description(
+                                "Preferred output buffer size in frames (not guaranteed)",
+                            ),
                         ),
                 ),
         )
