@@ -17,8 +17,8 @@ APIs live under `field.*`, not here.
 | `looping`        | **ro** | FieldAssist | `boolean`         | Transport loop flag                                                     |
 | `preview`        | **ro** | FieldAssist | `boolean`         | Preview playback flag                                                   |
 | `explorer`       | **ro** | FieldAssist | `boolean`         | Explorer dock open                                                      |
-| `output_device`  | **rw** | FieldAssist | `string` or `nil` | Preferred output device (substring match)                               |
-| `output_devices` | **ro** | FieldAssist | `{ string, … }`   | Known output device names                                               |
+| `output_device`  | **rw** | all         | `string` or `nil` | Preferred output device (substring match). Seeded from `settings.json` `audio.output_device` before `init.lua`; init may override. FieldAssist live-switches the stream on set; field-play / field-batch store the preference only (play resolves at open). |
+| `output_devices` | **ro** | all         | `{ string, … }`   | Known output device names                                               |
 
 ## app Functions / methods
 | Function            | Arguments                        | Returns   | Hosts       | Description                                                                                                             |

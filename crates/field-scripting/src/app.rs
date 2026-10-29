@@ -37,6 +37,38 @@ impl UserData for LuaApp {
             let doc = LuaComposition::from_lua(value, lua)?;
             LuaSession::focused().set_composition(lua, doc.id)
         });
+        fields.add_field_method_get("output_device", |lua, _| {
+            Ok(host_from_lua(lua)?.inner.borrow().output_device.clone())
+        });
+        fields.add_field_method_set("output_device", |lua, _, value: Value| {
+            let spec = match value {
+                Value::Nil => None,
+                Value::String(name) => Some(name.to_str()?.to_owned()),
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "output_device must be a string or nil, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            host_from_lua(lua)?.inner.borrow_mut().output_device = spec;
+            Ok(())
+        });
+        fields.add_field_method_get("output_devices", |lua, _| {
+            let names = field_audio_playback::list_output_devices()
+                .map(|devices| {
+                    devices
+                        .into_iter()
+                        .map(|info| info.name)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let table = lua.create_table_with_capacity(names.len(), 0)?;
+            for (index, name) in names.into_iter().enumerate() {
+                table.set(index + 1, name)?;
+            }
+            Ok(table)
+        });
     }
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {

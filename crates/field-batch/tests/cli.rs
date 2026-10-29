@@ -26,6 +26,60 @@ fn eval_flag_prints_app_name() {
 }
 
 #[test]
+fn output_device_seeds_from_settings_and_init_overrides() {
+    let config = empty_config_dir();
+    std::fs::write(
+        config.path().join("settings.json"),
+        r#"{ "audio": { "output_device": "Speakers" } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        config.path().join("init.lua"),
+        r#"app.output_device = "Headphones""#,
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_field-batch");
+    let output = Command::new(bin)
+        .args([
+            "--config-dir",
+            config.path().to_str().unwrap(),
+            "--eval",
+            "app.output_device",
+        ])
+        .output()
+        .expect("spawn field-batch");
+    assert!(output.status.success(), "{:?}", output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim() == "Headphones",
+        "expected init override, got:\n{stdout}"
+    );
+
+    let config_seed = empty_config_dir();
+    std::fs::write(
+        config_seed.path().join("settings.json"),
+        r#"{ "audio": { "output_device": "Speakers" } }"#,
+    )
+    .unwrap();
+    std::fs::write(config_seed.path().join("init.lua"), "-- no device pin\n").unwrap();
+    let output = Command::new(bin)
+        .args([
+            "--config-dir",
+            config_seed.path().to_str().unwrap(),
+            "--eval",
+            "app.output_device",
+        ])
+        .output()
+        .expect("spawn field-batch");
+    assert!(output.status.success(), "{:?}", output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim() == "Speakers",
+        "expected settings seed, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn runs_script_file() {
     let config = empty_config_dir();
     let dir = tempfile::tempdir().unwrap();

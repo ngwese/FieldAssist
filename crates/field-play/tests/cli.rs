@@ -44,6 +44,46 @@ fn write_stereo_sine(path: &Path, frames: u32, sample_rate: u32) {
 }
 
 #[test]
+fn init_output_device_preference_is_used_for_resolve() {
+    let config = empty_config_dir();
+    std::fs::write(
+        config.path().join("init.lua"),
+        r#"app.output_device = "__no_such_field_play_device__""#,
+    )
+    .unwrap();
+    let media = tempfile::tempdir().unwrap();
+    let wav = media.path().join("stereo_sine.wav");
+    write_stereo_sine(&wav, 1_024, 44_100);
+
+    let bin = env!("CARGO_BIN_EXE_field-play");
+    let output = Command::new(bin)
+        .args([
+            "--config-dir",
+            config.path().to_str().unwrap(),
+            "--seconds",
+            "0.05",
+            wav.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn field-play");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "expected resolve failure for unknown device, got success:\n{combined}"
+    );
+    assert!(
+        combined.contains("resolve output device")
+            || combined.contains("__no_such_field_play_device__"),
+        "expected preference to drive resolve error:\n{combined}"
+    );
+}
+
+#[test]
 fn plays_media_file_with_detect_layout_and_decoder() {
     use cpal::traits::DeviceTrait;
 

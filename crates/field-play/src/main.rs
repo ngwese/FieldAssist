@@ -556,7 +556,7 @@ fn add_marker_at_playhead(
 
 /// Load path into a headless script world, run init + enrich + `detect_layout`,
 /// return the shared composition (monitor chain may have been filled by layout
-/// defaults) and the preferred output device from settings.
+/// defaults) and the preferred output device after settings seed + init.
 fn open_with_detect(
     path: &std::path::Path,
     config_dir: Option<PathBuf>,
@@ -577,10 +577,14 @@ fn open_with_detect(
 
     host.apply_scripting_settings(&settings.scripting)
         .map_err(|err| anyhow::anyhow!("apply scripting settings: {err}"))?;
+    host.set_output_device(settings.audio.output_device.clone());
     host.load_init()
         .map_err(|err| anyhow::anyhow!("load init.lua: {err}"))?;
     host.fire_enrich_session(None);
     flush_script_output(&host);
+
+    let preferred_output = host.output_device();
+    let buffer_size_frames = settings.audio.buffer_size_frames;
 
     let id = world
         .borrow_mut()
@@ -598,11 +602,7 @@ fn open_with_detect(
         .get(&id)
         .map(|doc| doc.composition.clone())
         .context("document missing after open")?;
-    Ok((
-        composition,
-        settings.audio.output_device,
-        settings.audio.buffer_size_frames,
-    ))
+    Ok((composition, preferred_output, buffer_size_frames))
 }
 
 fn flush_script_output(host: &ScriptHost) {

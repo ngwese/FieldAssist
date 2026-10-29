@@ -145,6 +145,9 @@ pub(crate) struct HostInner {
     /// confirm dialogs without UI interaction.  When empty, `confirm` returns
     /// `true` (permissive default for batch / headless contexts).
     pub(crate) confirm_responses: VecDeque<bool>,
+    /// Preferred playback output device (substring / name / index spec).
+    /// Seeded from settings; `app.output_device` may override. Not opened here.
+    pub(crate) output_device: Option<String>,
 }
 
 /// Shared handle stored in Lua app data.
@@ -221,6 +224,7 @@ impl ScriptHost {
                 args: Vec::new(),
                 package_policy,
                 confirm_responses: VecDeque::new(),
+                output_device: None,
             })),
         };
         lua.set_app_data(handle.clone());
@@ -274,6 +278,17 @@ impl ScriptHost {
     /// Set `app.args` (script argv after the file name).
     pub fn set_args(&self, args: Vec<String>) {
         self.handle.inner.borrow_mut().args = args;
+    }
+
+    /// Preferred playback output device spec (`app.output_device`), if any.
+    pub fn output_device(&self) -> Option<String> {
+        self.handle.inner.borrow().output_device.clone()
+    }
+
+    /// Set or clear the preferred playback output device (stores only; does
+    /// not open a CPAL stream).
+    pub fn set_output_device(&self, spec: Option<String>) {
+        self.handle.inner.borrow_mut().output_device = spec;
     }
 
     /// Evaluate a chunk; capture `print` and the return value.
@@ -1573,6 +1588,66 @@ mod tests {
         assert_eq!(out.result.as_deref(), Some("field-batch"));
         let out = host.eval("app.name = 'x'");
         assert!(out.error.is_some());
+    }
+
+    #[test]
+    fn output_device_preference_round_trips_on_host() {
+        let host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        assert!(host.output_device().is_none());
+        host.set_output_device(Some("Focusrite".into()));
+        assert_eq!(host.output_device().as_deref(), Some("Focusrite"));
+        host.set_output_device(None);
+        assert!(host.output_device().is_none());
+    }
+
+    #[test]
+    fn app_output_device_round_trips_and_rejects_bad_type() {
+        let mut host = ScriptHost::new(HostProfile {
+            name: "field-batch",
+            config_dir: None,
+        })
+        .unwrap();
+        let out = host.eval("return app.output_device == nil");
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+
+        let out = host.eval(
+            r#"
+            app.output_device = "Focusrite"
+            return app.output_device
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("Focusrite"));
+        assert_eq!(host.output_device().as_deref(), Some("Focusrite"));
+
+        let out = host.eval(
+            r#"
+            app.output_device = nil
+            return app.output_device == nil
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
+        assert!(host.output_device().is_none());
+
+        host.set_output_device(Some("keep".into()));
+        let out = host.eval("app.output_device = 1");
+        assert!(out.error.is_some());
+        assert_eq!(host.output_device().as_deref(), Some("keep"));
+
+        let out = host.eval(
+            r#"
+            local d = app.output_devices
+            return type(d) == "table"
+            "#,
+        );
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!(out.result.as_deref(), Some("true"));
     }
 
     #[test]

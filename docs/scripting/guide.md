@@ -108,7 +108,8 @@ at the top of every `init.lua`; the Lua helpers stay for late opt-in.
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
 `settings.json`, applies scripting (+ keeps experimental flags in a local
-registry; device ignored until needed), then loads `{config}/variables.json`
+registry), seeds `app.output_device` from `audio.output_device` (init may
+override; batch does not open a stream), then loads `{config}/variables.json`
 into host user variables (missing/invalid → empty), then loads user `init.lua`
 if present, else the shared embedded default. Does **not** auto-load Add /
 Replace / Review. After init, fires `enrich_session` for the empty focused
@@ -120,14 +121,16 @@ fires `enrich_session`; `field.session.open` (load `.fasession`) does not.
 ### field-play
 
 Optional `--config-dir` (default: same FieldAssist config directory). Loads
-`settings.json`, applies scripting, uses `audio.output_device` and
-`audio.buffer_size_frames` when resolving
-playback, then loads `{config}/variables.json` into host user variables
+`settings.json`, applies scripting, seeds `app.output_device` from
+`audio.output_device` (init may override; headless hosts do not live-switch),
+then loads `{config}/variables.json` into host user variables
 (missing/invalid → empty), then loads user `init.lua` if present, else the
-shared embedded default (layouts + `detect_layout`). Does **not** load workflow
-bundles. After init, fires `enrich_session` for the empty world session. After
-opening the path, fires `enrich_composition` then `detect_layout` once so unset
-`monitor_chain` values pick up the layout default before playback.
+shared embedded default (layouts + `detect_layout`). Uses the post-init
+`app.output_device` preference and `audio.buffer_size_frames` when resolving
+playback. Does **not** load workflow bundles. After init, fires
+`enrich_session` for the empty world session. After opening the path, fires
+`enrich_composition` then `detect_layout` once so unset `monitor_chain`
+values pick up the layout default before playback.
 
 ## Conventions
 
