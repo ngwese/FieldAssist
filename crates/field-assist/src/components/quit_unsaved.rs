@@ -162,7 +162,7 @@ impl Render for QuitUnsavedList {
                                     this.selection.click(
                                         ix,
                                         modifiers.shift,
-                                        modifiers.secondary(),
+                                        modifiers.secondary(cx),
                                         this.items.len(),
                                     );
                                     cx.notify();

@@ -2,6 +2,13 @@
 
 <!-- git-cliff: end of header -->
 
+## Unreleased
+
+### Other
+
+- Upgrade gpui-kit to 0.9.1
+
+
 ## [0.25.0] - 2026-10-18
 
 ### Features

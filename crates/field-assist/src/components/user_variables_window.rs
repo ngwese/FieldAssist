@@ -16,8 +16,8 @@ use gpui_kit::{
     canvas, div, fill, point, prelude::FluentBuilder as _, px, size, uniform_list, App,
     AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
     FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
-    ScrollStrategy, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollEvent,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
     UniformListScrollHandle, Window,
 };
 
@@ -681,7 +681,7 @@ impl Render for UserVariablesView {
                     .w_full()
                     .overflow_hidden()
                     .relative()
-                    .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
+                    .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
                         if !this.needs_h_scroll() {
                             return;
                         }

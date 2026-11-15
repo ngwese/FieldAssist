@@ -3,8 +3,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use gpui_kit::{actions, Action, App, KeyBinding, Keystroke};
+use gpui_kit::{
+    actions, Action, App, KeyBinding, KeyBindingContextPredicate, Keystroke, OperatingSystem,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -247,14 +250,14 @@ struct KeymapFile {
 }
 
 pub fn install_keybindings(cx: &mut App) {
-    let bindings = load_keybindings();
+    let bindings = load_keybindings(cx);
     cx.bind_keys(bindings);
 }
 
-fn load_keybindings() -> Vec<KeyBinding> {
+fn load_keybindings(cx: &App) -> Vec<KeyBinding> {
     resolved_bindings()
         .into_iter()
-        .flat_map(|(keystrokes, command_id)| bindings_for(&command_id, &keystrokes))
+        .flat_map(|(keystrokes, command_id)| bindings_for(&command_id, &keystrokes, cx))
         .collect()
 }
 
@@ -329,16 +332,25 @@ fn user_keymap_path() -> Option<PathBuf> {
     Some(user_config_dir()?.join("keymap.json"))
 }
 
-fn valid_keystrokes(spec: &str) -> bool {
+fn valid_keystrokes(spec: &str, os: OperatingSystem) -> bool {
     let mut parts = spec.split_whitespace().peekable();
     if parts.peek().is_none() {
         return false;
     }
-    parts.all(|part| Keystroke::parse(part).is_ok())
+    parts.all(|part| Keystroke::parse_with_os(part, os).is_ok())
 }
 
-fn bindings_for(command_id: &str, keystrokes: &str) -> Vec<KeyBinding> {
-    let contexts: &[&str] = match command_id {
+#[cfg(test)]
+fn os_for(platform: Platform) -> OperatingSystem {
+    match platform {
+        Platform::Macos => OperatingSystem::Mac,
+        Platform::Linux => OperatingSystem::Linux,
+        Platform::Windows => OperatingSystem::Windows,
+    }
+}
+
+fn contexts_for(command_id: &str) -> &'static [&'static str] {
+    match command_id {
         "view.fit_all"
         | "view.frame"
         | "selection.add_marker"
@@ -346,100 +358,121 @@ fn bindings_for(command_id: &str, keystrokes: &str) -> Vec<KeyBinding> {
         | "selection.delete_marker"
         | "transport.play_pause" => &[WAVEFORM_KEY_CONTEXT, WAVEFORM_HOVER_KEY_CONTEXT],
         _ => &[APP_KEY_CONTEXT],
-    };
-    contexts
+    }
+}
+
+fn bindings_for(command_id: &str, keystrokes: &str, cx: &App) -> Vec<KeyBinding> {
+    contexts_for(command_id)
         .iter()
-        .filter_map(|context| binding_in(command_id, keystrokes, context))
+        .filter_map(|context| binding_in(command_id, keystrokes, context, cx))
         .collect()
 }
 
+/// Whether a keymap entry can resolve to an action and parse for `os`.
+///
+/// Used by tests without constructing a GPUI [`App`] for [`KeyBinding::load`].
 #[cfg(test)]
-fn binding_for(command_id: &str, keystrokes: &str) -> Option<KeyBinding> {
-    bindings_for(command_id, keystrokes).into_iter().next()
+fn can_bind(command_id: &str, keystrokes: &str, os: OperatingSystem) -> bool {
+    action_for(command_id).is_some() && valid_keystrokes(keystrokes, os)
 }
 
-fn binding_in(command_id: &str, keystrokes: &str, context: &str) -> Option<KeyBinding> {
+fn binding_in(command_id: &str, keystrokes: &str, context: &str, cx: &App) -> Option<KeyBinding> {
     if !is_known_command(command_id) {
         eprintln!("FieldAssist: unknown command {command_id:?} bound to {keystrokes:?}");
         return None;
     }
-    if !valid_keystrokes(keystrokes) {
+    let os = cx.platform_info().os;
+    if !valid_keystrokes(keystrokes, os) {
         eprintln!("FieldAssist: invalid keystroke {keystrokes:?} for {command_id}");
         return None;
     }
+    let action = action_for(command_id)?;
+    let predicate = match KeyBindingContextPredicate::parse(context) {
+        Ok(predicate) => Rc::new(predicate),
+        Err(err) => {
+            eprintln!("FieldAssist: invalid key context {context:?}: {err}");
+            return None;
+        }
+    };
+    match KeyBinding::load(keystrokes, action, Some(predicate), false, None, cx) {
+        Ok(binding) => Some(binding),
+        Err(err) => {
+            eprintln!(
+                "FieldAssist: failed to load keybinding {keystrokes:?} for {command_id}: {err}"
+            );
+            None
+        }
+    }
+}
+
+fn action_for(command_id: &str) -> Option<Box<dyn Action>> {
     Some(match command_id {
-        "file.open" => KeyBinding::new(keystrokes, Open, Some(context)),
-        "file.save" => KeyBinding::new(keystrokes, Save, Some(context)),
-        "file.save_as" => KeyBinding::new(keystrokes, SaveAs, Some(context)),
-        "file.save_session" => KeyBinding::new(keystrokes, SaveSession, Some(context)),
-        "file.save_session_as" => KeyBinding::new(keystrokes, SaveSessionAs, Some(context)),
-        "file.close_session" => KeyBinding::new(keystrokes, CloseSession, Some(context)),
-        "file.close" => KeyBinding::new(keystrokes, Close, Some(context)),
-        "file.export" => KeyBinding::new(keystrokes, Export, Some(context)),
-        "file.quit" => KeyBinding::new(keystrokes, Quit, Some(context)),
-        "app.hide" => KeyBinding::new(keystrokes, Hide, Some(context)),
-        "app.hide_others" => KeyBinding::new(keystrokes, HideOthers, Some(context)),
-        "app.show_all" => KeyBinding::new(keystrokes, ShowAll, Some(context)),
-        "app.settings" => KeyBinding::new(keystrokes, Settings, Some(context)),
-        "app.variables" => KeyBinding::new(keystrokes, UserVariables, Some(context)),
-        "app.install_cli_tools" => KeyBinding::new(keystrokes, InstallCliTools, Some(context)),
-        "help.online_docs" => KeyBinding::new(keystrokes, HelpOnlineDocs, Some(context)),
-        "help.about" => KeyBinding::new(keystrokes, About, Some(context)),
-        "view.fit_all" => KeyBinding::new(keystrokes, ViewFitAll, Some(context)),
-        "view.frame" => KeyBinding::new(keystrokes, ViewFrame, Some(context)),
-        "view.zoom_in" => KeyBinding::new(keystrokes, ViewZoomIn, Some(context)),
-        "view.zoom_out" => KeyBinding::new(keystrokes, ViewZoomOut, Some(context)),
-        "view.show-explorer" => KeyBinding::new(keystrokes, ViewShowExplorer, Some(context)),
-        "view.hide-explorer" => KeyBinding::new(keystrokes, ViewHideExplorer, Some(context)),
-        "view.toggle-explorer" => KeyBinding::new(keystrokes, ViewExplorer, Some(context)),
-        "view.show-detail" => KeyBinding::new(keystrokes, ViewShowDetail, Some(context)),
-        "view.hide-detail" => KeyBinding::new(keystrokes, ViewHideDetail, Some(context)),
-        "view.toggle-detail" => KeyBinding::new(keystrokes, ViewDetail, Some(context)),
-        "view.show-script" => KeyBinding::new(keystrokes, ViewShowScript, Some(context)),
-        "view.hide-script" => KeyBinding::new(keystrokes, ViewHideScript, Some(context)),
-        "view.toggle-script" => KeyBinding::new(keystrokes, ViewScript, Some(context)),
-        "view.show-media" => KeyBinding::new(keystrokes, ViewShowMedia, Some(context)),
-        "view.toggle-media" => KeyBinding::new(keystrokes, ViewToggleMedia, Some(context)),
-        "view.wrap_messages" => KeyBinding::new(keystrokes, ViewWrapMessages, Some(context)),
-        "view.follow_playhead" => KeyBinding::new(keystrokes, ViewFollowPlayhead, Some(context)),
-        "transport.home" => KeyBinding::new(keystrokes, TransportHome, Some(context)),
-        "transport.previous" => KeyBinding::new(keystrokes, TransportPrevious, Some(context)),
-        "transport.start" => KeyBinding::new(keystrokes, TransportStart, Some(context)),
-        "transport.play_pause" => KeyBinding::new(keystrokes, TransportPlayPause, Some(context)),
-        "transport.stop" => KeyBinding::new(keystrokes, TransportStop, Some(context)),
-        "transport.next" => KeyBinding::new(keystrokes, TransportNext, Some(context)),
-        "transport.end" => KeyBinding::new(keystrokes, TransportEnd, Some(context)),
-        "transport.loop" => KeyBinding::new(keystrokes, TransportLoop, Some(context)),
-        "transport.preview" => KeyBinding::new(keystrokes, TransportPreview, Some(context)),
-        "edit.undo" => KeyBinding::new(keystrokes, EditUndo, Some(context)),
-        "edit.redo" => KeyBinding::new(keystrokes, EditRedo, Some(context)),
-        "edit.cut" => KeyBinding::new(keystrokes, EditCut, Some(context)),
-        "edit.copy" => KeyBinding::new(keystrokes, EditCopy, Some(context)),
-        "edit.paste" => KeyBinding::new(keystrokes, EditPaste, Some(context)),
-        "edit.clear" => KeyBinding::new(keystrokes, EditClear, Some(context)),
-        "edit.remove" => KeyBinding::new(keystrokes, EditRemove, Some(context)),
-        "edit.duplicate" => KeyBinding::new(keystrokes, EditDuplicate, Some(context)),
-        "edit.trim" => KeyBinding::new(keystrokes, EditTrim, Some(context)),
-        "edit.break_out_regions" => KeyBinding::new(keystrokes, EditBreakOutRegions, Some(context)),
-        "edit.break_out_channels" => {
-            KeyBinding::new(keystrokes, EditBreakOutChannels, Some(context))
-        }
-        "selection.select_all" => KeyBinding::new(keystrokes, SelectAll, Some(context)),
-        "selection.select_none" => KeyBinding::new(keystrokes, SelectNone, Some(context)),
-        "selection.invert" => KeyBinding::new(keystrokes, InvertSelection, Some(context)),
-        "selection.zero_crossing" => KeyBinding::new(keystrokes, ZeroCrossing, Some(context)),
-        "selection.marker_type_blue" => KeyBinding::new(keystrokes, MarkerTypeBlue, Some(context)),
-        "selection.marker_type_yellow" => {
-            KeyBinding::new(keystrokes, MarkerTypeYellow, Some(context))
-        }
-        "selection.marker_type_purple" => {
-            KeyBinding::new(keystrokes, MarkerTypePurple, Some(context))
-        }
-        "selection.snap_to_marker" => KeyBinding::new(keystrokes, SnapToMarker, Some(context)),
-        "selection.add_at_hover" => KeyBinding::new(keystrokes, AddMarkerAtHover, Some(context)),
-        "selection.add_marker" => KeyBinding::new(keystrokes, AddMarker, Some(context)),
-        "selection.add_note" => KeyBinding::new(keystrokes, AddNote, Some(context)),
-        "selection.delete_marker" => KeyBinding::new(keystrokes, DeleteMarker, Some(context)),
+        "file.open" => Box::new(Open),
+        "file.save" => Box::new(Save),
+        "file.save_as" => Box::new(SaveAs),
+        "file.save_session" => Box::new(SaveSession),
+        "file.save_session_as" => Box::new(SaveSessionAs),
+        "file.close_session" => Box::new(CloseSession),
+        "file.close" => Box::new(Close),
+        "file.export" => Box::new(Export),
+        "file.quit" => Box::new(Quit),
+        "app.hide" => Box::new(Hide),
+        "app.hide_others" => Box::new(HideOthers),
+        "app.show_all" => Box::new(ShowAll),
+        "app.settings" => Box::new(Settings),
+        "app.variables" => Box::new(UserVariables),
+        "app.install_cli_tools" => Box::new(InstallCliTools),
+        "help.online_docs" => Box::new(HelpOnlineDocs),
+        "help.about" => Box::new(About),
+        "view.fit_all" => Box::new(ViewFitAll),
+        "view.frame" => Box::new(ViewFrame),
+        "view.zoom_in" => Box::new(ViewZoomIn),
+        "view.zoom_out" => Box::new(ViewZoomOut),
+        "view.show-explorer" => Box::new(ViewShowExplorer),
+        "view.hide-explorer" => Box::new(ViewHideExplorer),
+        "view.toggle-explorer" => Box::new(ViewExplorer),
+        "view.show-detail" => Box::new(ViewShowDetail),
+        "view.hide-detail" => Box::new(ViewHideDetail),
+        "view.toggle-detail" => Box::new(ViewDetail),
+        "view.show-script" => Box::new(ViewShowScript),
+        "view.hide-script" => Box::new(ViewHideScript),
+        "view.toggle-script" => Box::new(ViewScript),
+        "view.show-media" => Box::new(ViewShowMedia),
+        "view.toggle-media" => Box::new(ViewToggleMedia),
+        "view.wrap_messages" => Box::new(ViewWrapMessages),
+        "view.follow_playhead" => Box::new(ViewFollowPlayhead),
+        "transport.home" => Box::new(TransportHome),
+        "transport.previous" => Box::new(TransportPrevious),
+        "transport.start" => Box::new(TransportStart),
+        "transport.play_pause" => Box::new(TransportPlayPause),
+        "transport.stop" => Box::new(TransportStop),
+        "transport.next" => Box::new(TransportNext),
+        "transport.end" => Box::new(TransportEnd),
+        "transport.loop" => Box::new(TransportLoop),
+        "transport.preview" => Box::new(TransportPreview),
+        "edit.undo" => Box::new(EditUndo),
+        "edit.redo" => Box::new(EditRedo),
+        "edit.cut" => Box::new(EditCut),
+        "edit.copy" => Box::new(EditCopy),
+        "edit.paste" => Box::new(EditPaste),
+        "edit.clear" => Box::new(EditClear),
+        "edit.remove" => Box::new(EditRemove),
+        "edit.duplicate" => Box::new(EditDuplicate),
+        "edit.trim" => Box::new(EditTrim),
+        "edit.break_out_regions" => Box::new(EditBreakOutRegions),
+        "edit.break_out_channels" => Box::new(EditBreakOutChannels),
+        "selection.select_all" => Box::new(SelectAll),
+        "selection.select_none" => Box::new(SelectNone),
+        "selection.invert" => Box::new(InvertSelection),
+        "selection.zero_crossing" => Box::new(ZeroCrossing),
+        "selection.marker_type_blue" => Box::new(MarkerTypeBlue),
+        "selection.marker_type_yellow" => Box::new(MarkerTypeYellow),
+        "selection.marker_type_purple" => Box::new(MarkerTypePurple),
+        "selection.snap_to_marker" => Box::new(SnapToMarker),
+        "selection.add_at_hover" => Box::new(AddMarkerAtHover),
+        "selection.add_marker" => Box::new(AddMarker),
+        "selection.add_note" => Box::new(AddNote),
+        "selection.delete_marker" => Box::new(DeleteMarker),
         _ => return None,
     })
 }
@@ -452,6 +485,7 @@ mod tests {
     fn default_keymap_parses_and_command_ids_resolve() {
         for platform in [Platform::Macos, Platform::Linux, Platform::Windows] {
             let map = parse_and_flatten(DEFAULT_KEYMAP, platform).expect("default keymap parses");
+            let os = os_for(platform);
             assert!(!map.is_empty());
             for (keystrokes, command_id) in &map {
                 assert!(
@@ -459,8 +493,8 @@ mod tests {
                     "unknown command {command_id:?} on {keystrokes:?}"
                 );
                 assert!(
-                    binding_for(command_id, keystrokes).is_some(),
-                    "failed to bind {command_id:?} to {keystrokes:?}"
+                    can_bind(command_id, keystrokes, os),
+                    "failed to bind {command_id:?} to {keystrokes:?} on {platform:?}"
                 );
             }
         }
@@ -578,22 +612,23 @@ mod tests {
     #[test]
     fn unknown_command_ids_are_skipped() {
         assert!(!is_known_command("not.a.command"));
-        assert!(binding_for("not.a.command", "a").is_none());
+        assert!(action_for("not.a.command").is_none());
+        assert!(!can_bind("not.a.command", "a", OperatingSystem::Mac));
     }
 
     #[test]
     fn help_online_docs_is_a_known_command() {
         assert!(is_known_command("help.online_docs"));
-        assert!(binding_for("help.online_docs", "f12").is_some());
+        assert!(can_bind("help.online_docs", "f12", OperatingSystem::Mac));
         assert!(!is_known_command("not.a.command"));
     }
 
     #[test]
     fn keymap_bindings_are_scoped_to_the_app_view() {
-        let binding = binding_for("edit.clear", "backspace").expect("backspace");
-        assert!(binding.predicate().is_some());
-        let binding = binding_for("transport.stop", "k").expect("stop");
-        assert!(binding.predicate().is_some());
+        assert_eq!(contexts_for("edit.clear"), &[APP_KEY_CONTEXT]);
+        assert_eq!(contexts_for("transport.stop"), &[APP_KEY_CONTEXT]);
+        assert!(can_bind("edit.clear", "backspace", OperatingSystem::Mac));
+        assert!(can_bind("transport.stop", "k", OperatingSystem::Mac));
     }
 
     #[test]
@@ -606,10 +641,15 @@ mod tests {
             ("selection.delete_marker", "d"),
             ("transport.play_pause", "space"),
         ] {
-            let bindings = bindings_for(command_id, keystrokes);
-            assert_eq!(bindings.len(), 2, "{command_id}");
+            let contexts = contexts_for(command_id);
+            assert_eq!(contexts.len(), 2, "{command_id}");
+            assert!(contexts.contains(&WAVEFORM_KEY_CONTEXT), "{command_id}");
             assert!(
-                bindings.iter().all(|binding| binding.predicate().is_some()),
+                contexts.contains(&WAVEFORM_HOVER_KEY_CONTEXT),
+                "{command_id}"
+            );
+            assert!(
+                can_bind(command_id, keystrokes, OperatingSystem::Mac),
                 "{command_id}"
             );
         }
@@ -620,22 +660,21 @@ mod tests {
         // Hover-without-click relies on WaveformHover; if that context drops
         // after the first Space (GPUI default hover modality), toggle breaks
         // until the mouse moves (issue #15).
-        let bindings = bindings_for("transport.play_pause", "space");
-        assert_eq!(bindings.len(), 2);
-        let contexts: Vec<String> = bindings
-            .iter()
-            .filter_map(|binding| binding.predicate().map(|p| p.to_string()))
-            .collect();
+        let contexts = contexts_for("transport.play_pause");
+        assert_eq!(contexts.len(), 2);
         assert!(
-            contexts
-                .iter()
-                .any(|c| c.contains(WAVEFORM_HOVER_KEY_CONTEXT)),
+            contexts.contains(&WAVEFORM_HOVER_KEY_CONTEXT),
             "expected WaveformHover binding, got {contexts:?}"
         );
         assert!(
-            contexts.iter().any(|c| c.contains(WAVEFORM_KEY_CONTEXT)),
+            contexts.contains(&WAVEFORM_KEY_CONTEXT),
             "expected Waveform binding, got {contexts:?}"
         );
+        assert!(can_bind(
+            "transport.play_pause",
+            "space",
+            OperatingSystem::Mac
+        ));
     }
 
     #[test]
@@ -665,7 +704,7 @@ mod tests {
             "view.toggle-media",
         ] {
             assert!(is_known_command(id), "{id}");
-            assert!(binding_for(id, "f12").is_some(), "{id}");
+            assert!(can_bind(id, "f12", OperatingSystem::Mac), "{id}");
         }
         assert!(!is_known_command("view.explorer"));
         assert!(!is_known_command("view.detail"));

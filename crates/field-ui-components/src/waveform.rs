@@ -16,7 +16,7 @@ use gpui_kit::{
     canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context, Corners,
     DispatchPhase, Entity, FocusHandle, Focusable, HoverListenerMode, InteractiveElement as _,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, RenderImage, Rgba, ScrollWheelEvent, SharedString,
+    PathBuilder, Pixels, Render, RenderImage, Rgba, ScrollEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, TextAlign, TextRun, Window,
 };
 use image::{ImageBuffer, Rgba as ImageRgba};
@@ -2259,7 +2259,7 @@ where
                     .w_full()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                    .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                         if WaveformDataProvider::frames(this.document.read(cx)) == 0 {
                             return;
                         }
@@ -2362,7 +2362,7 @@ where
                                                     move |this, event: &MouseDownEvent, _, cx| {
                                                         let shift = event.modifiers.shift;
                                                         let disjoint =
-                                                            event.modifiers.secondary();
+                                                            event.modifiers.secondary(cx);
                                                         this.document.update(cx, |doc, cx| {
                                                             WaveformEditor::click_channel_header(
                                                                 doc, ch, shift, disjoint,
@@ -2473,7 +2473,7 @@ where
                                                                     alt: event.modifiers.alt,
                                                                     disjoint: event
                                                                         .modifiers
-                                                                        .secondary(),
+                                                                        .secondary(cx),
                                                                     shift: true,
                                                                     anchor_sample: sample,
                                                                     origin_x: x,
@@ -2493,7 +2493,7 @@ where
                                                         } else {
                                                             let alt = event.modifiers.alt;
                                                             let disjoint =
-                                                                event.modifiers.secondary();
+                                                                event.modifiers.secondary(cx);
                                                             let radius = this.marker_snap_radius();
                                                             this.document.update(cx, |doc, cx| {
                                                                 let scope = WaveformEditor::channel_lanes(

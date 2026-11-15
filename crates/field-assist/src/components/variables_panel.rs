@@ -22,7 +22,7 @@ use gpui_kit::{
     AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
-    ScrollStrategy, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
+    ScrollEvent, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
     UniformListScrollHandle, Window,
 };
 
@@ -1329,31 +1329,29 @@ impl Render for VariablesPanel {
                             .h_full()
                             .overflow_hidden()
                             .relative()
-                            .on_scroll_wheel(cx.listener(
-                                move |this, event: &ScrollWheelEvent, _, cx| {
-                                    if !this.needs_h_scroll() {
-                                        return;
-                                    }
-                                    let delta = event.delta.pixel_delta(px(16.));
-                                    let dx = delta.x.as_f32();
-                                    let dy = delta.y.as_f32();
-                                    let horizontal = event.modifiers.shift || dx.abs() > dy.abs();
-                                    if !horizontal {
-                                        return;
-                                    }
-                                    let pan = if event.modifiers.shift {
-                                        if dx.abs() > dy.abs() {
-                                            dx
-                                        } else {
-                                            dy
-                                        }
-                                    } else {
+                            .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
+                                if !this.needs_h_scroll() {
+                                    return;
+                                }
+                                let delta = event.delta.pixel_delta(px(16.));
+                                let dx = delta.x.as_f32();
+                                let dy = delta.y.as_f32();
+                                let horizontal = event.modifiers.shift || dx.abs() > dy.abs();
+                                if !horizontal {
+                                    return;
+                                }
+                                let pan = if event.modifiers.shift {
+                                    if dx.abs() > dy.abs() {
                                         dx
-                                    };
-                                    this.pan_horizontal(-pan, cx);
-                                    cx.stop_propagation();
-                                },
-                            ))
+                                    } else {
+                                        dy
+                                    }
+                                } else {
+                                    dx
+                                };
+                                this.pan_horizontal(-pan, cx);
+                                cx.stop_propagation();
+                            }))
                             .child(
                                 canvas(
                                     {
