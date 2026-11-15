@@ -352,7 +352,7 @@ impl ProjectEnvelope {
 
     /// `from_json`.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        use anyhow::{bail, Context};
+        use anyhow::{Context, bail};
 
         let envelope: Self = serde_json::from_str(json).context("parse project JSON")?;
         if envelope.kind != FACOMP_KIND {

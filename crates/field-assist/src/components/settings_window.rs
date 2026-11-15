@@ -14,13 +14,13 @@ use gpui_kit::component::setting::{
     SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{
-    v_flex, ActiveTheme as _, AxisExt as _, Disableable as _, Icon, IconName, IconNamed,
-    Sizable as _, Size, Theme, ThemeRegistry,
+    ActiveTheme as _, AxisExt as _, Disableable as _, Icon, IconName, IconNamed, Sizable as _,
+    Size, Theme, ThemeRegistry, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, App, AppContext as _, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
 };
 
 use crate::playback::{list_output_devices, period_frame_catalog};

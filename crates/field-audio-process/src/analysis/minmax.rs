@@ -39,11 +39,7 @@ impl MinMaxOp {
     pub fn global_min_max(&self, channel: usize) -> (f32, f32) {
         let min = self.global_min[channel];
         let max = self.global_max[channel];
-        if min <= max {
-            (min, max)
-        } else {
-            (0.0, 0.0)
-        }
+        if min <= max { (min, max) } else { (0.0, 0.0) }
     }
 
     /// Combined global min/max across all channels.
@@ -57,11 +53,7 @@ impl MinMaxOp {
                 max = max.max(cmax);
             }
         }
-        if min <= max {
-            (min, max)
-        } else {
-            (0.0, 0.0)
-        }
+        if min <= max { (min, max) } else { (0.0, 0.0) }
     }
 
     /// Consume channel samples and append completed hop bins to `out`.
@@ -157,11 +149,7 @@ pub fn min_max_in_range(samples: &[f32], peaks: &[(f32, f32)], start: f64, end: 
         }
     }
 
-    if min > max {
-        (0.0, 0.0)
-    } else {
-        (min, max)
-    }
+    if min > max { (0.0, 0.0) } else { (min, max) }
 }
 
 #[cfg(test)]

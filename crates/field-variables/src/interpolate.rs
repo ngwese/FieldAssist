@@ -5,7 +5,7 @@
 
 use thiserror::Error;
 
-use crate::table::{split_variable_id, VariableTable};
+use crate::table::{VariableTable, split_variable_id};
 
 /// Maximum nested expansions of `${…}` inside resolved values.
 pub const MAX_INTERPOLATE_DEPTH: u32 = 32;
@@ -140,7 +140,7 @@ fn resolve(expr: &str, vars: &VariableTable) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{compose, VariableEntry, VariableTable};
+    use crate::{VariableEntry, VariableTable, compose};
 
     fn composed() -> VariableTable {
         let mut source = VariableTable::new();

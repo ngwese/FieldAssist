@@ -6,11 +6,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Parser;
 use field_scripting::{HostProfile, ScriptHost};
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 #[derive(Parser, Debug)]
 #[command(

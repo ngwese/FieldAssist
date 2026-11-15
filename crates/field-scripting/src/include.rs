@@ -72,7 +72,7 @@ fn resolve_include_path(host: &crate::host::HostHandle, spec: Value) -> mlua::Re
             return Err(mlua::Error::runtime(format!(
                 "field.include expects a path string or url, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
 

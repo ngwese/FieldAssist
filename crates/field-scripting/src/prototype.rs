@@ -21,7 +21,7 @@ pub fn new_instance(lua: &mlua::Lua, prototype: Table) -> mlua::Result<Table> {
             return Err(mlua::Error::runtime(format!(
                 "init must be a function, got {}",
                 other.type_name()
-            )))
+            )));
         }
     }
     Ok(instance)

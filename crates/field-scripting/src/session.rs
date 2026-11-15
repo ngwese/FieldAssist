@@ -11,7 +11,7 @@ use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value
 use field_session::{DocumentId, SessionId};
 
 use crate::composition::LuaComposition;
-use crate::host::{host_from_lua, HostHandle};
+use crate::host::{HostHandle, host_from_lua};
 use crate::util::{optional_lua_string, string_map_from_lua, string_map_to_lua};
 
 /// Handle to a session in the scripting backend.
@@ -509,7 +509,7 @@ fn string_list_from_lua(value: Value) -> mlua::Result<Vec<String>> {
                         return Err(mlua::Error::runtime(format!(
                             "groups entries must be strings, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 }
             }

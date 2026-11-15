@@ -6,13 +6,15 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, StyledExt as _,
     dock::{BasePanel, Panel, PanelEvent},
-    v_flex, ActiveTheme as _, StyledExt as _,
+    v_flex,
 };
 use gpui_kit::{
-    div, hsla, prelude::FluentBuilder as _, px, App, ClickEvent, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, hsla,
+    prelude::FluentBuilder as _, px,
 };
 
 /// One edit-history card.

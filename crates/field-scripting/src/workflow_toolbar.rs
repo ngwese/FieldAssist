@@ -345,7 +345,7 @@ fn constructor(lua: &mlua::Lua, kind: &str, props: Value) -> mlua::Result<Table>
             return Err(mlua::Error::runtime(format!(
                 "field.ui.{kind} expects a table, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     make_control(lua, kind, Some(props))
@@ -359,7 +359,7 @@ fn divider_constructor(lua: &mlua::Lua, props: Value) -> mlua::Result<Table> {
             return Err(mlua::Error::runtime(format!(
                 "field.ui.divider expects a table or nil, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     make_control(lua, "divider", props)
@@ -381,7 +381,7 @@ fn make_control(lua: &mlua::Lua, kind: &str, props: Option<Table>) -> mlua::Resu
             return Err(mlua::Error::runtime(format!(
                 "action must be a function, got {}",
                 other.type_name()
-            )))
+            )));
         }
     }
     control.raw_set("__fa_store", store)?;
@@ -494,7 +494,7 @@ fn set_toolbar(lua: &mlua::Lua, (this, items): (Table, Value)) -> mlua::Result<(
             return Err(mlua::Error::runtime(format!(
                 "toolbar must be a list of field.ui controls or nil, got {}",
                 other.type_name()
-            )))
+            )));
         }
     }
     this.set("__fa_toolbar", items)?;
@@ -648,7 +648,7 @@ fn parse_choices(value: Value) -> mlua::Result<Vec<(String, String)>> {
                         return Err(mlua::Error::runtime(format!(
                             "select choices entries must be strings or {{ value, label? }} tables, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 }
             }
@@ -689,12 +689,9 @@ fn parse_toggle_item(row: &Table, align: ToolbarAlign) -> mlua::Result<ToolbarIt
 fn parse_toolbar_icon(name: &str) -> mlua::Result<String> {
     let normalized = name.replace('-', "_");
     match normalized.as_str() {
-        "check"
-        | "circle_check"
-        | "circle_x"
-        | "circle_alert"
-        | "arrow_left"
-        | "arrow_right" => Ok(normalized),
+        "check" | "circle_check" | "circle_x" | "circle_alert" | "arrow_left" | "arrow_right" => {
+            Ok(normalized)
+        }
         other => Err(mlua::Error::runtime(format!(
             "icon must be \"check\", \"circle-check\", \"circle-x\", \"circle-alert\", \"arrow-left\", or \"arrow-right\", got `{other}`"
         ))),
@@ -782,7 +779,7 @@ fn log_append(lua: &mlua::Lua, (this, line): (Table, Value)) -> mlua::Result<()>
             return Err(mlua::Error::runtime(format!(
                 "log:append expects a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let store = control_store(&this)?;
@@ -999,8 +996,12 @@ mod tests {
             }"#,
         );
         match &items[..] {
-            [ToolbarItem::Toggle { on_icon: a, .. }, ToolbarItem::Toggle { on_icon: b, .. }, ToolbarItem::Toggle { on_icon: c, .. }, ToolbarItem::Toggle { on_icon: d, .. }] =>
-            {
+            [
+                ToolbarItem::Toggle { on_icon: a, .. },
+                ToolbarItem::Toggle { on_icon: b, .. },
+                ToolbarItem::Toggle { on_icon: c, .. },
+                ToolbarItem::Toggle { on_icon: d, .. },
+            ] => {
                 assert_eq!(a, "circle_check");
                 assert_eq!(b, "circle_alert");
                 assert_eq!(c, "circle_x");
@@ -1033,17 +1034,20 @@ mod tests {
             }"#,
         );
         match &items[..] {
-            [ToolbarItem::Button {
-                id: a,
-                label: la,
-                icon: Some(ia),
-                ..
-            }, ToolbarItem::Button {
-                id: b,
-                label: lb,
-                icon: Some(ib),
-                ..
-            }] => {
+            [
+                ToolbarItem::Button {
+                    id: a,
+                    label: la,
+                    icon: Some(ia),
+                    ..
+                },
+                ToolbarItem::Button {
+                    id: b,
+                    label: lb,
+                    icon: Some(ib),
+                    ..
+                },
+            ] => {
                 assert_eq!(a, "previous");
                 assert_eq!(la, "Previous");
                 assert_eq!(ia, "arrow_left");
@@ -1072,14 +1076,16 @@ mod tests {
             }"#,
         );
         match &items[..] {
-            [ToolbarItem::Select {
-                id,
-                label,
-                value,
-                choices,
-                align,
-                ..
-            }] => {
+            [
+                ToolbarItem::Select {
+                    id,
+                    label,
+                    value,
+                    choices,
+                    align,
+                    ..
+                },
+            ] => {
                 assert_eq!(id, "format");
                 assert_eq!(label.as_deref(), Some("Format"));
                 assert_eq!(value, "flac");

@@ -5,18 +5,18 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use field_audio_io::{probe_file, probe_header, ProbedFile, SymphoniaBlockSource};
+use field_audio_io::{ProbedFile, SymphoniaBlockSource, probe_file, probe_header};
 use field_audio_model::{
-    descriptor_mismatch, BlockPager, BlockSource, ChannelScope, DescriptorMismatch, Marker,
-    MarkerId, MarkerList, MarkerType, MediaAvailability, MediaDescriptor, MediaId, MediaPool,
-    MediaRef, MediaStore, RegionCollection, RegionId, StoredMarker, BLOCK_FRAMES,
-    MARKER_TYPE_TRANSIENT, SELECTION_COLLECTION,
+    BLOCK_FRAMES, BlockPager, BlockSource, ChannelScope, DescriptorMismatch, MARKER_TYPE_TRANSIENT,
+    Marker, MarkerId, MarkerList, MarkerType, MediaAvailability, MediaDescriptor, MediaId,
+    MediaPool, MediaRef, MediaStore, RegionCollection, RegionId, SELECTION_COLLECTION,
+    StoredMarker, descriptor_mismatch,
 };
 use field_audio_process::{
-    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, SpectralOp,
-    TransientDetectOp, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, PEAK_BLOCK, RecomputeScope,
+    SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, SpectralOp, TransientDetectOp,
 };
 use field_core::{LoadProblem, Location, OpenReport, ProblemCategory, ProgressHandle};
 
@@ -2071,11 +2071,7 @@ impl Composition {
             max = max.max(cmax);
             pos += take;
         }
-        if min > max {
-            (0.0, 0.0)
-        } else {
-            (min, max)
-        }
+        if min > max { (0.0, 0.0) } else { (min, max) }
     }
 
     fn clip_min_max(&self, clip: &Clip, channel: usize, local: u64, len: u64) -> (f32, f32) {
@@ -2117,11 +2113,7 @@ impl Composition {
             min = min.min(sample);
             max = max.max(sample);
         }
-        if min > max {
-            (0.0, 0.0)
-        } else {
-            (min, max)
-        }
+        if min > max { (0.0, 0.0) } else { (min, max) }
     }
 
     fn read_clip_channel(
@@ -3840,7 +3832,7 @@ pub fn media_ref_from_probed(probed: ProbedFile) -> MediaRef {
 
 /// Probe (or rebuild technical-only) `source` / `source.*` into `media.variables`.
 pub fn attach_source_variables(media: &mut MediaRef) {
-    use field_audio_io::{probe_source_variables, TechnicalSourceFields};
+    use field_audio_io::{TechnicalSourceFields, probe_source_variables};
     use field_variables::{VariableEntry, VariableTable};
 
     let tech = TechnicalSourceFields {
@@ -4834,11 +4826,13 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["format_version"], 10);
         assert_eq!(value["collections"].as_array().unwrap().len(), 1);
-        assert!(value["marker_types"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|ty| ty["name"] == "Red"));
+        assert!(
+            value["marker_types"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|ty| ty["name"] == "Red")
+        );
         let restored = Composition::from_json(&json).unwrap();
         assert!(restored.marker_types().iter().any(|ty| ty.name == "Red"));
         let silent = restored.collection("silent").expect("silent");
@@ -5396,17 +5390,21 @@ mod tests {
         assert_eq!(marker.marker_type, "Red");
         assert_eq!(marker.note.as_deref(), Some("hit"));
         assert_eq!(restored.resolved_marker_color("Red"), [1.0, 0.0, 0.0, 1.0]);
-        assert!(restored
-            .marker_types()
-            .iter()
-            .any(|ty| ty.name == "Red" && ty.color == [1.0, 0.0, 0.0, 1.0]));
+        assert!(
+            restored
+                .marker_types()
+                .iter()
+                .any(|ty| ty.name == "Red" && ty.color == [1.0, 0.0, 0.0, 1.0])
+        );
         let saved: serde_json::Value = serde_json::from_str(&restored.to_json().unwrap()).unwrap();
         assert!(saved["markers"][0].get("color").is_none());
-        assert!(saved["marker_types"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|ty| ty["name"] == "Red"));
+        assert!(
+            saved["marker_types"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|ty| ty["name"] == "Red")
+        );
     }
 
     #[test]

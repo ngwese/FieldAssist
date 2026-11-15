@@ -21,18 +21,18 @@ mod table;
 mod user_file;
 
 pub use complete::{
-    accept_edit, completion_context, completion_items, prefix_edit, tab_action, AcceptEdit,
-    CompletionContext, CompletionItem, CompletionKind, TabAction,
+    AcceptEdit, CompletionContext, CompletionItem, CompletionKind, TabAction, accept_edit,
+    completion_context, completion_items, prefix_edit, tab_action,
 };
-pub use compose::{compose, compose_with_order, DEFAULT_SCOPE_ORDER};
-pub use interpolate::{interpolate, interpolate_strict, InterpolateError, MAX_INTERPOLATE_DEPTH};
+pub use compose::{DEFAULT_SCOPE_ORDER, compose, compose_with_order};
+pub use interpolate::{InterpolateError, MAX_INTERPOLATE_DEPTH, interpolate, interpolate_strict};
 pub use table::{
-    split_variable_id, top_level_scope, StoredVariable, VariableEntry, VariableTable,
-    TOP_LEVEL_SCOPES,
+    StoredVariable, TOP_LEVEL_SCOPES, VariableEntry, VariableTable, split_variable_id,
+    top_level_scope,
 };
 pub use user_file::{
-    parse_user_variable_name, user_variable_display_name, UserVariablesFile, USER_SCOPE,
-    VARIABLES_FORMAT_VERSION, VARIABLES_KIND,
+    USER_SCOPE, UserVariablesFile, VARIABLES_FORMAT_VERSION, VARIABLES_KIND,
+    parse_user_variable_name, user_variable_display_name,
 };
 
 /// Re-export serde for callers that store tables.

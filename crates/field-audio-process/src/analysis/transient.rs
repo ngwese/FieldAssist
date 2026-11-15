@@ -3,10 +3,10 @@
 
 //! Fast/slow peak-envelope transient detection.
 
-use dasp::envelope::detect::Peak;
 use dasp::envelope::Detector;
+use dasp::envelope::detect::Peak;
 
-use field_audio_model::{NewMarker, MARKER_TYPE_TRANSIENT};
+use field_audio_model::{MARKER_TYPE_TRANSIENT, NewMarker};
 
 use super::AnalysisSink;
 

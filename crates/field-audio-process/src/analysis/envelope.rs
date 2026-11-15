@@ -3,8 +3,8 @@
 
 //! Peak-envelope follower analysis op.
 
-use dasp::envelope::detect::Peak;
 use dasp::envelope::Detector;
+use dasp::envelope::detect::Peak;
 
 use super::minmax::PEAK_BLOCK;
 

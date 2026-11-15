@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Selectable as _, Sizable as _,
+    StyledExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
@@ -13,14 +15,14 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, PopupMenuItem},
     resizable_panel,
     tooltip::Tooltip,
-    v_flex, v_resizable, ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed,
-    Selectable as _, Sizable as _, StyledExt as _,
+    v_flex, v_resizable,
 };
 use gpui_kit::{
-    actions, div, prelude::FluentBuilder as _, px, App, AppContext as _, Bounds, ClickEvent,
-    Context, DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, FileDragPaths, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
-    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    App, AppContext as _, Bounds, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
+    ExternalDragPayload, FileDragPaths, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, KeyBinding, MouseButton, ParentElement as _, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, actions, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::model::DocumentId;
@@ -2138,12 +2140,14 @@ fn info_media_table(
 ) -> gpui_kit::AnyElement {
     let header = info_media_row("#", "Path", "Rate", "Ch", "Len", "Size", muted, true, None);
     let body: Vec<gpui_kit::AnyElement> = if rows.is_empty() {
-        vec![div()
-            .text_xs()
-            .text_color(muted)
-            .py_0p5()
-            .child("(no media)")
-            .into_any_element()]
+        vec![
+            div()
+                .text_xs()
+                .text_color(muted)
+                .py_0p5()
+                .child("(no media)")
+                .into_any_element(),
+        ]
     } else {
         rows.iter()
             .enumerate()

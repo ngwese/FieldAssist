@@ -6,14 +6,16 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
-    h_flex, v_flex, ActiveTheme as _, Icon, IconName, IconNamed, Sizable as _, StyledExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, App, ClickEvent, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 /// Width of the xsmall region-card icon column (matches `Icon::xsmall` / `size_3`).

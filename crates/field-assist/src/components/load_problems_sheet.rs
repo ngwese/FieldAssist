@@ -7,15 +7,16 @@ use std::collections::HashSet;
 
 use field_core::{OpenReport, ProblemCategory};
 use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
-    v_flex, ActiveTheme as _, Icon, IconName, StyledExt as _,
+    v_flex,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, App, Context, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window,
+    App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 /// Inset of the dialog from the window top/bottom edges.

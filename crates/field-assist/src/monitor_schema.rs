@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use field_ui_components::ParamUiNode;
 
-use crate::monitor::{menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode};
+use crate::monitor::{FaustUiNode, menu_items_from_meta, meta_value, parse_ui_json};
 
 /// Faust monitor controls split for the Monitor panel layout.
 #[derive(Clone, Debug, Default)]

@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cpal::Device;
-use field_audio_playback::{OpenedPeriod, OutputBufferSize, OUTPUT_OPEN_TIMEOUT};
+use field_audio_playback::{OUTPUT_OPEN_TIMEOUT, OpenedPeriod, OutputBufferSize};
 
+use crate::model::Buffer;
 use crate::model::buffer::ChannelScope;
 use crate::model::composition::Composition;
 use crate::model::document::BufferDocument;
-use crate::model::Buffer;
 use crate::monitor::{MonitorChain, MonitorHost, MonitorHostProcess};
 
 use super::anchors::{collect_anchors, next_anchor, previous_anchor_near};

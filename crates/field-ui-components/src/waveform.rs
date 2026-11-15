@@ -7,17 +7,17 @@
 //! mutations via [`WaveformEditor`].
 
 use gpui_kit::component::{
-    h_flex,
+    ActiveTheme as _, StyledExt as _, h_flex,
     plot::scale::{Scale as _, ScaleLinear},
-    v_flex, ActiveTheme as _, StyledExt as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    canvas, div, fill, hsla, point, px, relative, rems, size, App, Bounds, Context, Corners,
-    DispatchPhase, Entity, FocusHandle, Focusable, HoverListenerMode, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    PathBuilder, Pixels, Render, RenderImage, Rgba, ScrollEvent, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TextAlign, TextRun, Window,
+    App, Bounds, Context, Corners, DispatchPhase, Entity, FocusHandle, Focusable,
+    HoverListenerMode, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder, Pixels, Render, RenderImage,
+    Rgba, ScrollEvent, SharedString, StatefulInteractiveElement as _, Styled as _, TextAlign,
+    TextRun, Window, canvas, div, fill, hsla, point, px, relative, rems, size,
 };
 use image::{ImageBuffer, Rgba as ImageRgba};
 use smallvec::SmallVec;
@@ -25,13 +25,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::waveform_axis::{
-    db_to_amplitude, hover_axis_at_y, hover_axis_quantize, pane_bounds_for_lane, peak_axis_layout,
-    peak_ticks_for_layout, spectrum_axis_layout, spectrum_ticks_for_layout, PeakAxisLayout,
-    SpectrumAxisLayout, WaveformHoverAxis,
+    PeakAxisLayout, SpectrumAxisLayout, WaveformHoverAxis, db_to_amplitude, hover_axis_at_y,
+    hover_axis_quantize, pane_bounds_for_lane, peak_axis_layout, peak_ticks_for_layout,
+    spectrum_axis_layout, spectrum_ticks_for_layout,
 };
 use crate::waveform_data::{
-    clamp_peaks_spectrum_split, PeakRendering, WaveformDataProvider, WaveformRepresentation,
-    MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
+    MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT, PeakRendering, WaveformDataProvider,
+    WaveformRepresentation, clamp_peaks_spectrum_split,
 };
 use crate::waveform_editor::{LaneScope, PaintRegion, WaveformEditor};
 
@@ -2099,11 +2099,7 @@ fn min_max_of(samples: &[f32]) -> (f32, f32) {
         min = min.min(s);
         max = max.max(s);
     }
-    if min > max {
-        (0.0, 0.0)
-    } else {
-        (min, max)
-    }
+    if min > max { (0.0, 0.0) } else { (min, max) }
 }
 
 /// Whether peak paint should fold PCM per column instead of overview bins.

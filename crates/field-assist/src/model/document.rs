@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use super::buffer::{Buffer, ChannelScope, RegionId};
 use super::composition::{
-    map_inclusive_through_inverse, map_inclusive_through_op, map_point_through_inverse,
-    map_point_through_op, AnalysisKind, Composition, EditId, EditOp, MarkerId, MarkerType,
+    AnalysisKind, Composition, EditId, EditOp, MarkerId, MarkerType, map_inclusive_through_inverse,
+    map_inclusive_through_op, map_point_through_inverse, map_point_through_op,
 };
 use super::regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};
 use super::selection::SamplePosition;
@@ -1668,9 +1668,11 @@ mod tests {
         assert!(doc.remove_marker_type("Blue"));
         let composition = doc.composition.read().unwrap();
         assert_eq!(composition.markers().len(), 1);
-        assert!(composition
-            .marker_types()
-            .iter()
-            .all(|ty| ty.name != "Blue"));
+        assert!(
+            composition
+                .marker_types()
+                .iter()
+                .all(|ty| ty.name != "Blue")
+        );
     }
 }

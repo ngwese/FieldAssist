@@ -8,16 +8,16 @@ use std::rc::Rc;
 
 use field_ui_components::VariableRow;
 use gpui_kit::component::{
+    Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    Icon, IconName, Sizable as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Styled as _, Window,
+    App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Styled as _, Window, div, px,
 };
 
 /// Name search + enabled scopes for a variables table.
@@ -120,16 +120,21 @@ impl VariablesFilter {
 }
 
 /// Build the search field + Scopes dropdown, optionally with add/remove controls.
-pub fn filter_bar<V: 'static>(
+pub fn filter_bar<
+    V: 'static,
+    T: Fn(&mut V, String, &mut Context<V>) + 'static,
+    U: Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+    W: Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
+>(
     filter: &VariablesFilter,
     rows: &[VariableRow],
     entity: Entity<V>,
     divider: Hsla,
     show_edit_controls: bool,
-    on_toggle_scope: impl Fn(&mut V, String, &mut Context<V>) + 'static,
-    on_add: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
-    on_remove: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
-) -> impl IntoElement {
+    on_toggle_scope: T,
+    on_add: U,
+    on_remove: W,
+) -> impl IntoElement + use<V, T, U, W> {
     let available = VariablesFilter::available_scopes(rows);
     let enabled_snapshot = filter.enabled_scopes.clone();
     let search = filter.search_input().cloned();

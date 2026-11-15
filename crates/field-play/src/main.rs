@@ -28,10 +28,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use field_audio_monitor::{MonitorChain, MonitorHost};
 use field_audio_playback::{
-    output_device_name, resolve_output_device, MonitorProcess, OutputBufferSize, PlaybackEngine,
-    PlaybackShared, PlaybackStats, TransportState,
+    MonitorProcess, OutputBufferSize, PlaybackEngine, PlaybackShared, PlaybackStats,
+    TransportState, output_device_name, resolve_output_device,
 };
-use field_composition::{Composition, PagerStats, MARKER_TYPE_BLUE};
+use field_composition::{Composition, MARKER_TYPE_BLUE, PagerStats};
 use field_scripting::{BackendHandle, HeadlessBackend, HeadlessWorld, HostProfile, ScriptHost};
 
 use monitor_process::MonitorHostProcess;
@@ -427,11 +427,7 @@ fn handle_ui_action(
                     let after = *after;
                     let saved = perform_save(composition, session, display, &path);
                     *focus = Focus::Transport;
-                    if saved {
-                        Some(after)
-                    } else {
-                        None
-                    }
+                    if saved { Some(after) } else { None }
                 }
                 _ => None,
             };

@@ -3,9 +3,9 @@
 
 //! Output device enumeration and resolution.
 
-use anyhow::{anyhow, bail, Context, Result};
-use cpal::traits::{DeviceTrait, HostTrait};
+use anyhow::{Context, Result, anyhow, bail};
 use cpal::Device;
+use cpal::traits::{DeviceTrait, HostTrait};
 
 /// Summarized output device for UI / CLI listing.
 #[derive(Debug, Clone)]

@@ -5,13 +5,14 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, ActiveTheme as _, Disableable as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, App, ClickEvent, Context, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    App, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use crate::model::DocumentId;

@@ -5,7 +5,7 @@
 
 use mlua::{FromLua, Function, Lua, UserData, UserDataFields, UserDataMethods, Value};
 
-use field_scripting::{host_from_lua, LuaComposition, LuaSession};
+use field_scripting::{LuaComposition, LuaSession, host_from_lua};
 
 use super::access;
 use super::backend::backend_from_lua;
@@ -149,7 +149,7 @@ impl UserData for LuaApp {
                     return Err(mlua::Error::runtime(format!(
                         "output_device must be a string or nil, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             backend_from_lua(lua)?.set_output_device(spec.as_deref())

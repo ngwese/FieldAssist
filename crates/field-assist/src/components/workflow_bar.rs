@@ -5,19 +5,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
+    ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Sizable as _, Size,
+    StyleSized as _, StyledExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
-    ActiveTheme as _, Colorize as _, Icon, IconName, IconNamed, Sizable as _, Size,
-    StyleSized as _, StyledExt as _,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, rems, AppContext as _, Context, Entity, ExternalPaths,
-    Focusable as _, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
-    WeakEntity, Window,
+    AppContext as _, Context, Entity, ExternalPaths, Focusable as _, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, Rgba, SharedString,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::app::AppView;

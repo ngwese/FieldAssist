@@ -182,17 +182,13 @@ fn properties_from_lua(properties: Table) -> mlua::Result<WorkflowBaseProperties
         Value::Nil => name.clone(),
         Value::String(value) => {
             let text = value.to_str()?.to_owned();
-            if text.is_empty() {
-                name.clone()
-            } else {
-                text
-            }
+            if text.is_empty() { name.clone() } else { text }
         }
         other => {
             return Err(mlua::Error::runtime(format!(
                 "display_name must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let description: String = match properties.get::<Value>("description")? {
@@ -202,7 +198,7 @@ fn properties_from_lua(properties: Table) -> mlua::Result<WorkflowBaseProperties
             return Err(mlua::Error::runtime(format!(
                 "description must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let scopes = string_list_from_lua(properties.get("scopes")?)?;
@@ -271,7 +267,7 @@ fn optional_positive_number(value: Value, default: f64) -> mlua::Result<f64> {
             return Err(mlua::Error::runtime(format!(
                 "drop.priority must be a number, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     if number <= 0.0 || !number.is_finite() {
@@ -291,7 +287,7 @@ fn string_list_from_lua(value: Value) -> mlua::Result<Vec<String>> {
                         return Err(mlua::Error::runtime(format!(
                             "scopes must be strings, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 }
             }
@@ -354,7 +350,7 @@ pub fn bind_workflow_module(lua: &mlua::Lua, field: &mlua::Table) -> mlua::Resul
                     return Err(mlua::Error::runtime(format!(
                         "declare expects a prototype table or (properties, function), got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             host_from_lua(lua)?
@@ -375,7 +371,7 @@ pub fn bind_workflow_module(lua: &mlua::Lua, field: &mlua::Table) -> mlua::Resul
                     return Err(mlua::Error::runtime(format!(
                         "run expects a workflow name, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
                 None => return Err(mlua::Error::runtime("run expects a workflow name")),
             };
@@ -390,7 +386,7 @@ pub fn bind_workflow_module(lua: &mlua::Lua, field: &mlua::Table) -> mlua::Resul
                     return Err(mlua::Error::runtime(format!(
                         "run payload must be a table, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             workflow_run(lua, &name, payload)

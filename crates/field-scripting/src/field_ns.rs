@@ -9,7 +9,7 @@ use crate::audio_devices::bind_audio_devices;
 use crate::composition::bind_composition_module;
 use crate::export::bind_exports;
 use crate::fs::bind_fs;
-use crate::host::{host_from_lua, LogLevel};
+use crate::host::{LogLevel, host_from_lua};
 use crate::include::field_include;
 use crate::layout::bind_layouts;
 use crate::media::bind_media_module;

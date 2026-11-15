@@ -14,16 +14,16 @@ use crate::app::bind_app;
 use crate::backend::{BackendHandle, HeadlessBackend, ScriptBackend};
 use crate::field_ns::bind_field;
 use crate::layout::ChannelLayoutDef;
-use crate::package_policy::{install_package_policy, PackagePolicy};
+use crate::package_policy::{PackagePolicy, install_package_policy};
 use crate::variables::ResolverDef;
 use crate::workflow::{
-    instance_display_name, instance_name, prototype_is_stateful, table_method, workflow_new,
-    workflow_start, WorkflowDef, WorkflowMeta,
+    WorkflowDef, WorkflowMeta, instance_display_name, instance_name, prototype_is_stateful,
+    table_method, workflow_new, workflow_start,
 };
-use crate::workflow_app::{layout_drop_targets, workflows_for_menu, DropLayout};
-use crate::workflow_sheet::{has_sheet, sheet_control_row, sheet_from_table, SheetSnapshot};
+use crate::workflow_app::{DropLayout, layout_drop_targets, workflows_for_menu};
+use crate::workflow_sheet::{SheetSnapshot, has_sheet, sheet_control_row, sheet_from_table};
 use crate::workflow_toolbar::{
-    control_store, invoke_action, toolbar_from_table, toolbar_row, ToolbarItem,
+    ToolbarItem, control_store, invoke_action, toolbar_from_table, toolbar_row,
 };
 use crate::world::HeadlessWorld;
 
@@ -1985,12 +1985,13 @@ mod tests {
         assert!(ok);
 
         // Native modules enabled without going through Lua.
-        assert!(host
-            .handle
-            .inner
-            .borrow()
-            .package_policy
-            .native_modules_enabled());
+        assert!(
+            host.handle
+                .inner
+                .borrow()
+                .package_policy
+                .native_modules_enabled()
+        );
 
         host.load_init_from(Some(config.path())).unwrap();
     }

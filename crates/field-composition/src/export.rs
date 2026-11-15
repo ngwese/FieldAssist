@@ -6,8 +6,8 @@
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
-use field_audio_io::{encoder, select_channels, EncodeSpec, FormatEncoder, TagMap};
+use anyhow::{Context, Result, bail};
+use field_audio_io::{EncodeSpec, FormatEncoder, TagMap, encoder, select_channels};
 use field_audio_process::resample_planar;
 use field_core::ProgressHandle;
 
@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
     use field_audio_io::{
-        decode, encoder, encoders, planar_frames, EncodeSpec, EncoderCaps, FormatEncoder, PcmFormat,
+        EncodeSpec, EncoderCaps, FormatEncoder, PcmFormat, decode, encoder, encoders, planar_frames,
     };
     use field_audio_model::MediaRef;
     use field_audio_process::resample_planar;

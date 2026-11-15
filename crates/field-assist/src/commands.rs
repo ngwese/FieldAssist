@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::{
-    actions, Action, App, KeyBinding, KeyBindingContextPredicate, Keystroke, OperatingSystem,
+    Action, App, KeyBinding, KeyBindingContextPredicate, Keystroke, OperatingSystem, actions,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;

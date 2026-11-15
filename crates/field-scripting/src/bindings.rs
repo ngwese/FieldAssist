@@ -10,7 +10,7 @@ use std::rc::Rc;
 use field_audio_model::MediaVariableStore;
 use field_session::DocumentId;
 use field_session::SessionId;
-use field_variables::{top_level_scope, VariableEntry, VariableTable};
+use field_variables::{VariableEntry, VariableTable, top_level_scope};
 use mlua::{MetaMethod, UserData, UserDataFields, UserDataMethods, UserDataRef, Value};
 
 use crate::host::host_from_lua;
@@ -247,7 +247,7 @@ impl UserData for ValuesProxy {
                     return Err(mlua::Error::runtime(format!(
                         "bindings.values key must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             match this.bindings.get_value(lua, &name)? {
@@ -264,7 +264,7 @@ impl UserData for ValuesProxy {
                         return Err(mlua::Error::runtime(format!(
                             "bindings.values key must be a string, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 match value {

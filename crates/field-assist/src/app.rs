@@ -9,39 +9,40 @@ use std::time::{Duration, Instant};
 
 use cpal::Device;
 use gpui_kit::component::{
+    ActiveTheme as _, GlobalState, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
+    Theme, ThemeMode, TitleBar, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogFooter,
     dock::{
-        panel_handle, DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId,
-        PaneRef, PanelId, PanelStyle,
+        DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId, PaneRef, PanelId,
+        PanelStyle, panel_handle,
     },
-    h_flex, v_flex, ActiveTheme as _, GlobalState, Icon, IconName, Selectable as _, Sizable as _,
-    StyledExt as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    div, hsla, img, point, prelude::FluentBuilder as _, px, relative, size, AnyWindowHandle, App,
-    AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
     InteractiveElement as _, IntoElement, KeyContext, KeyDownEvent, Menu, MenuItem,
     ParentElement as _, PathPromptOptions, Pixels, Render, SharedString, Styled as _,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId, WindowOptions,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId, WindowOptions, div, hsla, img,
+    point, prelude::FluentBuilder as _, px, relative, size,
 };
 
-use crate::analysis_spawn::{resolve_analysis_spawn, AnalysisSpawnDecision};
+use crate::analysis_spawn::{AnalysisSpawnDecision, resolve_analysis_spawn};
 use crate::assets::AppAssets;
 use crate::commands::{
-    install_keybindings, About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak,
-    AnalyzeSelectionOnly, AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker,
-    EditBreakOutChannels, EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate,
-    EditPaste, EditRedo, EditRemove, EditTrim, EditUndo, Export, HelpOnlineDocs, Hide, HideOthers,
-    InstallCliTools, InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open,
-    Quit, Save, SaveAs, SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType,
-    Settings, ShowAll, SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd,
-    TransportHome, TransportLoop, TransportNext, TransportPlayPause, TransportPreview,
-    TransportPrevious, TransportStart, TransportStop, UserVariables, ViewDetail, ViewExplorer,
-    ViewFitAll, ViewFollowPlayhead, ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript,
-    ViewOverlayEnvelopePeak, ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia,
-    ViewShowScript, ViewToggleMedia, ViewWaveformPeaks, ViewWaveformPeaksSpectrum,
-    ViewWaveformSpectrum, ViewWrapMessages, ViewZoomIn, ViewZoomOut, ZeroCrossing,
+    About, AddMarker, AddMarkerAtHover, AddNote, AnalyzeEnvelopePeak, AnalyzeSelectionOnly,
+    AnalyzeTransients, CancelWorkflow, Close, CloseSession, DeleteMarker, EditBreakOutChannels,
+    EditBreakOutRegions, EditClear, EditCopy, EditCut, EditDuplicate, EditPaste, EditRedo,
+    EditRemove, EditTrim, EditUndo, Export, HelpOnlineDocs, Hide, HideOthers, InstallCliTools,
+    InvertSelection, MarkerTypeBlue, MarkerTypePurple, MarkerTypeYellow, Open, Quit, Save, SaveAs,
+    SaveSession, SaveSessionAs, SelectAll, SelectNone, SetActiveMarkerType, Settings, ShowAll,
+    SnapToMarker, StartWorkflow, ToggleSnapMarkerType, TransportEnd, TransportHome, TransportLoop,
+    TransportNext, TransportPlayPause, TransportPreview, TransportPrevious, TransportStart,
+    TransportStop, UserVariables, ViewDetail, ViewExplorer, ViewFitAll, ViewFollowPlayhead,
+    ViewFrame, ViewHideDetail, ViewHideExplorer, ViewHideScript, ViewOverlayEnvelopePeak,
+    ViewScript, ViewShowDetail, ViewShowExplorer, ViewShowMedia, ViewShowScript, ViewToggleMedia,
+    ViewWaveformPeaks, ViewWaveformPeaksSpectrum, ViewWaveformSpectrum, ViewWrapMessages,
+    ViewZoomIn, ViewZoomOut, ZeroCrossing, install_keybindings,
 };
 use crate::components::about::AboutView;
 use crate::components::empty_pane::EmptyPane;
@@ -52,7 +53,7 @@ use crate::components::media_panel::MediaPoolPanel;
 use crate::components::quit_unsaved::{QuitUnsavedAction, QuitUnsavedList};
 use crate::components::status_bar::file_status_from_composition;
 use crate::components::variables_panel::{
-    compose_for_view, rows_from_composed, VariablesPanel, VariablesPanelState,
+    VariablesPanel, VariablesPanelState, compose_for_view, rows_from_composed,
 };
 use crate::components::workflow_bar::WorkflowBar;
 use crate::components::workspace::WorkspacePanel;
@@ -62,19 +63,20 @@ use crate::dock_titles::{
 };
 use crate::lineage::{ExplorerLineageFlags, LineageNode, LineageTree};
 use crate::model::composition::{
-    default_marker_type, AnalysisBlockOutcome, AnalysisKind, Composition, EditId, MediaDescriptor,
-    MediaStore, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW,
+    AnalysisBlockOutcome, AnalysisKind, Composition, DEFAULT_MARKER_TYPES, EditId,
+    MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_YELLOW, MediaDescriptor, MediaStore,
+    default_marker_type,
 };
 use crate::model::{
-    is_facomp_path, is_fasession_path, Buffer, BufferDocument, ChannelScope, CompositionId,
-    DocumentId, MarkerId, RegionId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
+    Buffer, BufferDocument, ChannelScope, CompositionId, DocumentId, MarkerId, RegionId, Session,
+    SessionDocksUi, SessionUi, SessionWindowUi, is_facomp_path, is_fasession_path,
 };
 use crate::monitor::MonitorChain;
 use crate::monitor_schema::{collect_param_addresses, param_ui_layout_from_json};
 use crate::playback::{
-    list_output_devices, output_device_name, resolve_output_device, should_refresh_monitor_ui,
     OpenedPeriod, OutputBufferSize, PlaybackFaultFlusher, PlaybackFaultLevel, PlaybackSession,
-    TransportState,
+    TransportState, list_output_devices, output_device_name, resolve_output_device,
+    should_refresh_monitor_ui,
 };
 use crate::progress::{ProgressHandle, ProgressState};
 use crate::script::{
@@ -83,10 +85,10 @@ use crate::script::{
 };
 use crate::settings::WaveformSettingsExt;
 use field_ui_components::{
-    content_foreground, tool_dock_min_size, AppMenuBar, CenterTabBarHandler, ChainChoice,
-    CompactDockSkin, ContentForeground, EditsPanel, LayoutPicker, LogLevel, LogLine, MarkersPanel,
-    MessagesPanel, MonitorCallbacks, MonitorPanel, MonitorSnapshot, RegionsPanel, ReplOutput,
-    ReplPanel, SessionStatusBar, WaveformDisplay,
+    AppMenuBar, CenterTabBarHandler, ChainChoice, CompactDockSkin, ContentForeground, EditsPanel,
+    LayoutPicker, LogLevel, LogLine, MarkersPanel, MessagesPanel, MonitorCallbacks, MonitorPanel,
+    MonitorSnapshot, RegionsPanel, ReplOutput, ReplPanel, SessionStatusBar, WaveformDisplay,
+    content_foreground, tool_dock_min_size,
 };
 
 struct OpenTarget(Entity<AppView>);
@@ -305,54 +307,56 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Self {
         let app = cx.weak_entity();
-        cx.spawn_in(window, async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(33))
-                .await;
-            let still_alive = cx.update(|window, cx| {
-                this.update(cx, |this, cx| {
-                    this.drain_pending_loaded_scripts(window, cx);
-                    this.drain_pending_opens(window, cx);
-                    this.drain_pending_load(window, cx);
-                    this.drain_pending_export(window, cx);
-                    this.drain_pending_analysis(window, cx);
-                    this.drain_analysis_requests(cx);
-                    this.flush_playback_faults(cx);
-                    if let Some(views) = this.active_views() {
-                        views.document.update(cx, |doc, cx| {
-                            if this.playback.poll(doc) {
-                                cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
+                let still_alive = cx.update(|window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.drain_pending_loaded_scripts(window, cx);
+                        this.drain_pending_opens(window, cx);
+                        this.drain_pending_load(window, cx);
+                        this.drain_pending_export(window, cx);
+                        this.drain_pending_analysis(window, cx);
+                        this.drain_analysis_requests(cx);
+                        this.flush_playback_faults(cx);
+                        if let Some(views) = this.active_views() {
+                            views.document.update(cx, |doc, cx| {
+                                if this.playback.poll(doc) {
+                                    cx.notify();
+                                }
+                            });
+                            let progress = views.document.read(cx).progress.snapshot();
+                            let transport = this.playback.transport_state();
+                            if this.follow_playhead && transport == TransportState::Playing {
+                                this.maybe_follow_playhead(cx);
                             }
-                        });
-                        let progress = views.document.read(cx).progress.snapshot();
-                        let transport = this.playback.transport_state();
-                        if this.follow_playhead && transport == TransportState::Playing {
-                            this.maybe_follow_playhead(cx);
+                            if progress != this.last_progress {
+                                this.last_progress = progress;
+                                views.waveform.update(cx, |_, cx| cx.notify());
+                            }
+                            views.workspace.update(cx, |workspace, cx| {
+                                workspace.sync_transport(transport, this.playback.looping(), cx);
+                            });
+                            this.header_meta.update(cx, |meta, cx| {
+                                meta.set_transport(transport, cx);
+                            });
+                            // Avoid spinning MonitorPanel (~30 Hz) when idle/hidden;
+                            // meters are static once envelopes settle after stop.
+                            if should_refresh_monitor_ui(
+                                this.monitor_tab_visible(cx),
+                                transport == TransportState::Playing,
+                                this.playback.input_meters_active(),
+                            ) {
+                                this.monitor.update(cx, |_, cx| cx.notify());
+                            }
                         }
-                        if progress != this.last_progress {
-                            this.last_progress = progress;
-                            views.waveform.update(cx, |_, cx| cx.notify());
-                        }
-                        views.workspace.update(cx, |workspace, cx| {
-                            workspace.sync_transport(transport, this.playback.looping(), cx);
-                        });
-                        this.header_meta.update(cx, |meta, cx| {
-                            meta.set_transport(transport, cx);
-                        });
-                        // Avoid spinning MonitorPanel (~30 Hz) when idle/hidden;
-                        // meters are static once envelopes settle after stop.
-                        if should_refresh_monitor_ui(
-                            this.monitor_tab_visible(cx),
-                            transport == TransportState::Playing,
-                            this.playback.input_meters_active(),
-                        ) {
-                            this.monitor.update(cx, |_, cx| cx.notify());
-                        }
-                    }
-                })
-            });
-            if !matches!(still_alive, Ok(Ok(()))) {
-                break;
+                    })
+                });
+                if !matches!(still_alive, Ok(Ok(()))) {
+                    break;
+                }
             }
         })
         .detach();
@@ -4617,8 +4621,8 @@ impl AppView {
     }
 
     fn quick_note_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::component::input::Input;
         use gpui_kit::MouseButton;
+        use gpui_kit::component::input::Input;
 
         let theme = cx.theme().clone();
         let session = self
@@ -8098,8 +8102,8 @@ mod open_url_tests {
 #[cfg(test)]
 mod help_menu_tests {
     use super::{
-        app_menus, default_marker_type, help_menu_items, online_docs_url_for, AppMenuState,
-        ONLINE_DOCS_URL,
+        AppMenuState, ONLINE_DOCS_URL, app_menus, default_marker_type, help_menu_items,
+        online_docs_url_for,
     };
     use crate::model::composition::DEFAULT_MARKER_TYPES;
     use gpui_kit::MenuItem;
@@ -8170,10 +8174,12 @@ mod help_menu_tests {
                 .iter()
                 .find(|menu| menu.name.as_ref() == crate::APP_NAME)
                 .expect("application menu");
-            assert!(app_menu
-                .items
-                .iter()
-                .any(|item| action_label(item) == Some("About...")));
+            assert!(
+                app_menu
+                    .items
+                    .iter()
+                    .any(|item| action_label(item) == Some("About..."))
+            );
         }
         let help_menu = menus
             .into_iter()

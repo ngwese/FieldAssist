@@ -12,17 +12,17 @@ use std::thread;
 use mlua::{FromLua, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use field_audio_model::{ChannelScope, RegionId, SELECTION_COLLECTION};
-use field_composition::{render_outputs, Composition, OutputResult, RenderOutput, RenderPlan};
+use field_composition::{Composition, OutputResult, RenderOutput, RenderPlan, render_outputs};
 use field_session::DocumentId;
 
 use crate::export::{apply_overrides, build_job, profile_fields_from_lua, profile_ref_from_value};
 use crate::host::host_from_lua;
 use crate::marker::{
-    color_from_value, color_to_lua, list_markers, marker_id_from_lua, parse_add_marker, LuaMarker,
+    LuaMarker, color_from_value, color_to_lua, list_markers, marker_id_from_lua, parse_add_marker,
 };
 use crate::media::LuaMedia;
 use crate::region::LuaRegion;
-use crate::selection::{channels_from_lua, collection_name_from_lua, optional_i64, LuaCollection};
+use crate::selection::{LuaCollection, channels_from_lua, collection_name_from_lua, optional_i64};
 use crate::util::{optional_lua_string, string_map_from_lua, string_map_to_lua};
 use crate::world::OpenDocument;
 
@@ -250,21 +250,17 @@ impl UserData for LuaComposition {
                                     return Err(mlua::Error::runtime(format!(
                                         "playback_channels entries must be integers, got {}",
                                         other.type_name()
-                                    )))
+                                    )));
                                 }
                             }
                         }
-                        if ch.is_empty() {
-                            None
-                        } else {
-                            Some(ch)
-                        }
+                        if ch.is_empty() { None } else { Some(ch) }
                     }
                     other => {
                         return Err(mlua::Error::runtime(format!(
                             "playback_channels must be a table, \"all\", or nil, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 doc.composition
@@ -611,7 +607,7 @@ fn parse_render_output(
         Value::Nil => {
             return Err(mlua::Error::runtime(
                 "render output requires a `profile` (name or options table)",
-            ))
+            ));
         }
         Value::String(name) => profile_ref_from_value(&host, Value::String(name))?,
         Value::UserData(ud) => profile_ref_from_value(&host, Value::UserData(ud))?,
@@ -625,9 +621,9 @@ fn parse_render_output(
         }
         other => {
             return Err(mlua::Error::runtime(format!(
-            "render output `profile` must be a name, profile userdata, or options table, got {}",
-            other.type_name()
-        )))
+                "render output `profile` must be a name, profile userdata, or options table, got {}",
+                other.type_name()
+            )));
         }
     };
 
@@ -645,7 +641,7 @@ fn parse_render_output(
             return Err(mlua::Error::runtime(format!(
                 "render output `chain` must be a string or nil, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
 
@@ -662,7 +658,7 @@ fn parse_render_output(
                         return Err(mlua::Error::runtime(format!(
                             "render params values must be numbers, got {} for key `{key}`",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 map.insert(key, v);
@@ -673,7 +669,7 @@ fn parse_render_output(
             return Err(mlua::Error::runtime(format!(
                 "render output `params` must be a table or nil, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
 
@@ -714,7 +710,7 @@ fn parse_render_plan(
             return Err(mlua::Error::runtime(format!(
                 "render expects an options table, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
 
@@ -725,7 +721,7 @@ fn parse_render_plan(
             return Err(mlua::Error::runtime(format!(
                 "render `outputs` must be a table, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
 
@@ -740,7 +736,7 @@ fn parse_render_plan(
                 return Err(mlua::Error::runtime(format!(
                     "render outputs entries must be tables, got {}",
                     other.type_name()
-                )))
+                )));
             }
         }
     }

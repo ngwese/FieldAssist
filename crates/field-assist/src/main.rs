@@ -143,11 +143,11 @@ fn attach_parent_console() {
     use std::fs::OpenOptions;
     use std::os::windows::io::IntoRawHandle;
     use windows_sys::Win32::System::Console::{
-        AttachConsole, GetConsoleMode, SetConsoleMode, SetStdHandle, ATTACH_PARENT_PROCESS,
-        ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        ATTACH_PARENT_PROCESS, AttachConsole, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode,
+        STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode, SetStdHandle,
     };
 
-    extern "C" {
+    unsafe extern "C" {
         fn _dup2(fd1: i32, fd2: i32) -> i32;
         fn _open_osfhandle(osfhandle: isize, flags: i32) -> i32;
     }

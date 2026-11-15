@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use field_audio_monitor::{create_dsp, MonitorChain, MonitorDsp};
+use field_audio_monitor::{MonitorChain, MonitorDsp, create_dsp};
 use field_composition::OfflineDsp;
 
 /// Offline Faust DSP for a single monitor chain.
@@ -87,11 +87,11 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use field_audio_io::{decode, EncodeSpec, PcmFormat};
+    use field_audio_io::{EncodeSpec, PcmFormat, decode};
     use field_audio_model::MediaRef;
     use field_audio_monitor::MonitorChain;
     use field_composition::Composition;
-    use field_composition::{render_outputs, OfflineDsp, RenderOutput, RenderPlan};
+    use field_composition::{OfflineDsp, RenderOutput, RenderPlan, render_outputs};
 
     fn sine_media(frames: usize, channels: usize, rate: u32) -> MediaRef {
         let samples = (0..channels)

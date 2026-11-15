@@ -7,20 +7,21 @@ use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
 use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
-    v_flex, ActiveTheme as _, IconName, Sizable as _,
+    v_flex,
 };
 use gpui_kit::{
-    canvas, div, fill, point, prelude::FluentBuilder as _, px, size, uniform_list, App,
-    AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
+    App, AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
     ScrollEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window,
+    UniformListScrollHandle, Window, canvas, div, fill, point, prelude::FluentBuilder as _, px,
+    size, uniform_list,
 };
 
 use crate::media_pool::MediaPoolRow;
@@ -373,7 +374,7 @@ impl MediaPoolPanel {
         self.resize_drag = None;
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted = cx.theme().muted_foreground;
         let entity_id = cx.entity_id();
         let visible = self.visible_columns();
@@ -479,7 +480,7 @@ fn column_menu_button(
     hidden: HashSet<MediaColumn>,
     muted: gpui_kit::Hsla,
     cx: &mut Context<MediaPoolPanel>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let view = cx.entity().clone();
     Button::new("media-columns")
         .ghost()
@@ -784,11 +785,7 @@ impl Render for MediaPoolPanel {
                                     return;
                                 }
                                 let pan = if event.modifiers.shift {
-                                    if dx.abs() > dy.abs() {
-                                        dx
-                                    } else {
-                                        dy
-                                    }
+                                    if dx.abs() > dy.abs() { dx } else { dy }
                                 } else {
                                     dx
                                 };

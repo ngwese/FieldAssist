@@ -402,10 +402,11 @@ mod tests {
         assert_eq!(col.regions[0].end, 9);
         assert_eq!(col.regions[1].start, 21);
         assert_eq!(col.regions[1].end, 99);
-        assert!(col
-            .regions
-            .iter()
-            .all(|r| r.channels == ChannelScope::all()));
+        assert!(
+            col.regions
+                .iter()
+                .all(|r| r.channels == ChannelScope::all())
+        );
     }
 
     #[test]

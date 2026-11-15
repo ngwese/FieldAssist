@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use mlua::{FromLua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
-use crate::host::{host_from_lua, HostHandle};
+use crate::host::{HostHandle, host_from_lua};
 use field_session::DocumentId;
 
 #[derive(Clone, Debug)]
@@ -144,17 +144,13 @@ pub fn layout_from_lua(table: Table) -> mlua::Result<ChannelLayoutDef> {
         Value::Nil => name.clone(),
         Value::String(text) => {
             let code = text.to_str()?.to_owned();
-            if code.is_empty() {
-                name.clone()
-            } else {
-                code
-            }
+            if code.is_empty() { name.clone() } else { code }
         }
         other => {
             return Err(mlua::Error::runtime(format!(
                 "layout code must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let description: String = table.get("description").unwrap_or_default();
@@ -169,7 +165,7 @@ pub fn layout_from_lua(table: Table) -> mlua::Result<ChannelLayoutDef> {
                 return Err(mlua::Error::runtime(format!(
                     "channel label must be a string, got {}",
                     other.type_name()
-                )))
+                )));
             }
         };
         channels.insert(index, label);
@@ -238,7 +234,7 @@ fn table_to_json(table: Table) -> mlua::Result<serde_json::Value> {
                 return Err(mlua::Error::runtime(format!(
                     "monitor table keys must be strings or 1-based integers, got {}",
                     other.type_name()
-                )))
+                )));
             }
         }
     }

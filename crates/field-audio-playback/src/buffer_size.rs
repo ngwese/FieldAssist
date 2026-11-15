@@ -129,7 +129,9 @@ mod tests {
         assert!(catalog.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(
             catalog,
-            vec![16, 32, 48, 64, 128, 192, 256, 288, 480, 512, 1024, 2048, 4096, 8192]
+            vec![
+                16, 32, 48, 64, 128, 192, 256, 288, 480, 512, 1024, 2048, 4096, 8192
+            ]
         );
         assert_eq!(period_frame_catalog(), catalog);
     }

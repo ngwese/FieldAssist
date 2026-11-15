@@ -10,7 +10,7 @@ use std::time::Duration;
 use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use crossterm::terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use field_audio_playback::TransportState;
 

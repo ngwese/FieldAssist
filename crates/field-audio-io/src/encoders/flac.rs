@@ -3,13 +3,13 @@
 
 use std::io::{Cursor, Write};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flac_codec::encode::{FlacSampleWriter, Options};
 
+use crate::FormatEncoder;
 use crate::metadata::TagMap;
 use crate::pcm::{bits_for_integer, interleave_i32, planar_frames};
 use crate::spec::{EncodeSpec, EncoderCaps, PcmFormat};
-use crate::FormatEncoder;
 
 /// FLAC encoder using `flac-codec`.
 pub struct FlacEncoder;

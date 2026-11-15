@@ -6,15 +6,16 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
-    h_flex, v_flex, ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    actions, div, prelude::FluentBuilder as _, px, App, ClickEvent, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    ParentElement as _, Render, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _, Render,
+    Rgba, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    actions, div, prelude::FluentBuilder as _, px,
 };
 
 #[allow(missing_docs)]

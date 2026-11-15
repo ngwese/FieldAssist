@@ -13,8 +13,9 @@ use field_scripting::{
     PathBrowse, ProgressVariant, SheetPane, SheetSnapshot, ToolbarAlign, ToolbarItem,
 };
 use gpui_kit::component::{
+    ActiveTheme as _, Colorize as _, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
-    form::{field, Form},
+    form::{Form, field},
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -26,13 +27,13 @@ use gpui_kit::component::{
     separator::Separator,
     stepper::{Stepper, StepperItem},
     switch::Switch,
-    v_flex, ActiveTheme as _, Colorize as _, Disableable as _, IconName, Sizable as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, rems, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _, Hsla,
+    App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Rgba,
-    SharedString, Styled as _, WeakEntity, Window,
+    SharedString, Styled as _, WeakEntity, Window, div, px, rems,
 };
 
 use crate::app::AppView;

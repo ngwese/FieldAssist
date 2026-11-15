@@ -7,23 +7,24 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use field_ui_components::VariableRow;
-use field_variables::{compose, top_level_scope, VariableEntry, VariableTable};
+use field_variables::{VariableEntry, VariableTable, compose, top_level_scope};
 use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     input::{IndentInline, Input, InputEvent, InputState, OutdentInline},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
-    v_flex, ActiveTheme as _, IconName, Sizable as _,
+    v_flex,
 };
 use gpui_kit::{
-    canvas, div, fill, point, prelude::FluentBuilder as _, px, size, uniform_list, App,
-    AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
+    App, AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
     EntityId, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
     ScrollEvent, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window,
+    UniformListScrollHandle, Window, canvas, div, fill, point, prelude::FluentBuilder as _, px,
+    size, uniform_list,
 };
 
 use crate::components::variables_filter::{self, VariablesFilter};
@@ -813,7 +814,7 @@ impl VariablesPanel {
         self.resize_drag = None;
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted = cx.theme().muted_foreground;
         let entity_id = cx.entity_id();
         let visible = self.visible_columns();
@@ -923,7 +924,7 @@ fn column_menu_button(
     hidden: HashSet<VarColumn>,
     muted: gpui_kit::Hsla,
     cx: &mut Context<VariablesPanel>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let view = cx.entity().clone();
     Button::new("variables-menu")
         .ghost()
@@ -1341,11 +1342,7 @@ impl Render for VariablesPanel {
                                     return;
                                 }
                                 let pan = if event.modifiers.shift {
-                                    if dx.abs() > dy.abs() {
-                                        dx
-                                    } else {
-                                        dy
-                                    }
+                                    if dx.abs() > dy.abs() { dx } else { dy }
                                 } else {
                                     dx
                                 };

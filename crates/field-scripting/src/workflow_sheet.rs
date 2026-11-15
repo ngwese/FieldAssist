@@ -9,7 +9,7 @@ use mlua::{Function, Table, Value};
 
 use crate::host::host_from_lua;
 use crate::workflow_toolbar::{
-    control_is_control, parse_control_item, stamp_control_owner, toolbar_row_id, ToolbarItem,
+    ToolbarItem, control_is_control, parse_control_item, stamp_control_owner, toolbar_row_id,
 };
 
 /// Snapshot of an open workflow sheet for the host UI.
@@ -71,7 +71,7 @@ fn parse_sheet_table(table: &Table) -> mlua::Result<SheetSnapshot> {
             return Err(mlua::Error::runtime(format!(
                 "sheet title must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let panes_value = table.get::<Value>("panes")?;
@@ -94,7 +94,7 @@ fn parse_sheet_table(table: &Table) -> mlua::Result<SheetSnapshot> {
             return Err(mlua::Error::runtime(format!(
                 "sheet current must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     Ok(SheetSnapshot {
@@ -142,7 +142,7 @@ fn parse_pane(row: &Table) -> mlua::Result<SheetPane> {
             return Err(mlua::Error::runtime(format!(
                 "pane text must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let controls = parse_control_list(row.get("controls")?, "controls")?;
@@ -248,7 +248,7 @@ fn set_sheet(lua: &mlua::Lua, (this, props): (Table, Value)) -> mlua::Result<()>
             return Err(mlua::Error::runtime(format!(
                 "set_sheet panes must be a list, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     stamp_pane_controls(&panes, &this)?;

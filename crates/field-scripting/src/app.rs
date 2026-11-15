@@ -6,7 +6,7 @@
 use mlua::{FromLua, MultiValue, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::composition::LuaComposition;
-use crate::host::{host_from_lua, LogLevel};
+use crate::host::{LogLevel, host_from_lua};
 use crate::session::LuaSession;
 
 /// Global `app` userdata.
@@ -48,7 +48,7 @@ impl UserData for LuaApp {
                     return Err(mlua::Error::runtime(format!(
                         "output_device must be a string or nil, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             host_from_lua(lua)?.inner.borrow_mut().output_device = spec;
@@ -108,7 +108,7 @@ impl UserData for LuaApp {
                 _ => {
                     return Err(mlua::Error::runtime(
                         "run_workflow expects a workflow name string",
-                    ))
+                    ));
                 }
             };
             let payload = match iter.next() {

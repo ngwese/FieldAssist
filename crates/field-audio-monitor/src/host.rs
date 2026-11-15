@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwapOption;
 
 use crate::chain::MonitorChain;
-use crate::dsp::{create_dsp, MonitorDsp};
+use crate::dsp::{MonitorDsp, create_dsp};
 use crate::params::ParamStore;
 
 const FADE_SECS: f32 = 0.02;

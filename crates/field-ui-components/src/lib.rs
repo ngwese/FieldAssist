@@ -70,7 +70,7 @@ mod waveform_editor;
 
 pub use app_menu::AppMenuBar;
 pub use channel_toggle::{ChannelSelector, ChannelToggle};
-pub use dock_skin::{tool_dock_min_size, CenterTabBarHandler, CompactDockSkin};
+pub use dock_skin::{CenterTabBarHandler, CompactDockSkin, tool_dock_min_size};
 pub use edits::{
     EditActivateHandler, EditCard, EditClickHandler, EditHoverHandler, EditsData, EditsPanel,
 };
@@ -86,7 +86,7 @@ pub use regions::{
 };
 pub use repl::{ReplEvalHandler, ReplOutput, ReplPanel};
 pub use status_bar::{FileStatus, LayoutPicker, SessionStatusBar};
-pub use theme::{content_foreground, ContentForeground};
+pub use theme::{ContentForeground, content_foreground};
 pub use transport::{Transport, TransportAction};
 pub use variable_completion::VariableCompletion;
 pub use variables::{
@@ -94,12 +94,13 @@ pub use variables::{
     VariableValueHandler, VariablesTable, VariablesTableOptions,
 };
 pub use waveform::{
-    SpectrumGradient, SpectrumGradientStop, WaveformDisplay, SPECTRUM_GRADIENT_DB_FLOOR,
+    SPECTRUM_GRADIENT_DB_FLOOR, SpectrumGradient, SpectrumGradientStop, WaveformDisplay,
 };
-pub use waveform_axis::{format_db_hover, format_hz_hover, hover_axis_quantize, WaveformHoverAxis};
+pub use waveform_axis::{WaveformHoverAxis, format_db_hover, format_hz_hover, hover_axis_quantize};
 pub use waveform_data::{
-    clamp_peaks_spectrum_split, clamp_ribbon_db, clamp_ribbon_shell_value_reduce, PeakRendering,
-    WaveformDataProvider, WaveformRepresentation, DEFAULT_PEAKS_SPECTRUM_SPLIT, DEFAULT_RIBBON_DB,
-    DEFAULT_RIBBON_SHELL_VALUE_REDUCE, MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT,
+    DEFAULT_PEAKS_SPECTRUM_SPLIT, DEFAULT_RIBBON_DB, DEFAULT_RIBBON_SHELL_VALUE_REDUCE,
+    MAX_PEAKS_SPECTRUM_SPLIT, MIN_PEAKS_SPECTRUM_SPLIT, PeakRendering, WaveformDataProvider,
+    WaveformRepresentation, clamp_peaks_spectrum_split, clamp_ribbon_db,
+    clamp_ribbon_shell_value_reduce,
 };
 pub use waveform_editor::{LaneScope, PaintRegion, PeakStatus, WaveformEditor};

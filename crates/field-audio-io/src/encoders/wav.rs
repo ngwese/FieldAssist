@@ -3,13 +3,13 @@
 
 use std::io::{Cursor, Write};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use hound::{SampleFormat, WavSpec, WavWriter};
 
+use crate::FormatEncoder;
 use crate::metadata::TagMap;
 use crate::pcm::{clamp_unit, planar_frames, to_signed, to_u8};
 use crate::spec::{EncodeSpec, EncoderCaps, PcmFormat};
-use crate::FormatEncoder;
 
 /// WAV encoder using `hound`, with optional INFO / bext / iXML tags.
 pub struct WavEncoder;

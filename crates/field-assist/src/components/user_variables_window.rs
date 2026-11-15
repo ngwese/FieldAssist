@@ -5,25 +5,25 @@
 
 use std::collections::{HashMap, HashSet};
 
-use field_ui_components::{content_foreground, VariableRow};
+use field_ui_components::{VariableRow, content_foreground};
 use field_variables::{VariableEntry, VariableTable};
 use gpui_kit::component::{
-    h_flex,
+    ActiveTheme as _, Sizable as _, Theme, h_flex,
     input::{IndentInline, Input, InputEvent, InputState, OutdentInline},
-    v_flex, ActiveTheme as _, Sizable as _, Theme,
+    v_flex,
 };
 use gpui_kit::{
-    canvas, div, fill, point, prelude::FluentBuilder as _, px, size, uniform_list, App,
-    AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
+    App, AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, ElementId, Empty, Entity,
     FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollEvent,
     ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window,
+    UniformListScrollHandle, Window, canvas, div, fill, point, prelude::FluentBuilder as _, px,
+    size, uniform_list,
 };
 
 use crate::components::variables_filter::{self, VariablesFilter};
 use crate::user_variables::{
-    self, parse_user_variable_name, user_variable_display_name, UserVariablesFile, USER_SCOPE,
+    self, USER_SCOPE, UserVariablesFile, parse_user_variable_name, user_variable_display_name,
 };
 
 const MIN_COLUMN_WIDTH: f32 = 32.;
@@ -502,7 +502,7 @@ impl UserVariablesView {
         self.begin_edit(next_row, next_col, window, cx);
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted = cx.theme().muted_foreground;
         let content_width = self.content_width();
         h_flex()
@@ -693,11 +693,7 @@ impl Render for UserVariablesView {
                             return;
                         }
                         let pan = if event.modifiers.shift {
-                            if dx.abs() > dy.abs() {
-                                dx
-                            } else {
-                                dy
-                            }
+                            if dx.abs() > dy.abs() { dx } else { dy }
                         } else {
                             dx
                         };

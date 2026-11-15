@@ -14,7 +14,7 @@ pub use field_scripting::{
 };
 #[cfg(test)]
 pub use host::TestWorld;
-pub use host::{ScriptHost, EMBEDDED_INIT};
+pub use host::{EMBEDDED_INIT, ScriptHost};
 
 #[cfg(test)]
 mod tests {
@@ -22,8 +22,8 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
 
-    use crate::model::composition::{Composition, MediaRef};
     use crate::model::Buffer;
+    use crate::model::composition::{Composition, MediaRef};
 
     use super::*;
 
@@ -178,13 +178,14 @@ mod tests {
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
         assert_eq!(doc.selection.regions[0].label.as_deref(), Some("sel"));
-        assert!(doc
-            .composition
-            .read()
-            .unwrap()
-            .marker_types()
-            .iter()
-            .all(|ty| ty.name != "Red"));
+        assert!(
+            doc.composition
+                .read()
+                .unwrap()
+                .marker_types()
+                .iter()
+                .all(|ty| ty.name != "Red")
+        );
     }
 
     #[test]
@@ -237,10 +238,12 @@ mod tests {
         let doc = world.docs.get(&id).unwrap();
         let composition = doc.composition.read().unwrap();
         assert_eq!(composition.markers().len(), 1);
-        assert!(composition
-            .marker_types()
-            .iter()
-            .any(|ty| ty.name == "Blue"));
+        assert!(
+            composition
+                .marker_types()
+                .iter()
+                .any(|ty| ty.name == "Blue")
+        );
     }
 
     #[test]
@@ -259,10 +262,12 @@ mod tests {
         let id = world.active.unwrap();
         let doc = world.docs.get(&id).unwrap();
         let composition = doc.composition.read().unwrap();
-        assert!(composition
-            .marker_types()
-            .iter()
-            .any(|ty| ty.name == "Red" && ty.color == [1.0, 0.0, 0.0, 1.0]));
+        assert!(
+            composition
+                .marker_types()
+                .iter()
+                .any(|ty| ty.name == "Red" && ty.color == [1.0, 0.0, 0.0, 1.0])
+        );
     }
 
     #[test]
@@ -1543,9 +1548,10 @@ mod tests {
         )
         .expect("review");
         let logs = host.take_logs();
-        assert!(logs
-            .iter()
-            .all(|entry| entry.level == LogLevel::Info && entry.topic == "review"));
+        assert!(
+            logs.iter()
+                .all(|entry| entry.level == LogLevel::Info && entry.topic == "review")
+        );
         let messages: Vec<_> = logs.iter().map(|entry| entry.message.as_str()).collect();
         assert!(
             messages
@@ -1554,9 +1560,11 @@ mod tests {
             "{messages:?}"
         );
         assert!(messages.iter().any(|message| message.contains("take.wav")));
-        assert!(messages
-            .iter()
-            .any(|message| message.contains("batch.fasession")));
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("batch.fasession"))
+        );
         assert_eq!(world.borrow().session.workflow(), Some("review"));
         assert!(world.borrow().looping);
         assert!(world.borrow().preview);
@@ -1655,15 +1663,19 @@ mod tests {
             })
             .collect();
         assert_eq!(groups.len(), 2, "{groups:?}");
-        assert!(groups
-            .iter()
-            .all(|(_, group)| group.as_deref() == Some("todo")));
-        assert!(world
-            .borrow()
-            .session
-            .documents()
-            .iter()
-            .all(|doc| doc.file_path() != Some(nested.join("notes.txt").as_path())));
+        assert!(
+            groups
+                .iter()
+                .all(|(_, group)| group.as_deref() == Some("todo"))
+        );
+        assert!(
+            world
+                .borrow()
+                .session
+                .documents()
+                .iter()
+                .all(|doc| doc.file_path() != Some(nested.join("notes.txt").as_path()))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1728,12 +1740,14 @@ mod tests {
         let (mut host, world) = test_host();
         host.load_init_from(None).expect("embedded init");
         let _ = host.take_logs();
-        assert!(world
-            .borrow()
-            .session
-            .documents()
-            .iter()
-            .all(|doc| doc.group.is_none()));
+        assert!(
+            world
+                .borrow()
+                .session
+                .documents()
+                .iter()
+                .all(|doc| doc.group.is_none())
+        );
         host.invoke_menu_workflow("review").expect("review menu");
         let logs = host.take_logs();
         assert!(
@@ -1741,12 +1755,14 @@ mod tests {
                 .any(|entry| entry.message.contains("menu") && entry.message.contains("todo")),
             "{logs:?}"
         );
-        assert!(world
-            .borrow()
-            .session
-            .documents()
-            .iter()
-            .all(|doc| doc.group.as_deref() == Some("todo")));
+        assert!(
+            world
+                .borrow()
+                .session
+                .documents()
+                .iter()
+                .all(|doc| doc.group.as_deref() == Some("todo"))
+        );
         // Assigning doc.group must register the name; otherwise the explorer
         // side pane hides every composition in that group.
         assert!(

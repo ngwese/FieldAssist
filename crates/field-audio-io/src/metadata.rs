@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn flac_encode_writes_mapped_vorbis_comments() {
-        use crate::{encoder, EncodeSpec, PcmFormat};
+        use crate::{EncodeSpec, PcmFormat, encoder};
 
         let mut table = VariableTable::new();
         table.upsert(VariableEntry::new(

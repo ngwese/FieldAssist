@@ -10,7 +10,7 @@ use field_variables::VariableTable;
 use gpui_kit::{App, Global};
 
 pub use field_variables::{
-    parse_user_variable_name, user_variable_display_name, UserVariablesFile, USER_SCOPE,
+    USER_SCOPE, UserVariablesFile, parse_user_variable_name, user_variable_display_name,
 };
 
 /// Path to `variables.json` beside `settings.json`, if the config dir resolves.

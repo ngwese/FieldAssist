@@ -9,10 +9,10 @@
 
 #[allow(unused_imports)] // compatibility re-exports for app call sites
 pub use field_audio_io::{
-    decode, decode_range, load_buffer, probe_file, probe_header, DecodedAudio, ProbedFile,
-    SymphoniaBlockSource,
+    DecodedAudio, ProbedFile, SymphoniaBlockSource, decode, decode_range, load_buffer, probe_file,
+    probe_header,
 };
 #[allow(unused_imports)] // compatibility re-exports for app call sites
 pub use field_audio_process::{
-    build_peaks, min_max_in_range, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+    PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, build_peaks, min_max_in_range,
 };

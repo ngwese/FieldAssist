@@ -5,11 +5,11 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::{h_flex, ActiveTheme as _};
+use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, App, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window,
+    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 /// Width large enough for a three-digit label at `text_xs` with even

@@ -12,7 +12,7 @@ use tempfile::TempDir;
 
 use crate::pcm::{bits_for_integer, clamp_unit, to_signed, to_u8};
 use crate::{
-    decode, encoder, encoders, probe_file, probe_header, EncodeSpec, FormatEncoder, PcmFormat,
+    EncodeSpec, FormatEncoder, PcmFormat, decode, encoder, encoders, probe_file, probe_header,
 };
 
 const RATE: u32 = 48_000;

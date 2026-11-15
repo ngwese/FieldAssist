@@ -5,8 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::composition::CompositionId;
 use crate::model::DocumentId;
+use crate::model::composition::CompositionId;
 
 /// One open document's composition identity and optional parent link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

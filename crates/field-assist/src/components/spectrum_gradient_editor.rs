@@ -3,15 +3,15 @@
 
 //! Spectrum heatmap gradient editor for the Waveform settings page.
 
-use field_ui_components::{SpectrumGradient, SPECTRUM_GRADIENT_DB_FLOOR};
+use field_ui_components::{SPECTRUM_GRADIENT_DB_FLOOR, SpectrumGradient};
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _, Size};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    canvas, div, fill, point, px, size, App, AppContext as _, Bounds, Context, DispatchPhase,
-    Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, Rgba, SharedString,
-    Styled as _, TextAlign, Window,
+    App, AppContext as _, Bounds, Context, DispatchPhase, Entity, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, Pixels, Render, Rgba, SharedString, Styled as _, TextAlign,
+    Window, canvas, div, fill, point, px, size,
 };
 
 use crate::settings::{self, WaveformSettingsExt};

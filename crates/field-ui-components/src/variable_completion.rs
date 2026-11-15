@@ -6,20 +6,20 @@
 use std::rc::Rc;
 
 use field_variables::{
-    accept_edit, completion_context, completion_items, prefix_edit, tab_action, CompletionContext,
-    CompletionItem, CompletionKind, TabAction, VariableTable,
+    CompletionContext, CompletionItem, CompletionKind, TabAction, VariableTable, accept_edit,
+    completion_context, completion_items, prefix_edit, tab_action,
 };
 use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, OutdentInline},
-    ActiveTheme as _, Icon, IconName, Sizable as _,
 };
 use gpui_kit::{
-    actions, anchored, deferred, div, prelude::FluentBuilder as _, px, App, AppContext as _,
-    Context, ElementId, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    KeyBinding, MouseButton, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    App, AppContext as _, Context, ElementId, Entity, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _, Pixels,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, actions, anchored, deferred, div, prelude::FluentBuilder as _, px,
 };
 
 actions!(variable_completion, [ConfirmCompletion]);
@@ -144,7 +144,7 @@ impl VariableCompletion {
     }
 
     /// Input + optional completion popdown for host layouts.
-    pub fn render_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_field(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let entity = cx.entity();
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;

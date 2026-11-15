@@ -6,28 +6,29 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use field_audio_io::{
-    build_tag_map, encoder, encoders, format_rate, EncodeSpec, PcmFormat, RATE_PRESETS,
+    EncodeSpec, PcmFormat, RATE_PRESETS, build_tag_map, encoder, encoders, format_rate,
 };
 use field_composition::ExportJob;
 use field_scripting::{
-    resolve_export_settings, ExportChannels, ExportProfileDef, ExportSourceDefaults,
-    ResolvedExportSettings,
+    ExportChannels, ExportProfileDef, ExportSourceDefaults, ResolvedExportSettings,
+    resolve_export_settings,
 };
 use field_ui_components::{ChannelSelector, VariableCompletion, VariableRow};
-use field_variables::{compose, interpolate, interpolate_strict, VariableEntry, VariableTable};
+use field_variables::{VariableEntry, VariableTable, compose, interpolate, interpolate_strict};
 use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::InputEvent,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, rems, App, AppContext as _, Context, DispatchPhase, Entity, ExternalPaths, Hsla,
+    App, AppContext as _, Context, DispatchPhase, Entity, ExternalPaths, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement as _, PathPromptOptions, Pixels, Render,
-    StatefulInteractiveElement as _, Styled as _, Window,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, rems,
 };
 
 use crate::components::explorer::CompositionDrag;
@@ -626,7 +627,7 @@ impl ExportSheet {
         muted: Hsla,
         border: Hsla,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let content_width = self.content_width();
         let widths: HashMap<ExportVarColumn, Pixels> = ExportVarColumn::ALL
             .into_iter()

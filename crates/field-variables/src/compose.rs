@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::table::{top_level_scope, VariableEntry, VariableTable, TOP_LEVEL_SCOPES};
+use crate::table::{TOP_LEVEL_SCOPES, VariableEntry, VariableTable, top_level_scope};
 
 /// Default top-level scope order: earlier layers lose to later ones.
 pub const DEFAULT_SCOPE_ORDER: &[&str] = TOP_LEVEL_SCOPES;

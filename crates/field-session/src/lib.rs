@@ -22,9 +22,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use field_audio_model::{MediaDescriptor, MediaId};
-use field_core::{deserialize_prefixed_uuid, serialize_prefixed_uuid, CompositionId, Location};
+use field_core::{CompositionId, Location, deserialize_prefixed_uuid, serialize_prefixed_uuid};
 use field_variables::{StoredVariable, VariableTable};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;

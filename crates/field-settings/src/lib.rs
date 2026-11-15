@@ -12,9 +12,9 @@ mod io;
 
 pub use groups::AppSettings;
 pub use groups::{
-    AppearanceSettings, AudioSettings, ExperimentalSettings, ScriptingSettings, SelectionSettings,
-    SpectrumGradientStopSettings, ViewSettings, WaveformSettings, DEFAULT_RIBBON_DB,
-    DEFAULT_RIBBON_SHELL_VALUE_REDUCE, DETAIL_DOCK_TRUE_TAB, DOCK_HIDDEN, SCRIPT_DOCK_TRUE_TAB,
-    SETTINGS_FORMAT_VERSION, SETTINGS_KIND, SPECTRUM_GRADIENT_DB_FLOOR,
+    AppearanceSettings, AudioSettings, DEFAULT_RIBBON_DB, DEFAULT_RIBBON_SHELL_VALUE_REDUCE,
+    DETAIL_DOCK_TRUE_TAB, DOCK_HIDDEN, ExperimentalSettings, SCRIPT_DOCK_TRUE_TAB,
+    SETTINGS_FORMAT_VERSION, SETTINGS_KIND, SPECTRUM_GRADIENT_DB_FLOOR, ScriptingSettings,
+    SelectionSettings, SpectrumGradientStopSettings, ViewSettings, WaveformSettings,
 };
 pub use io::{load_from_dir, path_in, save_to_dir};

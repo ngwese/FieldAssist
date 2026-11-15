@@ -33,7 +33,7 @@ pub fn string_map_from_lua(
                         return Err(mlua::Error::runtime(format!(
                             "property keys must be strings, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 let v = match val {
@@ -41,13 +41,13 @@ pub fn string_map_from_lua(
                     Value::Nil => {
                         return Err(mlua::Error::runtime(format!(
                             "property `{k}` cannot be nil"
-                        )))
+                        )));
                     }
                     other => {
                         return Err(mlua::Error::runtime(format!(
                             "property `{k}` must be a string, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 map.insert(k, v);

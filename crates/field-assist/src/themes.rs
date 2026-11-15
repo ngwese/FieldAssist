@@ -4,8 +4,8 @@
 //! Call [`register_bundled`] after `gpui_kit::init` so Default Light/Dark already
 //! exist; extra packs then appear in `app.themes`.
 
-use gpui_kit::component::ThemeRegistry;
 use gpui_kit::App;
+use gpui_kit::component::ThemeRegistry;
 
 const BUNDLED_THEME_SETS: &[&str] = &[
     include_str!("../assets/themes/adventure.json"),

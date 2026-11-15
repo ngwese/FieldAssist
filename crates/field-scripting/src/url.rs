@@ -179,7 +179,7 @@ impl UserData for LuaUrl {
                         return Err(mlua::Error::runtime(format!(
                             "join segment must be a string, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 path.push(seg.trim_start_matches(['/', '\\']));

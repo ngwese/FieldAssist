@@ -29,16 +29,16 @@ mod snap;
 
 pub use buffer::{Buffer, BufferSource, ChannelScope, NewRegion, Region, RegionId};
 pub use markers::{
-    default_marker_type, marker_type_color, Marker, MarkerId, MarkerList, MarkerType, NewMarker,
-    StoredMarker, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE,
-    MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
+    DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT,
+    MARKER_TYPE_YELLOW, Marker, MarkerId, MarkerList, MarkerType, NewMarker, StoredMarker,
+    default_marker_type, marker_type_color,
 };
 pub use media::{
-    compute_media_id, descriptor_mismatch, DescriptorMismatch, MediaAvailability, MediaDescriptor,
-    MediaId, MediaIdentityFields, MediaPool, MediaRef, MediaStore, MediaVariableStore,
+    DescriptorMismatch, MediaAvailability, MediaDescriptor, MediaId, MediaIdentityFields,
+    MediaPool, MediaRef, MediaStore, MediaVariableStore, compute_media_id, descriptor_mismatch,
 };
 pub use pager::{
-    BlockPager, BlockSource, NullBlockSource, PagerStats, BLOCK_FRAMES, RAM_CACHE_BYTES,
+    BLOCK_FRAMES, BlockPager, BlockSource, NullBlockSource, PagerStats, RAM_CACHE_BYTES,
 };
 pub use pcm::{DecodedAudio, PcmBuffer};
 pub use regions::{RegionCollection, RegionEndpoint, SELECTION_COLLECTION};

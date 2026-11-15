@@ -6,22 +6,22 @@ pub mod document;
 pub use document::BufferDocument;
 #[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_audio_model::{
-    nearest_zero_crossing, nearest_zero_crossing_default, Buffer, BufferSource, ChannelScope,
-    DecodedAudio, PcmBuffer, Region, RegionCollection, RegionEndpoint, RegionId, SamplePosition,
-    SELECTION_COLLECTION,
+    Buffer, BufferSource, ChannelScope, DecodedAudio, PcmBuffer, Region, RegionCollection,
+    RegionEndpoint, RegionId, SELECTION_COLLECTION, SamplePosition, nearest_zero_crossing,
+    nearest_zero_crossing_default,
 };
 pub use field_composition as composition;
 #[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_composition::{
-    default_marker_type, descriptor_mismatch, is_facomp_path, marker_type_color, AnalysisKind,
-    Clipboard, Composition, CompositionId, DescriptorMismatch, EditId, EditOp, Marker, MarkerId,
-    MarkerType, MediaDescriptor, MediaRef, MediaStore, DEFAULT_MARKER_TYPES, MARKER_TYPE_BLUE,
-    MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT, MARKER_TYPE_YELLOW,
+    AnalysisKind, Clipboard, Composition, CompositionId, DEFAULT_MARKER_TYPES, DescriptorMismatch,
+    EditId, EditOp, MARKER_TYPE_BLUE, MARKER_TYPE_PURPLE, MARKER_TYPE_TRANSIENT,
+    MARKER_TYPE_YELLOW, Marker, MarkerId, MarkerType, MediaDescriptor, MediaRef, MediaStore,
+    default_marker_type, descriptor_mismatch, is_facomp_path, marker_type_color,
 };
 pub use field_session as session;
 #[allow(unused_imports)] // re-exported for call sites across the binary
 pub use field_session::{
-    is_fasession_path, DocumentId, Session, SessionDocksUi, SessionUi, SessionWindowUi,
+    DocumentId, Session, SessionDocksUi, SessionUi, SessionWindowUi, is_fasession_path,
 };
 
 /// Compatibility shim for `crate::model::file_url`.

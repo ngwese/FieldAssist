@@ -17,12 +17,12 @@
 
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
-use anyhow::{bail, Context, Result};
-use field_audio_io::{encoder, select_channels, EncodeSpec, FormatEncoder, TagMap};
+use anyhow::{Context, Result, bail};
+use field_audio_io::{EncodeSpec, FormatEncoder, TagMap, encoder, select_channels};
 use field_audio_process::resample_planar;
 use field_core::ProgressHandle;
 
@@ -525,7 +525,7 @@ fn write_render_output(
 mod tests {
     use std::collections::HashMap;
 
-    use field_audio_io::{decode, EncodeSpec, PcmFormat};
+    use field_audio_io::{EncodeSpec, PcmFormat, decode};
     use field_audio_model::MediaRef;
 
     use super::*;

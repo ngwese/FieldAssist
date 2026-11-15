@@ -7,7 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use field_audio_model::BLOCK_FRAMES;
 use field_audio_process::StreamingResampler;
 
@@ -15,7 +15,7 @@ use crate::decode::{decode_range, probe_header};
 use crate::pcm::select_channels;
 use crate::spec::EncodeSpec;
 use crate::stream::{begin_stream, finish_with_tags};
-use crate::{encoder, TagMap};
+use crate::{TagMap, encoder};
 
 /// Default decode/encode block size (matches pager [`BLOCK_FRAMES`]).
 pub const DEFAULT_BLOCK_FRAMES: u64 = BLOCK_FRAMES;
@@ -231,7 +231,7 @@ fn validate_paths(source: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{decode, probe_file, PcmFormat};
+    use crate::{PcmFormat, decode, probe_file};
 
     fn write_sine_wav(path: &Path, channels: u16, frames: u32, sample_rate: u32) {
         use std::io::Write;

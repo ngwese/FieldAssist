@@ -24,7 +24,7 @@ impl UserData for LuaTheme {
                     return Err(mlua::Error::runtime(format!(
                         "theme.name must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             backend_from_lua(lua)?.set_theme_name(&name)
@@ -37,7 +37,7 @@ impl UserData for LuaTheme {
                     return Err(mlua::Error::runtime(format!(
                         "theme.mode must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             backend_from_lua(lua)?.set_theme_mode(&mode)

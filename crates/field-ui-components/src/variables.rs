@@ -6,13 +6,13 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, ActiveTheme as _, Sizable as _, StyledExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, App, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Window,
+    App, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 /// One row in a variables table.

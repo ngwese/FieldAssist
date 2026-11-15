@@ -4,8 +4,8 @@
 //! Floating quick-note entry over the waveform (`n` key).
 
 use gpui_kit::component::{
-    input::{InputEvent, InputState},
     IconNamed,
+    input::{InputEvent, InputState},
 };
 use gpui_kit::{AppContext as _, Context, Entity, Focusable as _, SharedString, Window};
 

@@ -5,8 +5,8 @@
 
 #[allow(unused_imports)] // compatibility re-exports for app call sites
 pub use field_audio_monitor::{
-    menu_items_from_meta, meta_value, parse_ui_json, FaustUiNode, FaustUiRoot, MonitorChain,
-    MonitorHost,
+    FaustUiNode, FaustUiRoot, MonitorChain, MonitorHost, menu_items_from_meta, meta_value,
+    parse_ui_json,
 };
 
 mod offline;

@@ -35,22 +35,22 @@ use std::io::Write;
 use anyhow::Result;
 
 pub use decode::{
-    decode, decode_range, load_buffer, probe_file, probe_header, DecodedAudio, ProbedFile,
-    SymphoniaBlockSource,
+    DecodedAudio, ProbedFile, SymphoniaBlockSource, decode, decode_range, load_buffer, probe_file,
+    probe_header,
 };
 pub use metadata::{
-    build_tag_map, probe_source_variables, TagMap, TechnicalSourceFields, BWF_VORBIS_KEYS,
-    CANONICAL_KEYS, IXML_VORBIS_KEYS,
+    BWF_VORBIS_KEYS, CANONICAL_KEYS, IXML_VORBIS_KEYS, TagMap, TechnicalSourceFields,
+    build_tag_map, probe_source_variables,
 };
 pub use pcm::{
     bits_for_integer, clamp_unit, interleave_f32, interleave_i32, planar_frames, select_channels,
     to_signed, to_u8,
 };
 pub use spec::{
-    format_rate, snap_format, spec_supported, EncodeSpec, EncoderCaps, PcmFormat, RATE_PRESETS,
+    EncodeSpec, EncoderCaps, PcmFormat, RATE_PRESETS, format_rate, snap_format, spec_supported,
 };
-pub use stream::{begin_stream, finish_with_tags, EncodeStream};
-pub use transcode::{transcode, TranscodeRequest, DEFAULT_BLOCK_FRAMES};
+pub use stream::{EncodeStream, begin_stream, finish_with_tags};
+pub use transcode::{DEFAULT_BLOCK_FRAMES, TranscodeRequest, transcode};
 
 /// Streaming / buffer encoder for a container format.
 pub trait FormatEncoder: Send + Sync {

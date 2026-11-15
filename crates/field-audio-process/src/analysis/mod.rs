@@ -9,10 +9,10 @@ mod spectral;
 mod transient;
 
 pub use envelope::EnvelopePeakOp;
-pub use minmax::{build_peaks, fold_minmax_bins, min_max_in_range, MinMaxOp, PEAK_BLOCK};
+pub use minmax::{MinMaxOp, PEAK_BLOCK, build_peaks, fold_minmax_bins, min_max_in_range};
 pub use spectral::{
-    spectral_band_for_freq, SpectralOp, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, SPECTRAL_FFT_SIZE,
-    SPECTRAL_FMIN_HZ,
+    SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR, SPECTRAL_FFT_SIZE, SPECTRAL_FMIN_HZ, SpectralOp,
+    spectral_band_for_freq,
 };
 pub use transient::TransientDetectOp;
 

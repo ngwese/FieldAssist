@@ -7,17 +7,18 @@ use std::path::{Path, PathBuf};
 
 use field_ui_components::content_foreground;
 use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, Theme,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _, Theme,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, uniform_list, App, AppContext as _, Bounds, Context, DragMoveEvent, Entity,
-    ExternalPaths, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    PathPromptOptions, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window,
+    App, AppContext as _, Bounds, Context, DragMoveEvent, Entity, ExternalPaths, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathPromptOptions,
+    Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, div, px, uniform_list,
 };
 
 use crate::settings;

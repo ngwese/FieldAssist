@@ -10,9 +10,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, Action, App, Context, Entity, EventEmitter, ExternalPaths,
-    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, WeakEntity, Window,
+    Action, App, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, WeakEntity,
+    Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::app::AppView;
@@ -21,8 +21,8 @@ use crate::commands::{
     TransportNext, TransportPlayPause, TransportPrevious,
 };
 use crate::components::drop_overlay::file_drop_overlay;
-use crate::model::document::BufferDocument;
 use crate::model::DocumentId;
+use crate::model::document::BufferDocument;
 use crate::playback::TransportState;
 use field_ui_components::WaveformDisplay;
 

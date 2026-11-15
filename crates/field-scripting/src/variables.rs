@@ -9,18 +9,18 @@
 //! Call [`composition_site_detached`] / `composition:variable_resolver()` for
 //! the same lookup the pane uses.
 
-use field_audio_io::{probe_source_variables, TechnicalSourceFields};
+use field_audio_io::{TechnicalSourceFields, probe_source_variables};
 use field_composition::Composition;
 use field_session::DocumentId;
 use field_variables::{
-    interpolate, interpolate_strict, split_variable_id, VariableEntry, VariableTable,
+    VariableEntry, VariableTable, interpolate, interpolate_strict, split_variable_id,
 };
 use mlua::{MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
 use std::path::Path;
 
 use crate::bindings::{
-    bindings_from_lua, live_user_bindings, split_readonly_by_scope, split_source_by_scope,
-    split_user_detached, LuaBindings,
+    LuaBindings, bindings_from_lua, live_user_bindings, split_readonly_by_scope,
+    split_source_by_scope, split_user_detached,
 };
 use crate::host::host_from_lua;
 use crate::prototype::{base_properties, create_prototype_table};
@@ -61,7 +61,7 @@ pub fn resolver_create_prototype(lua: &mlua::Lua, properties: Table) -> mlua::Re
             return Err(mlua::Error::runtime(format!(
                 "resolver name must be a string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     let proto = create_prototype_table(lua)?;
@@ -110,7 +110,7 @@ pub fn resolver_new_instance(
             return Err(mlua::Error::runtime(format!(
                 "init must be a function, got {}",
                 other.type_name()
-            )))
+            )));
         }
     }
     Ok(instance)
@@ -217,7 +217,7 @@ fn call_names(instance: &Table) -> mlua::Result<Vec<String>> {
                                 return Err(mlua::Error::runtime(format!(
                                     "names() entries must be strings, got {}",
                                     other.type_name()
-                                )))
+                                )));
                             }
                         }
                     }
@@ -258,7 +258,7 @@ fn call_resolve(
                     return Err(mlua::Error::runtime(format!(
                         "resolve() value must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             let resolved_scope = match iter.next() {
@@ -268,7 +268,7 @@ fn call_resolve(
                     return Err(mlua::Error::runtime(format!(
                         "resolve() scope must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             Ok(Some((value, resolved_scope)))
@@ -531,7 +531,7 @@ impl UserData for LuaVariableResolver {
                     return Err(mlua::Error::runtime(format!(
                         "resolve expand flag must be a boolean, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             let expr = expr.trim();
@@ -566,7 +566,7 @@ impl UserData for LuaVariableResolver {
                         return Err(mlua::Error::runtime(format!(
                             "expand strict flag must be a boolean, got {}",
                             other.type_name()
-                        )))
+                        )));
                     }
                 };
                 let table = resolve_with_active(lua, &this.bindings)?;

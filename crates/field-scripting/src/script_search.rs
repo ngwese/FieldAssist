@@ -80,7 +80,7 @@ pub fn collect_matching_lua(config: Option<&Path>, prefix: &str) -> Vec<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field_settings::{save_to_dir, AppSettings};
+    use field_settings::{AppSettings, save_to_dir};
 
     #[test]
     fn search_dirs_include_extras_from_settings() {

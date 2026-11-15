@@ -5,14 +5,14 @@
 
 use std::path::{Path, PathBuf};
 
-use field_audio_io::{build_tag_map, encoder, snap_format, EncodeSpec, PcmFormat};
-use field_composition::{export_to_path, Composition, ExportJob};
+use field_audio_io::{EncodeSpec, PcmFormat, build_tag_map, encoder, snap_format};
+use field_composition::{Composition, ExportJob, export_to_path};
 use field_session::DocumentId;
-use field_variables::{interpolate_strict, VariableTable};
+use field_variables::{VariableTable, interpolate_strict};
 use mlua::{FromLua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::fs::path_from_lua;
-use crate::host::{host_from_lua, HostHandle};
+use crate::host::{HostHandle, host_from_lua};
 use crate::variables::composition_source_variables;
 
 /// Registered export profile from Lua.
@@ -612,7 +612,7 @@ pub fn resolve_export_job(
             return Err(mlua::Error::runtime(format!(
                 "export expects a profile name, profile userdata, or options table, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
     build_job(lua, host, composition, composition_id, profile)

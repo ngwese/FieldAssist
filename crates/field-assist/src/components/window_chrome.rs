@@ -3,11 +3,11 @@
 
 //! Shared custom title-bar chrome for secondary windows (Settings, About).
 
-use gpui_kit::component::{h_flex, TitleBar};
+use gpui_kit::component::{TitleBar, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, img, px, size, Bounds, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
-    Point, SharedString, Size, Styled as _, TitlebarOptions, WindowBounds, WindowOptions,
+    Bounds, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, SharedString,
+    Size, Styled as _, TitlebarOptions, WindowBounds, WindowOptions, div, img, px, size,
 };
 
 /// [`WindowOptions`] that pair with a drawn [`TitleBar`] (theme-matching chrome).

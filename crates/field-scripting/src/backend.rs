@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use field_audio_model::{MediaId, MediaRef, MediaStore};
 use field_composition::Composition;
-use field_session::{is_fasession_path, DocumentId, Session, SessionDocument, SessionId};
+use field_session::{DocumentId, Session, SessionDocument, SessionId, is_fasession_path};
 
 use crate::world::{HeadlessWorld, OpenDocument};
 
@@ -313,7 +313,7 @@ pub trait ScriptBackend {
 
     /// Save session.  Headless returns an error; desktop overrides this.
     fn save_session(&mut self, which: Option<SessionId>, path: Option<PathBuf>)
-        -> mlua::Result<()>;
+    -> mlua::Result<()>;
 
     /// Close a detached session loaded via `open_detached_session`.
     ///
@@ -351,7 +351,7 @@ pub trait ScriptBackend {
 
     /// Composition-scoped variables (`.facomp`).
     fn composition_variables(&self, id: DocumentId)
-        -> mlua::Result<field_variables::VariableTable>;
+    -> mlua::Result<field_variables::VariableTable>;
 
     /// Replace composition-scoped variables.
     fn set_composition_variables(

@@ -7,16 +7,17 @@ use std::rc::Rc;
 
 use crate::theme::content_foreground;
 use gpui_kit::component::{
+    ActiveTheme as _, Sizable as _,
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
-    v_flex, ActiveTheme as _, Sizable as _,
+    v_flex,
 };
 use gpui_kit::{
-    div, rems, AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    rems,
 };
 
 /// Evaluation result shown in the transcript.

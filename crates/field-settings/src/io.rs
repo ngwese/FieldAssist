@@ -67,7 +67,7 @@ pub fn save_to_dir(settings: &AppSettings, config_dir: Option<&Path>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::groups::{ScriptingSettings, DOCK_HIDDEN, SETTINGS_KIND};
+    use crate::groups::{DOCK_HIDDEN, SETTINGS_KIND, ScriptingSettings};
 
     #[test]
     fn load_missing_returns_defaults() {

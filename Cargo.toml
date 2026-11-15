@@ -22,7 +22,7 @@ default-members = ["crates/field-assist"]
 
 [workspace.package]
 version = "0.26.0-pre"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/ngwese/FieldAssist"
 

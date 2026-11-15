@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::table::{split_variable_id, StoredVariable, VariableEntry, VariableTable};
+use crate::table::{StoredVariable, VariableEntry, VariableTable, split_variable_id};
 
 /// On-disk kind marker for `variables.json`.
 pub const VARIABLES_KIND: &str = "variables";

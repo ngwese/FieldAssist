@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use super::chain::MonitorChain;
 use super::generated::{
-    self, FaustDsp, ParamIndex, MONITOR_FOA_FUMA_JSON, MONITOR_FOA_JSON, MONITOR_MONO_JSON,
-    MONITOR_MS_JSON, MONITOR_STEREO_JSON, UI,
+    self, FaustDsp, MONITOR_FOA_FUMA_JSON, MONITOR_FOA_JSON, MONITOR_MONO_JSON, MONITOR_MS_JSON,
+    MONITOR_STEREO_JSON, ParamIndex, UI,
 };
 use super::schema::{collect_addresses, parse_ui_json};
 

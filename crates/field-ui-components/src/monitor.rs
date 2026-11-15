@@ -8,19 +8,20 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconNamed, Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     slider::{Slider, SliderEvent, SliderScale, SliderState},
-    v_flex, ActiveTheme as _, Icon, IconNamed, Sizable as _,
+    v_flex,
 };
 use gpui_kit::{
-    div, hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative, App,
-    AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, hsla,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::channel_toggle::ChannelSelector;

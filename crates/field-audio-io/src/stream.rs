@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use flac_codec::encode::{FlacSampleWriter, Options};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use ogg::writing::{PacketWriteEndInfo, PacketWriter};
@@ -18,7 +18,7 @@ use crate::pcm::{
     bits_for_integer, clamp_unit, interleave_f32, interleave_i32, planar_frames, to_signed, to_u8,
 };
 use crate::spec::{EncodeSpec, PcmFormat};
-use crate::{encoder, TagMap};
+use crate::{TagMap, encoder};
 
 /// Streaming encoder session: write planar blocks then finalize.
 pub trait EncodeStream: Send {

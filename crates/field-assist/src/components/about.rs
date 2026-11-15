@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 use gpui_kit::component::{
+    ActiveTheme as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, ActiveTheme as _, StyledExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
-    div, img, px, rems, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, Styled as _, Window,
+    App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, Render, Styled as _, Window, div, img, px, rems,
 };
 
 pub struct AboutView {

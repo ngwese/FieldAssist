@@ -19,7 +19,7 @@
 //! the crate-level `AGENTS.md`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -30,12 +30,12 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
 
 use super::buffer_size::{
-    buffer_size_frame_catalog, catalog_in_range, negotiate_fixed_candidates, BufferSizeRange,
-    OpenedPeriod, OutputBufferSize,
+    BufferSizeRange, OpenedPeriod, OutputBufferSize, buffer_size_frame_catalog, catalog_in_range,
+    negotiate_fixed_candidates,
 };
 use super::faults::PlaybackFaults;
-use super::monitor::{map_direct, MonitorProcess};
-use super::prefetch::{PrefetchRing, PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES};
+use super::monitor::{MonitorProcess, map_direct};
+use super::prefetch::{PREFETCH_CAPACITY_FRAMES, PREFETCH_CHUNK_FRAMES, PrefetchRing};
 use super::provider::PlaybackDataProvider;
 use super::src_convert::StreamingSrc;
 use super::transport::TransportState;
@@ -483,11 +483,7 @@ impl PlaybackShared {
 
     fn playback_start(&self) -> usize {
         let v = self.in_point.load(Ordering::SeqCst);
-        if v == IN_OUT_NONE {
-            0
-        } else {
-            v
-        }
+        if v == IN_OUT_NONE { 0 } else { v }
     }
 
     fn playback_end(&self) -> usize {

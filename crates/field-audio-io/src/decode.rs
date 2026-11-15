@@ -6,14 +6,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, time::SystemTime};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use field_audio_model::{BlockSource, Buffer, BufferSource, PcmBuffer};
 use field_audio_process::build_peaks;
 use symphonia::core::{
-    audio::{sample::SampleFormat, AudioSpec, GenericAudioBufferRef},
+    audio::{AudioSpec, GenericAudioBufferRef, sample::SampleFormat},
     codecs::audio::{AudioCodecParameters, AudioDecoderOptions},
     errors::Error as SymphoniaError,
-    formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo, Track, TrackType},
+    formats::{FormatOptions, FormatReader, SeekMode, SeekTo, Track, TrackType, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
     packet::Packet,

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rubato::audioadapter::Adapter;
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Resampler};
@@ -266,9 +266,11 @@ mod tests {
     #[test]
     fn resample_48000_to_44100_changes_length() {
         let frames = 4800;
-        let input = vec![(0..frames)
-            .map(|i| (i as f32 / 48000.0 * 440.0 * std::f32::consts::TAU).sin())
-            .collect::<Vec<_>>()];
+        let input = vec![
+            (0..frames)
+                .map(|i| (i as f32 / 48000.0 * 440.0 * std::f32::consts::TAU).sin())
+                .collect::<Vec<_>>(),
+        ];
         let out = resample_planar(&input, 48000, 44100).unwrap();
         let expected = (frames as f64 * 44100.0 / 48000.0).round() as usize;
         let got = out[0].len();

@@ -3,14 +3,14 @@
 
 use std::io::Write;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use rusty_vorbis::VorbisEncoder;
 
+use crate::FormatEncoder;
 use crate::metadata::TagMap;
 use crate::pcm::interleave_f32;
 use crate::spec::{EncodeSpec, EncoderCaps};
-use crate::FormatEncoder;
 
 /// Ogg Vorbis encoder using `rusty_vorbis`.
 pub struct VorbisEncoderImpl;

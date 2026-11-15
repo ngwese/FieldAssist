@@ -4,7 +4,7 @@
 //! FieldAssist GPUI settings store over [`field_settings`].
 
 use field_features::{Feature, FeatureRegistry};
-use field_settings::{load_from_dir, path_in, save_to_dir, SpectrumGradientStopSettings};
+use field_settings::{SpectrumGradientStopSettings, load_from_dir, path_in, save_to_dir};
 use field_ui_components::{
     PeakRendering, SpectrumGradient, SpectrumGradientStop, WaveformRepresentation,
 };
@@ -12,9 +12,9 @@ use gpui_kit::{App, Global};
 
 #[allow(unused_imports)] // public re-exports for callers / docs
 pub use field_settings::{
-    AppSettings, AppearanceSettings, AudioSettings, ExperimentalSettings, ScriptingSettings,
-    SelectionSettings, ViewSettings, WaveformSettings, DOCK_HIDDEN, SETTINGS_FORMAT_VERSION,
-    SETTINGS_KIND,
+    AppSettings, AppearanceSettings, AudioSettings, DOCK_HIDDEN, ExperimentalSettings,
+    SETTINGS_FORMAT_VERSION, SETTINGS_KIND, ScriptingSettings, SelectionSettings, ViewSettings,
+    WaveformSettings,
 };
 
 /// In-memory settings + launch flags used by the Settings UI and `app:load_settings`.

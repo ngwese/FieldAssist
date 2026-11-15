@@ -1,17 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-use gpui_kit::component::{h_flex, ActiveTheme as _};
+use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, App, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
-    Window,
+    App, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use crate::model::document::BufferDocument;
 use crate::playback::TransportState;
 use field_ui_components::{
-    format_db_hover, format_hz_hover, hover_axis_quantize, WaveformDisplay, WaveformHoverAxis,
+    WaveformDisplay, WaveformHoverAxis, format_db_hover, format_hz_hover, hover_axis_quantize,
 };
 
 /// Title-bar session readout. Lives in its own view so hover, playhead, and

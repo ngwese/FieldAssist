@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
-use field_session::{placeholder_media_descriptor, DocumentId, Session, SessionDocument};
+use field_session::{DocumentId, Session, SessionDocument, placeholder_media_descriptor};
 use mlua::Lua;
 
-use crate::model::{is_facomp_path, Buffer, BufferDocument, Composition, MediaStore};
+use crate::model::{Buffer, BufferDocument, Composition, MediaStore, is_facomp_path};
 
 pub use field_scripting::EMBEDDED_INIT;
 
@@ -168,7 +168,7 @@ impl ScriptHost {
         session: &field_variables::VariableTable,
         composition: &field_variables::VariableTable,
     ) -> Result<field_variables::VariableTable, String> {
-        use field_scripting::{split_readonly_by_scope, split_user_detached, LuaBindings};
+        use field_scripting::{LuaBindings, split_readonly_by_scope, split_user_detached};
 
         let mut bindings = split_readonly_by_scope(source);
         bindings.extend(split_user_detached(user, true));
@@ -192,7 +192,7 @@ impl ScriptHost {
         composition: &field_variables::VariableTable,
         export: &field_variables::VariableTable,
     ) -> Result<field_variables::VariableTable, String> {
-        use field_scripting::{split_readonly_by_scope, split_user_detached, LuaBindings};
+        use field_scripting::{LuaBindings, split_readonly_by_scope, split_user_detached};
 
         let mut bindings = split_readonly_by_scope(source);
         bindings.extend(split_user_detached(user, true));

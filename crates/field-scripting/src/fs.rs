@@ -301,7 +301,7 @@ pub fn bind_fs(lua: &Lua, field: &Table) -> mlua::Result<()> {
                     return Err(mlua::Error::runtime(format!(
                         "checksum algorithm must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             if algo != "blake3" {

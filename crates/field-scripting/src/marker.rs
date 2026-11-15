@@ -5,7 +5,7 @@
 
 use mlua::{FromLua, Lua, MultiValue, Table, UserData, UserDataFields, UserDataMethods, Value};
 
-use field_audio_model::{default_marker_type, Marker, MarkerId};
+use field_audio_model::{Marker, MarkerId, default_marker_type};
 use field_session::DocumentId;
 
 use crate::composition::with_document;
@@ -94,7 +94,7 @@ pub fn parse_add_marker(args: MultiValue) -> mlua::Result<AddMarkerArgs> {
                     return Err(mlua::Error::runtime(format!(
                         "marker type must be a string, got {}",
                         other.type_name()
-                    )))
+                    )));
                 }
             };
             Ok(AddMarkerArgs {

@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 use gpui_kit::component::{
-    dock::{BasePanel, Panel, PanelEvent},
     ActiveTheme as _,
+    dock::{BasePanel, Panel, PanelEvent},
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, App, Context, EventEmitter, ExternalPaths, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, WeakEntity, Window,
+    App, Context, EventEmitter, ExternalPaths, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, WeakEntity, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use crate::app::AppView;

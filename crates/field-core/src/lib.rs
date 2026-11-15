@@ -29,6 +29,6 @@ mod open_report;
 mod progress;
 
 pub use file_url::Location;
-pub use ids::{deserialize_prefixed_uuid, serialize_prefixed_uuid, CompositionId};
+pub use ids::{CompositionId, deserialize_prefixed_uuid, serialize_prefixed_uuid};
 pub use open_report::{LoadProblem, OpenReport, ProblemCategory};
 pub use progress::{ProgressHandle, ProgressState};

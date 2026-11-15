@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use field_audio_process::{
-    AnalysisKind, RecomputeScope, PEAK_BLOCK, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
+    AnalysisKind, PEAK_BLOCK, RecomputeScope, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR,
     SPECTRAL_FFT_SIZE,
 };
 

@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use field_audio_model::{
-    Buffer, ChannelScope, MediaStore, RegionCollection, RegionId, SamplePosition,
-    SELECTION_COLLECTION,
+    Buffer, ChannelScope, MediaStore, RegionCollection, RegionId, SELECTION_COLLECTION,
+    SamplePosition,
 };
-use field_composition::{is_facomp_path, Composition, MarkerId, MarkerType};
+use field_composition::{Composition, MarkerId, MarkerType, is_facomp_path};
 use field_session::{
-    is_fasession_path, placeholder_media_descriptor, DocumentId, Session, SessionDocument,
+    DocumentId, Session, SessionDocument, is_fasession_path, placeholder_media_descriptor,
 };
 
 /// Open document held by the headless world.

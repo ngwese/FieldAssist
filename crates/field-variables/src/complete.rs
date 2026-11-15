@@ -263,11 +263,7 @@ impl CompletionContext {
 
 fn first_segment(path: &str) -> Option<&str> {
     let seg = path.split('.').next()?;
-    if seg.is_empty() {
-        None
-    } else {
-        Some(seg)
-    }
+    if seg.is_empty() { None } else { Some(seg) }
 }
 
 fn common_prefix<'a>(mut labels: impl Iterator<Item = &'a str>) -> String {
@@ -289,7 +285,7 @@ fn common_prefix<'a>(mut labels: impl Iterator<Item = &'a str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{compose, VariableEntry, VariableTable};
+    use crate::{VariableEntry, VariableTable, compose};
 
     fn sample_table() -> VariableTable {
         let mut source = VariableTable::new();

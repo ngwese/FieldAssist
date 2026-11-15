@@ -2,19 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 use gpui_kit::component::{
+    ActiveTheme as _, GlobalState, Icon, IconNamed, InteractiveElementExt as _, Selectable as _,
+    Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     kbd::Kbd,
     menu::{PopupMenu, PopupMenuItem},
-    ActiveTheme as _, GlobalState, Icon, IconNamed, InteractiveElementExt as _, Selectable as _,
-    Sizable as _,
 };
 use gpui_kit::{
-    anchored, deferred, div, prelude::FluentBuilder as _, px, size, transparent_white, Action, App,
-    AppContext as _, ClickEvent, Context, DismissEvent, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, OwnedMenu, OwnedMenuItem,
+    Action, App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, OwnedMenu, OwnedMenuItem,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Transformation, Window,
+    Subscription, Transformation, Window, anchored, deferred, div, prelude::FluentBuilder as _, px,
+    size, transparent_white,
 };
 
 /// Application menu bar for Windows and Linux, painted in muted chrome colors.

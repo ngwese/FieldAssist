@@ -46,7 +46,7 @@ pub fn next_anchor(anchors: &[usize], pos: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::model::buffer::ChannelScope;
-    use crate::model::composition::{Composition, MediaRef, MARKER_TYPE_BLUE};
+    use crate::model::composition::{Composition, MARKER_TYPE_BLUE, MediaRef};
     use crate::model::document::BufferDocument;
 
     fn test_document() -> BufferDocument {

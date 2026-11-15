@@ -7,18 +7,19 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    v_flex, ActiveTheme as _, IconName, Sizable as _,
+    v_flex,
 };
 use gpui_kit::{
-    canvas, div, prelude::FluentBuilder as _, px, uniform_list, App, AppContext as _, Context,
-    DispatchPhase, ElementId, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
+    App, AppContext as _, Context, DispatchPhase, ElementId, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window, canvas, div,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 
 const MIN_COLUMN_WIDTH: f32 = 32.;
@@ -322,7 +323,7 @@ impl MessagesPanel {
         self.resize_drag = None;
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let muted = cx.theme().muted_foreground;
         let entity_id = cx.entity_id();
         let visible = self.visible_columns();
@@ -398,7 +399,10 @@ impl MessagesPanel {
     }
 }
 
-fn resize_handle(column: MessageColumn, cx: &mut Context<MessagesPanel>) -> impl IntoElement {
+fn resize_handle(
+    column: MessageColumn,
+    cx: &mut Context<MessagesPanel>,
+) -> impl IntoElement + use<> {
     h_flex()
         .id(("messages-resize", column.stable_id()))
         .w(px(RESIZE_HANDLE_WIDTH))
@@ -450,7 +454,7 @@ fn column_menu_button(
     wrap_messages: bool,
     muted: gpui_kit::Hsla,
     cx: &mut Context<MessagesPanel>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let view = cx.entity().clone();
     Button::new("messages-columns")
         .ghost()

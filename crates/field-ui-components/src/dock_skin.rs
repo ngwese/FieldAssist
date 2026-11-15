@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     dock::{
         BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, NodeId, PanelHandle,
@@ -13,13 +14,12 @@ use gpui_kit::component::{
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     tab::{Tab, TabBar},
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
 };
 use gpui_kit::{
-    div, prelude::FluentBuilder as _, px, rems, Anchor, AnyElement, AnyView, App, AppContext as _,
-    Axis, ClickEvent, Div, Entity, Global, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, Window,
+    Anchor, AnyElement, AnyView, App, AppContext as _, Axis, ClickEvent, Div, Entity, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    rems,
 };
 
 /// Host callbacks for the center waveform tab bar.

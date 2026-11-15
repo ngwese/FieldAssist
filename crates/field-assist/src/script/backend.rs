@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use field_audio_model::{MediaId, MediaRef, MediaStore};
 use field_scripting::{OpenDocument, ScriptBackend};
-use field_session::{is_fasession_path, DocumentId, Session, SessionDocument, SessionId};
+use field_session::{DocumentId, Session, SessionDocument, SessionId, is_fasession_path};
 
-use crate::model::{is_facomp_path, BufferDocument, Composition};
+use crate::model::{BufferDocument, Composition, is_facomp_path};
 
 use super::access;
 use super::host::TestWorld;

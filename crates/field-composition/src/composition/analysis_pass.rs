@@ -9,15 +9,15 @@ use std::time::Instant;
 use anyhow::Result;
 use field_audio_model::BLOCK_FRAMES;
 use field_audio_process::{
-    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, SpectralOp,
-    TransientDetectOp, SPECTRAL_BAND_COUNT,
+    AnalysisKind, AnalysisSink, EnvelopePeakOp, MinMaxOp, RecomputeScope, SPECTRAL_BAND_COUNT,
+    SpectralOp, TransientDetectOp,
 };
 use field_core::ProgressHandle;
 
 use super::{
-    advance_read_pos, next_chunk_in_ranges, peak_covered_samples, AnalysisBlockOutcome, Composition,
+    AnalysisBlockOutcome, Composition, advance_read_pos, next_chunk_in_ranges, peak_covered_samples,
 };
-use crate::analysis_store::{expand_frame_ranges, merge_frame_ranges, AnalysisStreams, FrameRange};
+use crate::analysis_store::{AnalysisStreams, FrameRange, expand_frame_ranges, merge_frame_ranges};
 
 /// Wall-time counters for one shared analysis pass (read vs consume).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -727,7 +727,7 @@ impl Composition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use field_audio_model::{BlockSource, MediaRef, BLOCK_FRAMES};
+    use field_audio_model::{BLOCK_FRAMES, BlockSource, MediaRef};
     use field_audio_process::{AnalysisKind, SPECTRAL_BAND_COUNT, SPECTRAL_DB_FLOOR};
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
