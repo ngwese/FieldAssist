@@ -6,7 +6,7 @@
 
 ### Other
 
-- Upgrade gpui-kit to 0.9.1
+- Upgrade gpui-kit to 0.10.0
 - Bump workspace Rust edition to 2024
 
 
