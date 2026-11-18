@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Greg Wuller
 # SPDX-License-Identifier: MIT
-"""Rasterize assets/logo/04-bands-stroke.svg into Windows .ico and macOS .icns.
+"""Rasterize assets/logo/04-bands-stroke-fat-scaled.svg into Windows .ico and
+macOS .icns.
 
 Requires: pip install resvg_py
 """
@@ -20,7 +21,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "crates" / "field-assist" / "assets"
-SVG_PATH = ASSETS / "logo" / "04-bands-stroke.svg"
+SVG_PATH = ASSETS / "logo" / "04-bands-stroke-fat-scaled.svg"
 OUT_DIR = ASSETS / "app-icon"
 
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
@@ -83,7 +84,8 @@ def main() -> None:
         sys.exit(1)
 
     svg = SVG_PATH.read_text(encoding="utf-8")
-    sizes = sorted(set(ICO_SIZES) | {size for _, size in ICNS_TYPES} | {512})
+    # macOS full-res icon is 1024×1024 (ic10); keep that as the master PNG.
+    sizes = sorted(set(ICO_SIZES) | {size for _, size in ICNS_TYPES} | {1024})
     images = {size: render_png(svg, size) for size in sizes}
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,10 +94,10 @@ def main() -> None:
     png = OUT_DIR / "app-icon.png"
     write_ico(ico, images)
     write_icns(icns, images)
-    png.write_bytes(images[512])
+    png.write_bytes(images[1024])
     print(f"wrote {ico.relative_to(ROOT)}")
     print(f"wrote {icns.relative_to(ROOT)}")
-    print(f"wrote {png.relative_to(ROOT)}")
+    print(f"wrote {png.relative_to(ROOT)} (1024×1024)")
 
 
 if __name__ == "__main__":

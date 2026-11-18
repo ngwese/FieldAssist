@@ -72,15 +72,15 @@ cargo run --release -- --dump-init
 ## App icon
 
 The in-app mark, Windows `.exe` icon, and macOS `.app` icon all come from
-[crates/field-assist/assets/logo/04-bands-stroke.svg](../crates/field-assist/assets/logo/04-bands-stroke.svg)
-(logo study 4, stroke bands). Raster assets live in
+[crates/field-assist/assets/logo/04-bands-stroke-fat-scaled.svg](../crates/field-assist/assets/logo/04-bands-stroke-fat-scaled.svg)
+(logo study 4, fat stroke bands). Raster assets live in
 [crates/field-assist/assets/app-icon/](../crates/field-assist/assets/app-icon/):
 
 | File | Used by |
 | --- | --- |
 | `app-icon.ico` | Embedded into the Windows executable at compile time |
 | `AppIcon.icns` | Copied into `FieldAssist.app/Contents/Resources/` |
-| `app-icon.png` | 512px PNG of the same artwork |
+| `app-icon.png` | 1024×1024 PNG of the same artwork (macOS full-res) |
 
 After changing the SVG, regenerate those files (requires
 [resvg_py](https://pypi.org/project/resvg_py/)):
