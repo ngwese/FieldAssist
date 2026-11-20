@@ -2,6 +2,22 @@
 
 <!-- git-cliff: end of header -->
 
+## [0.26.0] - 2026-11-20
+
+### Features
+
+- Negotiate preferred audio buffer size on open
+- Expose app.output_device on headless hosts
+
+### Miscellaneous Tasks
+
+- Remove unused omp harness config
+- Archive split-scripting-reference OpenSpec change
+- Upgrade gpui-kit to 0.9.1
+- Bump workspace Rust edition to 2024
+- Upgrade gpui-kit to 0.10.0
+
+
 ## Unreleased
 
 ### Other
